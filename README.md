@@ -199,7 +199,7 @@ This project is licensed under the MIT License - see the [LICENSE](./LICENSE) fi
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/YOUR_USERNAME/RoslynMcpServer/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/YOUR_USERNAME/RoslynMcpServer/discussions)
+- **Issues**: [GitHub Issues](https://github.com/JoshuaRamirez/RoslynMcpServer/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/JoshuaRamirez/RoslynMcpServer/discussions)
 
 
