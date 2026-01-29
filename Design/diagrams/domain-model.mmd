@@ -1,0 +1,62 @@
+classDiagram
+    class Workspace {
+        +Guid WorkspaceId
+        +AbsolutePath SolutionPath
+        +WorkspaceState State
+        +List~Project~ Projects
+        +LoadSolution()
+        +Dispose()
+    }
+
+    class Project {
+        +ProjectId Id
+        +string Name
+        +AbsolutePath FilePath
+        +List~Document~ Documents
+    }
+
+    class Document {
+        +DocumentId Id
+        +string Name
+        +AbsolutePath FilePath
+        +SyntaxTree SyntaxTree
+        +SemanticModel SemanticModel
+    }
+
+    class Symbol {
+        +SymbolKey Id
+        +string Name
+        +string FullyQualifiedName
+        +SymbolKind Kind
+        +Accessibility Accessibility
+    }
+
+    class Reference {
+        +Location ReferenceLocation
+        +Document ReferencingDocument
+        +Symbol ReferencedSymbol
+        +bool IsImplicit
+    }
+
+    class RefactoringOperation {
+        +Guid OperationId
+        +RefactoringKind Kind
+        +Symbol TargetSymbol
+        +Destination Destination
+        +OperationState State
+        +List~DocumentChange~ Changes
+    }
+
+    class DocumentChange {
+        +DocumentId DocumentId
+        +ChangeKind Kind
+        +SourceText OldText
+        +SourceText NewText
+    }
+
+    Workspace "1" --> "*" Project : contains
+    Project "1" --> "*" Document : contains
+    Document "1" --> "*" Symbol : defines
+    Symbol "1" --> "*" Reference : referenced by
+    RefactoringOperation "1" --> "1" Symbol : targets
+    RefactoringOperation "1" --> "*" DocumentChange : produces

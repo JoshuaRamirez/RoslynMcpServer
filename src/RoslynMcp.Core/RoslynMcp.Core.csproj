@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RootNamespace>RoslynMcp.Core</RootNamespace>
+
+    <!-- NuGet Package Metadata -->
+    <PackageId>RoslynMcp.Core</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>RoslynMcp Contributors</Authors>
+    <Company>RoslynMcp</Company>
+    <Description>Core library for Roslyn MCP Server providing C# refactoring operations including move type, rename symbol, extract method, and more. Powered by Roslyn and MSBuild.</Description>
+    <PackageTags>roslyn;mcp;refactoring;csharp;model-context-protocol;code-analysis;msbuild;dotnet</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/JoshuaRamirez/RoslynMcpServer</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/YOUR_USERNAME/RoslynMcpServer</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Build.Locator" Version="1.6.1" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.8.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="4.8.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RoslynMcp.Contracts\RoslynMcp.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,55 @@
+name: Publish NuGet Packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 0.1.0)'
+        required: true
+        type: string
+
+jobs:
+  publish:
+    name: Build and Publish NuGet Packages
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore RoslynMcp.sln
+
+    - name: Build solution
+      run: dotnet build RoslynMcp.sln -c Release --no-restore
+
+    - name: Run tests
+      run: dotnet test RoslynMcp.sln -c Release --no-build --verbosity normal
+
+    - name: Pack RoslynMcp.Contracts
+      run: dotnet pack src/RoslynMcp.Contracts/RoslynMcp.Contracts.csproj -c Release --no-build -o ./packages
+
+    - name: Pack RoslynMcp.Core
+      run: dotnet pack src/RoslynMcp.Core/RoslynMcp.Core.csproj -c Release --no-build -o ./packages
+
+    - name: List packages
+      run: ls -R ./packages
+      shell: bash
+
+    - name: Push to NuGet.org
+      run: dotnet nuget push ./packages/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+      if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+
+    - name: Upload packages as artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: nuget-packages
+        path: ./packages/*.nupkg
+

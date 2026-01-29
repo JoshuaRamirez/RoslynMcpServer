@@ -1,0 +1,19 @@
+stateDiagram-v2
+    [*] --> Pending
+    Pending --> Validating : Begin
+    Validating --> Resolving : Valid
+    Validating --> Failed : Invalid
+    Resolving --> Computing : SymbolFound
+    Resolving --> Failed : NotFound
+    Computing --> Previewing : preview=true
+    Computing --> Applying : preview=false
+    Computing --> Failed : Error
+    Previewing --> Applying : Execute
+    Previewing --> Cancelled : Cancel
+    Applying --> Committing : Applied
+    Applying --> Failed : Error
+    Committing --> Completed : Committed
+    Committing --> Failed : Error
+    Completed --> [*]
+    Failed --> [*]
+    Cancelled --> [*]

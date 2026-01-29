@@ -1,0 +1,50 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  code-quality:
+    name: Code Quality Checks
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore RoslynMcp.sln
+
+    - name: Build with warnings as errors
+      run: dotnet build RoslynMcp.sln -c Release --no-restore /p:TreatWarningsAsErrors=true
+
+    - name: Run code analysis
+      run: dotnet build RoslynMcp.sln -c Release --no-restore /p:RunAnalyzers=true /p:EnforceCodeStyleInBuild=true
+
+  format-check:
+    name: Format Check
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore RoslynMcp.sln
+
+    - name: Check code formatting
+      run: dotnet format RoslynMcp.sln --verify-no-changes --verbosity diagnostic
+

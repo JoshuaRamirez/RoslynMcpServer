@@ -1,0 +1,14 @@
+stateDiagram-v2
+    [*] --> Unloaded
+    Unloaded --> Loading : LoadSolution()
+    Loading --> Ready : Success
+    Loading --> Error : Failure
+    Ready --> Operating : StartOperation()
+    Operating --> Ready : Complete
+    Operating --> Error : Failure
+    Error --> Unloaded : Reset()
+    Error --> Loading : Retry()
+    Ready --> Disposed : Dispose()
+    Error --> Disposed : Dispose()
+    Unloaded --> Disposed : Dispose()
+    Disposed --> [*]

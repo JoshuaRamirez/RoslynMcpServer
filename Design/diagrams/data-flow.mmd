@@ -1,0 +1,29 @@
+flowchart TB
+    subgraph MCP["MCP Transport Layer"]
+        A[JSON-RPC Request] --> B[StdioTransport]
+        B --> C[ToolRegistry]
+        C --> D[IToolHandler]
+    end
+
+    subgraph Core["Refactoring Core"]
+        D --> E[WorkspaceProvider]
+        E --> F[WorkspaceContext]
+        F --> G[RefactoringOperation]
+        G --> H[SymbolResolver]
+        G --> I[ReferenceTracker]
+        G --> J[SyntaxRewriter]
+    end
+
+    subgraph Roslyn["Roslyn APIs"]
+        H --> K[MSBuildWorkspace]
+        I --> L[SymbolFinder]
+        J --> M[SyntaxTree]
+    end
+
+    subgraph FileSystem["File System"]
+        G --> N[AtomicFileWriter]
+        N --> O[Temp File]
+        O --> P[Final File]
+    end
+
+    P --> Q[JSON-RPC Response]
