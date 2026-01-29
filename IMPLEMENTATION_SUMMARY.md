@@ -86,7 +86,7 @@ This document summarizes all work completed to prepare the RoslynMcp solution fo
    <Description>Contract definitions for Roslyn MCP Server...</Description>
    <PackageTags>roslyn;mcp;refactoring;csharp;model-context-protocol</PackageTags>
    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-   <RepositoryUrl>https://github.com/YOUR_USERNAME/RoslynMcpServer</RepositoryUrl>
+   <RepositoryUrl>https://github.com/JoshuaRamirez/RoslynMcpServer</RepositoryUrl>
    <IncludeSymbols>true</IncludeSymbols>
    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
    ```
@@ -221,11 +221,11 @@ Build succeeded.
 
 ### What Remains (Manual Steps)
 
-1. Update `YOUR_USERNAME` placeholder in:
-   - `src/RoslynMcp.Contracts/RoslynMcp.Contracts.csproj`
-   - `src/RoslynMcp.Core/RoslynMcp.Core.csproj`
-   - `README.md`
-   - `CONTRIBUTING.md`
+1. ✅ Update `YOUR_USERNAME` placeholder - COMPLETED
+   - ✅ `src/RoslynMcp.Contracts/RoslynMcp.Contracts.csproj`
+   - ✅ `src/RoslynMcp.Core/RoslynMcp.Core.csproj`
+   - ✅ `README.md`
+   - ✅ `CONTRIBUTING.md`
 
 2. Run initialization:
    ```powershell
