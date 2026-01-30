@@ -47,7 +47,11 @@ jobs:
       shell: bash
 
     - name: Push to NuGet.org
-      run: dotnet nuget push ./packages/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+      run: |
+        for pkg in ./packages/*.nupkg; do
+          dotnet nuget push "$pkg" --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+        done
+      shell: bash
       if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
 
     - name: Upload packages as artifacts
