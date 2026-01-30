@@ -51,20 +51,44 @@ The server communicates via stdin/stdout using the MCP protocol:
 dotnet run --project src/RoslynMcp.Server
 ```
 
-### Configuration for MCP Clients
+### Configuration for Claude Code
 
-Add to your MCP client configuration (e.g., Claude Desktop):
+1. Create a `.mcp.json` file in your project root (or copy `.mcp.json.example`):
 
 ```json
 {
   "mcpServers": {
-    "roslyn": {
-      "command": "dotnet",
-      "args": ["run", "--project", "path/to/RoslynMcpServer/src/RoslynMcp.Server"]
+    "roslyn-refactor": {
+      "type": "stdio",
+      "command": "/absolute/path/to/RoslynMcpServer/src/RoslynMcp.Server/bin/Release/net9.0/RoslynMcp.Server.exe",
+      "args": [],
+      "env": {}
     }
   }
 }
 ```
+
+2. Restart Claude Code or run `/mcp` to connect
+
+**Note:** Use absolute paths. On Windows, use forward slashes: `C:/Source/RoslynMcpServer/...`
+
+### Configuration for Claude Desktop
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "roslyn-refactor": {
+      "command": "dotnet",
+      "args": ["run", "--project", "/path/to/RoslynMcpServer/src/RoslynMcp.Server", "--no-build"],
+      "env": {}
+    }
+  }
+}
+```
+
+**Tip:** Using `--no-build` with pre-built Release binaries improves startup time.
 
 ## 🛠️ Available Tools
 
