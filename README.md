@@ -17,28 +17,30 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that ex
 
 ## 📦 Installation
 
-### As a NuGet Package
+### As a Global Tool (Recommended)
 
 ```bash
-# Install the core library
+dotnet tool install -g RoslynMcp.Server
+```
+
+Then use `roslyn-mcp` as the command in your MCP configuration.
+
+### As a NuGet Library
+
+```bash
+# Install the core library (for building custom integrations)
 dotnet add package RoslynMcp.Core
 
 # Install the contracts library
 dotnet add package RoslynMcp.Contracts
 ```
 
-### As an MCP Server
+### From Source
 
 ```bash
-# Clone the repository
 git clone https://github.com/JoshuaRamirez/RoslynMcpServer.git
 cd RoslynMcpServer
-
-# Build the solution
 dotnet build -c Release
-
-# Run the server
-dotnet run --project src/RoslynMcp.Server
 ```
 
 ## 🎯 Quick Start
@@ -53,14 +55,14 @@ dotnet run --project src/RoslynMcp.Server
 
 ### Configuration for Claude Code
 
-1. Create a `.mcp.json` file in your project root (or copy `.mcp.json.example`):
+Create a `.mcp.json` file in your project root:
 
 ```json
 {
   "mcpServers": {
     "roslyn-refactor": {
       "type": "stdio",
-      "command": "/absolute/path/to/RoslynMcpServer/src/RoslynMcp.Server/bin/Release/net9.0/RoslynMcp.Server.exe",
+      "command": "roslyn-mcp",
       "args": [],
       "env": {}
     }
@@ -68,9 +70,7 @@ dotnet run --project src/RoslynMcp.Server
 }
 ```
 
-2. Restart Claude Code or run `/mcp` to connect
-
-**Note:** Use absolute paths. On Windows, use forward slashes: `C:/Source/RoslynMcpServer/...`
+Then restart Claude Code or run `/mcp` to connect.
 
 ### Configuration for Claude Desktop
 
@@ -80,15 +80,13 @@ Add to `claude_desktop_config.json`:
 {
   "mcpServers": {
     "roslyn-refactor": {
-      "command": "dotnet",
-      "args": ["run", "--project", "/path/to/RoslynMcpServer/src/RoslynMcp.Server", "--no-build"],
+      "command": "roslyn-mcp",
+      "args": [],
       "env": {}
     }
   }
 }
 ```
-
-**Tip:** Using `--no-build` with pre-built Release binaries improves startup time.
 
 ## 🛠️ Available Tools
 

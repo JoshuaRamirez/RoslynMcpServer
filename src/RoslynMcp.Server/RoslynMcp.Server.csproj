@@ -8,13 +8,28 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <RootNamespace>RoslynMcp.Server</RootNamespace>
 
-    <!-- Package Metadata (not packable - this is an executable) -->
-    <IsPackable>false</IsPackable>
+    <!-- .NET Global Tool Configuration -->
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>roslyn-mcp</ToolCommandName>
+
+    <!-- NuGet Package Metadata -->
+    <PackageId>RoslynMcp.Server</PackageId>
     <Version>0.1.0</Version>
     <Authors>RoslynMcp Contributors</Authors>
     <Company>RoslynMcp</Company>
-    <Description>MCP Server executable for Roslyn-powered C# refactoring operations. Implements the Model Context Protocol for AI assistant integration.</Description>
+    <Description>MCP Server for Roslyn-powered C# refactoring operations. Install as a global tool to use with Claude Code, Claude Desktop, or other MCP clients. Provides 8 refactoring operations: move type to file, move type to namespace, rename symbol, extract method, add/remove usings, and generate constructor.</Description>
+    <PackageTags>roslyn;mcp;refactoring;csharp;model-context-protocol;code-analysis;dotnet;ai-tools;claude</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/JoshuaRamirez/RoslynMcpServer</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/JoshuaRamirez/RoslynMcpServer</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="System.Text.Json" Version="8.0.5" />

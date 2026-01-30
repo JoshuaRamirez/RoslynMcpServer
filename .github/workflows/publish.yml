@@ -39,6 +39,9 @@ jobs:
     - name: Pack RoslynMcp.Core
       run: dotnet pack src/RoslynMcp.Core/RoslynMcp.Core.csproj -c Release --no-build -o ./packages
 
+    - name: Pack RoslynMcp.Server (Global Tool)
+      run: dotnet pack src/RoslynMcp.Server/RoslynMcp.Server.csproj -c Release -o ./packages
+
     - name: List packages
       run: ls -R ./packages
       shell: bash

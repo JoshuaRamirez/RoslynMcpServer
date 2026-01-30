@@ -2,7 +2,7 @@
   "mcpServers": {
     "roslyn-refactor": {
       "type": "stdio",
-      "command": "/path/to/RoslynMcpServer/src/RoslynMcp.Server/bin/Release/net9.0/RoslynMcp.Server.exe",
+      "command": "roslyn-mcp",
       "args": [],
       "env": {}
     }
