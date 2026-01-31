@@ -225,6 +225,54 @@ public static class ErrorCodes
     /// <summary>Interface member conflicts.</summary>
     public const string InterfaceMemberConflict = "3065";
 
+    // --------------------------------------------
+    // Extract Interface/Base Class Errors (3070-3079)
+    // --------------------------------------------
+
+    /// <summary>Interface with same name already exists.</summary>
+    public const string InterfaceAlreadyExists = "3070";
+
+    /// <summary>Cannot extract from static type.</summary>
+    public const string CannotExtractFromStatic = "3071";
+
+    /// <summary>Member is not public and cannot be extracted to interface.</summary>
+    public const string MemberNotPublic = "3072";
+
+    /// <summary>Type already has a base class other than Object.</summary>
+    public const string TypeAlreadyHasBase = "3073";
+
+    /// <summary>Member cannot be moved to base class.</summary>
+    public const string MemberNotMoveable = "3074";
+
+    // --------------------------------------------
+    // Async Conversion Errors (3080-3089)
+    // --------------------------------------------
+
+    /// <summary>Method is already async.</summary>
+    public const string AlreadyAsync = "3080";
+
+    /// <summary>Method has no awaitable calls to convert.</summary>
+    public const string NoAsyncCalls = "3081";
+
+    /// <summary>Cannot convert iterator method to async.</summary>
+    public const string CannotConvertIterator = "3082";
+
+    // --------------------------------------------
+    // Inline/Variable Errors (3090-3099)
+    // --------------------------------------------
+
+    /// <summary>Variable has multiple assignments.</summary>
+    public const string MultipleAssignments = "3090";
+
+    /// <summary>Variable is used in ref/out context.</summary>
+    public const string UsedInRefContext = "3091";
+
+    /// <summary>Expression type is void.</summary>
+    public const string ExpressionIsVoid = "3092";
+
+    /// <summary>Cannot inline expression with side effects.</summary>
+    public const string CannotInlineSideEffects = "3093";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

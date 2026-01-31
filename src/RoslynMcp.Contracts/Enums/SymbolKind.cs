@@ -37,6 +37,9 @@ public enum SymbolKind
     /// <summary>Event declaration.</summary>
     Event,
 
+    /// <summary>Constant declaration.</summary>
+    Constant,
+
     // Other
     /// <summary>Local variable.</summary>
     Local,

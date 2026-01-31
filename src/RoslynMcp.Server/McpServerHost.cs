@@ -35,6 +35,18 @@ public sealed class McpServerHost : IAsyncDisposable
         _toolRegistry.Register(new RemoveUnusedUsingsTool(workspaceProvider));
         _toolRegistry.Register(new GenerateConstructorTool(workspaceProvider));
 
+        // Phase 2 - Expanded Operations
+        _toolRegistry.Register(new ExtractInterfaceTool(workspaceProvider));
+        _toolRegistry.Register(new ImplementInterfaceTool(workspaceProvider));
+        _toolRegistry.Register(new GenerateOverridesTool(workspaceProvider));
+        _toolRegistry.Register(new ExtractVariableTool(workspaceProvider));
+        _toolRegistry.Register(new InlineVariableTool(workspaceProvider));
+        _toolRegistry.Register(new ExtractConstantTool(workspaceProvider));
+        _toolRegistry.Register(new ChangeSignatureTool(workspaceProvider));
+        _toolRegistry.Register(new EncapsulateFieldTool(workspaceProvider));
+        _toolRegistry.Register(new ConvertToAsyncTool(workspaceProvider));
+        _toolRegistry.Register(new ExtractBaseClassTool(workspaceProvider));
+
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
