@@ -58,7 +58,7 @@ public sealed class MoveTypeToFileOperation
                 cancellationToken);
 
             // Validate target
-            ValidateTarget(@params, resolution);
+            await ValidateTargetAsync(@params, resolution, cancellationToken);
 
             // Find all references
             var references = await _referenceTracker.FindAllReferencesAsync(
@@ -149,7 +149,10 @@ public sealed class MoveTypeToFileOperation
             throw new RefactoringException(ErrorCodes.SameLocation, "Source and target files are the same.");
     }
 
-    private void ValidateTarget(MoveTypeToFileParams @params, SymbolResolutionResult resolution)
+    private async Task ValidateTargetAsync(
+        MoveTypeToFileParams @params,
+        SymbolResolutionResult resolution,
+        CancellationToken cancellationToken)
     {
         var targetDoc = _context.GetDocumentByPath(@params.TargetFile);
 
@@ -163,7 +166,7 @@ public sealed class MoveTypeToFileOperation
         // If target exists, check for name collision
         if (targetDoc != null)
         {
-            var targetRoot = targetDoc.GetSyntaxRootAsync().Result;
+            var targetRoot = await targetDoc.GetSyntaxRootAsync(cancellationToken);
             if (targetRoot != null)
             {
                 var existingTypes = targetRoot.DescendantNodes()

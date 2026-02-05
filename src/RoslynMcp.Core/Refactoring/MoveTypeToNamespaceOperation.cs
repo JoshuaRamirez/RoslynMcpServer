@@ -63,7 +63,7 @@ public sealed class MoveTypeToNamespaceOperation
                 cancellationToken);
 
             // Validate namespace change
-            ValidateNamespaceChange(@params, resolution);
+            await ValidateNamespaceChangeAsync(@params, resolution, cancellationToken);
 
             // Find all references
             var references = await _referenceTracker.FindAllReferencesAsync(
@@ -154,7 +154,10 @@ public sealed class MoveTypeToNamespaceOperation
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
     }
 
-    private void ValidateNamespaceChange(MoveTypeToNamespaceParams @params, SymbolResolutionResult resolution)
+    private async Task ValidateNamespaceChangeAsync(
+        MoveTypeToNamespaceParams @params,
+        SymbolResolutionResult resolution,
+        CancellationToken cancellationToken)
     {
         var currentNamespace = resolution.Symbol.ContainingNamespace.ToDisplayString();
 
@@ -166,8 +169,9 @@ public sealed class MoveTypeToNamespaceOperation
         }
 
         // Check for name collision in target namespace
-        var targetType = _symbolResolver.FindTypeByNameAsync(
-            $"{@params.TargetNamespace}.{resolution.Symbol.Name}").Result;
+        var targetType = await _symbolResolver.FindTypeByNameAsync(
+            $"{@params.TargetNamespace}.{resolution.Symbol.Name}",
+            cancellationToken);
 
         if (targetType != null && !SymbolEqualityComparer.Default.Equals(targetType, resolution.Symbol))
         {
