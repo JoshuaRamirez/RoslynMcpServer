@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Server.Logging;
 using RoslynMcp.Server.Tools;
 using RoslynMcp.Server.Transport;
 
@@ -61,6 +62,7 @@ public sealed class McpServerHost : IAsyncDisposable
     public async Task RunAsync(CancellationToken cancellationToken = default)
     {
         // Log startup
+        FileLogger.Log("McpServerHost.RunAsync starting message loop...");
         await LogAsync("Roslyn MCP Server starting...");
 
         while (!cancellationToken.IsCancellationRequested)
@@ -71,22 +73,37 @@ public sealed class McpServerHost : IAsyncDisposable
                 if (request == null)
                 {
                     // Stream closed
+                    FileLogger.Log("Transport stream closed, exiting message loop.");
                     break;
                 }
 
+                FileLogger.Log($"Received request: method={request.Method}, id={request.Id}");
                 var response = await HandleRequestAsync(request, cancellationToken);
                 await _transport.WriteMessageAsync(response, cancellationToken);
             }
             catch (OperationCanceledException)
             {
+                FileLogger.Log("Operation cancelled, exiting message loop.");
                 break;
+            }
+            catch (InvalidOperationException ex) when (ex.Message.StartsWith("Failed to parse MCP message"))
+            {
+                // JSON parse error - send proper JSON-RPC error response
+                // Per JSON-RPC spec, use error code -32700 for parse errors
+                // ID is null because we couldn't parse the request to get an ID
+                FileLogger.LogError("JSON parse error", ex);
+                await LogAsync($"JSON parse error: {ex.Message}");
+                var errorResponse = McpResponse.Failure(null, -32700, $"Parse error: {ex.InnerException?.Message ?? ex.Message}");
+                await _transport.WriteMessageAsync(errorResponse, cancellationToken);
             }
             catch (Exception ex)
             {
+                FileLogger.LogError("Error handling request", ex);
                 await LogAsync($"Error handling request: {ex.Message}");
             }
         }
 
+        FileLogger.Log("McpServerHost.RunAsync message loop ended.");
         await LogAsync("Roslyn MCP Server shutting down...");
     }
 
@@ -159,16 +176,20 @@ public sealed class McpServerHost : IAsyncDisposable
         var handler = _toolRegistry.GetHandler(callParams.Name);
         if (handler == null)
         {
+            FileLogger.LogWarning($"Unknown tool requested: {callParams.Name}");
             return McpResponse.Failure(request.Id, -32602, $"Unknown tool: {callParams.Name}");
         }
 
         try
         {
+            FileLogger.Log($"Executing tool: {callParams.Name}");
             var result = await handler.ExecuteAsync(callParams.Arguments, cancellationToken);
+            FileLogger.Log($"Tool completed successfully: {callParams.Name}");
             return McpResponse.Success(request.Id, result);
         }
         catch (Exception ex)
         {
+            FileLogger.LogError($"Tool execution failed: {callParams.Name}", ex);
             return McpResponse.Failure(request.Id, -32603, $"Tool execution failed: {ex.Message}");
         }
     }
