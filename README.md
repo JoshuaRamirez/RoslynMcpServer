@@ -4,58 +4,66 @@
 [![Code Quality](https://github.com/JoshuaRamirez/RoslynMcpServer/actions/workflows/quality.yml/badge.svg)](https://github.com/JoshuaRamirez/RoslynMcpServer/actions/workflows/quality.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes Roslyn-powered C# refactoring operations to AI assistants and other MCP clients.
+Let AI assistants like Claude safely refactor your C# codebase using the same Roslyn compiler platform that powers Visual Studio.
 
-## 🚀 Features
+Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes 18 Roslyn-powered refactoring operations to AI assistants and other MCP clients. It gives your AI tools the ability to rename symbols, move types, extract methods, generate constructors, and much more -- with full solution-wide reference tracking and preview support on every operation.
 
-- **8 Refactoring Operations**: Comprehensive C# code transformations powered by Roslyn
-- **Preview Mode**: See changes before applying them to your codebase
-- **Cross-platform**: Works on Windows, Linux, and macOS
-- **MSBuild Integration**: Seamlessly works with `.sln` and `.csproj` files
-- **Atomic File Operations**: Safe file writes with rollback on failure
-- **Comprehensive Error Handling**: Detailed error messages and diagnostics
+---
 
-## 📦 Installation
+## Table of Contents
 
-### As a Global Tool (Recommended)
+- [Why RoslynMcpServer?](#why-roslynmcpserver)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Available Tools](#available-tools)
+- [Preview Mode](#preview-mode)
+- [Troubleshooting](#troubleshooting)
+- [NuGet Libraries](#nuget-libraries)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Why RoslynMcpServer?
+
+- **18 refactoring operations** -- the most comprehensive Roslyn MCP server available
+- **Preview mode on every operation** -- see exactly what will change before applying
+- **Atomic file writes with rollback** -- if any file write fails, all changes are reverted
+- **Solution-wide reference updates** -- renames and moves propagate across your entire solution
+- **Single command install** -- `dotnet tool install -g RoslynMcp.Server`, no repo cloning needed
+- **Cross-platform** -- works on Windows, Linux, and macOS
+
+---
+
+## Prerequisites
+
+Before installing, make sure you have:
+
+1. **.NET 9.0 SDK or later** -- [Download here](https://dotnet.microsoft.com/download/dotnet/9.0)
+2. **A C# solution (.sln) or project (.csproj) to work with**
+
+Verify your .NET SDK version:
+
+```bash
+dotnet --version
+```
+
+The output should be `9.0.x` or higher.
+
+---
+
+## Quick Start
+
+### 1. Install
 
 ```bash
 dotnet tool install -g RoslynMcp.Server
 ```
 
-Then use `roslyn-mcp` as the command in your MCP configuration.
+### 2. Configure
 
-### As a NuGet Library
-
-```bash
-# Install the core library (for building custom integrations)
-dotnet add package RoslynMcp.Core
-
-# Install the contracts library
-dotnet add package RoslynMcp.Contracts
-```
-
-### From Source
-
-```bash
-git clone https://github.com/JoshuaRamirez/RoslynMcpServer.git
-cd RoslynMcpServer
-dotnet build -c Release
-```
-
-## 🎯 Quick Start
-
-### Running the MCP Server
-
-The server communicates via stdin/stdout using the MCP protocol:
-
-```bash
-dotnet run --project src/RoslynMcp.Server
-```
-
-### Configuration for Claude Code
-
-Create a `.mcp.json` file in your project root:
+Create a `.mcp.json` file in your project root (for Claude Code):
 
 ```json
 {
@@ -63,8 +71,7 @@ Create a `.mcp.json` file in your project root:
     "roslyn-refactor": {
       "type": "stdio",
       "command": "roslyn-mcp",
-      "args": [],
-      "env": {}
+      "args": []
     }
   }
 }
@@ -72,160 +79,230 @@ Create a `.mcp.json` file in your project root:
 
 Then restart Claude Code or run `/mcp` to connect.
 
-### Configuration for Claude Desktop
+### 3. Verify
 
-Add to `claude_desktop_config.json`:
+Ask Claude:
+
+> "Run the roslyn diagnose tool for my solution at C:/path/to/MySolution.sln"
+
+You should see a health report with Roslyn version, MSBuild status, and workspace details.
+
+### 4. Try It
+
+Ask Claude:
+
+> "Rename the class UserService to AccountService in C:/path/to/MySolution.sln"
+
+Claude will use the `rename_symbol` tool to rename the class and update every reference across your entire solution.
+
+---
+
+## Configuration
+
+### Claude Code
+
+Create `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "roslyn-refactor": {
+      "type": "stdio",
+      "command": "roslyn-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+Add to your `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "roslyn-refactor": {
       "command": "roslyn-mcp",
-      "args": [],
-      "env": {}
+      "args": []
     }
   }
 }
 ```
 
-## 🛠️ Available Tools
+Config file locations:
 
-### 1. `move_type_to_file`
-Move a type (class, interface, struct, enum) to its own file.
+| OS      | Path                                                        |
+|---------|-------------------------------------------------------------|
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json`               |
+| macOS   | `~/Library/Application Support/Claude/claude_desktop_config.json` |
 
-**Parameters:**
-- `solutionPath` (required): Path to `.sln` or `.csproj` file
-- `sourceFile` (required): Path to source file containing the type
-- `symbolName` (required): Name of the type to move
-- `targetFile` (optional): Destination file path
-- `createTargetFile` (optional): Create target file if it doesn't exist (default: true)
-- `preview` (optional): Return changes without applying (default: false)
+---
 
-**Example:**
-```json
-{
-  "solutionPath": "/path/to/MySolution.sln",
-  "sourceFile": "/path/to/Models.cs",
-  "symbolName": "User",
-  "targetFile": "/path/to/User.cs",
-  "preview": false
-}
-```
+## Available Tools
 
-### 2. `move_type_to_namespace`
-Move a type to a different namespace and update all references.
+All 18 tools accept a `solutionPath` parameter (absolute path to a `.sln` or `.csproj` file) and a `preview` parameter (set to `true` to see changes without applying them).
 
-**Parameters:**
-- `solutionPath` (required): Path to `.sln` or `.csproj` file
-- `sourceFile` (required): Path to source file
-- `symbolName` (required): Name of the type
-- `targetNamespace` (required): New namespace
-- `updateFileLocation` (optional): Move file to match namespace structure (default: false)
-- `preview` (optional): Preview mode (default: false)
+### Move and Rename
 
-### 3. `rename_symbol`
-Rename any C# symbol (type, method, property, field, variable) with automatic reference updates.
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `move_type_to_file` | Move a C# type declaration to a different file. Updates all references automatically. | `sourceFile`, `symbolName`, `targetFile`, `createTargetFile` |
+| `move_type_to_namespace` | Change the namespace of a C# type. Updates all using directives and qualified references. | `sourceFile`, `symbolName`, `targetNamespace`, `updateFileLocation` |
+| `rename_symbol` | Rename any C# symbol (type, method, property, field, variable, etc.) with automatic reference updates across the solution. | `sourceFile`, `symbolName`, `newName`, `line`, `column`, `renameOverloads`, `renameFile` |
 
-**Parameters:**
-- `solutionPath` (required): Path to `.sln` or `.csproj` file
-- `sourceFile` (required): Path to source file
-- `symbolName` (required): Current name of the symbol
-- `newName` (required): New name for the symbol
-- `line` (optional): Line number for disambiguation
-- `column` (optional): Column number for disambiguation
-- `renameOverloads` (optional): Rename overloaded methods (default: false)
-- `renameImplementations` (optional): Rename interface implementations (default: true)
-- `renameFile` (optional): Rename file if renaming a type (default: true)
-- `preview` (optional): Preview mode (default: false)
+### Extract
 
-### 4. `extract_method`
-Extract selected code into a new method.
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `extract_method` | Extract selected code into a new method. Automatically detects parameters and return values. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `methodName`, `visibility` |
+| `extract_variable` | Extract an expression to a local variable. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `variableName`, `useVar` |
+| `extract_constant` | Extract a literal value to a named constant. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `constantName`, `visibility`, `replaceAll` |
+| `extract_interface` | Extract an interface from a class's public members. | `sourceFile`, `typeName`, `interfaceName`, `members`, `targetFile` |
+| `extract_base_class` | Extract members to a new base class. | `sourceFile`, `typeName`, `baseClassName`, `members`, `targetFile`, `makeAbstract` |
 
-**Parameters:**
-- `solutionPath` (required): Path to `.sln` or `.csproj` file
-- `sourceFile` (required): Path to source file
-- `startLine` (required): Start line of selection (1-based)
-- `startColumn` (required): Start column of selection (1-based)
-- `endLine` (required): End line of selection (1-based)
-- `endColumn` (required): End column of selection (1-based)
-- `methodName` (required): Name for the new method
-- `visibility` (optional): Method visibility (default: "private")
-- `makeStatic` (optional): Make method static if possible (default: false)
-- `preview` (optional): Preview mode (default: false)
+### Inline
 
-### 5. `add_missing_usings`
-Add missing using directives to resolve unbound type references.
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `inline_variable` | Inline a local variable by replacing all usages with its initializer value. | `sourceFile`, `variableName`, `line` |
 
-**Parameters:**
-- `solutionPath` (required): Path to `.sln` or `.csproj` file
-- `sourceFile` (required): Path to source file
-- `preview` (optional): Preview mode (default: false)
+### Signature and Encapsulation
 
-### 6. `remove_unused_usings`
-Remove unused using directives from a file.
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `change_signature` | Add, remove, or reorder method parameters and update all call sites. | `sourceFile`, `methodName`, `parameters` (array of changes), `line` |
+| `encapsulate_field` | Convert a field to a property with backing field. | `sourceFile`, `fieldName`, `propertyName`, `readOnly` |
 
-**Parameters:**
-- `solutionPath` (required): Path to `.sln` or `.csproj` file
-- `sourceFile` (required): Path to source file
-- `preview` (optional): Preview mode (default: false)
+### Generate
 
-### 7. `generate_constructor`
-Generate a constructor for a class with specified members.
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `generate_constructor` | Generate a constructor that initializes fields and/or properties of a type. | `sourceFile`, `typeName`, `members`, `addNullChecks` |
+| `generate_overrides` | Generate override methods for base class virtual/abstract members. | `sourceFile`, `typeName`, `members`, `callBase` |
+| `implement_interface` | Generate interface member implementations for a type. | `sourceFile`, `typeName`, `interfaceName`, `explicitImplementation`, `members` |
 
-**Parameters:**
-- `solutionPath` (required): Path to `.sln` or `.csproj` file
-- `sourceFile` (required): Path to source file
-- `typeName` (required): Name of the class
-- `members` (required): Array of member names to include in constructor
-- `addNullChecks` (optional): Add null checks for reference types (default: false)
-- `preview` (optional): Preview mode (default: false)
+### Convert
 
-### 8. `diagnose`
-Check the health of the Roslyn MCP server environment and workspace status.
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `convert_to_async` | Convert a synchronous method to async/await pattern. | `sourceFile`, `methodName`, `line`, `renameToAsync` |
 
-**Parameters:**
-- `solutionPath` (optional): Solution to test loading
-- `verbose` (optional): Include detailed diagnostic information (default: false)
+### Using Directives
 
-## 📚 Documentation
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `add_missing_usings` | Add missing using directives required to resolve unbound type references in a C# file. | `sourceFile` |
+| `remove_unused_usings` | Remove unused using directives from a C# file. | `sourceFile` |
 
-For detailed documentation on each refactoring operation, see the [Design](./Design) folder.
+### Diagnostics
 
-## 🤝 Contributing
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `diagnose` | Check the health of the Roslyn MCP server environment and workspace status. | `solutionPath` (optional), `verbose` |
 
-Contributions are welcome! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
+---
 
-### Development Setup
+## Preview Mode
 
-1. Clone the repository
-2. Install .NET 9.0 SDK or later
-3. Run `dotnet restore`
-4. Run `dotnet build`
-5. Run tests: `dotnet test`
+Every refactoring tool supports a `preview` parameter. When set to `true`, the tool computes and returns the changes that would be made without writing anything to disk. This lets you review diffs before committing to a refactoring.
 
-### Running Tests
+Example (as a natural language prompt to Claude):
+
+> "Preview what would happen if I renamed OrderProcessor to OrderHandler in C:/path/to/MySolution.sln"
+
+Claude will call `rename_symbol` with `preview: true` and show you the affected files and diffs.
+
+---
+
+## Troubleshooting
+
+### .NET 9 SDK not found
+
+If you see errors about the SDK not being found:
+
+1. Verify the SDK is installed: `dotnet --list-sdks`
+2. Make sure .NET 9.0 or later appears in the list
+3. If not, install it from [https://dotnet.microsoft.com/download/dotnet/9.0](https://dotnet.microsoft.com/download/dotnet/9.0)
+
+### MSBuild or solution loading issues
+
+If MSBuild cannot be located or your solution fails to load:
+
+1. Make sure you can build the solution from the command line first: `dotnet build /path/to/MySolution.sln`
+2. On Windows, ensure Visual Studio Build Tools or a Visual Studio installation is available
+3. Check that `solutionPath` is an absolute path to a valid `.sln` or `.csproj` file
+
+### Using the diagnose tool
+
+The `diagnose` tool is the first thing to try when something is not working. It reports:
+
+- Whether Roslyn is loaded and its version
+- Whether MSBuild was found and its version
+- Whether the .NET SDK is available and its version
+- Whether a given solution can be loaded, including project and document counts
+
+Run it through Claude:
+
+> "Run the roslyn diagnose tool with verbose output for C:/path/to/MySolution.sln"
+
+Or without a solution path to check just the environment:
+
+> "Run the roslyn diagnose tool"
+
+---
+
+## NuGet Libraries
+
+In addition to the global tool, the project publishes libraries for building custom integrations:
 
 ```bash
-# Run all tests
+# Core library -- refactoring operations and workspace management
+dotnet add package RoslynMcp.Core
+
+# Contracts library -- shared models and interfaces
+dotnet add package RoslynMcp.Contracts
+```
+
+---
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
+
+### Build from Source
+
+```bash
+git clone https://github.com/JoshuaRamirez/RoslynMcpServer.git
+cd RoslynMcpServer
+dotnet build -c Release
+```
+
+### Run Tests
+
+```bash
+# All tests
 dotnet test
 
-# Run specific test project
+# Specific test projects
 dotnet test tests/RoslynMcp.Core.Tests
 dotnet test tests/RoslynMcp.Server.Tests
 ```
 
-## 📄 License
+---
 
-This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
+## License
 
-## 🙏 Acknowledgments
+This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for details.
 
-- Built with [Roslyn](https://github.com/dotnet/roslyn) - the .NET Compiler Platform
+---
+
+## Acknowledgments
+
+- Built with [Roslyn](https://github.com/dotnet/roslyn) -- the .NET Compiler Platform
 - Implements the [Model Context Protocol](https://modelcontextprotocol.io)
 
-## 📞 Support
+## Support
 
 - **Issues**: [GitHub Issues](https://github.com/JoshuaRamirez/RoslynMcpServer/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/JoshuaRamirez/RoslynMcpServer/discussions)
-
-
