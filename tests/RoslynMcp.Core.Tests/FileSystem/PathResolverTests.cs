@@ -5,41 +5,59 @@ namespace RoslynMcp.Core.Tests.FileSystem;
 
 public class PathResolverTests
 {
+    private static string WinOrUnix(string winPath, string unixPath) =>
+        OperatingSystem.IsWindows() ? winPath : unixPath;
+
     [Theory]
-    [InlineData(@"C:\path\to\file.cs", true)]
-    [InlineData(@"/usr/local/file.cs", true)]
-    [InlineData(@"relative\path.cs", false)]
-    [InlineData(@".\file.cs", false)]
-    [InlineData(@"..\file.cs", false)]
-    [InlineData("", false)]
-    [InlineData(null, false)]
+    [MemberData(nameof(IsAbsolutePathData))]
     public void IsAbsolutePath_ReturnsExpected(string? path, bool expected)
     {
         var result = PathResolver.IsAbsolutePath(path!);
         Assert.Equal(expected, result);
     }
 
+    public static TheoryData<string?, bool> IsAbsolutePathData => new()
+    {
+        { WinOrUnix(@"C:\path\to\file.cs", "/path/to/file.cs"), true },
+        { @"/usr/local/file.cs", true },
+        { @"relative\path.cs", false },
+        { @".\file.cs", false },
+        { @"..\file.cs", false },
+        { "", false },
+        { null, false }
+    };
+
     [Theory]
-    [InlineData(@"C:\project\src\File.cs", true)]
-    [InlineData(@"C:\project\src\File.CS", true)]
-    [InlineData(@"/home/user/File.cs", true)]
-    [InlineData(@"C:\project\src\File.txt", false)]
-    [InlineData(@"relative\File.cs", false)]
-    [InlineData("", false)]
+    [MemberData(nameof(IsValidCSharpFilePathData))]
     public void IsValidCSharpFilePath_ReturnsExpected(string path, bool expected)
     {
         var result = PathResolver.IsValidCSharpFilePath(path);
         Assert.Equal(expected, result);
     }
 
+    public static TheoryData<string, bool> IsValidCSharpFilePathData => new()
+    {
+        { WinOrUnix(@"C:\project\src\File.cs", "/project/src/File.cs"), true },
+        { WinOrUnix(@"C:\project\src\File.CS", "/project/src/File.CS"), true },
+        { @"/home/user/File.cs", true },
+        { WinOrUnix(@"C:\project\src\File.txt", "/project/src/File.txt"), false },
+        { @"relative\File.cs", false },
+        { "", false }
+    };
+
     [Theory]
-    [InlineData(@"C:\project\Solution.sln", true)]
-    [InlineData(@"C:\project\Project.csproj", true)]
-    [InlineData(@"C:\project\File.cs", false)]
-    [InlineData(@"relative\Solution.sln", false)]
+    [MemberData(nameof(IsValidSolutionOrProjectPathData))]
     public void IsValidSolutionOrProjectPath_ReturnsExpected(string path, bool expected)
     {
         var result = PathResolver.IsValidSolutionOrProjectPath(path);
         Assert.Equal(expected, result);
     }
+
+    public static TheoryData<string, bool> IsValidSolutionOrProjectPathData => new()
+    {
+        { WinOrUnix(@"C:\project\Solution.sln", "/project/Solution.sln"), true },
+        { WinOrUnix(@"C:\project\Project.csproj", "/project/Project.csproj"), true },
+        { WinOrUnix(@"C:\project\File.cs", "/project/File.cs"), false },
+        { @"relative\Solution.sln", false }
+    };
 }
