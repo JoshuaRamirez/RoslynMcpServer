@@ -1,5 +1,5 @@
-using Xunit;
 using RoslynMcp.Core.FileSystem;
+using Xunit;
 
 namespace RoslynMcp.Core.Tests.FileSystem;
 

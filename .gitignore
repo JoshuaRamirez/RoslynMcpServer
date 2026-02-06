@@ -3,6 +3,7 @@
 
 # User-specific files
 .mcp.json
+.claude/
 *.rsuser
 *.suo
 *.user

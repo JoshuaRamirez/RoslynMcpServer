@@ -1,6 +1,6 @@
+using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
-using RoslynMcp.Contracts.Errors;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring;

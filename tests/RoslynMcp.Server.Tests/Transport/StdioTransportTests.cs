@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json;
-using Xunit;
 using RoslynMcp.Server.Transport;
+using Xunit;
 
 namespace RoslynMcp.Server.Tests.Transport;
 
