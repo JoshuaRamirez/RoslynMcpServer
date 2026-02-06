@@ -15,10 +15,10 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>RoslynMcp.Server</PackageId>
-    <Version>0.2.1</Version>
+    <Version>0.3.0</Version>
     <Authors>Joshua Ramirez</Authors>
     <Company>RedJay</Company>
-    <Description>MCP Server for Roslyn-powered C# refactoring operations. Install as a global tool to use with Claude Code, Claude Desktop, or other MCP clients. Provides 19 refactoring operations including move type, rename symbol, extract method/variable/constant/interface/base class, inline variable, change signature, encapsulate field, generate constructor/overrides, implement interface, convert to async, add/remove/sort usings, and diagnostics.</Description>
+    <Description>MCP Server for Roslyn-powered C# refactoring operations. Install as a global tool to use with Claude Code, Claude Desktop, or other MCP clients. Provides 24 tools: 19 refactoring operations (move type, rename symbol, extract method/variable/constant/interface/base class, inline variable, change signature, encapsulate field, generate constructor/overrides, implement interface, convert to async, add/remove/sort usings, diagnostics) plus 5 code navigation tools (find references, go to definition, get symbol info, find implementations, search symbols).</Description>
     <PackageTags>roslyn;mcp;refactoring;csharp;model-context-protocol;code-analysis;dotnet;ai-tools;claude</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/JoshuaRamirez/RoslynMcpServer</RepositoryUrl>

@@ -116,6 +116,12 @@ public static class ErrorCodes
     /// <summary>No overridable member found.</summary>
     public const string OverrideTargetNotFound = "2018";
 
+    /// <summary>No implementations found for symbol.</summary>
+    public const string NoImplementationsFound = "2019";
+
+    /// <summary>Symbol kind not valid for requested query.</summary>
+    public const string InvalidSymbolKind = "2020";
+
     // ============================================
     // Semantic Errors (3xxx)
     // ============================================

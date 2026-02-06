@@ -8,7 +8,7 @@
 
 Let AI assistants like Claude safely refactor your C# codebase using the same Roslyn compiler platform that powers Visual Studio.
 
-Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes 19 Roslyn-powered refactoring operations to AI assistants and other MCP clients. It gives your AI tools the ability to rename symbols, move types, extract methods, generate constructors, and much more -- with full solution-wide reference tracking and preview support on every operation.
+Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes 24 Roslyn-powered tools to AI assistants and other MCP clients. It combines 19 refactoring operations with 5 code navigation tools -- giving your AI both deep code intelligence (find references, go to definition, search symbols) and deep refactoring (rename, extract, move, generate) with full solution-wide reference tracking and preview support.
 
 ---
 
@@ -29,7 +29,7 @@ Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotoc
 
 ## Why RoslynMcpServer?
 
-- **19 refactoring operations** -- the most comprehensive Roslyn MCP server available
+- **24 tools** -- 19 refactoring operations + 5 code navigation tools, the most comprehensive Roslyn MCP server available
 - **Preview mode on every operation** -- see exactly what will change before applying
 - **Atomic file writes with rollback** -- if any file write fails, all changes are reverted
 - **Solution-wide reference updates** -- renames and moves propagate across your entire solution
@@ -143,7 +143,7 @@ Config file locations:
 
 ## Available Tools
 
-All 19 tools accept a `solutionPath` parameter (absolute path to a `.sln` or `.csproj` file) and a `preview` parameter (set to `true` to see changes without applying them).
+All tools accept a `solutionPath` parameter (absolute path to a `.sln` or `.csproj` file). Refactoring tools also accept a `preview` parameter (set to `true` to see changes without applying them).
 
 ### Move and Rename
 
@@ -203,6 +203,18 @@ All 19 tools accept a `solutionPath` parameter (absolute path to a `.sln` or `.c
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `diagnose` | Check the health of the Roslyn MCP server environment and workspace status. | `solutionPath` (optional), `verbose` |
+
+### Code Navigation
+
+These read-only tools let you explore and understand your codebase without making changes. Use them to discover symbols, trace references, and inspect type information before refactoring.
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `find_references` | Find all references to a symbol across the entire solution. Returns file locations, context snippets, and write/definition indicators. | `sourceFile`, `symbolName`, `line`, `column`, `maxResults` |
+| `go_to_definition` | Navigate to the source definition of a symbol. Supports partial classes with multiple definition locations. | `sourceFile`, `symbolName`, `line`, `column` |
+| `get_symbol_info` | Get detailed metadata for any symbol: kind, accessibility, modifiers, base types, interfaces, members, parameters, return type, and XML documentation. | `sourceFile`, `symbolName`, `line`, `column` |
+| `find_implementations` | Find all implementations of an interface or overrides of an abstract/virtual member. | `sourceFile`, `symbolName`, `line`, `column`, `maxResults` |
+| `search_symbols` | Search for symbols by name pattern across the entire workspace. Filter by kind (class, method, property, etc.). | `query`, `kindFilter`, `maxResults` |
 
 ---
 

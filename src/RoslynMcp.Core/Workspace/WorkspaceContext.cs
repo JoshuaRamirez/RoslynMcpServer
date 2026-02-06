@@ -57,9 +57,14 @@ public sealed class WorkspaceContext : IDisposable
     }
 
     /// <summary>
-    /// Creates a symbol resolver for this workspace.
+    /// Creates a type symbol resolver for this workspace.
     /// </summary>
     public TypeSymbolResolver CreateSymbolResolver() => new(this);
+
+    /// <summary>
+    /// Creates a general-purpose symbol resolver that can find any symbol by position or name.
+    /// </summary>
+    public SymbolResolver CreateGeneralSymbolResolver() => new(this);
 
     /// <summary>
     /// Creates a reference tracker for this workspace.

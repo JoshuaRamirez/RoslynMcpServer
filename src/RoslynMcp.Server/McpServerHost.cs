@@ -49,6 +49,13 @@ public sealed class McpServerHost : IAsyncDisposable
         _toolRegistry.Register(new ConvertToAsyncTool(workspaceProvider));
         _toolRegistry.Register(new ExtractBaseClassTool(workspaceProvider));
 
+        // Code Navigation / Query Tools
+        _toolRegistry.Register(new FindReferencesTool(workspaceProvider));
+        _toolRegistry.Register(new GoToDefinitionTool(workspaceProvider));
+        _toolRegistry.Register(new GetSymbolInfoTool(workspaceProvider));
+        _toolRegistry.Register(new FindImplementationsTool(workspaceProvider));
+        _toolRegistry.Register(new SearchSymbolsTool(workspaceProvider));
+
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
