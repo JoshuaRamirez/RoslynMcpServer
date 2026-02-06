@@ -71,14 +71,14 @@ public sealed class RefactoringResult
         SymbolInfo? symbol,
         int referencesUpdated,
         long executionTimeMs) => new()
-    {
-        Success = true,
-        OperationId = operationId,
-        Changes = changes,
-        Symbol = symbol,
-        ReferencesUpdated = referencesUpdated,
-        ExecutionTimeMs = executionTimeMs
-    };
+        {
+            Success = true,
+            OperationId = operationId,
+            Changes = changes,
+            Symbol = symbol,
+            ReferencesUpdated = referencesUpdated,
+            ExecutionTimeMs = executionTimeMs
+        };
 
     /// <summary>
     /// Creates a failed result.
@@ -96,10 +96,10 @@ public sealed class RefactoringResult
     public static RefactoringResult PreviewResult(
         Guid operationId,
         IReadOnlyList<PendingChange> pendingChanges) => new()
-    {
-        Success = true,
-        OperationId = operationId,
-        Preview = true,
-        PendingChanges = pendingChanges
-    };
+        {
+            Success = true,
+            OperationId = operationId,
+            Preview = true,
+            PendingChanges = pendingChanges
+        };
 }

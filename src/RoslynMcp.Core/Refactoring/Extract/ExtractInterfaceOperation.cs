@@ -225,7 +225,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         return filtered;
     }
 
-    private async Task<Solution> CreateInterfaceInNewFileAsync(
+    private Task<Solution> CreateInterfaceInNewFileAsync(
         Solution solution,
         Project project,
         string targetFile,
@@ -262,7 +262,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
             compilationUnit,
             filePath: targetFile);
 
-        return newDoc.Project.Solution;
+        return Task.FromResult(newDoc.Project.Solution);
     }
 
     private static Solution AddInterfaceToSameFile(

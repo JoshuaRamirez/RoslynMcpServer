@@ -316,7 +316,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         return member;
     }
 
-    private async Task<Solution> CreateBaseClassInNewFileAsync(
+    private Task<Solution> CreateBaseClassInNewFileAsync(
         Solution solution,
         Project project,
         string targetFile,
@@ -353,7 +353,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             compilationUnit,
             filePath: targetFile);
 
-        return newDoc.Project.Solution;
+        return Task.FromResult(newDoc.Project.Solution);
     }
 
     private static Solution AddBaseClassToSameFile(

@@ -10,6 +10,14 @@ namespace RoslynMcp.Core.Tests.Refactoring;
 /// </summary>
 public class RenameSymbolParamsValidationTests
 {
+    /// <summary>
+    /// Returns a platform-appropriate absolute path for test purposes.
+    /// On Windows: C:\test\file.cs, on Unix: /test/file.cs
+    /// </summary>
+    private static string AbsoluteTestPath(string extension = ".cs") =>
+        OperatingSystem.IsWindows()
+            ? $"C:\\test\\file{extension}"
+            : $"/test/file{extension}";
     [Fact]
     public void ValidateParams_MissingSourceFile_ThrowsException()
     {
@@ -31,7 +39,7 @@ public class RenameSymbolParamsValidationTests
     {
         var @params = new RenameSymbolParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             SymbolName = "",
             NewName = "RenamedClass"
         };
@@ -47,7 +55,7 @@ public class RenameSymbolParamsValidationTests
     {
         var @params = new RenameSymbolParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             SymbolName = "MyClass",
             NewName = ""
         };
@@ -79,7 +87,7 @@ public class RenameSymbolParamsValidationTests
     {
         var @params = new RenameSymbolParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             SymbolName = "MyClass",
             NewName = "123Invalid"
         };
@@ -95,7 +103,7 @@ public class RenameSymbolParamsValidationTests
     {
         var @params = new RenameSymbolParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             SymbolName = "MyClass",
             NewName = "class"
         };
@@ -111,7 +119,7 @@ public class RenameSymbolParamsValidationTests
     {
         var @params = new RenameSymbolParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             SymbolName = "MyClass",
             NewName = "MyClass"
         };
@@ -127,7 +135,7 @@ public class RenameSymbolParamsValidationTests
     {
         var @params = new RenameSymbolParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             SymbolName = "MyClass",
             NewName = "RenamedClass",
             Line = 0
@@ -144,7 +152,7 @@ public class RenameSymbolParamsValidationTests
     {
         var @params = new RenameSymbolParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             SymbolName = "MyClass",
             NewName = "RenamedClass",
             Column = 0
@@ -167,7 +175,7 @@ public class RenameSymbolParamsValidationTests
     {
         var @params = new RenameSymbolParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             SymbolName = "MyClass",
             NewName = newName
         };

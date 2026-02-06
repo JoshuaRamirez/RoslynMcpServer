@@ -10,6 +10,14 @@ namespace RoslynMcp.Core.Tests.Refactoring;
 /// </summary>
 public class ExtractMethodParamsValidationTests
 {
+    /// <summary>
+    /// Returns a platform-appropriate absolute path for test purposes.
+    /// On Windows: C:\test\file.cs, on Unix: /test/file.cs
+    /// </summary>
+    private static string AbsoluteTestPath(string extension = ".cs") =>
+        OperatingSystem.IsWindows()
+            ? $"C:\\test\\file{extension}"
+            : $"/test/file{extension}";
     [Fact]
     public void ValidateParams_MissingSourceFile_ThrowsException()
     {
@@ -34,7 +42,7 @@ public class ExtractMethodParamsValidationTests
     {
         var @params = new ExtractMethodParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             StartLine = 1,
             StartColumn = 1,
             EndLine = 5,
@@ -53,7 +61,7 @@ public class ExtractMethodParamsValidationTests
     {
         var @params = new ExtractMethodParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             StartLine = 0,
             StartColumn = 1,
             EndLine = 5,
@@ -72,7 +80,7 @@ public class ExtractMethodParamsValidationTests
     {
         var @params = new ExtractMethodParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             StartLine = 1,
             StartColumn = 0,
             EndLine = 5,
@@ -91,7 +99,7 @@ public class ExtractMethodParamsValidationTests
     {
         var @params = new ExtractMethodParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             StartLine = 5,
             StartColumn = 1,
             EndLine = 3,
@@ -110,7 +118,7 @@ public class ExtractMethodParamsValidationTests
     {
         var @params = new ExtractMethodParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             StartLine = 5,
             StartColumn = 10,
             EndLine = 5,
@@ -129,7 +137,7 @@ public class ExtractMethodParamsValidationTests
     {
         var @params = new ExtractMethodParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             StartLine = 1,
             StartColumn = 1,
             EndLine = 5,
@@ -148,7 +156,7 @@ public class ExtractMethodParamsValidationTests
     {
         var @params = new ExtractMethodParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             StartLine = 1,
             StartColumn = 1,
             EndLine = 5,
@@ -167,7 +175,7 @@ public class ExtractMethodParamsValidationTests
     {
         var @params = new ExtractMethodParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             StartLine = 1,
             StartColumn = 1,
             EndLine = 5,
@@ -191,7 +199,7 @@ public class ExtractMethodParamsValidationTests
     {
         var @params = new ExtractMethodParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             StartLine = 1,
             StartColumn = 1,
             EndLine = 5,

@@ -10,6 +10,14 @@ namespace RoslynMcp.Core.Tests.Refactoring;
 /// </summary>
 public class OrganizeUsingsParamsValidationTests
 {
+    /// <summary>
+    /// Returns a platform-appropriate absolute path for test purposes.
+    /// On Windows: C:\test\file{ext}, on Unix: /test/file{ext}
+    /// </summary>
+    private static string AbsoluteTestPath(string extension = ".cs") =>
+        OperatingSystem.IsWindows()
+            ? $"C:\\test\\file{extension}"
+            : $"/test/file{extension}";
     [Fact]
     public void AddMissingUsings_MissingSourceFile_ThrowsException()
     {
@@ -43,7 +51,7 @@ public class OrganizeUsingsParamsValidationTests
     {
         var @params = new AddMissingUsingsParams
         {
-            SourceFile = "C:\\test\\file.txt"
+            SourceFile = AbsoluteTestPath(".txt")
         };
 
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -57,7 +65,7 @@ public class OrganizeUsingsParamsValidationTests
     {
         var @params = new AddMissingUsingsParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             Preview = true
         };
 
@@ -100,7 +108,7 @@ public class OrganizeUsingsParamsValidationTests
     {
         var @params = new RemoveUnusedUsingsParams
         {
-            SourceFile = "C:\\test\\file.txt"
+            SourceFile = AbsoluteTestPath(".txt")
         };
 
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -114,7 +122,7 @@ public class OrganizeUsingsParamsValidationTests
     {
         var @params = new RemoveUnusedUsingsParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             Preview = true
         };
 

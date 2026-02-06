@@ -10,6 +10,14 @@ namespace RoslynMcp.Core.Tests.Refactoring;
 /// </summary>
 public class GenerateConstructorParamsValidationTests
 {
+    /// <summary>
+    /// Returns a platform-appropriate absolute path for test purposes.
+    /// On Windows: C:\test\file.cs, on Unix: /test/file.cs
+    /// </summary>
+    private static string AbsoluteTestPath(string extension = ".cs") =>
+        OperatingSystem.IsWindows()
+            ? $"C:\\test\\file{extension}"
+            : $"/test/file{extension}";
     [Fact]
     public void ValidateParams_MissingSourceFile_ThrowsException()
     {
@@ -30,7 +38,7 @@ public class GenerateConstructorParamsValidationTests
     {
         var @params = new GenerateConstructorParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             TypeName = ""
         };
 
@@ -60,7 +68,7 @@ public class GenerateConstructorParamsValidationTests
     {
         var @params = new GenerateConstructorParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             TypeName = "MyClass",
             Members = new List<string> { "Field1", "Field2" },
             AddNullChecks = true
@@ -78,7 +86,7 @@ public class GenerateConstructorParamsValidationTests
     {
         var @params = new GenerateConstructorParams
         {
-            SourceFile = "C:\\test\\file.cs",
+            SourceFile = AbsoluteTestPath(),
             TypeName = "MyClass",
             Members = null
         };
