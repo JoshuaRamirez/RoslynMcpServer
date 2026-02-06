@@ -34,6 +34,7 @@ public sealed class McpServerHost : IAsyncDisposable
         _toolRegistry.Register(new ExtractMethodTool(workspaceProvider));
         _toolRegistry.Register(new AddMissingUsingsTool(workspaceProvider));
         _toolRegistry.Register(new RemoveUnusedUsingsTool(workspaceProvider));
+        _toolRegistry.Register(new SortUsingsTool(workspaceProvider));
         _toolRegistry.Register(new GenerateConstructorTool(workspaceProvider));
 
         // Phase 2 - Expanded Operations
@@ -132,7 +133,7 @@ public sealed class McpServerHost : IAsyncDisposable
             serverInfo = new
             {
                 name = "roslyn-mcp",
-                version = "0.1.0"
+                version = typeof(McpServerHost).Assembly.GetName().Version?.ToString(3) ?? "0.0.0"
             }
         });
     }

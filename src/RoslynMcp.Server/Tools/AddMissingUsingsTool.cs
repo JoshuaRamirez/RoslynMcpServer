@@ -32,13 +32,13 @@ public sealed class AddMissingUsingsTool : IToolHandler
     public string Name => "add_missing_usings";
 
     /// <inheritdoc />
-    public string Description => "Add missing using directives required to resolve unbound type references in a C# file.";
+    public string Description => "Add missing using directives required to resolve unbound type references. Process a single file or all files in the solution.";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -49,7 +49,13 @@ public sealed class AddMissingUsingsTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional.",
+                @default = false
             },
             preview = new
             {
@@ -87,6 +93,7 @@ public sealed class AddMissingUsingsTool : IToolHandler
             var @params = new AddMissingUsingsParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -115,7 +122,8 @@ public sealed class AddMissingUsingsTool : IToolHandler
     private sealed class AddMissingUsingsArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public bool? Preview { get; init; }
     }
 }

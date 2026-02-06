@@ -8,17 +8,17 @@ using RoslynMcp.Server.Transport;
 namespace RoslynMcp.Server.Tools;
 
 /// <summary>
-/// MCP tool handler for remove_unused_usings operation.
+/// MCP tool handler for sort_usings operation.
 /// </summary>
-public sealed class RemoveUnusedUsingsTool : IToolHandler
+public sealed class SortUsingsTool : IToolHandler
 {
     private readonly IWorkspaceProvider _workspaceProvider;
     private readonly JsonSerializerOptions _jsonOptions;
 
     /// <summary>
-    /// Creates a new remove unused usings tool.
+    /// Creates a new sort usings tool.
     /// </summary>
-    public RemoveUnusedUsingsTool(IWorkspaceProvider workspaceProvider)
+    public SortUsingsTool(IWorkspaceProvider workspaceProvider)
     {
         _workspaceProvider = workspaceProvider;
         _jsonOptions = new JsonSerializerOptions
@@ -29,16 +29,16 @@ public sealed class RemoveUnusedUsingsTool : IToolHandler
     }
 
     /// <inheritdoc />
-    public string Name => "remove_unused_usings";
+    public string Name => "sort_usings";
 
     /// <inheritdoc />
-    public string Description => "Remove unused using directives. Process a single file or all files in the solution.";
+    public string Description => "Sort using directives alphabetically in a C# file.";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath" },
+        required = new[] { "solutionPath", "sourceFile" },
         properties = new
         {
             solutionPath = new
@@ -49,13 +49,7 @@ public sealed class RemoveUnusedUsingsTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file. Required when allFiles is false."
-            },
-            allFiles = new
-            {
-                type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional.",
-                @default = false
+                description = "Absolute path to the source file"
             },
             preview = new
             {
@@ -77,7 +71,7 @@ public sealed class RemoveUnusedUsingsTool : IToolHandler
                 return ToolResult.Error("Arguments required");
             }
 
-            var args = JsonSerializer.Deserialize<RemoveUnusedUsingsArgs>(arguments.Value.GetRawText(), _jsonOptions);
+            var args = JsonSerializer.Deserialize<SortUsingsArgs>(arguments.Value.GetRawText(), _jsonOptions);
             if (args == null)
             {
                 return ToolResult.Error("Failed to parse arguments");
@@ -89,11 +83,10 @@ public sealed class RemoveUnusedUsingsTool : IToolHandler
                 cancellationToken);
 
             // Execute operation
-            var operation = new RemoveUnusedUsingsOperation(context);
-            var @params = new RemoveUnusedUsingsParams
+            var operation = new SortUsingsOperation(context);
+            var @params = new SortUsingsParams
             {
                 SourceFile = args.SourceFile,
-                AllFiles = args.AllFiles ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -119,11 +112,10 @@ public sealed class RemoveUnusedUsingsTool : IToolHandler
         }
     }
 
-    private sealed class RemoveUnusedUsingsArgs
+    private sealed class SortUsingsArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string? SourceFile { get; init; }
-        public bool? AllFiles { get; init; }
+        public string SourceFile { get; init; } = "";
         public bool? Preview { get; init; }
     }
 }

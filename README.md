@@ -6,7 +6,7 @@
 
 Let AI assistants like Claude safely refactor your C# codebase using the same Roslyn compiler platform that powers Visual Studio.
 
-Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes 18 Roslyn-powered refactoring operations to AI assistants and other MCP clients. It gives your AI tools the ability to rename symbols, move types, extract methods, generate constructors, and much more -- with full solution-wide reference tracking and preview support on every operation.
+Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes 19 Roslyn-powered refactoring operations to AI assistants and other MCP clients. It gives your AI tools the ability to rename symbols, move types, extract methods, generate constructors, and much more -- with full solution-wide reference tracking and preview support on every operation.
 
 ---
 
@@ -27,7 +27,7 @@ Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotoc
 
 ## Why RoslynMcpServer?
 
-- **18 refactoring operations** -- the most comprehensive Roslyn MCP server available
+- **19 refactoring operations** -- the most comprehensive Roslyn MCP server available
 - **Preview mode on every operation** -- see exactly what will change before applying
 - **Atomic file writes with rollback** -- if any file write fails, all changes are reverted
 - **Solution-wide reference updates** -- renames and moves propagate across your entire solution
@@ -141,7 +141,7 @@ Config file locations:
 
 ## Available Tools
 
-All 18 tools accept a `solutionPath` parameter (absolute path to a `.sln` or `.csproj` file) and a `preview` parameter (set to `true` to see changes without applying them).
+All 19 tools accept a `solutionPath` parameter (absolute path to a `.sln` or `.csproj` file) and a `preview` parameter (set to `true` to see changes without applying them).
 
 ### Move and Rename
 
@@ -192,8 +192,9 @@ All 18 tools accept a `solutionPath` parameter (absolute path to a `.sln` or `.c
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `add_missing_usings` | Add missing using directives required to resolve unbound type references in a C# file. | `sourceFile` |
-| `remove_unused_usings` | Remove unused using directives from a C# file. | `sourceFile` |
+| `add_missing_usings` | Add missing using directives required to resolve unbound type references. Process a single file or all files in the solution. | `sourceFile`, `allFiles` |
+| `remove_unused_usings` | Remove unused using directives. Process a single file or all files in the solution. | `sourceFile`, `allFiles` |
+| `sort_usings` | Sort using directives alphabetically in a C# file. | `sourceFile` |
 
 ### Diagnostics
 

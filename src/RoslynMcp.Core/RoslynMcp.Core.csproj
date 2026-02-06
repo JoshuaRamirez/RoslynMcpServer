@@ -9,7 +9,7 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>RoslynMcp.Core</PackageId>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Authors>Joshua Ramirez</Authors>
     <Company>RedJay</Company>
     <Description>Core library for Roslyn MCP Server providing C# refactoring operations including move type, rename symbol, extract method, and more. Powered by Roslyn and MSBuild.</Description>

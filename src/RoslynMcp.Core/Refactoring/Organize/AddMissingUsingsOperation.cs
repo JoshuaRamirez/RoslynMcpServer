@@ -27,8 +27,14 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
     /// <inheritdoc />
     protected override void ValidateParams(AddMissingUsingsParams @params)
     {
+        if (@params.AllFiles)
+        {
+            // When processing all files, sourceFile is optional
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required when allFiles is false.");
 
         if (!PathResolver.IsAbsolutePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
@@ -46,7 +52,24 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         AddMissingUsingsParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+        {
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+        }
+
+        return await ExecuteSingleFileAsync(operationId, @params.SourceFile!, @params.Preview, cancellationToken);
+    }
+
+    /// <summary>
+    /// Processes a single file to add missing using directives.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteSingleFileAsync(
+        Guid operationId,
+        string sourceFile,
+        bool preview,
+        CancellationToken cancellationToken)
+    {
+        var document = GetDocumentOrThrow(sourceFile);
         var root = await document.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -140,9 +163,9 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         }
 
         // If preview mode, return without applying (but include before/after snippets)
-        if (@params.Preview)
+        if (preview)
         {
-            return CreatePreviewResult(operationId, @params.SourceFile, newUsings, root);
+            return CreatePreviewResult(operationId, sourceFile, newUsings, root);
         }
 
         // Add the using directives
@@ -176,6 +199,154 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             },
             UsingDirectivesAdded = newUsings.Count
         };
+    }
+
+    /// <summary>
+    /// Processes all C# documents in the solution to add missing using directives.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        AddMissingUsingsParams @params,
+        CancellationToken cancellationToken)
+    {
+        var solution = Context.Solution;
+        var allDocuments = solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var totalUsingsAdded = 0;
+        var allFilesModified = new List<string>();
+        var allPendingChanges = new List<PendingChange>();
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var root = await document.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
+            var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+
+            if (root == null || semanticModel == null)
+                continue;
+
+            // Find unresolved type names using defined diagnostic IDs
+            var diagnostics = semanticModel.GetDiagnostics(cancellationToken: cancellationToken)
+                .Where(d => d.Id == DiagnosticIds.TypeOrNamespaceNotFound ||
+                            d.Id == DiagnosticIds.NameDoesNotExist ||
+                            d.Id == DiagnosticIds.TypeOrNamespaceDoesNotExistInNamespace)
+                .ToList();
+
+            if (diagnostics.Count == 0)
+                continue;
+
+            // Find candidate namespaces for each unresolved symbol
+            var namespacesToAdd = new HashSet<string>();
+            var compilation = semanticModel.Compilation;
+
+            foreach (var diagnostic in diagnostics)
+            {
+                var node = root.FindNode(diagnostic.Location.SourceSpan);
+                var typeName = GetTypeName(node);
+                if (string.IsNullOrEmpty(typeName)) continue;
+
+                var candidateNamespaces = FindNamespacesForType(compilation, typeName);
+                if (candidateNamespaces.Count == 1)
+                {
+                    namespacesToAdd.Add(candidateNamespaces[0]);
+                }
+                else if (candidateNamespaces.Count > 1)
+                {
+                    var best = candidateNamespaces
+                        .OrderBy(n => n.StartsWith("System") ? 0 : 1)
+                        .ThenBy(n => n.Length)
+                        .First();
+                    namespacesToAdd.Add(best);
+                }
+            }
+
+            if (namespacesToAdd.Count == 0)
+                continue;
+
+            // Get existing usings
+            var existingUsings = root.Usings.Select(u => u.Name?.ToString() ?? "").ToHashSet();
+            var newUsings = namespacesToAdd.Where(n => !existingUsings.Contains(n)).ToList();
+
+            if (newUsings.Count == 0)
+                continue;
+
+            // If preview mode, collect pending changes
+            if (@params.Preview)
+            {
+                var previewResult = CreatePreviewResult(operationId, document.FilePath!, newUsings, root);
+                if (previewResult.PendingChanges != null)
+                    allPendingChanges.AddRange(previewResult.PendingChanges);
+                totalUsingsAdded += newUsings.Count;
+                continue;
+            }
+
+            // Add the using directives
+            var newUsingDirectives = newUsings
+                .Select(n => SyntaxFactory.UsingDirective(
+                        SyntaxFactory.ParseName(n).WithLeadingTrivia(SyntaxFactory.Space))
+                    .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed))
+                .ToList();
+
+            var allUsingsForFile = root.Usings.AddRange(newUsingDirectives);
+            var sortedUsings = UsingDirectiveSorter.Sort(allUsingsForFile);
+
+            var newRoot = root.WithUsings(SyntaxFactory.List(sortedUsings));
+            var newDocument = document.WithSyntaxRoot(newRoot);
+
+            // Update the solution incrementally so subsequent documents see prior changes
+            Context.UpdateSolution(newDocument.Project.Solution);
+
+            totalUsingsAdded += newUsings.Count;
+            allFilesModified.Add(document.FilePath!);
+        }
+
+        // If preview mode, return aggregated preview
+        if (@params.Preview)
+        {
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Preview = true,
+                PendingChanges = allPendingChanges,
+                UsingDirectivesAdded = totalUsingsAdded
+            };
+        }
+
+        // Commit all accumulated changes at once
+        if (allFilesModified.Count > 0)
+        {
+            var commitResult = await CommitChangesAsync(Context.Solution, cancellationToken);
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Changes = new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                UsingDirectivesAdded = totalUsingsAdded
+            };
+        }
+
+        // No files needed changes
+        return RefactoringResult.Succeeded(
+            operationId,
+            new FileChanges
+            {
+                FilesModified = [],
+                FilesCreated = [],
+                FilesDeleted = []
+            },
+            null,
+            0,
+            0);
     }
 
     private static string? GetTypeName(SyntaxNode node)

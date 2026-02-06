@@ -63,9 +63,9 @@ public class RemoveUnusedUsingsToolTests
             requiredFields.Add(item.GetString()!);
         }
 
-        // Assert
+        // Assert - solutionPath is required; sourceFile is optional (allFiles mode)
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
     }
 
     [Fact]
@@ -83,6 +83,7 @@ public class RemoveUnusedUsingsToolTests
 
         // Assert - Optional properties
         Assert.True(properties.TryGetProperty("preview", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
     }
 
     #endregion

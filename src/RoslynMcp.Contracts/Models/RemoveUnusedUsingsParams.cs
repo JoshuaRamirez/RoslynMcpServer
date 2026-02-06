@@ -6,9 +6,15 @@ namespace RoslynMcp.Contracts.Models;
 public sealed class RemoveUnusedUsingsParams
 {
     /// <summary>
-    /// Absolute path to the source file.
+    /// Absolute path to the source file. Required when <see cref="AllFiles"/> is false.
     /// </summary>
-    public required string SourceFile { get; init; }
+    public string? SourceFile { get; init; }
+
+    /// <summary>
+    /// When true, process all C# documents in the solution instead of a single file.
+    /// When true, <see cref="SourceFile"/> is optional.
+    /// </summary>
+    public bool AllFiles { get; init; }
 
     /// <summary>
     /// Return computed changes without applying. Default: false.

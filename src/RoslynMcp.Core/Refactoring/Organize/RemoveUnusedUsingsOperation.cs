@@ -27,8 +27,14 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
     /// <inheritdoc />
     protected override void ValidateParams(RemoveUnusedUsingsParams @params)
     {
+        if (@params.AllFiles)
+        {
+            // When processing all files, sourceFile is optional
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required when allFiles is false.");
 
         if (!PathResolver.IsAbsolutePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
@@ -46,7 +52,24 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
         RemoveUnusedUsingsParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+        {
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+        }
+
+        return await ExecuteSingleFileAsync(operationId, @params.SourceFile!, @params.Preview, cancellationToken);
+    }
+
+    /// <summary>
+    /// Processes a single file to remove unused using directives.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteSingleFileAsync(
+        Guid operationId,
+        string sourceFile,
+        bool preview,
+        CancellationToken cancellationToken)
+    {
+        var document = GetDocumentOrThrow(sourceFile);
         var root = await document.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -121,9 +144,9 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
         }
 
         // If preview mode, return without applying (but include before/after snippets)
-        if (@params.Preview)
+        if (preview)
         {
-            return CreatePreviewResult(operationId, @params.SourceFile, unusedUsings, root);
+            return CreatePreviewResult(operationId, sourceFile, unusedUsings, root);
         }
 
         // Remove unused usings and re-sort the remaining ones
@@ -153,6 +176,155 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
             },
             UsingDirectivesRemoved = unusedUsings.Count
         };
+    }
+
+    /// <summary>
+    /// Processes all C# documents in the solution to remove unused using directives.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        RemoveUnusedUsingsParams @params,
+        CancellationToken cancellationToken)
+    {
+        var solution = Context.Solution;
+        var allDocuments = solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var totalUsingsRemoved = 0;
+        var allFilesModified = new List<string>();
+        var allPendingChanges = new List<PendingChange>();
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var root = await document.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
+            var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+
+            if (root == null || semanticModel == null)
+                continue;
+
+            // Find unused usings via diagnostics
+            var unusedUsingDiagnostics = semanticModel.GetDiagnostics(cancellationToken: cancellationToken)
+                .Where(d => d.Id == DiagnosticIds.UnnecessaryUsing ||
+                            d.Id == DiagnosticIds.UnnecessaryUsingIde)
+                .ToList();
+
+            // Also do semantic analysis for unused usings
+            var usedNamespaces = GetUsedNamespaces(root, semanticModel, cancellationToken);
+            var unusedUsings = new List<UsingDirectiveSyntax>();
+
+            foreach (var usingDirective in root.Usings)
+            {
+                var namespaceName = usingDirective.Name?.ToString();
+                if (namespaceName == null) continue;
+
+                var isUnused = unusedUsingDiagnostics.Any(d =>
+                    d.Location.SourceSpan.IntersectsWith(usingDirective.Span));
+
+                if (!isUnused && !usedNamespaces.Contains(namespaceName))
+                {
+                    var nsSymbol = semanticModel.Compilation.GlobalNamespace
+                        .GetNamespaceMembers()
+                        .FirstOrDefault(n => n.ToDisplayString() == namespaceName);
+
+                    if (nsSymbol == null)
+                    {
+                        isUnused = true;
+                    }
+                }
+
+                if (isUnused)
+                {
+                    unusedUsings.Add(usingDirective);
+                }
+            }
+
+            // Also collect from diagnostics directly
+            foreach (var diagnostic in unusedUsingDiagnostics)
+            {
+                var node = root.FindNode(diagnostic.Location.SourceSpan);
+                if (node is UsingDirectiveSyntax usingNode && !unusedUsings.Contains(usingNode))
+                {
+                    unusedUsings.Add(usingNode);
+                }
+            }
+
+            if (unusedUsings.Count == 0)
+                continue;
+
+            // If preview mode, collect pending changes
+            if (@params.Preview)
+            {
+                var previewResult = CreatePreviewResult(operationId, document.FilePath!, unusedUsings, root);
+                if (previewResult.PendingChanges != null)
+                    allPendingChanges.AddRange(previewResult.PendingChanges);
+                totalUsingsRemoved += unusedUsings.Count;
+                continue;
+            }
+
+            // Remove unused usings and re-sort the remaining ones
+            var remainingUsings = root.Usings
+                .Where(u => !unusedUsings.Contains(u))
+                .ToList();
+
+            var sortedUsings = UsingDirectiveSorter.Sort(remainingUsings);
+
+            var newRoot = root.WithUsings(SyntaxFactory.List(sortedUsings));
+            var newDocument = document.WithSyntaxRoot(newRoot);
+
+            // Update the solution incrementally so subsequent documents see prior changes
+            Context.UpdateSolution(newDocument.Project.Solution);
+
+            totalUsingsRemoved += unusedUsings.Count;
+            allFilesModified.Add(document.FilePath!);
+        }
+
+        // If preview mode, return aggregated preview
+        if (@params.Preview)
+        {
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Preview = true,
+                PendingChanges = allPendingChanges,
+                UsingDirectivesRemoved = totalUsingsRemoved
+            };
+        }
+
+        // Commit all accumulated changes at once
+        if (allFilesModified.Count > 0)
+        {
+            var commitResult = await CommitChangesAsync(Context.Solution, cancellationToken);
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Changes = new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                UsingDirectivesRemoved = totalUsingsRemoved
+            };
+        }
+
+        // No files needed changes
+        return RefactoringResult.Succeeded(
+            operationId,
+            new FileChanges
+            {
+                FilesModified = [],
+                FilesCreated = [],
+                FilesDeleted = []
+            },
+            null,
+            0,
+            0);
     }
 
     /// <summary>
