@@ -8,7 +8,7 @@
 
 Let AI assistants like Claude safely refactor your C# codebase using the same Roslyn compiler platform that powers Visual Studio.
 
-Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes 24 Roslyn-powered tools to AI assistants and other MCP clients. It combines 19 refactoring operations with 5 code navigation tools -- giving your AI both deep code intelligence (find references, go to definition, search symbols) and deep refactoring (rename, extract, move, generate) with full solution-wide reference tracking and preview support.
+Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **41 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 19 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 4 code generation tools, and 7 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
 
 ---
 
@@ -29,7 +29,7 @@ Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotoc
 
 ## Why RoslynMcpServer?
 
-- **24 tools** -- 19 refactoring operations + 5 code navigation tools, the most comprehensive Roslyn MCP server available
+- **41 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
 - **Preview mode on every operation** -- see exactly what will change before applying
 - **Atomic file writes with rollback** -- if any file write fails, all changes are reverted
 - **Solution-wide reference updates** -- renames and moves propagate across your entire solution
@@ -189,6 +189,12 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln` or `.cspr
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `convert_to_async` | Convert a synchronous method to async/await pattern. | `sourceFile`, `methodName`, `line`, `renameToAsync` |
+| `convert_expression_body` | Toggle between expression body (`=> expr;`) and block body (`{ return expr; }`). | `sourceFile`, `direction`, `memberName`, `line` |
+| `convert_property` | Convert between auto-property and full property with backing field. | `sourceFile`, `direction`, `propertyName`, `line` |
+| `convert_foreach_linq` | Convert foreach loops with Add patterns to LINQ Select/Where expressions. | `sourceFile`, `line` |
+| `convert_to_pattern_matching` | Convert if/is chains and switch statements to switch expressions. | `sourceFile`, `line` |
+| `convert_to_interpolated_string` | Convert string.Format() calls and concatenation to interpolated strings. | `sourceFile`, `line` |
+| `introduce_parameter` | Promote a local variable to a method parameter, updating all call sites. | `sourceFile`, `variableName`, `line` |
 
 ### Using Directives
 
@@ -215,6 +221,31 @@ These read-only tools let you explore and understand your codebase without makin
 | `get_symbol_info` | Get detailed metadata for any symbol: kind, accessibility, modifiers, base types, interfaces, members, parameters, return type, and XML documentation. | `sourceFile`, `symbolName`, `line`, `column` |
 | `find_implementations` | Find all implementations of an interface or overrides of an abstract/virtual member. | `sourceFile`, `symbolName`, `line`, `column`, `maxResults` |
 | `search_symbols` | Search for symbols by name pattern across the entire workspace. Filter by kind (class, method, property, etc.). | `query`, `kindFilter`, `maxResults` |
+
+### Analysis & Metrics
+
+These tools analyze your code without making changes. Use them to understand code quality, data flow, and control flow.
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `get_diagnostics` | Retrieve compiler diagnostics (errors, warnings, info) filtered by severity and optionally by file. | `sourceFile`, `severityFilter` |
+| `get_code_metrics` | Calculate code metrics: cyclomatic complexity, lines of code, maintainability index, class coupling, depth of inheritance. | `sourceFile`, `symbolName`, `line` |
+| `analyze_control_flow` | Analyze control flow for a code region: start/end point reachability, return statements, and exit points. | `sourceFile`, `startLine`, `endLine` |
+| `analyze_data_flow` | Analyze data flow for a code region: variables read/written inside, data flowing in/out, captured variables. | `sourceFile`, `startLine`, `endLine` |
+| `find_callers` | Find all callers of a symbol across the entire solution. | `sourceFile`, `symbolName`, `line`, `column`, `maxResults` |
+| `get_type_hierarchy` | Retrieve the type hierarchy (base types and/or derived types) for a given type. | `sourceFile`, `symbolName`, `line`, `column`, `direction` |
+| `get_document_outline` | Get a hierarchical outline of all symbols in a file (namespaces, types, members). | `sourceFile` |
+
+### Code Generation
+
+These tools generate new code members for existing types.
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `generate_equals_hashcode` | Generate Equals() and GetHashCode() overrides for a type based on its fields/properties. | `sourceFile`, `typeName`, `fields` |
+| `generate_tostring` | Generate a ToString() override for a type. | `sourceFile`, `typeName`, `fields`, `format` |
+| `format_document` | Format a C# file using Roslyn's built-in formatter. | `sourceFile` |
+| `add_null_checks` | Add null-check statements (ArgumentNullException.ThrowIfNull or guard clauses) for method parameters. | `sourceFile`, `methodName`, `line`, `style` |
 
 ---
 

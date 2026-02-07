@@ -176,6 +176,13 @@ public static class ErrorCodes
     public const string CannotRenameExternal = "3018";
 
     // --------------------------------------------
+    // Conversion Errors (3020-3029)
+    // --------------------------------------------
+
+    /// <summary>Syntax cannot be converted in the requested direction.</summary>
+    public const string CannotConvert = "3020";
+
+    // --------------------------------------------
     // Extract Errors (3030-3039)
     // --------------------------------------------
 
@@ -212,6 +219,12 @@ public static class ErrorCodes
     // --------------------------------------------
     // Generate Errors (3060-3065)
     // --------------------------------------------
+
+    /// <summary>No fields or properties available for generation.</summary>
+    public const string NoMembersToGenerate = "3055";
+
+    /// <summary>Type already has the requested override (Equals, GetHashCode, ToString).</summary>
+    public const string AlreadyHasOverride = "3056";
 
     /// <summary>Constructor with same signature exists.</summary>
     public const string ConstructorExists = "3060";
@@ -278,6 +291,13 @@ public static class ErrorCodes
 
     /// <summary>Cannot inline expression with side effects.</summary>
     public const string CannotInlineSideEffects = "3093";
+
+    // --------------------------------------------
+    // Region/Range Errors (3100-3109)
+    // --------------------------------------------
+
+    /// <summary>Start/end line range is invalid for data or control flow analysis.</summary>
+    public const string InvalidRegion = "3100";
 
     // ============================================
     // System Errors (4xxx)

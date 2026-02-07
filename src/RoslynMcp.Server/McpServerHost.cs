@@ -56,6 +56,33 @@ public sealed class McpServerHost : IAsyncDisposable
         _toolRegistry.Register(new FindImplementationsTool(workspaceProvider));
         _toolRegistry.Register(new SearchSymbolsTool(workspaceProvider));
 
+        // Analysis & Metrics Tools
+        _toolRegistry.Register(new GetDiagnosticsTool(workspaceProvider));
+        _toolRegistry.Register(new GetCodeMetricsTool(workspaceProvider));
+        _toolRegistry.Register(new AnalyzeControlFlowTool(workspaceProvider));
+
+        // Navigation & Hierarchy Tools
+        _toolRegistry.Register(new FindCallersTool(workspaceProvider));
+        _toolRegistry.Register(new GetTypeHierarchyTool(workspaceProvider));
+        _toolRegistry.Register(new GetDocumentOutlineTool(workspaceProvider));
+
+        // Code Generation & Formatting Tools
+        _toolRegistry.Register(new GenerateEqualsHashCodeTool(workspaceProvider));
+        _toolRegistry.Register(new GenerateToStringTool(workspaceProvider));
+        _toolRegistry.Register(new FormatDocumentTool(workspaceProvider));
+        _toolRegistry.Register(new AddNullChecksTool(workspaceProvider));
+
+        // Data Flow & Conversion Tools
+        _toolRegistry.Register(new AnalyzeDataFlowTool(workspaceProvider));
+        _toolRegistry.Register(new ConvertExpressionBodyTool(workspaceProvider));
+        _toolRegistry.Register(new ConvertPropertyTool(workspaceProvider));
+        _toolRegistry.Register(new IntroduceParameterTool(workspaceProvider));
+
+        // Syntax Conversion Tools
+        _toolRegistry.Register(new ConvertForeachLinqTool(workspaceProvider));
+        _toolRegistry.Register(new ConvertToPatternMatchingTool(workspaceProvider));
+        _toolRegistry.Register(new ConvertToInterpolatedStringTool(workspaceProvider));
+
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,

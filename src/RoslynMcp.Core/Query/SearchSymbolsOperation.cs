@@ -109,9 +109,15 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
     {
         if (string.IsNullOrWhiteSpace(kindFilter)) return null;
 
-        return System.Enum.TryParse<Contracts.Enums.SymbolKind>(kindFilter, ignoreCase: true, out var kind)
-            ? kind
-            : null;
+        if (!System.Enum.TryParse<Contracts.Enums.SymbolKind>(kindFilter, ignoreCase: true, out var kind))
+        {
+            var validKinds = string.Join(", ", System.Enum.GetNames<Contracts.Enums.SymbolKind>());
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolKind,
+                $"Invalid kindFilter '{kindFilter}'. Valid values: {validKinds}");
+        }
+
+        return kind;
     }
 
     private static SymbolFilter GetSymbolFilter(Contracts.Enums.SymbolKind kind)
