@@ -38,7 +38,7 @@ public sealed class GetCodeMetricsTool : IToolHandler
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath" },
+        required = new[] { "solutionPath", "sourceFile" },
         properties = new
         {
             solutionPath = new

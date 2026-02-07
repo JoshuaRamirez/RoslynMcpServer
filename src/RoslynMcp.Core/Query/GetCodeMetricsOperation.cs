@@ -24,22 +24,19 @@ public sealed class GetCodeMetricsOperation : QueryOperationBase<GetCodeMetricsP
     /// <inheritdoc />
     protected override void ValidateParams(GetCodeMetricsParams @params)
     {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile) && string.IsNullOrWhiteSpace(@params.SymbolName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Either sourceFile or symbolName is required.");
+        if (string.IsNullOrWhiteSpace(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
-        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-        {
-            if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
 
-            if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-        }
+        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
 
-        if (!string.IsNullOrWhiteSpace(@params.SourceFile) && !File.Exists(@params.SourceFile))
+        if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
 

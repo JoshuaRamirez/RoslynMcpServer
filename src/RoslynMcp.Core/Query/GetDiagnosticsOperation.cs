@@ -74,28 +74,28 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
                     continue;
                 }
 
+                string? file = null;
+                int line = 0;
+                int column = 0;
+
+                if (diag.Location.IsInSource)
+                {
+                    var lineSpan = diag.Location.GetLineSpan();
+                    file = lineSpan.Path;
+                    line = lineSpan.StartLinePosition.Line + 1;
+                    column = lineSpan.StartLinePosition.Character + 1;
+                }
+
                 var info = new DiagnosticInfo
                 {
                     Id = diag.Id,
                     Message = diag.GetMessage(),
                     Severity = diag.Severity.ToString(),
-                    Category = diag.Descriptor.Category
+                    Category = diag.Descriptor.Category,
+                    File = file,
+                    Line = line,
+                    Column = column
                 };
-
-                if (diag.Location.IsInSource)
-                {
-                    var lineSpan = diag.Location.GetLineSpan();
-                    info = new DiagnosticInfo
-                    {
-                        Id = info.Id,
-                        Message = info.Message,
-                        Severity = info.Severity,
-                        File = lineSpan.Path,
-                        Line = lineSpan.StartLinePosition.Line + 1,
-                        Column = lineSpan.StartLinePosition.Character + 1,
-                        Category = info.Category
-                    };
-                }
 
                 diagnostics.Add(info);
             }

@@ -197,23 +197,48 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         }
         else
         {
-            // For > 8 fields, chain XOR
-            hashExpr = SyntaxFactory.InvocationExpression(
-                SyntaxFactory.MemberAccessExpression(
-                    SyntaxKind.SimpleMemberAccessExpression,
-                    SyntaxFactory.IdentifierName(members[0].Name),
-                    SyntaxFactory.IdentifierName("GetHashCode")));
+            // For > 8 fields, use HashCode builder: var hash = new HashCode(); hash.Add(f); ... return hash.ToHashCode();
+            var statements = new List<StatementSyntax>();
 
-            for (int i = 1; i < members.Count; i++)
+            // var hash = new HashCode();
+            statements.Add(SyntaxFactory.LocalDeclarationStatement(
+                SyntaxFactory.VariableDeclaration(SyntaxFactory.IdentifierName("var"))
+                    .WithVariables(SyntaxFactory.SingletonSeparatedList(
+                        SyntaxFactory.VariableDeclarator("hash")
+                            .WithInitializer(SyntaxFactory.EqualsValueClause(
+                                SyntaxFactory.ObjectCreationExpression(SyntaxFactory.IdentifierName("HashCode"))
+                                    .WithArgumentList(SyntaxFactory.ArgumentList())))))));
+
+            // hash.Add(fieldN); for each member
+            foreach (var member in members)
             {
-                var nextHash = SyntaxFactory.InvocationExpression(
+                statements.Add(SyntaxFactory.ExpressionStatement(
+                    SyntaxFactory.InvocationExpression(
+                        SyntaxFactory.MemberAccessExpression(
+                            SyntaxKind.SimpleMemberAccessExpression,
+                            SyntaxFactory.IdentifierName("hash"),
+                            SyntaxFactory.IdentifierName("Add")))
+                        .WithArgumentList(SyntaxFactory.ArgumentList(
+                            SyntaxFactory.SingletonSeparatedList(
+                                SyntaxFactory.Argument(SyntaxFactory.IdentifierName(member.Name)))))));
+            }
+
+            // return hash.ToHashCode();
+            statements.Add(SyntaxFactory.ReturnStatement(
+                SyntaxFactory.InvocationExpression(
                     SyntaxFactory.MemberAccessExpression(
                         SyntaxKind.SimpleMemberAccessExpression,
-                        SyntaxFactory.IdentifierName(members[i].Name),
-                        SyntaxFactory.IdentifierName("GetHashCode")));
+                        SyntaxFactory.IdentifierName("hash"),
+                        SyntaxFactory.IdentifierName("ToHashCode")))));
 
-                hashExpr = SyntaxFactory.BinaryExpression(SyntaxKind.ExclusiveOrExpression, hashExpr, nextHash);
-            }
+            return SyntaxFactory.MethodDeclaration(
+                    SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.IntKeyword)),
+                    "GetHashCode")
+                .WithModifiers(SyntaxFactory.TokenList(
+                    SyntaxFactory.Token(SyntaxKind.PublicKeyword),
+                    SyntaxFactory.Token(SyntaxKind.OverrideKeyword)))
+                .WithBody(SyntaxFactory.Block(statements))
+                .NormalizeWhitespace();
         }
 
         return SyntaxFactory.MethodDeclaration(

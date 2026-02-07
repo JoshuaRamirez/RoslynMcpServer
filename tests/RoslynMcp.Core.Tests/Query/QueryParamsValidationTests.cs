@@ -332,7 +332,7 @@ public class QueryParamsValidationTests
     #region GetCodeMetricsParams Validation
 
     [Fact]
-    public void GetCodeMetrics_NoSourceFileOrSymbol_ThrowsException()
+    public void GetCodeMetrics_MissingSourceFile_ThrowsException()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
             ValidateGetCodeMetricsParams(new GetCodeMetricsParams()));
@@ -524,18 +524,15 @@ public class QueryParamsValidationTests
 
     private static void ValidateGetCodeMetricsParams(GetCodeMetricsParams p)
     {
-        if (string.IsNullOrWhiteSpace(p.SourceFile) && string.IsNullOrWhiteSpace(p.SymbolName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Either sourceFile or symbolName is required.");
-        if (!string.IsNullOrWhiteSpace(p.SourceFile))
-        {
-            if (!PathResolver.IsAbsolutePath(p.SourceFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-            if (!PathResolver.IsValidCSharpFilePath(p.SourceFile))
-                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-        }
+        if (string.IsNullOrWhiteSpace(p.SourceFile))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+        if (!PathResolver.IsAbsolutePath(p.SourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+        if (!PathResolver.IsValidCSharpFilePath(p.SourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
         if (p.Line.HasValue && p.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
-        if (!string.IsNullOrWhiteSpace(p.SourceFile) && !File.Exists(p.SourceFile))
+        if (!File.Exists(p.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
     }
 
