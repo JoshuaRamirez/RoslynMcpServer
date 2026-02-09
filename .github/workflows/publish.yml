@@ -56,5 +56,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: nuget-packages
-        path: ./packages/*.nupkg
+        path: ./packages/*.*nupkg
 
