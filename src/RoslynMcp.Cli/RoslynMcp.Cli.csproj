@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RootNamespace>RoslynMcp.Cli</RootNamespace>
+
+    <!-- .NET Global Tool Configuration -->
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>roslyn-cli</ToolCommandName>
+
+    <PackageId>RoslynMcp.Cli</PackageId>
+    <Version>0.4.0</Version>
+    <Authors>Joshua Ramirez</Authors>
+    <Company>RedJay</Company>
+    <Description>Standalone CLI for 41 Roslyn-powered C# refactoring, analysis, and navigation tools.</Description>
+    <PackageTags>roslyn;cli;refactoring;csharp;code-analysis</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/JoshuaRamirez/RoslynMcpServer</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/JoshuaRamirez/RoslynMcpServer</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RoslynMcp.Core\RoslynMcp.Core.csproj" />
+  </ItemGroup>
+
+</Project>

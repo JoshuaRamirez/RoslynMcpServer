@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `roslyn-cli` standalone CLI tool (`RoslynMcp.Cli` package)
+  - All 41 Roslyn tools accessible from the command line without an AI assistant
+  - JSON output by default (pipeable to `jq`), with `--format text` for human-readable output
+  - Per-tool help via `roslyn-cli <tool-name> --help`
+  - Exit codes: 0=success, 1=tool error, 2=CLI error, 3=environment error
+  - Kebab-case tool names (e.g., `rename-symbol`, `get-diagnostics`)
+  - Generic dispatch via delegates -- no per-tool command classes
+- 69 new unit tests for CLI components (CliArgs, ArgsToJsonConverter, ToolRegistry, OutputFormatter, HelpGenerator)
+
 ## [0.4.0] - 2026-02-07
 
 ### Added

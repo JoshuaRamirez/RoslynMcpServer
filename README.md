@@ -17,6 +17,7 @@ Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotoc
 - [Why RoslynMcpServer?](#why-roslynmcpserver)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
+- [Standalone CLI](#standalone-cli)
 - [Configuration](#configuration)
 - [Available Tools](#available-tools)
 - [Preview Mode](#preview-mode)
@@ -96,6 +97,44 @@ Ask Claude:
 > "Rename the class UserService to AccountService in C:/path/to/MySolution.sln"
 
 Claude will use the `rename_symbol` tool to rename the class and update every reference across your entire solution.
+
+---
+
+## Standalone CLI
+
+All 41 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
+
+### Install
+
+```bash
+dotnet tool install -g RoslynMcp.Cli
+```
+
+### Usage
+
+```bash
+roslyn-cli <solution-path> <tool-name> [--option value ...]
+roslyn-cli <tool-name> --help
+roslyn-cli --help
+```
+
+### Examples
+
+```bash
+# Check environment health
+roslyn-cli C:/path/to/MySolution.sln diagnose --format text
+
+# Rename a symbol across the entire solution
+roslyn-cli C:/path/to/MySolution.sln rename-symbol --source-file C:/path/to/Foo.cs --symbol-name Bar --new-name Baz
+
+# Get compiler diagnostics (errors only), pipe to jq
+roslyn-cli C:/path/to/MySolution.sln get-diagnostics --severity-filter Error | jq '.data'
+
+# Preview a refactoring without applying
+roslyn-cli C:/path/to/MySolution.sln extract-method --source-file Foo.cs --start-line 10 --end-line 20 --method-name DoWork --preview
+```
+
+Output is JSON by default (pipeable to `jq`). Use `--format text` for human-readable output. Exit codes: 0=success, 1=tool error, 2=CLI error, 3=environment error.
 
 ---
 
