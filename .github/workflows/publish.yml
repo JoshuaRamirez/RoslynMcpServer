@@ -37,6 +37,9 @@ jobs:
     - name: Pack RoslynMcp.Server (Global Tool)
       run: dotnet pack src/RoslynMcp.Server/RoslynMcp.Server.csproj -c Release -o ./packages
 
+    - name: Pack RoslynMcp.Cli (Global Tool)
+      run: dotnet pack src/RoslynMcp.Cli/RoslynMcp.Cli.csproj -c Release -o ./packages
+
     - name: List packages
       run: ls -R ./packages
       shell: bash

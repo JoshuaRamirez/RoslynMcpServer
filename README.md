@@ -372,6 +372,7 @@ dotnet test
 # Specific test projects
 dotnet test tests/RoslynMcp.Core.Tests
 dotnet test tests/RoslynMcp.Server.Tests
+dotnet test tests/RoslynMcp.Cli.Tests
 ```
 
 ---
