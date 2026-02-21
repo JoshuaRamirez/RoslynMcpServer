@@ -180,7 +180,7 @@ public sealed class McpServerHost : IAsyncDisposable
 
     private McpResponse HandleInitialized(McpRequest request)
     {
-        // Notification messages are handled in RunAsync by skipping responses when id is null.
+        // Notification, no response needed (but we return success for compatibility)
         return McpResponse.Success(request.Id, new { });
     }
 
