@@ -67,7 +67,7 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
         {
             throw new RefactoringException(
                 ErrorCodes.InvalidSourcePath,
-                "Path must be a .sln or .csproj file.");
+                "Path must be a .sln, .slnx, or .csproj file.");
         }
 
         if (!File.Exists(projectOrSolutionPath))
@@ -115,7 +115,8 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
 
         try
         {
-            if (normalizedPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
+            if (normalizedPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase) ||
+                normalizedPath.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase))
             {
                 LogCallback?.Invoke($"Opening solution: {normalizedPath}");
                 solution = await workspace.OpenSolutionAsync(normalizedPath, cancellationToken: linkedCts.Token);

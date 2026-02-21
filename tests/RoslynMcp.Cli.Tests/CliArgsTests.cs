@@ -89,10 +89,12 @@ public class CliArgsTests
         Assert.Equal("rename-symbol", result.ToolName);
     }
 
-    [Fact]
-    public void SolutionPathLookingLikeFile_NotTreatedAsToolName()
+    [Theory]
+    [InlineData("MySolution.sln")]
+    [InlineData("MySolution.slnx")]
+    public void SolutionPathLookingLikeFile_NotTreatedAsToolName(string solutionPath)
     {
-        var result = CliArgs.Parse(["MySolution.sln", "--help"]);
+        var result = CliArgs.Parse([solutionPath, "--help"]);
         Assert.True(result.ShowHelp);
     }
 

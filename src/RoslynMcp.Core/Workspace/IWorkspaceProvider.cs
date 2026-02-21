@@ -10,7 +10,7 @@ public interface IWorkspaceProvider
     /// Creates a workspace context for the given project/solution.
     /// Caller must dispose to release resources.
     /// </summary>
-    /// <param name="projectOrSolutionPath">Path to .sln or .csproj file.</param>
+    /// <param name="projectOrSolutionPath">Path to .sln, .slnx, or .csproj file.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Scoped workspace context.</returns>
     Task<WorkspaceContext> CreateContextAsync(
