@@ -56,6 +56,7 @@ public class PathResolverTests
     public static TheoryData<string, bool> IsValidSolutionOrProjectPathData => new()
     {
         { WinOrUnix(@"C:\project\Solution.sln", "/project/Solution.sln"), true },
+        { WinOrUnix(@"C:\project\Solution.slnx", "/project/Solution.slnx"), true },
         { WinOrUnix(@"C:\project\Project.csproj", "/project/Project.csproj"), true },
         { WinOrUnix(@"C:\project\File.cs", "/project/File.cs"), false },
         { @"relative\Solution.sln", false }
