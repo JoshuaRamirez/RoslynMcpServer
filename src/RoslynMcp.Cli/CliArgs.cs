@@ -5,7 +5,7 @@ namespace RoslynMcp.Cli;
 /// </summary>
 public sealed class ParsedArgs
 {
-    /// <summary>Path to .sln or .csproj file (null for global help).</summary>
+    /// <summary>Path to .sln, .slnx, or .csproj file (null for global help).</summary>
     public string? SolutionPath { get; init; }
 
     /// <summary>Tool name in kebab-case (null for global help).</summary>
@@ -142,6 +142,7 @@ public static class CliArgs
 
     private static bool LooksLikeFilePath(string value) =>
         value.EndsWith(".sln", StringComparison.OrdinalIgnoreCase) ||
+        value.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) ||
         value.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) ||
         value.Contains(Path.DirectorySeparatorChar) ||
         value.Contains(Path.AltDirectorySeparatorChar);

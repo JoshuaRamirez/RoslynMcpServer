@@ -80,6 +80,7 @@ public static class PathResolver
             return false;
 
         return path.EndsWith(".sln", StringComparison.OrdinalIgnoreCase) ||
+               path.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) ||
                path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase);
     }
 
