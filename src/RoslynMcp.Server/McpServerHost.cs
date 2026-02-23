@@ -114,7 +114,12 @@ public sealed class McpServerHost : IAsyncDisposable
 
                 FileLogger.Log($"Received request: method={request.Method}, id={request.Id}");
                 var response = await HandleRequestAsync(request, cancellationToken);
-                await _transport.WriteMessageAsync(response, cancellationToken);
+
+                // JSON-RPC notifications do not include an id and must not receive a response.
+                if (request.Id != null)
+                {
+                    await _transport.WriteMessageAsync(response, cancellationToken);
+                }
             }
             catch (OperationCanceledException)
             {
@@ -148,6 +153,7 @@ public sealed class McpServerHost : IAsyncDisposable
         {
             "initialize" => HandleInitialize(request),
             "initialized" => HandleInitialized(request),
+            "notifications/initialized" => HandleInitialized(request),
             "tools/list" => HandleToolsList(request),
             "tools/call" => await HandleToolCallAsync(request, cancellationToken),
             "shutdown" => HandleShutdown(request),
