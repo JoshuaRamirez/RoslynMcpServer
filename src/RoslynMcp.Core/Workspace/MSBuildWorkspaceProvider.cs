@@ -93,7 +93,7 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
         // Collect workspace diagnostics but don't fail on warnings
         // Using ConcurrentBag for thread-safe collection as events may fire from multiple threads
         var diagnostics = new ConcurrentBag<WorkspaceDiagnostic>();
-        workspace.WorkspaceFailed += (_, args) =>
+        workspace.RegisterWorkspaceFailedHandler(args =>
         {
             if (args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
             {
@@ -104,7 +104,7 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
                 LogCallback?.Invoke($"Workspace warning: {args.Diagnostic.Message}");
             }
             diagnostics.Add(args.Diagnostic);
-        };
+        });
 
         Solution solution;
         var normalizedPath = PathResolver.NormalizePath(projectOrSolutionPath);
