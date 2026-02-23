@@ -53,7 +53,7 @@ jobs:
       if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
 
     - name: Upload packages as artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: nuget-packages
         path: ./packages/*.*nupkg
