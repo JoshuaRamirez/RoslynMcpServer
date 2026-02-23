@@ -1,5 +1,5 @@
-using Xunit;
 using RoslynMcp.Cli;
+using Xunit;
 
 namespace RoslynMcp.Cli.Tests;
 

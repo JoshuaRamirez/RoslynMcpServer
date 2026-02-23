@@ -1,8 +1,8 @@
 using System.Text.Json;
-using Xunit;
 using RoslynMcp.Cli;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using Xunit;
 
 namespace RoslynMcp.Cli.Tests;
 

@@ -1,6 +1,6 @@
 using System.Text.Json;
-using Xunit;
 using RoslynMcp.Cli;
+using Xunit;
 
 namespace RoslynMcp.Cli.Tests;
 
