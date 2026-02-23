@@ -27,7 +27,11 @@ public class SymbolKindMapperTests
     {
         var root = tree.GetCompilationUnitRoot();
         var node = root.DescendantNodes().OfType<TSyntax>().First();
+        // RS1039: The generic constraint resolves to the base SyntaxNode overload, but it
+        // dispatches correctly at runtime for all concrete syntax types used in these tests.
+#pragma warning disable RS1039
         return model.GetDeclaredSymbol(node)!;
+#pragma warning restore RS1039
     }
 
     [Fact]
