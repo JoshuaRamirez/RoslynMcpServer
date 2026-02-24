@@ -100,3 +100,6 @@ $RECYCLE.BIN/
 TestResults/
 *.trx
 
+# Claude Code gen-ui output
+claude-genui-output/
+
