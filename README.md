@@ -44,7 +44,7 @@ Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotoc
 Before installing, make sure you have:
 
 1. **.NET 9.0 SDK or later** -- [Download here](https://dotnet.microsoft.com/download/dotnet/9.0)
-2. **A C# solution (.sln) or project (.csproj) to work with**
+2. **A C# solution (`.sln` or `.slnx`) or project (`.csproj`) to work with**
 
 Verify your .NET SDK version:
 
@@ -182,7 +182,7 @@ Config file locations:
 
 ## Available Tools
 
-All tools accept a `solutionPath` parameter (absolute path to a `.sln` or `.csproj` file). Refactoring tools also accept a `preview` parameter (set to `true` to see changes without applying them).
+All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`, or `.csproj` file). Refactoring tools also accept a `preview` parameter (set to `true` to see changes without applying them).
 
 ### Move and Rename
 
@@ -316,7 +316,7 @@ If MSBuild cannot be located or your solution fails to load:
 
 1. Make sure you can build the solution from the command line first: `dotnet build /path/to/MySolution.sln`
 2. On Windows, ensure Visual Studio Build Tools or a Visual Studio installation is available
-3. Check that `solutionPath` is an absolute path to a valid `.sln` or `.csproj` file
+3. Check that `solutionPath` is an absolute path to a valid `.sln`, `.slnx`, or `.csproj` file
 
 ### Using the diagnose tool
 

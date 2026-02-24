@@ -160,7 +160,7 @@ public sealed class RenameSymbolOperation
 1. **Update your fork** with the latest upstream changes:
    ```bash
    git fetch upstream
-   git rebase upstream/main
+   git rebase upstream/master
    ```
 
 2. **Create a feature branch**:

@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-02-23
+
+### Added
+- `.slnx` (Visual Studio 2022+ XML solution format) support in workspace loading and CLI
+- Codex CLI compatibility via JSON-RPC 2.0 notification handling (`notifications/initialized`)
+- `TestSolution.slnx` test fixture
+
+### Changed
+- Roslyn upgraded from 4.8.0 to 5.0.0 (`Microsoft.CodeAnalysis.CSharp.Workspaces`, `Microsoft.CodeAnalysis.Workspaces.MSBuild`)
+- Workspace failure handler migrated to `RegisterWorkspaceFailedHandler` API (Roslyn 5.0)
+- xunit upgraded from 2.6.0 to 2.9.3 across all test projects
+- Microsoft.NET.Test.Sdk upgraded from 17.8.0 to 18.0.1 across all test projects
+- coverlet.collector upgraded from 6.0.0 to 6.0.4 across all test projects
+- GitHub Actions: checkout v4 to v6, setup-dotnet v4 to v5, upload-artifact v4 to v6
+- 566 total tests (270 Core + 206 Server + 90 Cli)
+
+### Fixed
+- RS1039 analyzer warning from Roslyn 5.0 upgrade (suppressed in SymbolKindMapperTests)
+- Import ordering in Cli.Tests to pass format check
+
 ## [0.3.1] - 2026-02-09
 
 ### Fixed
@@ -103,6 +123,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
+[0.4.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.2.0...v0.2.1
