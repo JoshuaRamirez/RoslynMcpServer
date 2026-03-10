@@ -1,6 +1,6 @@
 ---
 description: Install the Roslyn MCP Server .NET global tool
-allowed-tools: Bash(dotnet tool:*), Bash(roslyn-mcp:*), Bash(which:*)
+allowed-tools: Bash(dotnet:*), Bash(roslyn-mcp:*), Bash(which:*)
 ---
 
 # Roslyn MCP Server Setup
@@ -50,7 +50,7 @@ which roslyn-mcp
 Then verify it runs:
 
 ```
-roslyn-mcp --version
+roslyn-mcp --help
 ```
 
 ## Troubleshooting
