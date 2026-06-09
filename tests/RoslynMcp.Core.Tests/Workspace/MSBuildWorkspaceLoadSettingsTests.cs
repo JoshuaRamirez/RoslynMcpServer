@@ -20,12 +20,19 @@ public class MSBuildWorkspaceLoadSettingsTests
             name => environment.TryGetValue(name, out var value) ? value : null,
             []);
 
-        Assert.Equal("true", properties["CheckForSystemRuntimeDependency"]);
-        Assert.Equal("true", properties["DesignTimeBuild"]);
-        Assert.Equal("true", properties["BuildingInsideVisualStudio"]);
         Assert.Equal("false", properties["NuGetAudit"]);
         Assert.Equal("false", properties["TreatWarningsAsErrors"]);
         Assert.Equal("CS1591", properties["WarningsNotAsErrors"]);
+    }
+
+    [Fact]
+    public void BuildGlobalProperties_WithoutInputs_ReturnsEmpty()
+    {
+        var properties = MSBuildWorkspaceLoadSettings.BuildGlobalProperties(
+            _ => null,
+            []);
+
+        Assert.Empty(properties);
     }
 
     [Fact]
@@ -34,6 +41,21 @@ public class MSBuildWorkspaceLoadSettingsTests
         var diagnostics = new[]
         {
             new WorkspaceDiagnostic(WorkspaceDiagnosticKind.Failure, "error NU1903: package has a known vulnerability")
+        };
+
+        var fatalDiagnostics = MSBuildWorkspaceLoadSettings.GetFatalDiagnostics(diagnostics);
+
+        Assert.Empty(fatalDiagnostics);
+    }
+
+    [Fact]
+    public void GetFatalDiagnostics_IgnoresAuditFailuresWithoutDiagnosticCode()
+    {
+        var diagnostics = new[]
+        {
+            new WorkspaceDiagnostic(
+                WorkspaceDiagnosticKind.Failure,
+                "Msbuild failed when processing the file 'Example.csproj' with message: Package 'AutoMapper' 14.0.0 has a known high severity vulnerability, https://github.com/advisories/GHSA-rvv3-g6hj-g44x")
         };
 
         var fatalDiagnostics = MSBuildWorkspaceLoadSettings.GetFatalDiagnostics(diagnostics);
@@ -62,6 +84,24 @@ public class MSBuildWorkspaceLoadSettingsTests
         var properties = MSBuildWorkspaceLoadSettings.BuildGlobalProperties(
             _ => null,
             ["-p:NuGetAudit=false", "/property:WarningsNotAsErrors=NU1901;NU1902;NU1903;NU1904", "-p:TreatWarningsAsErrors=false"]);
+
+        Assert.Equal("false", properties["NuGetAudit"]);
+        Assert.Equal("false", properties["TreatWarningsAsErrors"]);
+        Assert.Equal("NU1901;NU1902;NU1903;NU1904", properties["WarningsNotAsErrors"]);
+    }
+
+    [Fact]
+    public void BuildGlobalProperties_UsesNuGetRestoreMsbuildArgsEnvironmentProperties()
+    {
+        var environment = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["NUGET_RESTORE_MSBUILD_ARGS"] =
+                "/p:NuGetAudit=false /p:WarningsNotAsErrors=NU1901;NU1902;NU1903;NU1904 /p:TreatWarningsAsErrors=false"
+        };
+
+        var properties = MSBuildWorkspaceLoadSettings.BuildGlobalProperties(
+            name => environment.TryGetValue(name, out var value) ? value : null,
+            []);
 
         Assert.Equal("false", properties["NuGetAudit"]);
         Assert.Equal("false", properties["TreatWarningsAsErrors"]);

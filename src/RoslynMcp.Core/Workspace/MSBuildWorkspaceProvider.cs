@@ -35,18 +35,26 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
     public static readonly TimeSpan DefaultWorkspaceLoadTimeout = TimeSpan.FromMinutes(5);
 
     private readonly IFileWriter _fileWriter;
+    private readonly string[] _commandLineArgs;
     private readonly TimeSpan _workspaceLoadTimeout;
 
     /// <summary>
     /// Creates a new workspace provider.
     /// </summary>
+    /// <param name="commandLineArgs">
+    /// Optional process arguments used to forward standard MSBuild property switches to workspace loading.
+    /// </param>
     /// <param name="fileWriter">Optional file writer for atomic operations.</param>
     /// <param name="workspaceLoadTimeout">
     /// Optional timeout for workspace loading operations.
     /// Defaults to <see cref="DefaultWorkspaceLoadTimeout"/> (5 minutes).
     /// </param>
-    public MSBuildWorkspaceProvider(IFileWriter? fileWriter = null, TimeSpan? workspaceLoadTimeout = null)
+    public MSBuildWorkspaceProvider(
+        IEnumerable<string>? commandLineArgs = null,
+        IFileWriter? fileWriter = null,
+        TimeSpan? workspaceLoadTimeout = null)
     {
+        _commandLineArgs = commandLineArgs?.ToArray() ?? [];
         _fileWriter = fileWriter ?? new AtomicFileWriter();
         _workspaceLoadTimeout = workspaceLoadTimeout ?? DefaultWorkspaceLoadTimeout;
     }
@@ -81,7 +89,11 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
 
         LogCallback?.Invoke($"Creating workspace for: {projectOrSolutionPath}");
 
-        var properties = MSBuildWorkspaceLoadSettings.BuildGlobalProperties();
+        var properties = GetGlobalProperties();
+        LogCallback?.Invoke(
+            properties.Count == 0
+                ? "MSBuild global properties: none"
+                : $"MSBuild global properties: {string.Join(", ", properties.Select(kvp => $"{kvp.Key}={kvp.Value}"))}");
         var workspace = MSBuildWorkspace.Create(properties);
 
         // Collect workspace diagnostics but don't fail on warnings
@@ -152,6 +164,10 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
 
         return new WorkspaceContext(workspace, solution, normalizedPath, _fileWriter);
     }
+
+    internal Dictionary<string, string> GetGlobalProperties(
+        Func<string, string?>? getEnvironmentVariable = null) =>
+        MSBuildWorkspaceLoadSettings.BuildGlobalProperties(getEnvironmentVariable, _commandLineArgs);
 
     /// <inheritdoc />
     public EnvironmentDiagnostics CheckEnvironment()

@@ -5,6 +5,8 @@ namespace RoslynMcp.Core.Workspace;
 
 internal static class MSBuildWorkspaceLoadSettings
 {
+    private const string _nuGetRestoreMsbuildArgsEnvironmentVariableName = "NUGET_RESTORE_MSBUILD_ARGS";
+
     private static readonly string[] _passThroughPropertyNames =
     [
         "NuGetAudit",
@@ -12,8 +14,10 @@ internal static class MSBuildWorkspaceLoadSettings
         "WarningsNotAsErrors"
     ];
 
-    private static readonly Regex _nuGetAuditDiagnosticCodePattern =
-        new(@"\bNU190[1-4]\b", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex _nuGetAuditDiagnosticPattern =
+        new(
+            @"\bNU190[1-4]\b|Package '[^']+'.* has a known [^,]+ vulnerability, https://github\.com/advisories/",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     private static readonly Regex _commandLinePropertySeparatorPattern =
         new(@"(?<=[^%])[;,](?=[A-Za-z_][A-Za-z0-9_.-]*=)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -31,16 +35,12 @@ internal static class MSBuildWorkspaceLoadSettings
         IEnumerable<string>? commandLineArgs = null)
     {
         getEnvironmentVariable ??= Environment.GetEnvironmentVariable;
-        commandLineArgs ??= Environment.GetCommandLineArgs().Skip(1);
+        commandLineArgs ??= [];
 
-        var properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["CheckForSystemRuntimeDependency"] = "true",
-            ["DesignTimeBuild"] = "true",
-            ["BuildingInsideVisualStudio"] = "true"
-        };
+        var properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         MergeKnownEnvironmentProperties(properties, getEnvironmentVariable);
+        MergeNuGetRestoreMsbuildArgsProperties(properties, getEnvironmentVariable);
         MergeCommandLineProperties(properties, commandLineArgs);
 
         return properties;
@@ -53,7 +53,7 @@ internal static class MSBuildWorkspaceLoadSettings
 
     internal static bool IsIgnorableFailure(WorkspaceDiagnostic diagnostic) =>
         diagnostic.Kind == WorkspaceDiagnosticKind.Failure &&
-        _nuGetAuditDiagnosticCodePattern.IsMatch(diagnostic.Message);
+        _nuGetAuditDiagnosticPattern.IsMatch(diagnostic.Message);
 
     private static void MergeKnownEnvironmentProperties(
         IDictionary<string, string> properties,
@@ -67,6 +67,19 @@ internal static class MSBuildWorkspaceLoadSettings
                 properties[propertyName] = value.Trim();
             }
         }
+    }
+
+    private static void MergeNuGetRestoreMsbuildArgsProperties(
+        Dictionary<string, string> properties,
+        Func<string, string?> getEnvironmentVariable)
+    {
+        var restoreMsbuildArgs = getEnvironmentVariable(_nuGetRestoreMsbuildArgsEnvironmentVariableName);
+        if (string.IsNullOrWhiteSpace(restoreMsbuildArgs))
+        {
+            return;
+        }
+
+        MergeCommandLineProperties(properties, SplitCommandLineArguments(restoreMsbuildArgs));
     }
 
     private static void MergeCommandLineProperties(
@@ -107,6 +120,42 @@ internal static class MSBuildWorkspaceLoadSettings
         }
 
         return properties;
+    }
+
+    private static IEnumerable<string> SplitCommandLineArguments(string commandLine)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine))
+        {
+            yield break;
+        }
+
+        var startIndex = 0;
+        var inQuotes = false;
+
+        for (var index = 0; index < commandLine.Length; index++)
+        {
+            var character = commandLine[index];
+            if (character == '"')
+            {
+                inQuotes = !inQuotes;
+                continue;
+            }
+
+            if (!inQuotes && char.IsWhiteSpace(character))
+            {
+                if (index > startIndex)
+                {
+                    yield return commandLine[startIndex..index];
+                }
+
+                startIndex = index + 1;
+            }
+        }
+
+        if (startIndex < commandLine.Length)
+        {
+            yield return commandLine[startIndex..];
+        }
     }
 
     private static bool TryGetPropertySwitchPayload(string argument, out string payload)

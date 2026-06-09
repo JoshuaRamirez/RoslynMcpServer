@@ -75,7 +75,7 @@ Console.CancelKeyPress += (_, e) =>
 
 try
 {
-    var workspaceProvider = new MSBuildWorkspaceProvider();
+    var workspaceProvider = new MSBuildWorkspaceProvider(args);
 
     // Special handling for diagnose (needs IWorkspaceProvider, not WorkspaceContext)
     if (parsed.ToolName.Equals("diagnose", StringComparison.OrdinalIgnoreCase))
