@@ -81,13 +81,7 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
 
         LogCallback?.Invoke($"Creating workspace for: {projectOrSolutionPath}");
 
-        var properties = new Dictionary<string, string>
-        {
-            ["CheckForSystemRuntimeDependency"] = "true",
-            ["DesignTimeBuild"] = "true",
-            ["BuildingInsideVisualStudio"] = "true"
-        };
-
+        var properties = MSBuildWorkspaceLoadSettings.BuildGlobalProperties();
         var workspace = MSBuildWorkspace.Create(properties);
 
         // Collect workspace diagnostics but don't fail on warnings
@@ -95,7 +89,11 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
         var diagnostics = new ConcurrentBag<WorkspaceDiagnostic>();
         workspace.RegisterWorkspaceFailedHandler(args =>
         {
-            if (args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
+            if (MSBuildWorkspaceLoadSettings.IsIgnorableFailure(args.Diagnostic))
+            {
+                LogCallback?.Invoke($"Ignoring NuGet audit workspace failure: {args.Diagnostic.Message}");
+            }
+            else if (args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
             {
                 LogErrorCallback?.Invoke($"Workspace failure: {args.Diagnostic.Message}", null);
             }
@@ -143,7 +141,7 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
         }
 
         // Check for critical errors
-        var errors = diagnostics.Where(d => d.Kind == WorkspaceDiagnosticKind.Failure).ToList();
+        var errors = MSBuildWorkspaceLoadSettings.GetFatalDiagnostics(diagnostics);
         if (errors.Count > 0)
         {
             workspace.Dispose();
