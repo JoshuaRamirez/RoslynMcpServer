@@ -1,3 +1,5 @@
+using RoslynMcp.Core.Workspace;
+
 namespace RoslynMcp.Cli;
 
 /// <summary>
@@ -25,6 +27,9 @@ public sealed class ParsedArgs
 
     /// <summary>Whether verbose output is enabled.</summary>
     public bool Verbose { get; init; }
+
+    /// <summary>Workspace loading options derived from global switches.</summary>
+    public WorkspaceLoadOptions WorkspaceLoadOptions { get; init; } = WorkspaceLoadOptions.Default;
 }
 
 /// <summary>
@@ -61,7 +66,7 @@ public static class CliArgs
         {
             var solutionPath = args[0];
             var toolName = args[1];
-            var (options, format, verbose) = ParseOptions(args, startIndex: 2);
+            var (options, format, verbose, workspaceLoadOptions) = ParseOptions(args, startIndex: 2);
 
             // Check for --help among the options
             if (options.ContainsKey("help"))
@@ -76,7 +81,8 @@ public static class CliArgs
                 ToolName = toolName,
                 Options = options,
                 Format = format,
-                Verbose = verbose
+                Verbose = verbose,
+                WorkspaceLoadOptions = workspaceLoadOptions
             };
         }
 
@@ -84,12 +90,13 @@ public static class CliArgs
         return new ParsedArgs { ShowHelp = true };
     }
 
-    private static (Dictionary<string, string> options, string format, bool verbose) ParseOptions(
+    private static (Dictionary<string, string> options, string format, bool verbose, WorkspaceLoadOptions workspaceLoadOptions) ParseOptions(
         string[] args, int startIndex)
     {
         var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var format = "json";
         var verbose = false;
+        var skipUnrecognizedProjects = false;
 
         for (int i = startIndex; i < args.Length; i++)
         {
@@ -118,6 +125,12 @@ public static class CliArgs
                 continue;
             }
 
+            if (key.Equals("skip-unrecognized-projects", StringComparison.OrdinalIgnoreCase))
+            {
+                skipUnrecognizedProjects = true;
+                continue;
+            }
+
             // Tool-specific options
             if (i + 1 < args.Length && !args[i + 1].StartsWith("--"))
             {
@@ -131,7 +144,10 @@ public static class CliArgs
             }
         }
 
-        return (options, format, verbose);
+        return (options, format, verbose, new WorkspaceLoadOptions
+        {
+            SkipUnrecognizedProjects = skipUnrecognizedProjects
+        });
     }
 
     private static bool IsHelpFlag(string arg) =>

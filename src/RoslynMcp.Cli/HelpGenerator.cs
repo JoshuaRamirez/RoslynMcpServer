@@ -19,12 +19,13 @@ public static class HelpGenerator
         sb.AppendLine("roslyn-cli — Standalone CLI for Roslyn-powered C# tools");
         sb.AppendLine();
         sb.AppendLine("USAGE:");
-        sb.AppendLine("  roslyn-cli <solution-path> <tool-name> [--option value ...]");
+        sb.AppendLine("  roslyn-cli <solution-path> <tool-name> [--skip-unrecognized-projects] [--option value ...]");
         sb.AppendLine("  roslyn-cli <tool-name> --help");
         sb.AppendLine("  roslyn-cli --help");
         sb.AppendLine();
         sb.AppendLine("GLOBAL OPTIONS:");
         sb.AppendLine("  --format <json|text>  Output format (default: json)");
+        sb.AppendLine("  --skip-unrecognized-projects  Skip Roslyn unrecognized project load failures");
         sb.AppendLine("  --verbose             Show detailed output");
         sb.AppendLine("  --help, -h            Show this help");
         sb.AppendLine();
@@ -45,7 +46,7 @@ public static class HelpGenerator
         sb.AppendLine("EXAMPLES:");
         sb.AppendLine("  roslyn-cli MySolution.sln rename-symbol --source-file Foo.cs --symbol-name Bar --new-name Baz");
         sb.AppendLine("  roslyn-cli MySolution.sln get-diagnostics --severity-filter Error --format text");
-        sb.AppendLine("  roslyn-cli MySolution.sln diagnose");
+        sb.AppendLine("  roslyn-cli MySolution.sln diagnose --skip-unrecognized-projects");
 
         return sb.ToString();
     }
@@ -60,9 +61,9 @@ public static class HelpGenerator
         sb.AppendLine();
         sb.AppendLine("USAGE:");
         if (tool.RequiresWorkspace)
-            sb.AppendLine($"  roslyn-cli <solution-path> {tool.Name} [--option value ...]");
+            sb.AppendLine($"  roslyn-cli <solution-path> {tool.Name} [--skip-unrecognized-projects] [--option value ...]");
         else
-            sb.AppendLine($"  roslyn-cli <solution-path> {tool.Name} [--option value ...]  (solution is optional)");
+            sb.AppendLine($"  roslyn-cli <solution-path> {tool.Name} [--skip-unrecognized-projects] [--option value ...]  (solution is optional)");
         sb.AppendLine();
 
         var props = tool.ParamsType.GetProperties(BindingFlags.Public | BindingFlags.Instance);

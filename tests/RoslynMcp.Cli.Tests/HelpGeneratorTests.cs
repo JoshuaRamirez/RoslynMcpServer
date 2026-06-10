@@ -12,6 +12,7 @@ public class HelpGeneratorTests
         var help = HelpGenerator.GenerateGlobalHelp(registry);
         Assert.Contains("USAGE:", help);
         Assert.Contains("roslyn-cli", help);
+        Assert.Contains("--skip-unrecognized-projects", help);
     }
 
     [Fact]

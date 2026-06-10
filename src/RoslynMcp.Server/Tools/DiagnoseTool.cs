@@ -99,6 +99,7 @@ public sealed class DiagnoseTool : IToolHandler
                         ProjectCount = context.Solution.Projects.Count(),
                         DocumentCount = context.Solution.Projects.Sum(p => p.Documents.Count())
                     };
+                    warnings.AddRange(context.LoadWarnings);
                 }
                 catch (Exception ex)
                 {

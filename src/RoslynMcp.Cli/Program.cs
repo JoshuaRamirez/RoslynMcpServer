@@ -75,7 +75,7 @@ Console.CancelKeyPress += (_, e) =>
 
 try
 {
-    var workspaceProvider = new MSBuildWorkspaceProvider();
+    var workspaceProvider = new MSBuildWorkspaceProvider(workspaceLoadOptions: parsed.WorkspaceLoadOptions);
 
     // Special handling for diagnose (needs IWorkspaceProvider, not WorkspaceContext)
     if (parsed.ToolName.Equals("diagnose", StringComparison.OrdinalIgnoreCase))
@@ -162,6 +162,7 @@ async Task<DiagnoseResult> ExecuteDiagnoseAsync(
 {
     var envDiag = provider.CheckEnvironment();
     var errors = new List<RefactoringError>();
+    List<string> contextWarnings = [];
 
     if (!envDiag.MsBuildFound)
     {
@@ -187,6 +188,7 @@ async Task<DiagnoseResult> ExecuteDiagnoseAsync(
                 ProjectCount = context.Solution.Projects.Count(),
                 DocumentCount = context.Solution.Projects.Sum(p => p.Documents.Count())
             };
+            contextWarnings.AddRange(context.LoadWarnings);
         }
         catch (Exception ex)
         {
@@ -225,6 +227,8 @@ async Task<DiagnoseResult> ExecuteDiagnoseAsync(
             ? ["move_type_to_file", "move_type_to_namespace", "diagnose"]
             : ["diagnose"],
         Errors = errors,
-        Warnings = []
+        Warnings = !string.IsNullOrEmpty(args.SolutionPath)
+            ? contextWarnings
+            : []
     };
 }

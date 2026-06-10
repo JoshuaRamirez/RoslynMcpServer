@@ -8,6 +8,18 @@ FileLogger.Log($"Process ID: {Environment.ProcessId}");
 FileLogger.Log($"Working directory: {Environment.CurrentDirectory}");
 FileLogger.Log($".NET Version: {Environment.Version}");
 
+ServerStartupOptions startupOptions;
+try
+{
+    startupOptions = ServerArgsParser.Parse(args);
+}
+catch (ArgumentException ex)
+{
+    FileLogger.LogError("Invalid startup arguments.", ex);
+    Console.Error.WriteLine(ex.Message);
+    return;
+}
+
 // Wire up logging callbacks for MSBuildWorkspaceProvider
 MSBuildWorkspaceProvider.LogCallback = FileLogger.Log;
 MSBuildWorkspaceProvider.LogErrorCallback = FileLogger.LogError;
@@ -23,7 +35,7 @@ Console.CancelKeyPress += (_, e) =>
 
 // Create workspace provider
 FileLogger.Log("Creating MSBuildWorkspaceProvider...");
-var workspaceProvider = new MSBuildWorkspaceProvider();
+var workspaceProvider = new MSBuildWorkspaceProvider(workspaceLoadOptions: startupOptions.WorkspaceLoadOptions);
 FileLogger.Log("MSBuildWorkspaceProvider created successfully.");
 
 // Create and run server

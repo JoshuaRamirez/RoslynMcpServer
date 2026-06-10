@@ -129,4 +129,15 @@ public class CliArgsTests
         Assert.Equal("DoStuff", result.Options["new-name"]);
         Assert.Equal("true", result.Options["preview"]);
     }
+
+    [Theory]
+    [InlineData("My.sln")]
+    [InlineData("My.slnx")]
+    public void SkipUnrecognizedProjects_IsParsedAsWorkspaceLoadOption(string solutionFile)
+    {
+        var result = CliArgs.Parse([solutionFile, "diagnose", "--skip-unrecognized-projects"]);
+
+        Assert.True(result.WorkspaceLoadOptions.SkipUnrecognizedProjects);
+        Assert.False(result.Options.ContainsKey("skip-unrecognized-projects"));
+    }
 }

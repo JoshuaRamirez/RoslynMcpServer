@@ -39,6 +39,11 @@ public sealed class WorkspaceContext : IDisposable
     public string LoadedPath { get; }
 
     /// <summary>
+    /// Warnings emitted while the workspace was loading.
+    /// </summary>
+    public IReadOnlyList<string> LoadWarnings { get; }
+
+    /// <summary>
     /// Current workspace state.
     /// </summary>
     public WorkspaceState State { get; private set; }
@@ -47,12 +52,14 @@ public sealed class WorkspaceContext : IDisposable
         MSBuildWorkspace workspace,
         Solution solution,
         string loadedPath,
-        IFileWriter? fileWriter = null)
+        IFileWriter? fileWriter = null,
+        IReadOnlyList<string>? loadWarnings = null)
     {
         _workspace = workspace;
         _solution = solution;
         _fileWriter = fileWriter ?? new AtomicFileWriter();
         LoadedPath = loadedPath;
+        LoadWarnings = loadWarnings ?? [];
         State = WorkspaceState.Ready;
     }
 

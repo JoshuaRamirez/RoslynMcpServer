@@ -35,6 +35,7 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
     public static readonly TimeSpan DefaultWorkspaceLoadTimeout = TimeSpan.FromMinutes(5);
 
     private readonly IFileWriter _fileWriter;
+    private readonly WorkspaceLoadOptions _workspaceLoadOptions;
     private readonly TimeSpan _workspaceLoadTimeout;
 
     /// <summary>
@@ -45,10 +46,15 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
     /// Optional timeout for workspace loading operations.
     /// Defaults to <see cref="DefaultWorkspaceLoadTimeout"/> (5 minutes).
     /// </param>
-    public MSBuildWorkspaceProvider(IFileWriter? fileWriter = null, TimeSpan? workspaceLoadTimeout = null)
+    /// <param name="workspaceLoadOptions">Optional workspace load behavior settings.</param>
+    public MSBuildWorkspaceProvider(
+        IFileWriter? fileWriter = null,
+        TimeSpan? workspaceLoadTimeout = null,
+        WorkspaceLoadOptions? workspaceLoadOptions = null)
     {
         _fileWriter = fileWriter ?? new AtomicFileWriter();
         _workspaceLoadTimeout = workspaceLoadTimeout ?? DefaultWorkspaceLoadTimeout;
+        _workspaceLoadOptions = workspaceLoadOptions ?? WorkspaceLoadOptions.Default;
     }
 
     /// <inheritdoc />
@@ -89,20 +95,12 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
         };
 
         var workspace = MSBuildWorkspace.Create(properties);
+        workspace.SkipUnrecognizedProjects = _workspaceLoadOptions.SkipUnrecognizedProjects;
 
-        // Collect workspace diagnostics but don't fail on warnings
-        // Using ConcurrentBag for thread-safe collection as events may fire from multiple threads
+        // Collect diagnostics and evaluate them after load so skip policy can be applied consistently.
         var diagnostics = new ConcurrentBag<WorkspaceDiagnostic>();
         workspace.RegisterWorkspaceFailedHandler(args =>
         {
-            if (args.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure)
-            {
-                LogErrorCallback?.Invoke($"Workspace failure: {args.Diagnostic.Message}", null);
-            }
-            else
-            {
-                LogCallback?.Invoke($"Workspace warning: {args.Diagnostic.Message}");
-            }
             diagnostics.Add(args.Diagnostic);
         });
 
@@ -141,18 +139,39 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
                 ErrorCodes.SolutionLoadFailed,
                 errorMsg);
         }
-
-        // Check for critical errors
-        var errors = diagnostics.Where(d => d.Kind == WorkspaceDiagnosticKind.Failure).ToList();
-        if (errors.Count > 0)
+        catch (Exception ex)
         {
             workspace.Dispose();
             throw new RefactoringException(
                 ErrorCodes.SolutionLoadFailed,
-                $"Failed to load solution: {string.Join("; ", errors.Select(e => e.Message))}");
+                $"Failed to load solution: {ex.Message}",
+                ex);
         }
 
-        return new WorkspaceContext(workspace, solution, normalizedPath, _fileWriter);
+        var evaluation = WorkspaceLoadFailureEvaluator.Evaluate(
+            diagnostics,
+            _workspaceLoadOptions,
+            solution.ProjectIds.Count);
+
+        foreach (var warning in evaluation.Warnings)
+        {
+            LogCallback?.Invoke($"Workspace warning: {warning}");
+        }
+
+        foreach (var error in evaluation.Errors)
+        {
+            LogErrorCallback?.Invoke($"Workspace failure: {error}", null);
+        }
+
+        if (evaluation.HasErrors)
+        {
+            workspace.Dispose();
+            throw new RefactoringException(
+                ErrorCodes.SolutionLoadFailed,
+                $"Failed to load solution: {string.Join("; ", evaluation.Errors)}");
+        }
+
+        return new WorkspaceContext(workspace, solution, normalizedPath, _fileWriter, evaluation.Warnings);
     }
 
     /// <inheritdoc />
@@ -164,6 +183,18 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
 
             if (instances.Length == 0)
             {
+                var sdkPath = FindDotNetSdk();
+                if (sdkPath != null)
+                {
+                    return new EnvironmentDiagnostics
+                    {
+                        MsBuildFound = true,
+                        MsBuildPath = sdkPath,
+                        DotnetSdkVersion = Environment.Version.ToString(),
+                        SearchPaths = [sdkPath]
+                    };
+                }
+
                 return new EnvironmentDiagnostics
                 {
                     MsBuildFound = false,
