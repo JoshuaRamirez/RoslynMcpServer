@@ -7,11 +7,21 @@ internal static class MSBuildWorkspaceLoadSettings
 {
     private const string _nuGetRestoreMsbuildArgsEnvironmentVariableName = "NUGET_RESTORE_MSBUILD_ARGS";
 
+    private static readonly KeyValuePair<string, string>[] _defaultGlobalProperties =
+    [
+        new("DesignTimeBuild", "true"),
+        new("CheckForSystemRuntimeDependency", "true"),
+        new("BuildingInsideVisualStudio", "true")
+    ];
+
     private static readonly string[] _passThroughPropertyNames =
     [
         "NuGetAudit",
         "TreatWarningsAsErrors",
-        "WarningsNotAsErrors"
+        "WarningsNotAsErrors",
+        "DesignTimeBuild",
+        "CheckForSystemRuntimeDependency",
+        "BuildingInsideVisualStudio"
     ];
 
     private static readonly Regex _nuGetAuditDiagnosticPattern =
@@ -37,7 +47,12 @@ internal static class MSBuildWorkspaceLoadSettings
         getEnvironmentVariable ??= Environment.GetEnvironmentVariable;
         commandLineArgs ??= [];
 
-        var properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var properties = new Dictionary<string, string>(_defaultGlobalProperties.Length, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (name, value) in _defaultGlobalProperties)
+        {
+            properties[name] = value;
+        }
 
         MergeKnownEnvironmentProperties(properties, getEnvironmentVariable);
         MergeNuGetRestoreMsbuildArgsProperties(properties, getEnvironmentVariable);

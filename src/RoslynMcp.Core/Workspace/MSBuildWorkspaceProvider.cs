@@ -90,10 +90,7 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
         LogCallback?.Invoke($"Creating workspace for: {projectOrSolutionPath}");
 
         var properties = GetGlobalProperties();
-        LogCallback?.Invoke(
-            properties.Count == 0
-                ? "MSBuild global properties: none"
-                : $"MSBuild global properties: {string.Join(", ", properties.Select(kvp => $"{kvp.Key}={kvp.Value}"))}");
+        LogCallback?.Invoke(DescribeGlobalProperties(properties));
         var workspace = MSBuildWorkspace.Create(properties);
 
         // Collect workspace diagnostics but don't fail on warnings
@@ -168,6 +165,11 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
     internal Dictionary<string, string> GetGlobalProperties(
         Func<string, string?>? getEnvironmentVariable = null) =>
         MSBuildWorkspaceLoadSettings.BuildGlobalProperties(getEnvironmentVariable, _commandLineArgs);
+
+    internal static string DescribeGlobalProperties(IReadOnlyDictionary<string, string> properties) =>
+        properties.Count == 0
+            ? "MSBuild global properties: none"
+            : $"MSBuild global properties: {string.Join(", ", properties.Keys.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))}";
 
     /// <inheritdoc />
     public EnvironmentDiagnostics CheckEnvironment()

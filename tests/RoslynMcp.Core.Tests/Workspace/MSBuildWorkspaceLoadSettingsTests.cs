@@ -20,19 +20,25 @@ public class MSBuildWorkspaceLoadSettingsTests
             name => environment.TryGetValue(name, out var value) ? value : null,
             []);
 
+        Assert.Equal("true", properties["DesignTimeBuild"]);
+        Assert.Equal("true", properties["CheckForSystemRuntimeDependency"]);
+        Assert.Equal("true", properties["BuildingInsideVisualStudio"]);
         Assert.Equal("false", properties["NuGetAudit"]);
         Assert.Equal("false", properties["TreatWarningsAsErrors"]);
         Assert.Equal("CS1591", properties["WarningsNotAsErrors"]);
     }
 
     [Fact]
-    public void BuildGlobalProperties_WithoutInputs_ReturnsEmpty()
+    public void BuildGlobalProperties_WithoutInputs_ReturnsBuiltInDefaults()
     {
         var properties = MSBuildWorkspaceLoadSettings.BuildGlobalProperties(
             _ => null,
             []);
 
-        Assert.Empty(properties);
+        Assert.Equal("true", properties["DesignTimeBuild"]);
+        Assert.Equal("true", properties["CheckForSystemRuntimeDependency"]);
+        Assert.Equal("true", properties["BuildingInsideVisualStudio"]);
+        Assert.Equal(3, properties.Count);
     }
 
     [Fact]
@@ -85,6 +91,9 @@ public class MSBuildWorkspaceLoadSettingsTests
             _ => null,
             ["-p:NuGetAudit=false", "/property:WarningsNotAsErrors=NU1901;NU1902;NU1903;NU1904", "-p:TreatWarningsAsErrors=false"]);
 
+        Assert.Equal("true", properties["DesignTimeBuild"]);
+        Assert.Equal("true", properties["CheckForSystemRuntimeDependency"]);
+        Assert.Equal("true", properties["BuildingInsideVisualStudio"]);
         Assert.Equal("false", properties["NuGetAudit"]);
         Assert.Equal("false", properties["TreatWarningsAsErrors"]);
         Assert.Equal("NU1901;NU1902;NU1903;NU1904", properties["WarningsNotAsErrors"]);
@@ -103,9 +112,31 @@ public class MSBuildWorkspaceLoadSettingsTests
             name => environment.TryGetValue(name, out var value) ? value : null,
             []);
 
+        Assert.Equal("true", properties["DesignTimeBuild"]);
+        Assert.Equal("true", properties["CheckForSystemRuntimeDependency"]);
+        Assert.Equal("true", properties["BuildingInsideVisualStudio"]);
         Assert.Equal("false", properties["NuGetAudit"]);
         Assert.Equal("false", properties["TreatWarningsAsErrors"]);
         Assert.Equal("NU1901;NU1902;NU1903;NU1904", properties["WarningsNotAsErrors"]);
+    }
+
+    [Fact]
+    public void BuildGlobalProperties_EnvironmentPropertiesOverrideBuiltInDefaults()
+    {
+        var environment = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["DesignTimeBuild"] = "false",
+            ["CheckForSystemRuntimeDependency"] = "false",
+            ["BuildingInsideVisualStudio"] = "false"
+        };
+
+        var properties = MSBuildWorkspaceLoadSettings.BuildGlobalProperties(
+            name => environment.TryGetValue(name, out var value) ? value : null,
+            []);
+
+        Assert.Equal("false", properties["DesignTimeBuild"]);
+        Assert.Equal("false", properties["CheckForSystemRuntimeDependency"]);
+        Assert.Equal("false", properties["BuildingInsideVisualStudio"]);
     }
 
     [Fact]
@@ -114,14 +145,16 @@ public class MSBuildWorkspaceLoadSettingsTests
         var environment = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
         {
             ["NuGetAudit"] = "true",
-            ["WarningsNotAsErrors"] = "CS1591"
+            ["WarningsNotAsErrors"] = "CS1591",
+            ["DesignTimeBuild"] = "false"
         };
 
         var properties = MSBuildWorkspaceLoadSettings.BuildGlobalProperties(
             name => environment.TryGetValue(name, out var value) ? value : null,
-            ["-p:NuGetAudit=false;WarningsNotAsErrors=NU1901;NU1902;NU1903;NU1904"]);
+            ["-p:NuGetAudit=false;WarningsNotAsErrors=NU1901;NU1902;NU1903;NU1904;DesignTimeBuild=true"]);
 
         Assert.Equal("false", properties["NuGetAudit"]);
         Assert.Equal("NU1901;NU1902;NU1903;NU1904", properties["WarningsNotAsErrors"]);
+        Assert.Equal("true", properties["DesignTimeBuild"]);
     }
 }
