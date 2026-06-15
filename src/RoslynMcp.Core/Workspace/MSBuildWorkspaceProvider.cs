@@ -247,26 +247,7 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
     {
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         var sdkBase = Path.Combine(programFiles, "dotnet", "sdk");
-
-        if (!Directory.Exists(sdkBase))
-        {
-            return null;
-        }
-
-        // Find the latest SDK version
-        var sdkVersions = Directory.GetDirectories(sdkBase)
-            .Select(Path.GetFileName)
-            .Where(d => d != null && char.IsDigit(d[0]))
-            .OrderByDescending(v => v)
-            .ToList();
-
-        if (sdkVersions.Count == 0)
-        {
-            return null;
-        }
-
-        var latestSdk = Path.Combine(sdkBase, sdkVersions[0]!);
-        return Directory.Exists(latestSdk) ? latestSdk : null;
+        return DotNetSdkResolver.FindLatestSdkPath(sdkBase);
     }
 
     private static VisualStudioInstance SelectPreferredInstance(VisualStudioInstance[] instances)
