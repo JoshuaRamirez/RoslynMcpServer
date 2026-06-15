@@ -164,11 +164,9 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
 
             if (instances.Length == 0)
             {
-                return new EnvironmentDiagnostics
-                {
-                    MsBuildFound = false,
-                    ErrorMessage = "MSBuild not found. Install Visual Studio, Build Tools, or .NET SDK."
-                };
+                return CreateEnvironmentDiagnosticsForNoInstances(
+                    FindDotNetSdk(),
+                    Environment.Version.ToString());
             }
 
             var preferred = SelectPreferredInstance(instances);
@@ -190,6 +188,28 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
                 ErrorMessage = ex.Message
             };
         }
+    }
+
+    internal static EnvironmentDiagnostics CreateEnvironmentDiagnosticsForNoInstances(
+        string? sdkPath,
+        string dotnetSdkVersion)
+    {
+        if (!string.IsNullOrEmpty(sdkPath))
+        {
+            return new EnvironmentDiagnostics
+            {
+                MsBuildFound = true,
+                MsBuildPath = sdkPath,
+                DotnetSdkVersion = dotnetSdkVersion,
+                SearchPaths = [sdkPath]
+            };
+        }
+
+        return new EnvironmentDiagnostics
+        {
+            MsBuildFound = false,
+            ErrorMessage = "MSBuild not found. Install Visual Studio, Build Tools, or .NET SDK."
+        };
     }
 
     private static void EnsureMsBuildRegistered()
