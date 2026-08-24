@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RoslynMcp.Server.Tests.TestHelpers;
 using RoslynMcp.Server.Tools;
 using RoslynMcp.Server.Transport;
 using Xunit;
@@ -15,7 +16,7 @@ public class AddMissingUsingsToolTests
 
     public AddMissingUsingsToolTests()
     {
-        _tool = new AddMissingUsingsTool(null!);
+        _tool = new AddMissingUsingsTool(new ThrowingWorkspaceProvider());
     }
 
     #region GetDefinition Tests

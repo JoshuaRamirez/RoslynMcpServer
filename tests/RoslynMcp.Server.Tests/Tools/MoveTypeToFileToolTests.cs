@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RoslynMcp.Server.Tests.TestHelpers;
 using RoslynMcp.Server.Tools;
 using RoslynMcp.Server.Transport;
 using Xunit;
@@ -15,8 +16,8 @@ public class MoveTypeToFileToolTests
 
     public MoveTypeToFileToolTests()
     {
-        // Use a null workspace provider since we're only testing argument validation
-        _tool = new MoveTypeToFileTool(null!);
+        // Fails loudly if workspace creation is attempted; argument validation is exercised via ExecuteAsync error paths.
+        _tool = new MoveTypeToFileTool(new ThrowingWorkspaceProvider());
     }
 
     #region GetDefinition Tests
