@@ -38,4 +38,8 @@
     <ProjectReference Include="..\RoslynMcp.Contracts\RoslynMcp.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="RoslynMcp.Core.Tests" />
+  </ItemGroup>
+
 </Project>

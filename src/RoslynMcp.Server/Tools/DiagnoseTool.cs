@@ -12,14 +12,18 @@ namespace RoslynMcp.Server.Tools;
 public sealed class DiagnoseTool : IToolHandler
 {
     private readonly IWorkspaceProvider _workspaceProvider;
+    private readonly Func<IReadOnlyList<string>> _capabilityProvider;
     private readonly JsonSerializerOptions _jsonOptions;
 
     /// <summary>
     /// Creates a new diagnose tool.
     /// </summary>
-    public DiagnoseTool(IWorkspaceProvider workspaceProvider)
+    public DiagnoseTool(
+        IWorkspaceProvider workspaceProvider,
+        Func<IReadOnlyList<string>>? capabilityProvider = null)
     {
         _workspaceProvider = workspaceProvider;
+        _capabilityProvider = capabilityProvider ?? (() => new[] { Name });
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -121,10 +125,6 @@ public sealed class DiagnoseTool : IToolHandler
                 };
             }
 
-            var capabilities = envDiag.MsBuildFound
-                ? new[] { "move_type_to_file", "move_type_to_namespace", "diagnose" }
-                : new[] { "diagnose" };
-
             var result = new DiagnoseResult
             {
                 Healthy = envDiag.MsBuildFound && errors.Count == 0,
@@ -138,7 +138,7 @@ public sealed class DiagnoseTool : IToolHandler
                     DotnetSdkVersion = envDiag.DotnetSdkVersion
                 },
                 Workspace = workspaceStatus,
-                Capabilities = capabilities,
+                Capabilities = _capabilityProvider(),
                 Errors = errors,
                 Warnings = warnings
             };

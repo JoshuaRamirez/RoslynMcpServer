@@ -16,6 +16,7 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
     private static bool _msBuildRegistered;
     private static readonly object _registrationLock = new();
     private static VisualStudioInstance? _registeredInstance;
+    private static DotNetSdkInfo? _registeredSdk;
 
     /// <summary>
     /// Optional logging callback for diagnostics.
@@ -164,6 +165,19 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
 
             if (instances.Length == 0)
             {
+                var fallbackSdk = _registeredSdk ?? DotNetSdkResolver.FindLatest();
+                if (fallbackSdk != null)
+                {
+                    return new EnvironmentDiagnostics
+                    {
+                        MsBuildFound = true,
+                        MsBuildVersion = fallbackSdk.Version,
+                        MsBuildPath = fallbackSdk.Path,
+                        DotnetSdkVersion = fallbackSdk.Version,
+                        SearchPaths = new[] { fallbackSdk.Path }
+                    };
+                }
+
                 return new EnvironmentDiagnostics
                 {
                     MsBuildFound = false,
@@ -172,13 +186,16 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
             }
 
             var preferred = SelectPreferredInstance(instances);
+            var detectedSdk = preferred.DiscoveryType == DiscoveryType.DotNetSdk
+                ? new DotNetSdkInfo(preferred.Version.ToString(), preferred.MSBuildPath)
+                : DotNetSdkResolver.FindLatest();
 
             return new EnvironmentDiagnostics
             {
                 MsBuildFound = true,
                 MsBuildVersion = preferred.Version.ToString(),
                 MsBuildPath = preferred.MSBuildPath,
-                DotnetSdkVersion = Environment.Version.ToString(),
+                DotnetSdkVersion = detectedSdk?.Version,
                 SearchPaths = instances.Select(i => i.MSBuildPath).ToList()
             };
         }
@@ -216,14 +233,14 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
 
             if (instances.Length == 0)
             {
-                // Try to find .NET SDK manually
                 LogCallback?.Invoke("No instances found, searching for .NET SDK manually...");
-                var sdkPath = FindDotNetSdk();
-                if (sdkPath != null)
+                var sdk = DotNetSdkResolver.FindLatest();
+                if (sdk != null)
                 {
-                    LogCallback?.Invoke($"Found .NET SDK at: {sdkPath}");
-                    MSBuildLocator.RegisterMSBuildPath(sdkPath);
+                    LogCallback?.Invoke($"Found .NET SDK {sdk.Version} at: {sdk.Path}");
+                    MSBuildLocator.RegisterMSBuildPath(sdk.Path);
                     LogCallback?.Invoke("MSBuild registered via .NET SDK path.");
+                    _registeredSdk = sdk;
                     _msBuildRegistered = true;
                     return;
                 }
@@ -241,32 +258,6 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
             LogCallback?.Invoke("MSBuild registered successfully.");
             _msBuildRegistered = true;
         }
-    }
-
-    private static string? FindDotNetSdk()
-    {
-        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        var sdkBase = Path.Combine(programFiles, "dotnet", "sdk");
-
-        if (!Directory.Exists(sdkBase))
-        {
-            return null;
-        }
-
-        // Find the latest SDK version
-        var sdkVersions = Directory.GetDirectories(sdkBase)
-            .Select(Path.GetFileName)
-            .Where(d => d != null && char.IsDigit(d[0]))
-            .OrderByDescending(v => v)
-            .ToList();
-
-        if (sdkVersions.Count == 0)
-        {
-            return null;
-        }
-
-        var latestSdk = Path.Combine(sdkBase, sdkVersions[0]!);
-        return Directory.Exists(latestSdk) ? latestSdk : null;
     }
 
     private static VisualStudioInstance SelectPreferredInstance(VisualStudioInstance[] instances)
