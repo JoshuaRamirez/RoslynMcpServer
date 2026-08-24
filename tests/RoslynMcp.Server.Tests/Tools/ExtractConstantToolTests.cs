@@ -7,16 +7,17 @@ using Xunit;
 namespace RoslynMcp.Server.Tests.Tools;
 
 /// <summary>
-/// Unit tests for ExtractMethodTool.
+/// Unit tests for ExtractConstantTool.
 /// Tests tool definition and argument validation.
 /// </summary>
-public class ExtractMethodToolTests
+public class ExtractConstantToolTests
 {
-    private readonly ExtractMethodTool _tool;
+    private readonly ExtractConstantTool _tool;
 
-    public ExtractMethodToolTests()
+    public ExtractConstantToolTests()
     {
-        _tool = new ExtractMethodTool(new ThrowingWorkspaceProvider());
+        // Fails loudly if workspace creation is attempted; argument validation is exercised via ExecuteAsync error paths.
+        _tool = new ExtractConstantTool(new ThrowingWorkspaceProvider());
     }
 
     #region GetDefinition Tests
@@ -24,7 +25,7 @@ public class ExtractMethodToolTests
     [Fact]
     public void GetDefinition_ReturnsCorrectName()
     {
-        Assert.Equal("extract_method", _tool.Name);
+        Assert.Equal("extract_constant", _tool.Name);
     }
 
     [Fact]
@@ -71,7 +72,7 @@ public class ExtractMethodToolTests
         Assert.Contains("startColumn", requiredFields);
         Assert.Contains("endLine", requiredFields);
         Assert.Contains("endColumn", requiredFields);
-        Assert.Contains("methodName", requiredFields);
+        Assert.Contains("constantName", requiredFields);
     }
 
     [Fact]
@@ -90,16 +91,16 @@ public class ExtractMethodToolTests
         Assert.True(properties.TryGetProperty("startColumn", out _));
         Assert.True(properties.TryGetProperty("endLine", out _));
         Assert.True(properties.TryGetProperty("endColumn", out _));
-        Assert.True(properties.TryGetProperty("methodName", out _));
+        Assert.True(properties.TryGetProperty("constantName", out _));
 
         // Assert - Optional properties
         Assert.True(properties.TryGetProperty("visibility", out _));
-        Assert.True(properties.TryGetProperty("makeStatic", out _));
+        Assert.True(properties.TryGetProperty("replaceAll", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
     }
 
     [Fact]
-    public void GetDefinition_VisibilityProperty_HasEnumValues()
+    public void GetDefinition_VisibilityProperty_HasEnumValuesAndDefault()
     {
         // Act
         var schema = _tool.InputSchema;
@@ -115,9 +116,10 @@ public class ExtractMethodToolTests
             values.Add(v.GetString()!);
         }
         Assert.Contains("private", values);
-        Assert.Contains("internal", values);
         Assert.Contains("protected", values);
+        Assert.Contains("internal", values);
         Assert.Contains("public", values);
+        Assert.Equal("private", visibility.GetProperty("default").GetString());
     }
 
     #endregion
@@ -146,14 +148,14 @@ public class ExtractMethodToolTests
     [Fact]
     public async Task ExecuteAsync_MissingRequiredField_ReturnsError()
     {
-        // Arrange - Missing methodName
+        // Arrange - Missing constantName
         var args = JsonDocument.Parse(@"{
             ""solutionPath"": ""C:/test/test.sln"",
             ""sourceFile"": ""C:/test/Test.cs"",
             ""startLine"": 10,
-            ""startColumn"": 1,
-            ""endLine"": 15,
-            ""endColumn"": 1
+            ""startColumn"": 5,
+            ""endLine"": 10,
+            ""endColumn"": 15
         }").RootElement;
 
         var result = await _tool.ExecuteAsync(args);

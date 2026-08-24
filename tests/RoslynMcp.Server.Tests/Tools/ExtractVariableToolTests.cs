@@ -7,17 +7,17 @@ using Xunit;
 namespace RoslynMcp.Server.Tests.Tools;
 
 /// <summary>
-/// Unit tests for AnalyzeDataFlowTool.
+/// Unit tests for ExtractVariableTool.
 /// Tests tool definition and argument validation.
 /// </summary>
-public class AnalyzeDataFlowToolTests
+public class ExtractVariableToolTests
 {
-    private readonly AnalyzeDataFlowTool _tool;
+    private readonly ExtractVariableTool _tool;
 
-    public AnalyzeDataFlowToolTests()
+    public ExtractVariableToolTests()
     {
         // Fails loudly if workspace creation is attempted; argument validation is exercised via ExecuteAsync error paths.
-        _tool = new AnalyzeDataFlowTool(new ThrowingWorkspaceProvider());
+        _tool = new ExtractVariableTool(new ThrowingWorkspaceProvider());
     }
 
     #region GetDefinition Tests
@@ -25,14 +25,12 @@ public class AnalyzeDataFlowToolTests
     [Fact]
     public void GetDefinition_ReturnsCorrectName()
     {
-        // Assert
-        Assert.Equal("analyze_data_flow", _tool.Name);
+        Assert.Equal("extract_variable", _tool.Name);
     }
 
     [Fact]
     public void GetDefinition_ReturnsNonEmptyDescription()
     {
-        // Assert
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
     }
@@ -61,17 +59,57 @@ public class AnalyzeDataFlowToolTests
         var doc = JsonDocument.Parse(json);
         var required = doc.RootElement.GetProperty("required");
 
-        // Assert
         var requiredFields = new List<string>();
         foreach (var item in required.EnumerateArray())
         {
             requiredFields.Add(item.GetString()!);
         }
 
+        // Assert
         Assert.Contains("solutionPath", requiredFields);
         Assert.Contains("sourceFile", requiredFields);
         Assert.Contains("startLine", requiredFields);
+        Assert.Contains("startColumn", requiredFields);
         Assert.Contains("endLine", requiredFields);
+        Assert.Contains("endColumn", requiredFields);
+        Assert.Contains("variableName", requiredFields);
+    }
+
+    [Fact]
+    public void GetDefinition_HasProperties_ForAllParameters()
+    {
+        // Act
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        // Assert - Required properties
+        Assert.True(properties.TryGetProperty("solutionPath", out _));
+        Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("startLine", out _));
+        Assert.True(properties.TryGetProperty("startColumn", out _));
+        Assert.True(properties.TryGetProperty("endLine", out _));
+        Assert.True(properties.TryGetProperty("endColumn", out _));
+        Assert.True(properties.TryGetProperty("variableName", out _));
+
+        // Assert - Optional properties
+        Assert.True(properties.TryGetProperty("useVar", out _));
+        Assert.True(properties.TryGetProperty("preview", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_UseVarProperty_DefaultsToTrue()
+    {
+        // Act
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var useVar = doc.RootElement.GetProperty("properties").GetProperty("useVar");
+
+        // Assert
+        Assert.Equal("boolean", useVar.GetProperty("type").GetString());
+        Assert.True(useVar.GetProperty("default").GetBoolean());
     }
 
     #endregion
@@ -81,10 +119,8 @@ public class AnalyzeDataFlowToolTests
     [Fact]
     public async Task ExecuteAsync_NullArguments_ReturnsError()
     {
-        // Act
         var result = await _tool.ExecuteAsync(null);
 
-        // Assert
         Assert.True(result.IsError);
         Assert.Contains("Arguments required", GetResultText(result));
     }
@@ -92,14 +128,28 @@ public class AnalyzeDataFlowToolTests
     [Fact]
     public async Task ExecuteAsync_EmptyArguments_ReturnsError()
     {
-        // Arrange
         var args = JsonDocument.Parse("{}").RootElement;
 
-        // Act
         var result = await _tool.ExecuteAsync(args);
 
-        // Assert
-        // The tool will try to deserialize and proceed, but fail when accessing workspace
+        Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MissingRequiredField_ReturnsError()
+    {
+        // Arrange - Missing variableName
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Test.cs"",
+            ""startLine"": 10,
+            ""startColumn"": 5,
+            ""endLine"": 10,
+            ""endColumn"": 20
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
         Assert.True(result.IsError);
     }
 

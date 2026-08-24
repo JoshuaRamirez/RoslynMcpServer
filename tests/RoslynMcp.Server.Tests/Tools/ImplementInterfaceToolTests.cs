@@ -7,16 +7,17 @@ using Xunit;
 namespace RoslynMcp.Server.Tests.Tools;
 
 /// <summary>
-/// Unit tests for ExtractMethodTool.
+/// Unit tests for ImplementInterfaceTool.
 /// Tests tool definition and argument validation.
 /// </summary>
-public class ExtractMethodToolTests
+public class ImplementInterfaceToolTests
 {
-    private readonly ExtractMethodTool _tool;
+    private readonly ImplementInterfaceTool _tool;
 
-    public ExtractMethodToolTests()
+    public ImplementInterfaceToolTests()
     {
-        _tool = new ExtractMethodTool(new ThrowingWorkspaceProvider());
+        // Fails loudly if workspace creation is attempted; argument validation is exercised via ExecuteAsync error paths.
+        _tool = new ImplementInterfaceTool(new ThrowingWorkspaceProvider());
     }
 
     #region GetDefinition Tests
@@ -24,7 +25,7 @@ public class ExtractMethodToolTests
     [Fact]
     public void GetDefinition_ReturnsCorrectName()
     {
-        Assert.Equal("extract_method", _tool.Name);
+        Assert.Equal("implement_interface", _tool.Name);
     }
 
     [Fact]
@@ -67,11 +68,8 @@ public class ExtractMethodToolTests
         // Assert
         Assert.Contains("solutionPath", requiredFields);
         Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("startLine", requiredFields);
-        Assert.Contains("startColumn", requiredFields);
-        Assert.Contains("endLine", requiredFields);
-        Assert.Contains("endColumn", requiredFields);
-        Assert.Contains("methodName", requiredFields);
+        Assert.Contains("typeName", requiredFields);
+        Assert.Contains("interfaceName", requiredFields);
     }
 
     [Fact]
@@ -86,38 +84,42 @@ public class ExtractMethodToolTests
         // Assert - Required properties
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
-        Assert.True(properties.TryGetProperty("startLine", out _));
-        Assert.True(properties.TryGetProperty("startColumn", out _));
-        Assert.True(properties.TryGetProperty("endLine", out _));
-        Assert.True(properties.TryGetProperty("endColumn", out _));
-        Assert.True(properties.TryGetProperty("methodName", out _));
+        Assert.True(properties.TryGetProperty("typeName", out _));
+        Assert.True(properties.TryGetProperty("interfaceName", out _));
 
         // Assert - Optional properties
-        Assert.True(properties.TryGetProperty("visibility", out _));
-        Assert.True(properties.TryGetProperty("makeStatic", out _));
+        Assert.True(properties.TryGetProperty("explicitImplementation", out _));
+        Assert.True(properties.TryGetProperty("members", out _));
+        Assert.True(properties.TryGetProperty("throwNotImplemented", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
     }
 
     [Fact]
-    public void GetDefinition_VisibilityProperty_HasEnumValues()
+    public void GetDefinition_ExplicitImplementationProperty_DefaultsToFalse()
     {
         // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
-        var visibility = doc.RootElement.GetProperty("properties").GetProperty("visibility");
+        var explicitImplementation = doc.RootElement.GetProperty("properties").GetProperty("explicitImplementation");
 
         // Assert
-        Assert.True(visibility.TryGetProperty("enum", out var enumValues));
-        var values = new List<string>();
-        foreach (var v in enumValues.EnumerateArray())
-        {
-            values.Add(v.GetString()!);
-        }
-        Assert.Contains("private", values);
-        Assert.Contains("internal", values);
-        Assert.Contains("protected", values);
-        Assert.Contains("public", values);
+        Assert.Equal("boolean", explicitImplementation.GetProperty("type").GetString());
+        Assert.False(explicitImplementation.GetProperty("default").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_ThrowNotImplementedProperty_DefaultsToTrue()
+    {
+        // Act
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var throwNotImplemented = doc.RootElement.GetProperty("properties").GetProperty("throwNotImplemented");
+
+        // Assert
+        Assert.Equal("boolean", throwNotImplemented.GetProperty("type").GetString());
+        Assert.True(throwNotImplemented.GetProperty("default").GetBoolean());
     }
 
     #endregion
@@ -146,14 +148,11 @@ public class ExtractMethodToolTests
     [Fact]
     public async Task ExecuteAsync_MissingRequiredField_ReturnsError()
     {
-        // Arrange - Missing methodName
+        // Arrange - Missing interfaceName
         var args = JsonDocument.Parse(@"{
             ""solutionPath"": ""C:/test/test.sln"",
             ""sourceFile"": ""C:/test/Test.cs"",
-            ""startLine"": 10,
-            ""startColumn"": 1,
-            ""endLine"": 15,
-            ""endColumn"": 1
+            ""typeName"": ""MyClass""
         }").RootElement;
 
         var result = await _tool.ExecuteAsync(args);
