@@ -171,7 +171,6 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
                     return new EnvironmentDiagnostics
                     {
                         MsBuildFound = true,
-                        MsBuildVersion = fallbackSdk.Version,
                         MsBuildPath = fallbackSdk.Path,
                         DotnetSdkVersion = fallbackSdk.Version,
                         SearchPaths = new[] { fallbackSdk.Path }
@@ -193,7 +192,9 @@ public sealed class MSBuildWorkspaceProvider : IWorkspaceProvider
             return new EnvironmentDiagnostics
             {
                 MsBuildFound = true,
-                MsBuildVersion = preferred.Version.ToString(),
+                MsBuildVersion = preferred.DiscoveryType == DiscoveryType.DotNetSdk
+                    ? null
+                    : preferred.Version.ToString(),
                 MsBuildPath = preferred.MSBuildPath,
                 DotnetSdkVersion = detectedSdk?.Version,
                 SearchPaths = instances.Select(i => i.MSBuildPath).ToList()

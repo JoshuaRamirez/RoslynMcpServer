@@ -46,6 +46,19 @@ public class DotNetSdkResolverTests
     }
 
     [Fact]
+    public void SelectLatest_OrdersPrereleaseIdentifiersNumerically()
+    {
+        var result = DotNetSdkResolver.SelectLatest(new[]
+        {
+            Path.Combine("dotnet", "sdk", "10.0.100-preview.9"),
+            Path.Combine("dotnet", "sdk", "10.0.100-preview.10")
+        });
+
+        Assert.NotNull(result);
+        Assert.Equal("10.0.100-preview.10", result.Version);
+    }
+
+    [Fact]
     public void SelectLatest_IgnoresNonSdkDirectories()
     {
         var result = DotNetSdkResolver.SelectLatest(new[]
