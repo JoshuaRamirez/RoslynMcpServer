@@ -336,8 +336,8 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
     private static TypeSyntax GetOutermostTypeSyntax(TypeSyntax type)
     {
         var current = type;
-        while (current.Parent is NullableTypeSyntax or RefTypeSyntax parent)
-            current = parent;
+        while (current.Parent is NullableTypeSyntax or RefTypeSyntax)
+            current = (TypeSyntax)current.Parent;
         return current;
     }
 
@@ -702,7 +702,53 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         if (member is IMethodSymbol { MethodKind: MethodKind.ReducedExtension })
             return false;
 
-        var container = member.ContainingType;
+        if (IsDeclaredOnHierarchy(member.ContainingType, baseType))
+            return true;
+
+        switch (member)
+        {
+            case IMethodSymbol method:
+                if (method.OverriddenMethod != null && IsAvailableOn(method.OverriddenMethod, baseType))
+                    return true;
+
+                foreach (var implemented in method.ExplicitInterfaceImplementations)
+                {
+                    if (IsAvailableOn(implemented, baseType))
+                        return true;
+                }
+
+                return ImplementsBaseInterfaceMember(method, baseType);
+
+            case IPropertySymbol property:
+                if (property.OverriddenProperty != null && IsAvailableOn(property.OverriddenProperty, baseType))
+                    return true;
+
+                foreach (var implemented in property.ExplicitInterfaceImplementations)
+                {
+                    if (IsAvailableOn(implemented, baseType))
+                        return true;
+                }
+
+                return ImplementsBaseInterfaceMember(property, baseType);
+
+            case IEventSymbol @event:
+                if (@event.OverriddenEvent != null && IsAvailableOn(@event.OverriddenEvent, baseType))
+                    return true;
+
+                foreach (var implemented in @event.ExplicitInterfaceImplementations)
+                {
+                    if (IsAvailableOn(implemented, baseType))
+                        return true;
+                }
+
+                return ImplementsBaseInterfaceMember(@event, baseType);
+        }
+
+        return false;
+    }
+
+    private static bool IsDeclaredOnHierarchy(INamedTypeSymbol? container, INamedTypeSymbol baseType)
+    {
         if (container == null)
             return false;
 
@@ -728,6 +774,31 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
                 SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, container.OriginalDefinition))
             {
                 return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ImplementsBaseInterfaceMember(ISymbol member, INamedTypeSymbol baseType)
+    {
+        var containing = member.ContainingType;
+        if (containing == null)
+            return false;
+
+        foreach (var iface in containing.AllInterfaces)
+        {
+            if (!IsDeclaredOnHierarchy(iface, baseType) &&
+                !SymbolEqualityComparer.Default.Equals(iface, baseType))
+            {
+                continue;
+            }
+
+            foreach (var ifaceMember in iface.GetMembers(member.Name))
+            {
+                var implementation = containing.FindImplementationForInterfaceMember(ifaceMember);
+                if (implementation != null && SymbolEqualityComparer.Default.Equals(implementation, member))
+                    return true;
             }
         }
 
