@@ -415,9 +415,314 @@ public class InlineMethodOperationTests
         Assert.Equal(ErrorCodes.NoCallSitesFound, ex.ErrorCode);
     }
 
+    [SkippableFact]
+    public async Task InlineMethod_UnbracedIfCall_ReplacesStatementAndRemovesMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private void Log(string message)
+                {
+                    System.Console.WriteLine(message);
+                }
+
+                public void Run(bool flag)
+                {
+                    if (flag)
+                        Log("one");
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineMethodParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Log"
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.DoesNotContain("void Log", text);
+        Assert.Contains(@"System.Console.WriteLine(""one"")", text);
+        Assert.DoesNotContain(@"Log(""one"")", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineMethod_SideEffectArgumentUsedTwice_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private int Next() => 1;
+
+                private int Twice(int value) => value + value;
+
+                public int Run()
+                {
+                    return Twice(Next());
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Twice"
+            }));
+
+        Assert.Equal(ErrorCodes.CannotInlineSideEffects, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task InlineMethod_ForeignReceiver_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private int _value = 1;
+
+                private int GetValue() => _value;
+
+                public int Run()
+                {
+                    var other = new Calculator();
+                    return other.GetValue();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "GetValue"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelection, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task InlineMethod_StatementsBeforeReturnUsedAsExpression_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private int Get()
+                {
+                    System.Console.WriteLine("x");
+                    return 1;
+                }
+
+                public int Run()
+                {
+                    return Get();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Get"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelection, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task InlineMethod_MethodGroupReference_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private int Convert(int value) => value * 2;
+
+                public int Run()
+                {
+                    var items = new[] { 1 };
+                    var projected = System.Linq.Enumerable.Select(items, Convert);
+                    return Convert(3);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Convert"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelection, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task InlineMethod_NestedReturn_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private void Log(string message)
+                {
+                    if (message == null)
+                        return;
+                    System.Console.WriteLine(message);
+                }
+
+                public void Run()
+                {
+                    Log("one");
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineMethodParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Log"
+            }));
+
+        Assert.Equal(ErrorCodes.UnresolvableControlFlow, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task InlineMethod_Overload_RemovesOnlySelectedMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private void Log(string message)
+                {
+                    System.Console.WriteLine(message);
+                }
+
+                private void Log(int value)
+                {
+                    System.Console.WriteLine(value);
+                }
+
+                public void Run()
+                {
+                    Log("one");
+                }
+            }
+            """;
+
+        var methodLine = FindMethodIdentifierLine(source, "Log");
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineMethodParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Log",
+            Line = methodLine
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("void Log(int value)", text);
+        Assert.DoesNotContain("void Log(string message)", text);
+        Assert.Contains(@"System.Console.WriteLine(""one"")", text);
+        Assert.DoesNotContain(@"Log(""one"")", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineMethod_AwaitParent_ParenthesizesBinaryExpression()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private AwaitableInt _left = new AwaitableInt(1);
+                private AwaitableInt _right = new AwaitableInt(2);
+
+                private AwaitableInt Sum() => _left + _right;
+
+                public async System.Threading.Tasks.Task<int> Run()
+                {
+                    return await Sum();
+                }
+            }
+
+            public readonly struct AwaitableInt
+            {
+                public AwaitableInt(int value) => Value = value;
+                public int Value { get; }
+                public System.Runtime.CompilerServices.TaskAwaiter<int> GetAwaiter() =>
+                    System.Threading.Tasks.Task.FromResult(Value).GetAwaiter();
+                public static AwaitableInt operator +(AwaitableInt left, AwaitableInt right) =>
+                    new AwaitableInt(left.Value + right.Value);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineMethodParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Sum"
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("await (_left + _right)", text);
+        Assert.DoesNotContain("await _left + _right", text);
+    }
+
     #endregion
 
     #region Helpers
+
+    private static int FindMethodIdentifierLine(string source, string methodName)
+    {
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var method = tree.GetRoot()
+            .DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .First(node => node.Identifier.Text == methodName);
+        return method.Identifier.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+    }
 
     private static (int Line, int Column) FindInvocationLocation(string source, string invocationText)
     {

@@ -9,6 +9,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Inline;
@@ -21,6 +22,8 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
     private static readonly Regex IdentifierPattern = new(
         @"^[A-Za-z_][A-Za-z0-9_]*$",
         RegexOptions.Compiled);
+
+    private static readonly SyntaxAnnotation TargetMethodAnnotation = new("RoslynMcp.InlineMethod.Target");
 
     /// <summary>
     /// Creates a new inline method operation.
@@ -103,6 +106,8 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 ErrorCodes.NoCallSitesFound,
                 $"No call sites found for method '{@params.MethodName}'.");
         }
+
+        await ValidateCallSitesAsync(methodSyntax, methodSymbol, callSites, cancellationToken);
 
         var removeMethod = @params.RemoveMethod && @params.CallSiteLocation == null;
         var newSolution = await ApplyInliningAsync(
@@ -234,6 +239,38 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 ErrorCodes.MethodIsRecursive,
                 $"Recursive method '{methodSymbol.Name}' cannot be inlined.");
         }
+
+        if (HasUnsupportedControlFlow(methodSyntax))
+        {
+            throw new RefactoringException(
+                ErrorCodes.UnresolvableControlFlow,
+                $"Method '{methodSymbol.Name}' contains nested return, break, continue, goto, or yield and cannot be inlined.");
+        }
+    }
+
+    private static bool HasUnsupportedControlFlow(MethodDeclarationSyntax methodSyntax)
+    {
+        SyntaxNode? body = methodSyntax.Body ?? (SyntaxNode?)methodSyntax.ExpressionBody;
+        if (body == null)
+            return false;
+
+        foreach (var node in body.DescendantNodes())
+        {
+            if (node is YieldStatementSyntax or GotoStatementSyntax
+                or BreakStatementSyntax or ContinueStatementSyntax)
+            {
+                return true;
+            }
+
+            if (node is ReturnStatementSyntax returnStatement &&
+                methodSyntax.Body != null &&
+                returnStatement.Parent != methodSyntax.Body)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsInterfaceImplementation(IMethodSymbol method)
@@ -304,50 +341,238 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                     continue;
 
                 var node = root.FindNode(location.Location.SourceSpan);
-                var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-                if (invocation == null)
+                if (IsMethodDeclarationReference(node, methodSyntax, declaringDocument, document, location.Location))
                     continue;
+
+                var invocation = FindInvokedCall(node, location.Location.SourceSpan);
+                if (invocation == null)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.InvalidSelection,
+                        $"Method '{methodSymbol.Name}' is used as a method group or non-invocation reference and cannot be inlined.");
+                }
+
+                var model = await document.GetSemanticModelAsync(cancellationToken)
+                    ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not get semantic model.");
+                var invoked = model.GetSymbolInfo(invocation, cancellationToken).Symbol as IMethodSymbol;
+                if (invoked == null ||
+                    !SymbolEqualityComparer.Default.Equals(invoked.OriginalDefinition, methodSymbol.OriginalDefinition))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.InvalidSelection,
+                        $"Method '{methodSymbol.Name}' is used as a method group or non-invocation reference and cannot be inlined.");
+                }
 
                 if (document.Id == declaringDocument.Id && methodSyntax.Span.Contains(invocation.Span))
                     continue;
 
-                callSites.Add(new CallSite(document, invocation));
+                if (@params.CallSiteLocation != null &&
+                    !MatchesCallSiteLocation(document, invocation, @params.CallSiteLocation))
+                {
+                    continue;
+                }
+
+                callSites.Add(new CallSite(document, invocation.Span));
             }
         }
 
-        if (@params.CallSiteLocation != null)
+        return callSites;
+    }
+
+    private static bool IsMethodDeclarationReference(
+        SyntaxNode node,
+        MethodDeclarationSyntax methodSyntax,
+        Document declaringDocument,
+        Document document,
+        Location location)
+    {
+        if (document.Id != declaringDocument.Id)
+            return false;
+
+        if (methodSyntax.Identifier.Span.Contains(location.SourceSpan) ||
+            location.SourceSpan.Contains(methodSyntax.Identifier.Span))
         {
-            var targetPath = PathResolver.NormalizePath(@params.CallSiteLocation.File);
-            callSites = callSites
-                .Where(site =>
-                {
-                    if (PathResolver.NormalizePath(site.Document.FilePath ?? "") != targetPath)
-                        return false;
-
-                    var span = site.Invocation.GetLocation().GetLineSpan();
-                    var startLine = span.StartLinePosition.Line + 1;
-                    var startColumn = span.StartLinePosition.Character + 1;
-                    var endLine = span.EndLinePosition.Line + 1;
-                    var endColumn = span.EndLinePosition.Character + 1;
-                    if (@params.CallSiteLocation.Line < startLine || @params.CallSiteLocation.Line > endLine)
-                        return false;
-
-                    if (startLine == endLine)
-                    {
-                        return @params.CallSiteLocation.Column >= startColumn &&
-                               @params.CallSiteLocation.Column <= endColumn;
-                    }
-
-                    if (@params.CallSiteLocation.Line == startLine)
-                        return @params.CallSiteLocation.Column >= startColumn;
-                    if (@params.CallSiteLocation.Line == endLine)
-                        return @params.CallSiteLocation.Column <= endColumn;
-                    return true;
-                })
-                .ToList();
+            return true;
         }
 
-        return callSites;
+        return node.AncestorsAndSelf().OfType<MethodDeclarationSyntax>()
+            .Any(m => m.Identifier.Span == methodSyntax.Identifier.Span);
+    }
+
+    private static InvocationExpressionSyntax? FindInvokedCall(SyntaxNode node, TextSpan referenceSpan)
+    {
+        var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
+        if (invocation == null)
+            return null;
+
+        var invokedName = invocation.Expression switch
+        {
+            IdentifierNameSyntax identifier => (SyntaxNode)identifier,
+            GenericNameSyntax generic => generic,
+            MemberAccessExpressionSyntax memberAccess => memberAccess.Name,
+            MemberBindingExpressionSyntax memberBinding => memberBinding.Name,
+            _ => invocation.Expression
+        };
+
+        if (invokedName.Span.Contains(referenceSpan) || referenceSpan.Contains(invokedName.Span))
+            return invocation;
+
+        return null;
+    }
+
+    private static bool MatchesCallSiteLocation(
+        Document document,
+        InvocationExpressionSyntax invocation,
+        CallSiteLocation location)
+    {
+        if (PathResolver.NormalizePath(document.FilePath ?? "") != PathResolver.NormalizePath(location.File))
+            return false;
+
+        var span = invocation.GetLocation().GetLineSpan();
+        var startLine = span.StartLinePosition.Line + 1;
+        var startColumn = span.StartLinePosition.Character + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var endColumn = span.EndLinePosition.Character + 1;
+        if (location.Line < startLine || location.Line > endLine)
+            return false;
+
+        if (startLine == endLine)
+        {
+            return location.Column >= startColumn && location.Column <= endColumn;
+        }
+
+        if (location.Line == startLine)
+            return location.Column >= startColumn;
+        if (location.Line == endLine)
+            return location.Column <= endColumn;
+        return true;
+    }
+
+    private static async Task ValidateCallSitesAsync(
+        MethodDeclarationSyntax methodSyntax,
+        IMethodSymbol methodSymbol,
+        IReadOnlyList<CallSite> callSites,
+        CancellationToken cancellationToken)
+    {
+        var usageCounts = CountParameterUsages(methodSyntax, methodSymbol);
+
+        foreach (var site in callSites)
+        {
+            var root = await site.Document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+            var invocation = RematchInvocation(root, site.Span)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Call site disappeared from document.");
+            var model = await site.Document.GetSemanticModelAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not get semantic model.");
+
+            ValidateReceiver(methodSymbol, invocation);
+            ValidateArgumentEvaluation(methodSyntax, methodSymbol, invocation, model, usageCounts);
+        }
+    }
+
+    private static void ValidateReceiver(IMethodSymbol methodSymbol, InvocationExpressionSyntax invocation)
+    {
+        if (methodSymbol.IsStatic)
+            return;
+
+        var receiver = invocation.Expression switch
+        {
+            MemberAccessExpressionSyntax memberAccess => memberAccess.Expression,
+            MemberBindingExpressionSyntax => invocation.Parent,
+            _ => null
+        };
+
+        if (receiver == null || receiver is ThisExpressionSyntax)
+            return;
+
+        throw new RefactoringException(
+            ErrorCodes.InvalidSelection,
+            $"Cannot inline instance method '{methodSymbol.Name}' at a call site with a different receiver.");
+    }
+
+    private static void ValidateArgumentEvaluation(
+        MethodDeclarationSyntax methodSyntax,
+        IMethodSymbol methodSymbol,
+        InvocationExpressionSyntax invocation,
+        SemanticModel model,
+        IReadOnlyDictionary<string, int> usageCounts)
+    {
+        var arguments = MapArguments(methodSyntax, methodSymbol, invocation);
+        foreach (var (parameterName, expression) in arguments)
+        {
+            usageCounts.TryGetValue(parameterName, out var uses);
+            var safe = MemberAnalyzer.IsSafeToInline(expression, model);
+            if (safe)
+                continue;
+
+            if (uses != 1)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CannotInlineSideEffects,
+                    $"Cannot inline method '{methodSymbol.Name}': argument for '{parameterName}' has side effects and is not used exactly once.");
+            }
+        }
+    }
+
+    private static Dictionary<string, ExpressionSyntax> MapArguments(
+        MethodDeclarationSyntax methodSyntax,
+        IMethodSymbol methodSymbol,
+        InvocationExpressionSyntax invocation)
+    {
+        var map = new Dictionary<string, ExpressionSyntax>(StringComparer.Ordinal);
+        var arguments = invocation.ArgumentList.Arguments;
+
+        for (var i = 0; i < methodSymbol.Parameters.Length; i++)
+        {
+            var parameter = methodSymbol.Parameters[i];
+            ArgumentSyntax? argument = null;
+
+            foreach (var candidate in arguments)
+            {
+                if (candidate.NameColon != null &&
+                    candidate.NameColon.Name.Identifier.Text == parameter.Name)
+                {
+                    argument = candidate;
+                    break;
+                }
+            }
+
+            if (argument == null && i < arguments.Count && arguments[i].NameColon == null)
+                argument = arguments[i];
+
+            if (argument != null)
+            {
+                map[parameter.Name] = argument.Expression;
+                continue;
+            }
+
+            var defaultSyntax = methodSyntax.ParameterList.Parameters
+                .FirstOrDefault(p => p.Identifier.Text == parameter.Name)?
+                .Default?.Value;
+
+            if (defaultSyntax != null)
+                map[parameter.Name] = defaultSyntax;
+        }
+
+        return map;
+    }
+
+    private static Dictionary<string, int> CountParameterUsages(
+        MethodDeclarationSyntax methodSyntax,
+        IMethodSymbol methodSymbol)
+    {
+        var counts = methodSymbol.Parameters.ToDictionary(p => p.Name, _ => 0, StringComparer.Ordinal);
+        SyntaxNode? body = methodSyntax.Body ?? (SyntaxNode?)methodSyntax.ExpressionBody;
+        if (body == null)
+            return counts;
+
+        foreach (var identifier in body.DescendantNodes().OfType<IdentifierNameSyntax>())
+        {
+            if (counts.ContainsKey(identifier.Identifier.Text))
+                counts[identifier.Identifier.Text]++;
+        }
+
+        return counts;
     }
 
     private static async Task<Solution> ApplyInliningAsync(
@@ -359,8 +584,17 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         CancellationToken cancellationToken)
     {
         var solution = declaringDocument.Project.Solution;
-        var sitesByDocument = callSites.GroupBy(s => s.Document.Id);
 
+        var declaringRoot = await declaringDocument.GetSyntaxRootAsync(cancellationToken)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+        var currentMethod = RematchMethod(declaringRoot, methodSyntax)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Method declaration disappeared.");
+        declaringRoot = declaringRoot.ReplaceNode(
+            currentMethod,
+            currentMethod.WithAdditionalAnnotations(TargetMethodAnnotation));
+        solution = declaringDocument.WithSyntaxRoot(declaringRoot).Project.Solution;
+
+        var sitesByDocument = callSites.GroupBy(s => s.Document.Id);
         foreach (var group in sitesByDocument)
         {
             var document = solution.GetDocument(group.Key)
@@ -368,14 +602,14 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
             var root = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-            var invocations = group.Select(s => s.Invocation).ToList();
+            var invocations = RematchInvocations(root, group.Select(s => s.Span));
             var rewriter = new InlineCallSiteRewriter(invocations, methodSyntax, methodSymbol);
             var newRoot = rewriter.Visit(root)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to rewrite call sites.");
 
             if (removeMethod && document.Id == declaringDocument.Id)
             {
-                newRoot = RemoveMethodDeclaration(newRoot, methodSyntax.Identifier.Text, methodSyntax.Span);
+                newRoot = RemoveAnnotatedMethod(newRoot, methodSyntax.Identifier.Text);
             }
 
             solution = document.WithSyntaxRoot(newRoot).Project.Solution;
@@ -387,31 +621,60 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Declaring document disappeared from solution.");
             var root = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
-            var newRoot = RemoveMethodDeclaration(root, methodSyntax.Identifier.Text, methodSyntax.Span);
+            var newRoot = RemoveAnnotatedMethod(root, methodSyntax.Identifier.Text);
             solution = document.WithSyntaxRoot(newRoot).Project.Solution;
         }
 
         return solution;
     }
 
-    private static SyntaxNode RemoveMethodDeclaration(SyntaxNode root, string methodName, TextSpan originalSpan)
+    private static MethodDeclarationSyntax? RematchMethod(SyntaxNode root, MethodDeclarationSyntax original)
     {
-        var method = root.DescendantNodes()
+        return root.DescendantNodes()
             .OfType<MethodDeclarationSyntax>()
-            .FirstOrDefault(m => m.Identifier.Text == methodName && m.Span.Start == originalSpan.Start);
+            .FirstOrDefault(m => m.Span == original.Span && m.Identifier.Text == original.Identifier.Text);
+    }
 
-        if (method == null)
+    private static List<InvocationExpressionSyntax> RematchInvocations(SyntaxNode root, IEnumerable<TextSpan> spans)
+    {
+        var spanSet = spans.ToHashSet();
+        return root.DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .Where(invocation => spanSet.Contains(invocation.Span))
+            .ToList();
+    }
+
+    private static InvocationExpressionSyntax? RematchInvocation(SyntaxNode root, TextSpan span)
+    {
+        return root.DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .FirstOrDefault(invocation => invocation.Span == span);
+    }
+
+    private static SyntaxNode RemoveAnnotatedMethod(SyntaxNode root, string methodName)
+    {
+        var annotated = root.GetAnnotatedNodes(TargetMethodAnnotation)
+            .OfType<MethodDeclarationSyntax>()
+            .ToList();
+
+        if (annotated.Count == 1)
         {
-            method = root.DescendantNodes()
-                .OfType<MethodDeclarationSyntax>()
-                .FirstOrDefault(m => m.Identifier.Text == methodName);
+            return root.RemoveNode(annotated[0], SyntaxRemoveOptions.KeepDirectives) ?? root;
         }
 
-        if (method == null)
-            return root;
+        var sameName = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == methodName)
+            .ToList();
 
-        return root.RemoveNode(method, SyntaxRemoveOptions.KeepDirectives)
-            ?? root;
+        if (sameName.Count != 1)
+        {
+            throw new RefactoringException(
+                ErrorCodes.SymbolAmbiguous,
+                $"Could not uniquely identify method '{methodName}' to remove after inlining. Provide a line number to select the overload.");
+        }
+
+        return root.RemoveNode(sameName[0], SyntaxRemoveOptions.KeepDirectives) ?? root;
     }
 
     private static async Task<RefactoringResult> CreatePreviewResultAsync(
@@ -464,7 +727,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
 
-    private sealed record CallSite(Document Document, InvocationExpressionSyntax Invocation);
+    private sealed record CallSite(Document Document, TextSpan Span);
 
     private sealed class InlineCallSiteRewriter : CSharpSyntaxRewriter
     {
@@ -508,12 +771,30 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
             return changed ? node.WithStatements(SyntaxFactory.List(rewritten)) : node;
         }
 
+        public override SyntaxNode? VisitExpressionStatement(ExpressionStatementSyntax node)
+        {
+            if (!TryGetTargetInvocation(node.Expression, out var invocation))
+                return base.VisitExpressionStatement(node);
+
+            // In-block calls are spliced by VisitBlock so multiple statements stay in the caller block.
+            if (node.Parent is BlockSyntax)
+                return node;
+
+            var inlined = CreateInlinedStatements(invocation, node);
+            if (inlined.Count == 0)
+                return SyntaxFactory.Block().WithTriviaFrom(node);
+            if (inlined.Count == 1)
+                return inlined[0];
+
+            return SyntaxFactory.Block(inlined);
+        }
+
         public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
         {
             if (!_targets.Contains(node))
                 return base.VisitInvocationExpression(node);
 
-            // Statement-level void calls are handled in VisitBlock.
+            // Statement-level calls are handled in VisitBlock / VisitExpressionStatement.
             if (node.Parent is ExpressionStatementSyntax)
                 return node;
 
@@ -537,7 +818,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
             InvocationExpressionSyntax invocation,
             ExpressionStatementSyntax originalStatement)
         {
-            var parameterMap = BuildParameterMap(invocation);
+            var parameterMap = MapArguments(_methodSyntax, _methodSymbol, invocation);
             var statements = TransformToStatements(parameterMap);
 
             if (statements.Count == 0)
@@ -566,48 +847,8 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
 
         private ExpressionSyntax CreateInlinedExpression(InvocationExpressionSyntax invocation)
         {
-            var parameterMap = BuildParameterMap(invocation);
+            var parameterMap = MapArguments(_methodSyntax, _methodSymbol, invocation);
             return TransformToExpression(parameterMap);
-        }
-
-        private Dictionary<string, ExpressionSyntax> BuildParameterMap(InvocationExpressionSyntax invocation)
-        {
-            var map = new Dictionary<string, ExpressionSyntax>(StringComparer.Ordinal);
-            var arguments = invocation.ArgumentList.Arguments;
-
-            for (var i = 0; i < _methodSymbol.Parameters.Length; i++)
-            {
-                var parameter = _methodSymbol.Parameters[i];
-                ArgumentSyntax? argument = null;
-
-                foreach (var candidate in arguments)
-                {
-                    if (candidate.NameColon != null &&
-                        candidate.NameColon.Name.Identifier.Text == parameter.Name)
-                    {
-                        argument = candidate;
-                        break;
-                    }
-                }
-
-                if (argument == null && i < arguments.Count && arguments[i].NameColon == null)
-                    argument = arguments[i];
-
-                if (argument != null)
-                {
-                    map[parameter.Name] = argument.Expression;
-                    continue;
-                }
-
-                var defaultSyntax = _methodSyntax.ParameterList.Parameters
-                    .FirstOrDefault(p => p.Identifier.Text == parameter.Name)?
-                    .Default?.Value;
-
-                if (defaultSyntax != null)
-                    map[parameter.Name] = defaultSyntax;
-            }
-
-            return map;
         }
 
         private IReadOnlyList<StatementSyntax> TransformToStatements(
@@ -616,9 +857,6 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
             if (_methodSyntax.ExpressionBody != null)
             {
                 var expression = Substitute(_methodSyntax.ExpressionBody.Expression, parameterMap);
-                if (_methodSymbol.ReturnsVoid)
-                    return new[] { SyntaxFactory.ExpressionStatement(expression) };
-
                 return new[] { SyntaxFactory.ExpressionStatement(expression) };
             }
 
@@ -655,10 +893,6 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
             var body = _methodSyntax.Body
                 ?? throw new RefactoringException(ErrorCodes.MethodHasNoBody, "Method has no body.");
 
-            var returns = body.Statements.OfType<ReturnStatementSyntax>()
-                .Where(r => r.Expression != null)
-                .ToList();
-
             if (body.Statements.Count == 1 &&
                 body.Statements[0] is ReturnStatementSyntax singleReturn &&
                 singleReturn.Expression != null)
@@ -666,14 +900,9 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 return Substitute(singleReturn.Expression, parameterMap);
             }
 
-            if (returns.Count == 1 && body.Statements[^1] == returns[0])
-            {
-                return Substitute(returns[0].Expression!, parameterMap);
-            }
-
             throw new RefactoringException(
                 ErrorCodes.InvalidSelection,
-                $"Cannot inline method '{_methodSymbol.Name}' as an expression; it does not have a single return.");
+                $"Cannot inline method '{_methodSymbol.Name}' as an expression; only a return-only or expression-bodied method is supported.");
         }
 
         private static T Substitute<T>(T node, IReadOnlyDictionary<string, ExpressionSyntax> parameterMap)
@@ -693,7 +922,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
 
             if (parent is BinaryExpressionSyntax or MemberAccessExpressionSyntax or ConditionalExpressionSyntax
                 or PrefixUnaryExpressionSyntax or PostfixUnaryExpressionSyntax or ElementAccessExpressionSyntax
-                or AssignmentExpressionSyntax or CastExpressionSyntax)
+                or AssignmentExpressionSyntax or CastExpressionSyntax or AwaitExpressionSyntax)
             {
                 return SyntaxFactory.ParenthesizedExpression(expression);
             }
@@ -718,7 +947,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
 
             var needsParens = node.Parent is BinaryExpressionSyntax or MemberAccessExpressionSyntax
                 or ConditionalExpressionSyntax or PrefixUnaryExpressionSyntax
-                or ElementAccessExpressionSyntax or AssignmentExpressionSyntax;
+                or ElementAccessExpressionSyntax or AssignmentExpressionSyntax or AwaitExpressionSyntax;
 
             if (needsParens && replacement is BinaryExpressionSyntax or ConditionalExpressionSyntax
                 or AssignmentExpressionSyntax or PrefixUnaryExpressionSyntax)
