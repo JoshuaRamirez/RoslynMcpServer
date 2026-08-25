@@ -38,6 +38,10 @@ public enum RefactoringKind
     /// <summary>Extract expression to constant.</summary>
     ExtractConstant,
 
+    // Inline Operations
+    /// <summary>Inline a method by replacing call sites with the method body.</summary>
+    InlineMethod,
+
     // Generate Operations
     /// <summary>Generate constructor from fields/properties.</summary>
     GenerateConstructor,

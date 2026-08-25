@@ -292,6 +292,18 @@ public static class ErrorCodes
     /// <summary>Cannot inline expression with side effects.</summary>
     public const string CannotInlineSideEffects = "3093";
 
+    /// <summary>Recursive methods cannot be inlined.</summary>
+    public const string MethodIsRecursive = "3094";
+
+    /// <summary>Virtual, override, or abstract methods cannot be inlined.</summary>
+    public const string MethodIsVirtual = "3095";
+
+    /// <summary>Method has no body (abstract, extern, partial declaration, or interface member).</summary>
+    public const string MethodHasNoBody = "3096";
+
+    /// <summary>No call sites found for the method.</summary>
+    public const string NoCallSitesFound = "3097";
+
     // --------------------------------------------
     // Region/Range Errors (3100-3109)
     // --------------------------------------------
