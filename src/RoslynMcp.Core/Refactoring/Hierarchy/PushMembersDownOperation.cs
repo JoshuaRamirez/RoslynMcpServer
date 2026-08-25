@@ -91,6 +91,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
         var leaveAbstract = @params.LeaveAbstract && sourceSymbol.TypeKind != TypeKind.Interface;
         ValidateMembersForPush(members, sourceSymbol, targets, leaveAbstract);
+        await ValidateNoBreakingReferencesAsync(
+            members, sourceSymbol, targets, leaveAbstract, cancellationToken);
 
         var pushedNames = members.Select(m => m.Name).ToList();
         var derivedUpdates = new List<DerivedUpdate>();
@@ -99,7 +101,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         {
             var original = await GetTypeDeclarationAsync(target, cancellationToken);
             var copies = members
-                .Select(member => ConvertForDerived(member.Syntax, target, leaveAbstract))
+                .Select(member => ConvertForDerived(member, sourceSymbol, target, semanticModel, leaveAbstract))
                 .ToList();
             derivedUpdates.Add(new DerivedUpdate(target, original, AddMembersToType(original, copies)));
         }
@@ -358,8 +360,17 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 ImplementsInterfaceMember(member.Symbol, source))
             {
                 throw new RefactoringException(
-                    ErrorCodes.MemberNotInterfaceCompatible,
+                    ErrorCodes.MemberRequiredByContract,
                     $"Member '{member.Name}' implements an interface contract on '{source.Name}' and cannot be removed.");
+            }
+
+            if (source.TypeKind != TypeKind.Interface &&
+                !leaveAbstract &&
+                IsRequiredByAbstractBase(member.Symbol))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MemberRequiredByContract,
+                    $"Member '{member.Name}' is required by an abstract base contract and cannot be removed.");
             }
 
             foreach (var target in targets)
@@ -381,6 +392,98 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
     }
 
+    private async Task ValidateNoBreakingReferencesAsync(
+        IReadOnlyList<PushableMember> members,
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets,
+        bool leaveAbstract,
+        CancellationToken cancellationToken)
+    {
+        if (leaveAbstract || source.TypeKind == TypeKind.Interface)
+            return;
+
+        foreach (var member in members)
+        {
+            var references = await SymbolFinder.FindReferencesAsync(
+                member.Symbol, Context.Solution, cancellationToken);
+
+            foreach (var referenced in references)
+            {
+                foreach (var location in referenced.Locations)
+                {
+                    if (location.IsImplicit || location.Location.SourceTree == null)
+                        continue;
+
+                    if (member.Syntax.SyntaxTree == location.Location.SourceTree &&
+                        member.Syntax.Span.Contains(location.Location.SourceSpan))
+                    {
+                        continue;
+                    }
+
+                    var document = location.Document;
+                    var root = await document.GetSyntaxRootAsync(cancellationToken);
+                    var model = await document.GetSemanticModelAsync(cancellationToken);
+                    if (root == null || model == null)
+                        continue;
+
+                    var node = root.FindNode(location.Location.SourceSpan);
+                    var receiver = GetReceiverType(node, model);
+                    if (WillHaveMemberAfterPush(receiver, targets))
+                        continue;
+
+                    throw new RefactoringException(
+                        ErrorCodes.MemberRequiredByContract,
+                        $"Cannot push '{member.Name}': it is still referenced through '{source.Name}' or a type that will not receive the member.");
+                }
+            }
+        }
+    }
+
+    private static ITypeSymbol? GetReceiverType(SyntaxNode node, SemanticModel model)
+    {
+        var name = node as SimpleNameSyntax ??
+                   node.DescendantNodesAndSelf().OfType<SimpleNameSyntax>().FirstOrDefault();
+
+        if (name?.Parent is MemberAccessExpressionSyntax access && access.Name == name)
+            return model.GetTypeInfo(access.Expression).Type;
+
+        if (name?.Parent is MemberBindingExpressionSyntax &&
+            name.Parent.Parent is ConditionalAccessExpressionSyntax conditional)
+        {
+            return model.GetTypeInfo(conditional.Expression).Type;
+        }
+
+        return model.GetEnclosingSymbol(node.SpanStart)?.ContainingType;
+    }
+
+    private static bool WillHaveMemberAfterPush(ITypeSymbol? receiver, IReadOnlyList<INamedTypeSymbol> targets)
+    {
+        if (receiver is not INamedTypeSymbol type)
+            return false;
+
+        for (var current = type; current != null; current = current.BaseType)
+        {
+            if (targets.Any(target =>
+                    SymbolEqualityComparer.Default.Equals(target, current) ||
+                    SymbolEqualityComparer.Default.Equals(target.OriginalDefinition, current.OriginalDefinition)))
+            {
+                return true;
+            }
+        }
+
+        foreach (var iface in type.AllInterfaces)
+        {
+            if (targets.Any(target =>
+                    SymbolEqualityComparer.Default.Equals(target, iface) ||
+                    SymbolEqualityComparer.Default.Equals(target.OriginalDefinition, iface.OriginalDefinition)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// Returns whether <paramref name="member"/> can be copied onto <paramref name="target"/>.
     /// </summary>
@@ -396,7 +499,30 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     }
 
     private static bool CanBeAbstract(ISymbol member) =>
-        member is IMethodSymbol or IPropertySymbol;
+        !member.IsStatic && member is IMethodSymbol or IPropertySymbol;
+
+    private static bool IsRequiredByAbstractBase(ISymbol member)
+    {
+        if (member is IMethodSymbol method && method.IsOverride)
+        {
+            for (var overridden = method.OverriddenMethod; overridden != null; overridden = overridden.OverriddenMethod)
+            {
+                if (overridden.IsAbstract)
+                    return true;
+            }
+        }
+
+        if (member is IPropertySymbol property && property.IsOverride)
+        {
+            for (var overridden = property.OverriddenProperty; overridden != null; overridden = overridden.OverriddenProperty)
+            {
+                if (overridden.IsAbstract)
+                    return true;
+            }
+        }
+
+        return false;
+    }
 
     private static bool ImplementsInterfaceMember(ISymbol member, INamedTypeSymbol source)
     {
@@ -470,22 +596,125 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     }
 
     private static MemberDeclarationSyntax ConvertForDerived(
-        MemberDeclarationSyntax member,
+        PushableMember member,
+        INamedTypeSymbol source,
         INamedTypeSymbol target,
+        SemanticModel semanticModel,
         bool leaveAbstract)
     {
-        if (target.TypeKind == TypeKind.Interface)
-            return ConvertToInterfaceMember(member);
+        var substituted = SubstituteTypeParameters(member.Syntax, semanticModel, source, target);
+        var isolated = IsolateMemberSyntax(substituted, member.Name);
 
-        return leaveAbstract
-            ? AddOverrideModifier(member)
-            : StripHierarchyModifiers(member);
+        if (target.TypeKind == TypeKind.Interface)
+            return ConvertToInterfaceMember(isolated);
+
+        var converted = leaveAbstract
+            ? AddOverrideModifier(isolated)
+            : StripHierarchyModifiers(isolated);
+
+        if (source.TypeKind == TypeKind.Interface && target.TypeKind != TypeKind.Interface)
+            converted = EnsurePublicAccessibility(converted);
+
+        return converted;
+    }
+
+    private static MemberDeclarationSyntax EnsurePublicAccessibility(MemberDeclarationSyntax member)
+    {
+        if (HasAccessibility(member.Modifiers))
+            return member;
+
+        return member.WithModifiers(
+            member.Modifiers.Insert(0, SyntaxFactory.Token(SyntaxKind.PublicKeyword)));
+    }
+
+    /// <summary>
+    /// Keeps only the requested declarator when a field or event field declares
+    /// multiple variables.
+    /// </summary>
+    internal static MemberDeclarationSyntax IsolateMemberSyntax(MemberDeclarationSyntax syntax, string name)
+    {
+        return syntax switch
+        {
+            FieldDeclarationSyntax field when field.Declaration.Variables.Count > 1 =>
+                field.WithDeclaration(field.Declaration.WithVariables(
+                    SyntaxFactory.SingletonSeparatedList(
+                        field.Declaration.Variables.First(v => v.Identifier.Text == name)))),
+            EventFieldDeclarationSyntax eventField when eventField.Declaration.Variables.Count > 1 =>
+                eventField.WithDeclaration(eventField.Declaration.WithVariables(
+                    SyntaxFactory.SingletonSeparatedList(
+                        eventField.Declaration.Variables.First(v => v.Identifier.Text == name)))),
+            _ => syntax
+        };
+    }
+
+    private static MemberDeclarationSyntax SubstituteTypeParameters(
+        MemberDeclarationSyntax member,
+        SemanticModel semanticModel,
+        INamedTypeSymbol source,
+        INamedTypeSymbol target)
+    {
+        var constructed = GetConstructedBase(source, target);
+        if (constructed == null || constructed.TypeArguments.Length == 0 || source.TypeParameters.Length == 0)
+            return member;
+
+        var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
+        foreach (var identifier in member.DescendantNodes().OfType<IdentifierNameSyntax>())
+        {
+            if (replacements.ContainsKey(identifier))
+                continue;
+
+            if (semanticModel.GetSymbolInfo(identifier).Symbol is not ITypeParameterSymbol typeParameter)
+                continue;
+
+            if (typeParameter.ContainingSymbol is not INamedTypeSymbol containingType)
+                continue;
+
+            if (!SymbolEqualityComparer.Default.Equals(containingType.OriginalDefinition, source.OriginalDefinition))
+                continue;
+
+            var index = -1;
+            for (var i = 0; i < source.TypeParameters.Length; i++)
+            {
+                if (source.TypeParameters[i].Name == typeParameter.Name)
+                {
+                    index = i;
+                    break;
+                }
+            }
+
+            if (index < 0 || index >= constructed.TypeArguments.Length)
+                continue;
+
+            var replacement = SyntaxFactory
+                .ParseTypeName(constructed.TypeArguments[index].ToDisplayString())
+                .WithTriviaFrom(identifier);
+            replacements[identifier] = replacement;
+        }
+
+        return replacements.Count == 0
+            ? member
+            : member.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+    }
+
+    private static INamedTypeSymbol? GetConstructedBase(INamedTypeSymbol source, INamedTypeSymbol target)
+    {
+        for (var current = target.BaseType; current != null; current = current.BaseType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, source.OriginalDefinition))
+                return current;
+        }
+
+        return target.AllInterfaces.FirstOrDefault(iface =>
+            SymbolEqualityComparer.Default.Equals(iface.OriginalDefinition, source.OriginalDefinition));
     }
 
     private static MemberDeclarationSyntax ConvertToInterfaceMember(MemberDeclarationSyntax member)
     {
         return member switch
         {
+            MethodDeclarationSyntax method when HasImplementationBody(method) => method
+                .WithModifiers(SyntaxFactory.TokenList())
+                .NormalizeWhitespace(),
             MethodDeclarationSyntax method => method
                 .WithModifiers(SyntaxFactory.TokenList())
                 .WithBody(null)
@@ -493,6 +722,9 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => ToInterfaceProperty(property),
+            EventDeclarationSyntax eventDecl when eventDecl.AccessorList != null => eventDecl
+                .WithModifiers(SyntaxFactory.TokenList())
+                .NormalizeWhitespace(),
             EventDeclarationSyntax eventDecl => eventDecl
                 .WithModifiers(SyntaxFactory.TokenList())
                 .WithAccessorList(null)
@@ -507,8 +739,20 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         };
     }
 
+    private static bool HasImplementationBody(MethodDeclarationSyntax method) =>
+        method.Body != null || method.ExpressionBody != null;
+
     private static PropertyDeclarationSyntax ToInterfaceProperty(PropertyDeclarationSyntax property)
     {
+        if (property.ExpressionBody != null ||
+            (property.AccessorList?.Accessors.Any(accessor =>
+                accessor.Body != null || accessor.ExpressionBody != null) ?? false))
+        {
+            return property
+                .WithModifiers(SyntaxFactory.TokenList())
+                .NormalizeWhitespace();
+        }
+
         var accessors = new List<AccessorDeclarationSyntax>();
         if (property.AccessorList != null)
         {
@@ -607,39 +851,45 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     private static MemberDeclarationSyntax StripHierarchyModifiers(MemberDeclarationSyntax member)
     {
+        // Keep virtual/override so further descendants continue to dispatch
+        // and compile. Abstract is replaced with a body plus virtual.
         return member switch
         {
-            MethodDeclarationSyntax method => EnsureMethodBody(method
-                    .WithModifiers(StripModifiers(
+            MethodDeclarationSyntax method => EnsureMethodBody(
+                    WithVirtualIfAbstract(method.WithModifiers(StripModifiers(
                         method.Modifiers,
-                        SyntaxKind.VirtualKeyword,
-                        SyntaxKind.OverrideKeyword,
                         SyntaxKind.AbstractKeyword,
                         SyntaxKind.NewKeyword,
-                        SyntaxKind.SealedKeyword)))
+                        SyntaxKind.SealedKeyword)),
+                        method.Modifiers.Any(SyntaxKind.AbstractKeyword)))
                 .NormalizeWhitespace(),
-            PropertyDeclarationSyntax property => property
-                .WithModifiers(StripModifiers(
+            PropertyDeclarationSyntax property =>
+                WithVirtualIfAbstract(property.WithModifiers(StripModifiers(
                     property.Modifiers,
-                    SyntaxKind.VirtualKeyword,
-                    SyntaxKind.OverrideKeyword,
                     SyntaxKind.AbstractKeyword,
                     SyntaxKind.NewKeyword,
-                    SyntaxKind.SealedKeyword))
+                    SyntaxKind.SealedKeyword)),
+                    property.Modifiers.Any(SyntaxKind.AbstractKeyword))
                 .NormalizeWhitespace(),
             FieldDeclarationSyntax field => field.NormalizeWhitespace(),
             EventFieldDeclarationSyntax eventField => eventField.NormalizeWhitespace(),
             EventDeclarationSyntax eventDecl => eventDecl
                 .WithModifiers(StripModifiers(
                     eventDecl.Modifiers,
-                    SyntaxKind.VirtualKeyword,
-                    SyntaxKind.OverrideKeyword,
                     SyntaxKind.AbstractKeyword,
                     SyntaxKind.NewKeyword,
                     SyntaxKind.SealedKeyword))
                 .NormalizeWhitespace(),
             _ => member.NormalizeWhitespace()
         };
+    }
+
+    private static T WithVirtualIfAbstract<T>(T member, bool wasAbstract) where T : MemberDeclarationSyntax
+    {
+        if (!wasAbstract || member.Modifiers.Any(SyntaxKind.VirtualKeyword) || member.Modifiers.Any(SyntaxKind.OverrideKeyword))
+            return member;
+
+        return (T)member.AddModifiers(SyntaxFactory.Token(SyntaxKind.VirtualKeyword));
     }
 
     private static SyntaxTokenList ToAbstractModifiers(SyntaxTokenList modifiers)
@@ -705,14 +955,23 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (source.TypeKind == TypeKind.Interface)
             return sourceDecl;
 
-        var pushedSyntax = members.Select(m => m.Syntax).ToHashSet();
+        var pushedNamesBySyntax = members
+            .GroupBy(member => member.Syntax)
+            .ToDictionary(group => group.Key, group => group.Select(member => member.Name).ToHashSet());
+
         var newMembers = new List<MemberDeclarationSyntax>();
 
         foreach (var member in sourceDecl.Members)
         {
-            if (!pushedSyntax.Contains(member))
+            if (!pushedNamesBySyntax.TryGetValue(member, out var pushedNames))
             {
                 newMembers.Add(member);
+                continue;
+            }
+
+            if (TryKeepRemainingDeclarators(member, pushedNames, out var remaining))
+            {
+                newMembers.Add(remaining);
                 continue;
             }
 
@@ -730,6 +989,43 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
 
         return updated;
+    }
+
+    private static bool TryKeepRemainingDeclarators(
+        MemberDeclarationSyntax member,
+        HashSet<string> pushedNames,
+        out MemberDeclarationSyntax remaining)
+    {
+        remaining = member;
+        switch (member)
+        {
+            case FieldDeclarationSyntax field:
+                {
+                    var keep = field.Declaration.Variables
+                        .Where(variable => !pushedNames.Contains(variable.Identifier.Text))
+                        .ToList();
+                    if (keep.Count == 0)
+                        return false;
+
+                    remaining = field.WithDeclaration(
+                        field.Declaration.WithVariables(SyntaxFactory.SeparatedList(keep)));
+                    return true;
+                }
+            case EventFieldDeclarationSyntax eventField:
+                {
+                    var keep = eventField.Declaration.Variables
+                        .Where(variable => !pushedNames.Contains(variable.Identifier.Text))
+                        .ToList();
+                    if (keep.Count == 0)
+                        return false;
+
+                    remaining = eventField.WithDeclaration(
+                        eventField.Declaration.WithVariables(SyntaxFactory.SeparatedList(keep)));
+                    return true;
+                }
+            default:
+                return false;
+        }
     }
 
     /// <summary>

@@ -380,8 +380,214 @@ public class PushMembersDownOperationTests
 
         var text = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.Contains("Speak", ExtractTypeBody(text, "IAnimal"));
+        Assert.Contains("public", ExtractTypeBody(text, "Dog"));
         Assert.Contains("Speak", ExtractTypeBody(text, "Dog"));
+        Assert.Contains("public", ExtractTypeBody(text, "Cat"));
         Assert.Contains("Speak", ExtractTypeBody(text, "Cat"));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_GenericBase_SubstitutesTypeArguments()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Box<T>
+            {
+                public T GetValue()
+                {
+                    return default;
+                }
+            }
+
+            public class StringBox : Box<string>
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            Members = ["GetValue"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var box = ExtractTypeBody(text, "Box");
+        var stringBox = ExtractTypeBody(text, "StringBox");
+        Assert.DoesNotContain("GetValue", box);
+        Assert.Contains("string GetValue()", stringBox);
+        Assert.DoesNotContain("T GetValue()", stringBox);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_VirtualMember_KeepsVirtualForFurtherOverrides()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual int Speak()
+                {
+                    return 1;
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+
+            public class Puppy : Dog
+            {
+                public override int Speak()
+                {
+                    return 2;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Speak"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var dog = ExtractTypeBody(text, "Dog");
+        var puppy = ExtractTypeBody(text, "Puppy");
+        Assert.DoesNotContain("Speak", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("virtual", dog);
+        Assert.Contains("Speak", dog);
+        Assert.Contains("override", puppy);
+        Assert.Contains("Speak", puppy);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_DefaultInterfaceMethod_KeepsBodyOnDerivedInterface()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IAnimal
+            {
+                int Speak()
+                {
+                    return 1;
+                }
+            }
+
+            public interface IDog : IAnimal
+            {
+            }
+
+            public class Cat : IDog
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "IAnimal",
+            Members = ["Speak"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var derived = ExtractTypeBody(text, "IDog");
+        Assert.Contains("Speak", derived);
+        Assert.Contains("return 1", derived);
+        Assert.DoesNotContain("Speak", ExtractTypeBody(text, "Cat"));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_OneVariableFromMultiField_LeavesSibling()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public int Selected, Untouched;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Selected"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.DoesNotContain("Selected", animal);
+        Assert.Contains("Untouched", animal);
+        Assert.Contains("Selected", dog);
+        Assert.DoesNotContain("Untouched", dog);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_BothVariablesFromMultiField_CopiesEachOnce()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public int Selected, Untouched;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Selected", "Untouched"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.DoesNotContain("Selected", animal);
+        Assert.DoesNotContain("Untouched", animal);
+        Assert.Equal(1, CountOccurrences(dog, "Selected"));
+        Assert.Equal(1, CountOccurrences(dog, "Untouched"));
     }
 
     #endregion
@@ -559,7 +765,7 @@ public class PushMembersDownOperationTests
                 Members = ["Speak"]
             }));
 
-        Assert.Equal(ErrorCodes.MemberNotInterfaceCompatible, ex.ErrorCode);
+        Assert.Equal(ErrorCodes.MemberRequiredByContract, ex.ErrorCode);
     }
 
     [SkippableFact]
@@ -656,6 +862,119 @@ public class PushMembersDownOperationTests
         Assert.Equal(ErrorCodes.MemberNotFound, ex.ErrorCode);
     }
 
+    [SkippableFact]
+    public async Task PushMembersDown_ReferencedThroughBaseType_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public int Speak()
+                {
+                    return 1;
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+
+            public static class Uses
+            {
+                public static int Call(Animal animal)
+                {
+                    return animal.Speak();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Speak"]
+            }));
+
+        Assert.Equal(ErrorCodes.MemberRequiredByContract, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_OverrideRequiredByAbstractBase_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Creature
+            {
+                public abstract int Speak();
+            }
+
+            public class Animal : Creature
+            {
+                public override int Speak()
+                {
+                    return 1;
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Speak"]
+            }));
+
+        Assert.Equal(ErrorCodes.MemberRequiredByContract, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstractOnStatic_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public static int Speak()
+                {
+                    return 1;
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Speak"],
+                LeaveAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+    }
+
     #endregion
 
     #region Helpers
@@ -665,6 +984,20 @@ public class PushMembersDownOperationTests
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        var start = 0;
+        while (true)
+        {
+            var index = text.IndexOf(value, start, StringComparison.Ordinal);
+            if (index < 0)
+                return count;
+            count++;
+            start = index + value.Length;
+        }
+    }
 
     private static string ExtractTypeBody(string source, string typeName)
     {
