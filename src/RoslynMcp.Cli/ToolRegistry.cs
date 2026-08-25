@@ -10,6 +10,7 @@ using RoslynMcp.Core.Refactoring.Encapsulate;
 using RoslynMcp.Core.Refactoring.Extract;
 using RoslynMcp.Core.Refactoring.Format;
 using RoslynMcp.Core.Refactoring.Generate;
+using RoslynMcp.Core.Refactoring.Hierarchy;
 using RoslynMcp.Core.Refactoring.Inline;
 using RoslynMcp.Core.Refactoring.Organize;
 using RoslynMcp.Core.Refactoring.Rename;
@@ -138,7 +139,7 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 42 tools registered.
+    /// Build the default registry with all 43 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
@@ -157,6 +158,8 @@ public sealed class ToolRegistry
             "extract-base-class", "Extract a base class from common members");
         r.RegisterRefactoring<IntroduceParameterOperation, IntroduceParameterParams>(
             "introduce-parameter", "Introduce a method parameter from an expression");
+        r.RegisterRefactoring<PullMembersUpOperation, PullMembersUpParams>(
+            "pull-members-up", "Move selected members from a derived type onto an existing base class or interface");
 
         // ── Refactoring: Rename (1) ───────────────────────────────────
         r.RegisterRefactoring<RenameSymbolOperation, RenameSymbolParams>(

@@ -311,6 +311,28 @@ public static class ErrorCodes
     /// <summary>Start/end line range is invalid for data or control flow analysis.</summary>
     public const string InvalidRegion = "3100";
 
+    // --------------------------------------------
+    // Hierarchy Errors (3105-3110)
+    // --------------------------------------------
+
+    /// <summary>Member depends on derived-only members that are not being pulled.</summary>
+    public const string MemberDependsOnDerived = "3105";
+
+    /// <summary>Target base class is sealed.</summary>
+    public const string BaseClassIsSealed = "3106";
+
+    /// <summary>Type has no base class or interface to pull members to.</summary>
+    public const string NoCommonBase = "3107";
+
+    /// <summary>Member name or signature already exists on the target type.</summary>
+    public const string ConflictsWithExistingMember = "3108";
+
+    /// <summary>Base class or interface is not editable (external assembly).</summary>
+    public const string BaseClassNotEditable = "3109";
+
+    /// <summary>Member cannot be declared on an interface (field, constructor, static, or non-public).</summary>
+    public const string MemberNotInterfaceCompatible = "3110";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

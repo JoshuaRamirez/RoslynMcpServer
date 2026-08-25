@@ -32,6 +32,9 @@ public enum RefactoringKind
     /// <summary>Extract base class from type.</summary>
     ExtractBaseClass,
 
+    /// <summary>Move selected members from a derived type onto an existing base class or interface.</summary>
+    PullMembersUp,
+
     /// <summary>Extract expression to variable.</summary>
     ExtractVariable,
 
