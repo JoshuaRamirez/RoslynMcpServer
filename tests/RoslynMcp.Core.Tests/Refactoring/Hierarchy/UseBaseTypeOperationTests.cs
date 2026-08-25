@@ -814,11 +814,13 @@ public class UseBaseTypeOperationTests
 
             public static class Use
             {
+                public static Dog GetDog() => new Dog();
+
                 public static int Feed()
                 {
-                    Dog dog;
-                    dog = new();
-                    return dog.Eat();
+                    Dog x = GetDog();
+                    x = new();
+                    return x.Eat();
                 }
             }
             """;

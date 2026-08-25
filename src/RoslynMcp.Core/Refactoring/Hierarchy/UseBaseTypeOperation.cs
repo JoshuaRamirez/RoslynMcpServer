@@ -410,11 +410,11 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         if (!CanUseBaseType(derived, baseType))
             return false;
 
-        if (HasTargetTypedNew(candidate.TypeSyntax, candidate.SemanticModel, derived))
-            return false;
-
         var declared = GetDeclaredSymbols(candidate.TypeSyntax, candidate.SemanticModel, cancellationToken);
         if (declared.Count == 0)
+            return false;
+
+        if (HasTargetTypedNew(candidate.TypeSyntax, declared, candidate.SemanticModel, derived))
             return false;
 
         foreach (var symbol in declared)
@@ -431,6 +431,7 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
 
     private static bool HasTargetTypedNew(
         TypeSyntax annotation,
+        IReadOnlyList<ISymbol> declared,
         SemanticModel model,
         INamedTypeSymbol derived)
     {
@@ -442,7 +443,50 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
                 return true;
         }
 
+        return HasTargetTypedNewAssignment(annotation, declared, model, derived);
+    }
+
+    private static bool HasTargetTypedNewAssignment(
+        TypeSyntax annotation,
+        IReadOnlyList<ISymbol> declared,
+        SemanticModel model,
+        INamedTypeSymbol derived)
+    {
+        var scope = GetAssignmentSearchScope(annotation);
+        if (scope == null)
+            return false;
+
+        foreach (var assignment in scope.DescendantNodes().OfType<AssignmentExpressionSyntax>())
+        {
+            if (assignment.Right is not ImplicitObjectCreationExpressionSyntax)
+                continue;
+
+            var left = model.GetSymbolInfo(assignment.Left).Symbol;
+            if (left == null || declared.All(symbol => !SymbolEqualityComparer.Default.Equals(symbol, left)))
+                continue;
+
+            var converted = model.GetTypeInfo(assignment.Right).ConvertedType;
+            if (converted != null && IsSameOrConstructed(converted, derived))
+                return true;
+        }
+
         return false;
+    }
+
+    private static SyntaxNode? GetAssignmentSearchScope(TypeSyntax annotation)
+    {
+        var outermost = GetOutermostTypeSyntax(annotation);
+        return outermost.Parent switch
+        {
+            VariableDeclarationSyntax or ParameterSyntax =>
+                outermost.FirstAncestorOrSelf<MethodDeclarationSyntax>() as SyntaxNode
+                ?? outermost.FirstAncestorOrSelf<LocalFunctionStatementSyntax>()
+                ?? outermost.FirstAncestorOrSelf<AccessorDeclarationSyntax>()
+                ?? outermost.FirstAncestorOrSelf<ConstructorDeclarationSyntax>(),
+            PropertyDeclarationSyntax or EventDeclarationSyntax or FieldDeclarationSyntax =>
+                outermost.FirstAncestorOrSelf<TypeDeclarationSyntax>(),
+            _ => outermost.FirstAncestorOrSelf<TypeDeclarationSyntax>()
+        };
     }
 
     private static IEnumerable<ImplicitObjectCreationExpressionSyntax> EnumerateInferredCreations(SyntaxNode? parent)
