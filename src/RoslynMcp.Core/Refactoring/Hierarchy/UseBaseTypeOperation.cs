@@ -62,7 +62,7 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var derivedDecl = FindTypeDeclaration(root, @params.TypeName);
+        var derivedDecl = FindTypeDeclaration(root, semanticModel, @params.TypeName, cancellationToken);
         if (derivedDecl == null)
         {
             throw new RefactoringException(
@@ -96,11 +96,12 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
                 continue;
             }
 
+            var constructed = GetConstructedTarget(target, candidate.TypeSyntax, candidate.SemanticModel);
             rewrites.Add(new RewritableReference(
                 candidate.Document,
                 candidate.TypeSyntax,
-                CreateBaseTypeReference(target, candidate.TypeSyntax),
-                target));
+                CreateBaseTypeReference(constructed, candidate.TypeSyntax, candidate.SemanticModel),
+                constructed));
         }
 
         if (rewrites.Count == 0)
@@ -140,15 +141,59 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
             0);
     }
 
-    private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName)
+    private static TypeDeclarationSyntax? FindTypeDeclaration(
+        SyntaxNode root,
+        SemanticModel model,
+        string typeName,
+        CancellationToken cancellationToken)
     {
         var simpleName = typeName.Contains('.')
             ? typeName[(typeName.LastIndexOf('.') + 1)..]
             : typeName;
 
-        return root.DescendantNodes()
+        var matches = root.DescendantNodes()
             .OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault(t => t.Identifier.Text == simpleName);
+            .Where(type => type.Identifier.Text == simpleName)
+            .ToList();
+
+        if (matches.Count == 0)
+            return null;
+
+        if (!typeName.Contains('.') || matches.Count == 1)
+            return matches[0];
+
+        foreach (var match in matches)
+        {
+            if (model.GetDeclaredSymbol(match, cancellationToken) is not INamedTypeSymbol symbol)
+                continue;
+
+            if (TypeNameMatches(symbol, typeName))
+                return match;
+        }
+
+        return null;
+    }
+
+    internal static bool TypeNameMatches(INamedTypeSymbol symbol, string typeName)
+    {
+        if (symbol.Name.Equals(typeName, StringComparison.Ordinal) ||
+            symbol.ToDisplayString().Equals(typeName, StringComparison.Ordinal) ||
+            symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
+                .Equals(typeName, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var metadata = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat
+            .WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.Omitted));
+        if (metadata.Equals(typeName, StringComparison.Ordinal))
+            return true;
+
+        var containing = symbol.ContainingNamespace?.ToDisplayString();
+        if (string.IsNullOrWhiteSpace(containing) || symbol.ContainingNamespace!.IsGlobalNamespace)
+            return false;
+
+        return $"{containing}.{symbol.Name}".Equals(typeName, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -362,7 +407,7 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         if (!CanUseBaseType(derived, baseType))
             return false;
 
-        if (HasTargetTypedNew(candidate.TypeSyntax))
+        if (HasTargetTypedNew(candidate.TypeSyntax, candidate.SemanticModel, derived))
             return false;
 
         var declared = GetDeclaredSymbols(candidate.TypeSyntax, candidate.SemanticModel, cancellationToken);
@@ -381,18 +426,95 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         return true;
     }
 
-    private static bool HasTargetTypedNew(TypeSyntax annotation)
+    private static bool HasTargetTypedNew(
+        TypeSyntax annotation,
+        SemanticModel model,
+        INamedTypeSymbol derived)
     {
         var outermost = GetOutermostTypeSyntax(annotation);
-        return outermost.Parent switch
+        foreach (var creation in EnumerateInferredCreations(outermost.Parent))
         {
-            VariableDeclarationSyntax variables =>
-                variables.Variables.Any(variable =>
-                    variable.Initializer?.Value is ImplicitObjectCreationExpressionSyntax),
-            PropertyDeclarationSyntax property =>
-                property.Initializer?.Value is ImplicitObjectCreationExpressionSyntax,
-            _ => false
-        };
+            var converted = model.GetTypeInfo(creation).ConvertedType;
+            if (converted != null && IsSameOrConstructed(converted, derived))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<ImplicitObjectCreationExpressionSyntax> EnumerateInferredCreations(SyntaxNode? parent)
+    {
+        switch (parent)
+        {
+            case VariableDeclarationSyntax variables:
+                foreach (var variable in variables.Variables)
+                {
+                    if (variable.Initializer?.Value is ImplicitObjectCreationExpressionSyntax creation)
+                        yield return creation;
+                }
+
+                break;
+            case PropertyDeclarationSyntax property:
+                if (property.Initializer?.Value is ImplicitObjectCreationExpressionSyntax propertyCreation)
+                    yield return propertyCreation;
+                foreach (var creation in EnumerateReturnCreations(property.ExpressionBody, GetAccessorBodies(property)))
+                    yield return creation;
+                break;
+            case MethodDeclarationSyntax method:
+                foreach (var creation in EnumerateReturnCreations(method.ExpressionBody, method.Body))
+                    yield return creation;
+                break;
+            case LocalFunctionStatementSyntax localFunction:
+                foreach (var creation in EnumerateReturnCreations(localFunction.ExpressionBody, localFunction.Body))
+                    yield return creation;
+                break;
+        }
+    }
+
+    private static IEnumerable<BlockSyntax?> GetAccessorBodies(PropertyDeclarationSyntax property)
+    {
+        if (property.AccessorList == null)
+            yield break;
+
+        foreach (var accessor in property.AccessorList.Accessors)
+            yield return accessor.Body;
+    }
+
+    private static IEnumerable<ImplicitObjectCreationExpressionSyntax> EnumerateReturnCreations(
+        ArrowExpressionClauseSyntax? expressionBody,
+        BlockSyntax? body)
+    {
+        if (expressionBody != null)
+        {
+            foreach (var creation in expressionBody.DescendantNodesAndSelf().OfType<ImplicitObjectCreationExpressionSyntax>())
+                yield return creation;
+        }
+
+        if (body == null)
+            yield break;
+
+        foreach (var ret in body.DescendantNodes().OfType<ReturnStatementSyntax>())
+        {
+            if (ret.Expression == null)
+                continue;
+
+            foreach (var creation in ret.Expression.DescendantNodesAndSelf().OfType<ImplicitObjectCreationExpressionSyntax>())
+                yield return creation;
+        }
+    }
+
+    private static IEnumerable<ImplicitObjectCreationExpressionSyntax> EnumerateReturnCreations(
+        ArrowExpressionClauseSyntax? expressionBody,
+        IEnumerable<BlockSyntax?> bodies)
+    {
+        foreach (var creation in EnumerateReturnCreations(expressionBody, (BlockSyntax?)null))
+            yield return creation;
+
+        foreach (var body in bodies)
+        {
+            foreach (var creation in EnumerateReturnCreations(null, body))
+                yield return creation;
+        }
     }
 
     private static List<ISymbol> GetDeclaredSymbols(
@@ -451,8 +573,10 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
 
     private static bool IsSignatureLocked(ISymbol symbol, TypeSyntax annotation)
     {
-        var method = symbol as IMethodSymbol;
-        var property = symbol as IPropertySymbol;
+        var method = symbol as IMethodSymbol
+            ?? (symbol as IParameterSymbol)?.ContainingSymbol as IMethodSymbol;
+        var property = symbol as IPropertySymbol
+            ?? (symbol as IParameterSymbol)?.ContainingSymbol as IPropertySymbol;
         if (method == null && property == null)
             return false;
 
@@ -828,28 +952,63 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         return named.AllInterfaces.Any(iface => SymbolEqualityComparer.Default.Equals(iface, baseType));
     }
 
-    internal static TypeSyntax CreateBaseTypeReference(INamedTypeSymbol baseType, TypeSyntax original)
+    internal static INamedTypeSymbol GetConstructedTarget(
+        INamedTypeSymbol target,
+        TypeSyntax original,
+        SemanticModel model)
     {
-        if (original is GenericNameSyntax generic)
+        var referenced = model.GetTypeInfo(original).Type as INamedTypeSymbol
+            ?? model.GetSymbolInfo(original).Symbol as INamedTypeSymbol;
+        if (referenced == null)
+            return target;
+
+        if (target.TypeKind == TypeKind.Interface)
         {
-            return SyntaxFactory.GenericName(
-                    SyntaxFactory.Identifier(
-                        generic.Identifier.LeadingTrivia,
-                        baseType.Name,
-                        generic.Identifier.TrailingTrivia),
-                    generic.TypeArgumentList)
-                .WithLeadingTrivia(original.GetLeadingTrivia())
-                .WithTrailingTrivia(original.GetTrailingTrivia());
+            return referenced.AllInterfaces.FirstOrDefault(iface =>
+                SymbolEqualityComparer.Default.Equals(iface.OriginalDefinition, target.OriginalDefinition))
+                ?? target;
         }
 
-        var display = original is QualifiedNameSyntax or AliasQualifiedNameSyntax
-            ? baseType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat
-                .WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.Omitted))
-            : baseType.Name;
+        for (var current = referenced.BaseType; current != null; current = current.BaseType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, target.OriginalDefinition))
+                return current;
+        }
+
+        return target;
+    }
+
+    internal static TypeSyntax CreateBaseTypeReference(
+        INamedTypeSymbol baseType,
+        TypeSyntax original,
+        SemanticModel model)
+    {
+        var display = baseType.ToMinimalDisplayString(model, original.SpanStart);
+        if (string.IsNullOrWhiteSpace(display) ||
+            NameBindsToDifferentType(display, baseType, model, original.SpanStart))
+        {
+            display = baseType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat
+                .WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.Omitted));
+        }
 
         return SyntaxFactory.ParseTypeName(display)
             .WithLeadingTrivia(original.GetLeadingTrivia())
             .WithTrailingTrivia(original.GetTrailingTrivia());
+    }
+
+    private static bool NameBindsToDifferentType(
+        string display,
+        INamedTypeSymbol expected,
+        SemanticModel model,
+        int position)
+    {
+        var parsed = SyntaxFactory.ParseTypeName(display);
+        var spec = model.GetSpeculativeTypeInfo(position, parsed, SpeculativeBindingOption.BindAsTypeOrNamespace);
+        if (spec.Type is not INamedTypeSymbol bound)
+            return true;
+
+        return !SymbolEqualityComparer.Default.Equals(bound.OriginalDefinition, expected.OriginalDefinition) &&
+               !SymbolEqualityComparer.Default.Equals(bound, expected);
     }
 
     private static async Task<Solution> ApplyRewritesAsync(
@@ -879,8 +1038,11 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
             }
 
             var newRoot = root.ReplaceNodes(map.Keys, (original, _) => map[original]);
-            if (newRoot is CompilationUnitSyntax unit)
+            if (newRoot is CompilationUnitSyntax unit &&
+                group.Any(rewrite => rewrite.Replacement is IdentifierNameSyntax))
+            {
                 newRoot = EnsureUsing(unit, group.First().BaseType);
+            }
 
             solution = document.WithSyntaxRoot(newRoot).Project.Solution;
         }

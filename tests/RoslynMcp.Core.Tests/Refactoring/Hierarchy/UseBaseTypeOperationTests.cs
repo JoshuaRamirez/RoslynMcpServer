@@ -583,6 +583,220 @@ public class UseBaseTypeOperationTests
         Assert.Equal(ErrorCodes.BaseCannotSatisfyUsedMembers, ex.ErrorCode);
     }
 
+    [SkippableFact]
+    public async Task UseBaseType_QualifiedTypeName_SelectsMatchingNamespace()
+    {
+        const string source = """
+            namespace A
+            {
+                public class Animal
+                {
+                    public int Eat() => 1;
+                }
+
+                public class Dog : Animal
+                {
+                    public int Bark() => 2;
+                }
+
+                public static class Use
+                {
+                    public static int Feed(Dog dog) => dog.Eat();
+                }
+            }
+
+            namespace B
+            {
+                public class Animal
+                {
+                    public int Eat() => 1;
+                }
+
+                public class Dog : Animal
+                {
+                    public int Bark() => 2;
+                }
+
+                public static class Use
+                {
+                    public static int Feed(Dog dog) => dog.Eat();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "B.Dog"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace A", updated);
+        Assert.Contains("public static int Feed(Dog dog) => dog.Eat();", updated);
+        Assert.Contains("namespace B", updated);
+        Assert.Contains("public static int Feed(Animal dog) => dog.Eat();", updated);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_TargetTypedNewReturn_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public int Eat() => 1;
+            }
+
+            public class Dog : Animal
+            {
+            }
+
+            public static class Use
+            {
+                public static Dog Create() => new();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog"
+            }));
+
+        Assert.Equal(ErrorCodes.BaseCannotSatisfyUsedMembers, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_ConflictingSimpleName_QualifiesReplacement()
+    {
+        const string source = """
+            namespace Other
+            {
+                public class Animal
+                {
+                    public int Eat() => 1;
+                }
+            }
+
+            namespace TestApp
+            {
+                public class Animal
+                {
+                }
+
+                public class Dog : Other.Animal
+                {
+                }
+
+                public static class Use
+                {
+                    public static int Feed(Dog dog) => dog.Eat();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "TestApp.Dog",
+            TargetBaseType = "Animal"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("Feed(Other.Animal dog)", updated);
+        Assert.DoesNotContain("Feed(Animal dog)", updated);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_OverrideParameter_IsNotRewritten()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public int Eat() => 1;
+            }
+
+            public class Dog : Animal
+            {
+            }
+
+            public abstract class BaseHandler
+            {
+                public abstract int Feed(Dog dog);
+            }
+
+            public class Handler : BaseHandler
+            {
+                public override int Feed(Dog dog) => dog.Eat();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog"
+            }));
+
+        Assert.Equal(ErrorCodes.BaseCannotSatisfyUsedMembers, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_GenericBaseMapping_UsesConstructedArguments()
+    {
+        const string source = """
+            using System.Collections.Generic;
+
+            namespace TestApp;
+
+            public class Base<T>
+            {
+                public T Value { get; set; } = default!;
+            }
+
+            public class Dog<T> : Base<List<T>>
+            {
+            }
+
+            public static class Use
+            {
+                public static int Count(Dog<int> dog) => dog.Value.Count;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("Count(Base<List<int>> dog)", updated);
+        Assert.DoesNotContain("Count(Base<int> dog)", updated);
+    }
+
     #endregion
 
     #region Helpers
