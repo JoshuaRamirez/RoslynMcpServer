@@ -339,6 +339,15 @@ public static class ErrorCodes
     /// <summary>Member is required by an interface or abstract contract and cannot be removed from the base.</summary>
     public const string MemberRequiredByContract = "3112";
 
+    /// <summary>No type-annotation references can be rewritten to the chosen base.</summary>
+    public const string NoEligibleReferences = "3113";
+
+    /// <summary>Candidate references use members that do not exist on the chosen base.</summary>
+    public const string BaseCannotSatisfyUsedMembers = "3114";
+
+    /// <summary>A document containing eligible references is not editable.</summary>
+    public const string DocumentNotEditable = "3115";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

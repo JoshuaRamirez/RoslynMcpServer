@@ -47,7 +47,7 @@ public sealed class ToolEntry
 }
 
 /// <summary>
-/// Maps tool names to execution delegates for all 44 Roslyn tools.
+/// Maps tool names to execution delegates for all 45 Roslyn tools.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -139,7 +139,7 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 44 tools registered.
+    /// Build the default registry with all 45 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
@@ -162,6 +162,8 @@ public sealed class ToolRegistry
             "pull-members-up", "Move selected members from a derived type onto an existing base class or interface");
         r.RegisterRefactoring<PushMembersDownOperation, PushMembersDownParams>(
             "push-members-down", "Move selected members from a base type down onto derived types");
+        r.RegisterRefactoring<UseBaseTypeOperation, UseBaseTypeParams>(
+            "use-base-type", "Replace derived-type references with a compatible base type or interface");
 
         // ── Refactoring: Rename (1) ───────────────────────────────────
         r.RegisterRefactoring<RenameSymbolOperation, RenameSymbolParams>(
