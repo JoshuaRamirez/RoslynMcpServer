@@ -333,6 +333,12 @@ public static class ErrorCodes
     /// <summary>Member cannot be declared on an interface (field, constructor, static, or non-public).</summary>
     public const string MemberNotInterfaceCompatible = "3110";
 
+    /// <summary>Derived class or interface is not editable (external assembly).</summary>
+    public const string DerivedClassNotEditable = "3111";
+
+    /// <summary>Member is required by an interface or abstract contract and cannot be removed from the base.</summary>
+    public const string MemberRequiredByContract = "3112";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================
