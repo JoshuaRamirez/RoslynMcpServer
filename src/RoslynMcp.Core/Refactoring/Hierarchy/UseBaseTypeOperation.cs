@@ -479,12 +479,11 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         return outermost.Parent switch
         {
             VariableDeclarationSyntax or ParameterSyntax =>
-                outermost.FirstAncestorOrSelf<MethodDeclarationSyntax>() as SyntaxNode
-                ?? outermost.FirstAncestorOrSelf<LocalFunctionStatementSyntax>()
-                ?? outermost.FirstAncestorOrSelf<AccessorDeclarationSyntax>()
-                ?? outermost.FirstAncestorOrSelf<ConstructorDeclarationSyntax>(),
-            PropertyDeclarationSyntax or EventDeclarationSyntax or FieldDeclarationSyntax =>
-                outermost.FirstAncestorOrSelf<TypeDeclarationSyntax>(),
+                outermost.AncestorsAndSelf().FirstOrDefault(node =>
+                    node is MethodDeclarationSyntax
+                        or LocalFunctionStatementSyntax
+                        or AccessorDeclarationSyntax
+                        or ConstructorDeclarationSyntax),
             _ => outermost.FirstAncestorOrSelf<TypeDeclarationSyntax>()
         };
     }
