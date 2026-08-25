@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `pull_members_up` — move selected members from a derived type onto an existing base class or interface, with preview mode and rejects for missing bases, interface-incompatible members, and name/signature conflicts
+
 ## [0.4.0] - 2026-02-23
 
 ### Added
