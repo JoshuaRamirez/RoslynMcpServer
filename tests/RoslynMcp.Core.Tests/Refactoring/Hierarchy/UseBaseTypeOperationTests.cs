@@ -797,6 +797,81 @@ public class UseBaseTypeOperationTests
         Assert.DoesNotContain("Count(Base<int> dog)", updated);
     }
 
+    [SkippableFact]
+    public async Task UseBaseType_TargetTypedNewAssignment_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public int Eat() => 1;
+            }
+
+            public class Dog : Animal
+            {
+            }
+
+            public static class Use
+            {
+                public static int Feed()
+                {
+                    Dog dog;
+                    dog = new();
+                    return dog.Eat();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog"
+            }));
+
+        Assert.Equal(ErrorCodes.BaseCannotSatisfyUsedMembers, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_StructWithSingleInterface_UsesInterface()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IAnimal
+            {
+                int Eat();
+            }
+
+            public struct Dog : IAnimal
+            {
+                public int Eat() => 1;
+            }
+
+            public static class Use
+            {
+                public static int Feed(Dog dog) => dog.Eat();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("Feed(IAnimal dog)", updated);
+    }
+
     #endregion
 
     #region Helpers

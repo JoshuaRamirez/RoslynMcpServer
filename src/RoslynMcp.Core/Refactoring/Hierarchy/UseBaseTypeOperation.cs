@@ -210,7 +210,10 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         if (string.IsNullOrWhiteSpace(targetTypeName))
         {
             var meaningful = classBases
-                .Where(candidate => candidate.SpecialType != SpecialType.System_Object)
+                .Where(candidate =>
+                    candidate.SpecialType != SpecialType.System_Object &&
+                    candidate.SpecialType != SpecialType.System_ValueType &&
+                    candidate.SpecialType != SpecialType.System_Enum)
                 .ToList();
             if (meaningful.Count > 0)
                 return meaningful[0];
@@ -735,6 +738,9 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         if (expression.Parent is ExpressionStatementSyntax)
             return true;
 
+        if (IsTargetTypedNewAssignment(expression))
+            return false;
+
         if (IsNullComparison(expression) || IsNameOfArgument(expression))
             return true;
 
@@ -785,6 +791,13 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         }
 
         return true;
+    }
+
+    private static bool IsTargetTypedNewAssignment(ExpressionSyntax expression)
+    {
+        return expression.Parent is AssignmentExpressionSyntax assignment &&
+               assignment.Left == expression &&
+               assignment.Right is ImplicitObjectCreationExpressionSyntax;
     }
 
     private static bool IsNullComparison(ExpressionSyntax expression)
