@@ -47,7 +47,7 @@ public sealed class ToolEntry
 }
 
 /// <summary>
-/// Maps tool names to execution delegates for all 45 Roslyn tools.
+/// Maps tool names to execution delegates for all 46 Roslyn tools.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -139,13 +139,13 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 45 tools registered.
+    /// Build the default registry with all 46 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
         var r = new ToolRegistry();
 
-        // ── Refactoring: Extract (6) ──────────────────────────────────
+        // ── Refactoring: Extract (7) ──────────────────────────────────
         r.RegisterRefactoring<ExtractMethodOperation, ExtractMethodParams>(
             "extract-method", "Extract selected code into a new method");
         r.RegisterRefactoring<ExtractVariableOperation, ExtractVariableParams>(
@@ -164,6 +164,8 @@ public sealed class ToolRegistry
             "push-members-down", "Move selected members from a base type down onto derived types");
         r.RegisterRefactoring<UseBaseTypeOperation, UseBaseTypeParams>(
             "use-base-type", "Replace derived-type references with a compatible base type or interface");
+        r.RegisterRefactoring<IntroduceFieldOperation, IntroduceFieldParams>(
+            "introduce-field", "Turn a selected local variable or expression into a class field");
 
         // ── Refactoring: Rename (1) ───────────────────────────────────
         r.RegisterRefactoring<RenameSymbolOperation, RenameSymbolParams>(

@@ -348,6 +348,19 @@ public static class ErrorCodes
     /// <summary>A document containing eligible references is not editable.</summary>
     public const string DocumentNotEditable = "3115";
 
+    // --------------------------------------------
+    // Introduce Field Errors (3116-3118)
+    // --------------------------------------------
+
+    /// <summary>Containing type cannot host the field, or the expression type is not a valid field type.</summary>
+    public const string InvalidTargetType = "3116";
+
+    /// <summary>Expression cannot be used as a field initializer.</summary>
+    public const string ExpressionNotFieldInitializable = "3117";
+
+    /// <summary>Expression captures local variable or parameter state.</summary>
+    public const string ExpressionCapturesLocal = "3118";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================
