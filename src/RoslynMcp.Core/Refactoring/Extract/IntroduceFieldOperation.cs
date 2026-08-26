@@ -187,6 +187,8 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
                     $"Local variable '{local.Name}' cannot be promoted to a field.");
             }
 
+            RejectUsingLocal(local, declarator);
+
             var declaration = (LocalDeclarationStatementSyntax)declarator.Parent!.Parent!;
             initializer = declarator.Initializer?.Value;
             fieldType = local.Type;
@@ -239,14 +241,15 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
             initializer = expression;
             replacements = @params.ReplaceAll
-                ? FindMatchingExpressions(GetContainingTypeOrThrow(expression), expression)
+                ? FindMatchingExpressions(GetContainingTypeOrThrow(expression), expression, semanticModel, cancellationToken)
                 : new List<SyntaxNode> { expression };
         }
 
-        var containingType = GetContainingTypeOrThrow(local?.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() ?? expression!);
+        var planAnchor = local?.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() ?? expression!;
+        var containingType = GetContainingTypeOrThrow(planAnchor);
         ValidateContainingType(containingType, @params.IsStatic, semanticModel, cancellationToken);
         ValidateNameAvailable(containingType, semanticModel, @params.FieldName, cancellationToken);
-        ValidateStaticUsage(local?.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() ?? expression!, @params.IsStatic);
+        ValidateStaticUsage(planAnchor, @params.IsStatic);
 
         if (!@params.InitializeInConstructor && initializer != null)
             ValidateInlineInitializer(initializer, semanticModel, @params.IsStatic, cancellationToken);
@@ -261,6 +264,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         var field = CreateFieldDeclaration(@params, fieldType, @params.InitializeInConstructor ? null : initializer);
 
         return new FieldPlan(
+            containingType,
             containingType.Identifier.Text,
             fieldType.ToDisplayString(),
             field,
@@ -268,6 +272,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             declarationToRemove,
             declaratorToRemove,
             initializer,
+            FindInsertBeforeFieldVariable(@params.IsStatic, planAnchor, replacements),
             replacements.Count + (declarationToRemove != null || declaratorToRemove != null ? 1 : 0));
     }
 
@@ -279,6 +284,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         var replaceAnn = new SyntaxAnnotation("introduce-field-replace");
         var removeDeclAnn = new SyntaxAnnotation("introduce-field-remove-decl");
         var removeVarAnn = new SyntaxAnnotation("introduce-field-remove-var");
+        var typeAnn = new SyntaxAnnotation("introduce-field-type");
 
         var annotateTargets = plan.Replacements
             .Concat(plan.DeclarationToRemove != null ? new SyntaxNode[] { plan.DeclarationToRemove } : Array.Empty<SyntaxNode>())
@@ -300,7 +306,19 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
                 return node;
             });
 
-        var fieldRef = SyntaxFactory.IdentifierName(@params.FieldName);
+        var typeSeed = annotated.GetAnnotatedNodes(replaceAnn).FirstOrDefault()
+            ?? annotated.GetAnnotatedNodes(removeDeclAnn).FirstOrDefault()
+            ?? annotated.GetAnnotatedNodes(removeVarAnn).FirstOrDefault();
+        var typeToAnnotate = typeSeed != null
+            ? GetContainingTypeOrThrow(typeSeed)
+            : annotated.GetCurrentNode(plan.ContainingType)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to locate containing type after rewrite.");
+
+        annotated = (CompilationUnitSyntax)annotated.ReplaceNode(
+            typeToAnnotate,
+            typeToAnnotate.WithAdditionalAnnotations(typeAnn));
+
+        var fieldRef = CreateFieldReference(@params.IsStatic, plan.ContainingTypeName, @params.FieldName);
         var replacements = annotated.GetAnnotatedNodes(replaceAnn).ToList();
         SyntaxNode newRoot = replacements.Count == 0
             ? annotated
@@ -324,10 +342,9 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             newRoot = newRoot.ReplaceNode(statement, statement.WithDeclaration(newDeclaration));
         }
 
-        var updatedType = newRoot.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .First(t => t.Identifier.Text == plan.ContainingTypeName);
-        var typeWithField = InsertField(updatedType, plan.Field);
+        var updatedType = newRoot.GetAnnotatedNodes(typeAnn).OfType<TypeDeclarationSyntax>().FirstOrDefault()
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to locate containing type after rewrite.");
+        var typeWithField = InsertField(updatedType, plan.Field, plan.InsertBeforeFieldVariable);
         if (@params.InitializeInConstructor && plan.Initializer != null)
             typeWithField = EnsureConstructorInitialization(typeWithField, @params, plan.Initializer);
 
@@ -344,13 +361,24 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             .OfType<VariableDeclaratorSyntax>()
             .FirstOrDefault(v => v.Parent?.Parent is LocalDeclarationStatementSyntax && v.Span.Contains(span));
         if (declarator != null)
-            return semanticModel.GetDeclaredSymbol(declarator, cancellationToken) as ILocalSymbol;
+        {
+            var declared = semanticModel.GetDeclaredSymbol(declarator, cancellationToken) as ILocalSymbol;
+            if (declared != null)
+                RejectUsingLocal(declared, declarator);
+            return declared;
+        }
 
         var localStatement = node.AncestorsAndSelf()
             .OfType<LocalDeclarationStatementSyntax>()
             .FirstOrDefault(s => s.Span.Contains(span) && s.Declaration.Variables.Count == 1);
         if (localStatement != null)
-            return semanticModel.GetDeclaredSymbol(localStatement.Declaration.Variables[0], cancellationToken) as ILocalSymbol;
+        {
+            var variable = localStatement.Declaration.Variables[0];
+            var declared = semanticModel.GetDeclaredSymbol(variable, cancellationToken) as ILocalSymbol;
+            if (declared != null)
+                RejectUsingLocal(declared, variable);
+            return declared;
+        }
 
         IdentifierNameSyntax? identifier = node as IdentifierNameSyntax
             ?? node.AncestorsAndSelf()
@@ -363,8 +391,12 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         if (semanticModel.GetSymbolInfo(identifier, cancellationToken).Symbol is ILocalSymbol local)
         {
             var syntax = local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax(cancellationToken);
-            if (syntax is VariableDeclaratorSyntax v && v.Parent?.Parent is LocalDeclarationStatementSyntax)
-                return local;
+            if (syntax is VariableDeclaratorSyntax v)
+            {
+                RejectUsingLocal(local, v);
+                if (v.Parent?.Parent is LocalDeclarationStatementSyntax)
+                    return local;
+            }
         }
 
         return null;
@@ -405,15 +437,47 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         return bestMatch;
     }
 
-    private static List<SyntaxNode> FindMatchingExpressions(TypeDeclarationSyntax containingType, ExpressionSyntax original)
+    private static List<SyntaxNode> FindMatchingExpressions(
+        TypeDeclarationSyntax containingType,
+        ExpressionSyntax original,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         var normalized = NormalizeExpression(original);
+        var originalBindings = CollectBindings(original, semanticModel, cancellationToken);
         return containingType.DescendantNodes()
             .OfType<ExpressionSyntax>()
-            .Where(expr => expr != original && NormalizeExpression(expr) == normalized)
+            .Where(expr =>
+                expr == original ||
+                (NormalizeExpression(expr) == normalized &&
+                 BindingsEqual(originalBindings, CollectBindings(expr, semanticModel, cancellationToken))))
             .Cast<SyntaxNode>()
-            .Prepend(original)
             .ToList();
+    }
+
+    private static IReadOnlyList<ISymbol?> CollectBindings(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        return expression.DescendantNodesAndSelf()
+            .OfType<IdentifierNameSyntax>()
+            .Select(id => semanticModel.GetSymbolInfo(id, cancellationToken).Symbol)
+            .ToList();
+    }
+
+    private static bool BindingsEqual(IReadOnlyList<ISymbol?> left, IReadOnlyList<ISymbol?> right)
+    {
+        if (left.Count != right.Count)
+            return false;
+
+        for (var i = 0; i < left.Count; i++)
+        {
+            if (!SymbolEqualityComparer.Default.Equals(left[i], right[i]))
+                return false;
+        }
+
+        return true;
     }
 
     private static string NormalizeExpression(ExpressionSyntax expression) =>
@@ -669,9 +733,38 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
     private static TypeDeclarationSyntax InsertField(
         TypeDeclarationSyntax typeDeclaration,
-        FieldDeclarationSyntax field)
+        FieldDeclarationSyntax field,
+        string? insertBeforeFieldVariable)
     {
         var members = typeDeclaration.Members.ToList();
+        var insertIndex = FindFieldInsertIndex(members, insertBeforeFieldVariable);
+
+        members.Insert(insertIndex, field
+            .WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed)
+            .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed));
+
+        return typeDeclaration.WithMembers(SyntaxFactory.List(members));
+    }
+
+    private static int FindFieldInsertIndex(IReadOnlyList<MemberDeclarationSyntax> members, string? insertBeforeFieldVariable)
+    {
+        if (insertBeforeFieldVariable != null)
+        {
+            var sourceIndex = -1;
+            for (var i = 0; i < members.Count; i++)
+            {
+                if (members[i] is FieldDeclarationSyntax existing &&
+                    existing.Declaration.Variables.Any(v => v.Identifier.Text == insertBeforeFieldVariable))
+                {
+                    sourceIndex = i;
+                    break;
+                }
+            }
+
+            if (sourceIndex >= 0)
+                return sourceIndex;
+        }
+
         var insertIndex = 0;
         for (var i = 0; i < members.Count; i++)
         {
@@ -681,11 +774,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
                 break;
         }
 
-        members.Insert(insertIndex, field
-            .WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed)
-            .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed));
-
-        return typeDeclaration.WithMembers(SyntaxFactory.List(members));
+        return insertIndex;
     }
 
     private static TypeDeclarationSyntax EnsureConstructorInitialization(
@@ -706,7 +795,9 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             }
         }
 
-        var assignment = CreateAssignment(@params.FieldName, initializer);
+        var assignment = CreateAssignment(
+            CreateFieldReference(@params.IsStatic, typeDeclaration.Identifier.Text, @params.FieldName),
+            initializer);
         var constructors = typeDeclaration.Members
             .OfType<ConstructorDeclarationSyntax>()
             .Where(c => @params.IsStatic
@@ -772,14 +863,72 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             .NormalizeWhitespace();
     }
 
-    private static ExpressionStatementSyntax CreateAssignment(string fieldName, ExpressionSyntax initializer) =>
+    private static ExpressionStatementSyntax CreateAssignment(ExpressionSyntax fieldRef, ExpressionSyntax initializer) =>
         SyntaxFactory.ExpressionStatement(
                 SyntaxFactory.AssignmentExpression(
                     SyntaxKind.SimpleAssignmentExpression,
-                    SyntaxFactory.IdentifierName(fieldName),
+                    fieldRef,
                     initializer.WithoutTrivia()))
             .NormalizeWhitespace()
             .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
+
+    private static ExpressionSyntax CreateFieldReference(bool isStatic, string typeName, string fieldName)
+    {
+        var name = SyntaxFactory.IdentifierName(fieldName);
+        if (isStatic)
+        {
+            return SyntaxFactory.MemberAccessExpression(
+                SyntaxKind.SimpleMemberAccessExpression,
+                SyntaxFactory.IdentifierName(typeName),
+                name);
+        }
+
+        return SyntaxFactory.MemberAccessExpression(
+            SyntaxKind.SimpleMemberAccessExpression,
+            SyntaxFactory.ThisExpression(),
+            name);
+    }
+
+    private static void RejectUsingLocal(ILocalSymbol local, VariableDeclaratorSyntax declarator)
+    {
+        if (!IsUsingDeclaration(declarator))
+            return;
+
+        throw new RefactoringException(
+            ErrorCodes.ExpressionNotFieldInitializable,
+            $"Local variable '{local.Name}' is a using declaration and cannot be promoted to a field.");
+    }
+
+    private static bool IsUsingDeclaration(VariableDeclaratorSyntax declarator) =>
+        declarator.Parent?.Parent switch
+        {
+            LocalDeclarationStatementSyntax statement => statement.UsingKeyword != default,
+            UsingStatementSyntax => true,
+            _ => false
+        };
+
+    private static string? FindInsertBeforeFieldVariable(
+        bool isStaticField,
+        SyntaxNode planAnchor,
+        IReadOnlyList<SyntaxNode> replacements)
+    {
+        if (!isStaticField)
+            return null;
+
+        var sourceField = planAnchor.AncestorsAndSelf()
+            .OfType<FieldDeclarationSyntax>()
+            .FirstOrDefault(f => f.Modifiers.Any(SyntaxKind.StaticKeyword));
+
+        sourceField ??= replacements
+            .Select(r => r.Ancestors()
+                .OfType<FieldDeclarationSyntax>()
+                .FirstOrDefault(f => f.Modifiers.Any(SyntaxKind.StaticKeyword)))
+            .Where(f => f != null)
+            .OrderBy(f => f!.SpanStart)
+            .FirstOrDefault();
+
+        return sourceField?.Declaration.Variables.FirstOrDefault()?.Identifier.Text;
+    }
 
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,
@@ -815,6 +964,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
     }
 
     private sealed record FieldPlan(
+        TypeDeclarationSyntax ContainingType,
         string ContainingTypeName,
         string FieldType,
         FieldDeclarationSyntax Field,
@@ -822,5 +972,6 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         LocalDeclarationStatementSyntax? DeclarationToRemove,
         VariableDeclaratorSyntax? DeclaratorToRemove,
         ExpressionSyntax? Initializer,
+        string? InsertBeforeFieldVariable,
         int ReplacementCount);
 }

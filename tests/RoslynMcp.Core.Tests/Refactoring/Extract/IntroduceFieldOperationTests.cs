@@ -172,7 +172,7 @@ public class IntroduceFieldOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("private int _answer = 42;", updated);
-        Assert.Contains("return _answer;", updated);
+        Assert.Contains("return this._answer;", updated);
         Assert.DoesNotContain("return 42;", updated);
     }
 
@@ -208,7 +208,7 @@ public class IntroduceFieldOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("private int _sum = 1 + 2;", updated);
-        Assert.Contains("return _sum;", updated);
+        Assert.Contains("return this._sum;", updated);
     }
 
     [SkippableFact]
@@ -244,7 +244,7 @@ public class IntroduceFieldOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("private int _value = 7;", updated);
-        Assert.Contains("return _value;", updated);
+        Assert.Contains("return this._value;", updated);
         Assert.DoesNotContain("int value = 7;", updated);
     }
 
@@ -283,8 +283,8 @@ public class IntroduceFieldOperationTests
         Assert.Contains("private int _answer;", updated);
         Assert.DoesNotContain("private int _answer = 42;", updated);
         Assert.Contains("public Calculator()", updated);
-        Assert.Contains("_answer = 42;", updated);
-        Assert.Contains("return _answer;", updated);
+        Assert.Contains("this._answer = 42;", updated);
+        Assert.Contains("return this._answer;", updated);
     }
 
     [SkippableFact]
@@ -328,7 +328,7 @@ public class IntroduceFieldOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("_answer = 42;", updated);
+        Assert.Contains("this._answer = 42;", updated);
         Assert.Contains("Warmup();", updated);
         Assert.Equal(1, CountOccurrences(updated, "public Calculator()"));
     }
@@ -589,6 +589,372 @@ public class IntroduceFieldOperationTests
             }));
 
         Assert.Equal(ErrorCodes.InvalidTargetType, ex.ErrorCode);
+    }
+
+    #endregion
+
+    #region Review follow-up regressions
+
+    [SkippableFact]
+    public async Task IntroduceField_ReplaceAll_DoesNotRewriteDifferentBindings()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Value { get; set; }
+
+                public int First()
+                {
+                    return Value + 1;
+                }
+
+                public int Second()
+                {
+                    int Value = 10;
+                    return Value + 1;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "Value + 1");
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            FieldName = "_next",
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private int _next = Value + 1;", updated);
+        Assert.Contains("return this._next;", updated);
+        Assert.Contains("int Value = 10;", updated);
+        Assert.Contains("return Value + 1;", updated);
+        Assert.Equal(1, CountOccurrences(updated, "return this._next;"));
+        Assert.Equal(1, CountOccurrences(updated, "return Value + 1;"));
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_ReplaceAll_RewritesSameBindings()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Value { get; set; }
+
+                public int First()
+                {
+                    return Value + 1;
+                }
+
+                public int Second()
+                {
+                    return Value + 1;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "Value + 1");
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            FieldName = "_next",
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private int _next = Value + 1;", updated);
+        Assert.Equal(2, CountOccurrences(updated, "return this._next;"));
+        Assert.DoesNotContain("return Value + 1;", updated);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_ShadowingParameter_UsesThisQualifiedReference()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Get()
+                {
+                    int value = 7;
+                    return Apply(x =>
+                    {
+                        int _value = x;
+                        return value + _value;
+                    });
+                }
+
+                private static int Apply(System.Func<int, int> fn)
+                {
+                    return fn(1);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "value = 7");
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            FieldName = "_value"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private int _value = 7;", updated);
+        Assert.Contains("return this._value + _value;", updated);
+        Assert.DoesNotContain("return value + _value;", updated);
+        Assert.DoesNotContain("int value = 7;", updated);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_StaticField_UsesTypeQualifiedReference()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public static int Get()
+                {
+                    return 42;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "42");
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            FieldName = "_answer",
+            IsStatic = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private static int _answer = 42;", updated);
+        Assert.Contains("return Calculator._answer;", updated);
+        Assert.DoesNotContain("return 42;", updated);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_UsingLocal_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public sealed class Resource : System.IDisposable
+            {
+                public int Value => 1;
+                public void Dispose()
+                {
+                }
+            }
+
+            public class Calculator
+            {
+                public int Get()
+                {
+                    using var resource = new Resource();
+                    return resource.Value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "resource = new Resource()");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new IntroduceFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                FieldName = "_resource"
+            }));
+
+        Assert.Equal(ErrorCodes.ExpressionNotFieldInitializable, ex.ErrorCode);
+        var unchanged = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("using var resource = new Resource();", unchanged);
+        Assert.DoesNotContain("private Resource _resource", unchanged);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_AwaitUsingLocal_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public sealed class Resource : System.IAsyncDisposable
+            {
+                public int Value => 1;
+                public System.Threading.Tasks.ValueTask DisposeAsync()
+                {
+                    return System.Threading.Tasks.ValueTask.CompletedTask;
+                }
+            }
+
+            public class Calculator
+            {
+                public async System.Threading.Tasks.Task<int> Get()
+                {
+                    await using var resource = new Resource();
+                    return resource.Value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "resource = new Resource()");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new IntroduceFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                FieldName = "_resource"
+            }));
+
+        Assert.Equal(ErrorCodes.ExpressionNotFieldInitializable, ex.ErrorCode);
+        var unchanged = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("await using var resource = new Resource();", unchanged);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_StaticInitializer_InsertsNewFieldBeforeSource()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private static int A = Compute();
+
+                private static int Compute()
+                {
+                    return 1;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "Compute()");
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            FieldName = "B",
+            IsStatic = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private static int B = Compute();", updated);
+        Assert.Contains("private static int A = Calculator.B;", updated);
+        var bIndex = updated.IndexOf("private static int B = Compute();", StringComparison.Ordinal);
+        var aIndex = updated.IndexOf("private static int A = Calculator.B;", StringComparison.Ordinal);
+        Assert.True(bIndex >= 0 && aIndex > bIndex, "New static field B must be declared before A.");
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_DuplicateTypeName_UpdatesSelectedTypeOnly()
+    {
+        const string source = """
+            namespace TestApp
+            {
+                public class Calculator
+                {
+                    public int Get()
+                    {
+                        return 42;
+                    }
+                }
+            }
+
+            namespace Other
+            {
+                public class Calculator
+                {
+                    public int Get()
+                    {
+                        return 99;
+                    }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "99");
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            FieldName = "_answer"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(1, CountOccurrences(updated, "private int _answer = 99;"));
+        Assert.Contains("return this._answer;", updated);
+        Assert.Contains("return 42;", updated);
+        Assert.DoesNotContain("return 99;", updated);
+
+        var testAppIndex = updated.IndexOf("namespace TestApp", StringComparison.Ordinal);
+        var otherIndex = updated.IndexOf("namespace Other", StringComparison.Ordinal);
+        var fieldIndex = updated.IndexOf("private int _answer = 99;", StringComparison.Ordinal);
+        Assert.True(testAppIndex >= 0 && otherIndex > testAppIndex);
+        Assert.True(fieldIndex > otherIndex, "Field must be inserted into Other.Calculator, not TestApp.Calculator.");
     }
 
     #endregion
