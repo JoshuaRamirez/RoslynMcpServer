@@ -47,7 +47,7 @@ public sealed class ToolEntry
 }
 
 /// <summary>
-/// Maps tool names to execution delegates for all 52 Roslyn tools.
+/// Maps tool names to execution delegates for all 53 Roslyn tools.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -139,7 +139,7 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 52 tools registered.
+    /// Build the default registry with all 53 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
@@ -207,7 +207,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ConvertToPatternMatchingOperation, ConvertToPatternMatchingParams>(
             "convert-to-pattern-matching", "Convert type checks to pattern matching");
 
-        // ── Refactoring: Generate (8) ─────────────────────────────────
+        // ── Refactoring: Generate (9) ─────────────────────────────────
         r.RegisterRefactoring<GenerateConstructorOperation, GenerateConstructorParams>(
             "generate-constructor", "Generate a constructor from fields/properties");
         r.RegisterRefactoring<GeneratePropertyOperation, GeneratePropertyParams>(
@@ -222,6 +222,8 @@ public sealed class ToolRegistry
             "generate-tostring", "Generate a ToString override");
         r.RegisterRefactoring<ImplementInterfaceOperation, ImplementInterfaceParams>(
             "implement-interface", "Generate implementation stubs for an interface");
+        r.RegisterRefactoring<ImplementAbstractOperation, ImplementAbstractParams>(
+            "implement-abstract", "Generate implementation stubs for unimplemented abstract members inherited by a class");
         r.RegisterRefactoring<AddNullChecksOperation, AddNullChecksParams>(
             "add-null-checks", "Add null checks to method parameters");
 
