@@ -41,6 +41,9 @@ public enum RefactoringKind
     /// <summary>Replace derived-type references with a compatible base type or interface.</summary>
     UseBaseType,
 
+    /// <summary>Promote a local variable or expression to a class field.</summary>
+    IntroduceField,
+
     /// <summary>Extract expression to variable.</summary>
     ExtractVariable,
 
