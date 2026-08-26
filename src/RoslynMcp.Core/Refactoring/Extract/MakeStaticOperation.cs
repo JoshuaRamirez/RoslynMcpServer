@@ -279,6 +279,13 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
                 $"Method '{method.Name}' cannot be made static because it is virtual, override, or abstract.");
         }
 
+        if (method.IsExtern)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolKind,
+                $"Method '{method.Name}' cannot be made static because it is extern.");
+        }
+
         if (method.ContainingType == null)
         {
             throw new RefactoringException(
@@ -618,6 +625,9 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
                 if (nameNode == null)
                     continue;
 
+                if (IsConditionalAccessCallSite(nameNode))
+                    throw CreateConditionalAccessException(method);
+
                 var target = GetRewriteTarget(nameNode);
                 if (target == null)
                     continue;
@@ -651,16 +661,27 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
                 .FirstOrDefault(name => name.Span.Contains(span) || span.Contains(name.Span));
     }
 
+    private static bool IsConditionalAccessCallSite(SimpleNameSyntax name) =>
+        name.Parent is MemberBindingExpressionSyntax ||
+        name.Ancestors().OfType<ConditionalAccessExpressionSyntax>().Any(conditional =>
+            GetConditionalBindingName(conditional) == name);
+
+    private static RefactoringException CreateConditionalAccessException(IMethodSymbol method)
+    {
+        return new RefactoringException(
+            ErrorCodes.InvalidSelection,
+            $"Cannot make '{method.Name}' static because a call site uses null-conditional access (?.) and rewriting it would drop short-circuiting.",
+            new Dictionary<string, object>
+            {
+                ["symbolName"] = method.Name
+            },
+            ["Update or remove null-conditional call sites (invocations and method groups), then retry."]);
+    }
+
     private static SyntaxNode? GetRewriteTarget(SimpleNameSyntax name)
     {
         if (name.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == name)
             return memberAccess;
-
-        if (name.Parent is MemberBindingExpressionSyntax)
-        {
-            return name.Ancestors().OfType<ConditionalAccessExpressionSyntax>().FirstOrDefault()
-                ?? name.Parent;
-        }
 
         return null;
     }
@@ -725,8 +746,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
                 .ToHashSet();
 
             var rewriteTargets = root.DescendantNodes()
-                .Where(node => callSiteSpans.Contains(node.Span) &&
-                    (node is MemberAccessExpressionSyntax || node is ConditionalAccessExpressionSyntax))
+                .Where(node => callSiteSpans.Contains(node.Span) && node is MemberAccessExpressionSyntax)
                 .ToList();
             var methods = root.DescendantNodes()
                 .OfType<MethodDeclarationSyntax>()
@@ -783,23 +803,11 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
 
     private static SyntaxNode RewriteCallSite(SyntaxNode original, SemanticModel model, string methodName)
     {
-        SimpleNameSyntax? name = original switch
-        {
-            MemberAccessExpressionSyntax memberAccess => memberAccess.Name,
-            ConditionalAccessExpressionSyntax conditional => GetConditionalBindingName(conditional),
-            _ => null
-        };
-
-        if (name == null)
+        if (original is not MemberAccessExpressionSyntax memberAccess)
             return original;
 
-        ExpressionSyntax? receiver = original switch
-        {
-            MemberAccessExpressionSyntax memberAccess => memberAccess.Expression,
-            ConditionalAccessExpressionSyntax conditional => conditional.Expression,
-            _ => null
-        };
-
+        var name = memberAccess.Name;
+        var receiver = memberAccess.Expression;
         var symbol = model.GetSymbolInfo(name).Symbol;
         var containingType = (symbol as IMethodSymbol)?.ContainingType;
         if (containingType == null)
@@ -809,16 +817,6 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
                     SyntaxKind.SimpleMemberAccessExpression,
                     fallback,
                     (SimpleNameSyntax)name.WithoutTrivia())
-                .WithTriviaFrom(original);
-        }
-
-        if (original is ConditionalAccessExpressionSyntax conditionalAccess &&
-            conditionalAccess.WhenNotNull is InvocationExpressionSyntax invocation)
-        {
-            var staticAccess = CreateStaticMemberAccess(
-                containingType, name, model, original.SpanStart, receiver);
-            return invocation
-                .WithExpression(staticAccess)
                 .WithTriviaFrom(original);
         }
 

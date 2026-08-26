@@ -428,6 +428,81 @@ public class MakeStaticOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    [SkippableFact]
+    public async Task MakeStatic_ConditionalAccessInvocation_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public void Log()
+                {
+                }
+
+                public void Use(Calculator? other)
+                {
+                    other?.Log();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MakeStaticOperation(workspace.Context);
+        var span = FindIdentifierSpan(source, "Log");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MakeStaticParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                SymbolName = "Log"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelection, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("other?.Log();", before);
+        Assert.DoesNotContain("static", before);
+    }
+
+    [SkippableFact]
+    public async Task MakeStatic_ExternMethod_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public extern int Add(int a, int b);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MakeStaticOperation(workspace.Context);
+        var span = FindSpan(source, "Add");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MakeStaticParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                SymbolName = "Add"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public extern int Add(int a, int b);", before);
+        Assert.DoesNotContain("static", before);
+    }
+
     [Fact]
     public void MakeStatic_UneditableDocument_Throws()
     {
