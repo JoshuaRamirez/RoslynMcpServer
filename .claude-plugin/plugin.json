@@ -1,7 +1,7 @@
 {
   "name": "roslyn-mcp",
   "version": "0.4.1",
-  "description": "Roslyn-powered C# refactoring MCP server — 47 tools for code navigation, analysis, generation, and refactoring across entire .NET solutions",
+  "description": "Roslyn-powered C# refactoring MCP server — 48 tools for code navigation, analysis, generation, and refactoring across entire .NET solutions",
   "author": {
     "name": "Joshua Ramirez"
   },

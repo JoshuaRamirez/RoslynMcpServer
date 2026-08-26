@@ -47,6 +47,9 @@ public enum RefactoringKind
     /// <summary>Delete a symbol only when it has no remaining references.</summary>
     SafeDelete,
 
+    /// <summary>Add the static modifier to an instance method that does not use instance state.</summary>
+    MakeStatic,
+
     /// <summary>Extract expression to variable.</summary>
     ExtractVariable,
 

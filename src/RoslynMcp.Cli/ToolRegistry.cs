@@ -47,7 +47,7 @@ public sealed class ToolEntry
 }
 
 /// <summary>
-/// Maps tool names to execution delegates for all 47 Roslyn tools.
+/// Maps tool names to execution delegates for all 48 Roslyn tools.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -139,7 +139,7 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 47 tools registered.
+    /// Build the default registry with all 48 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
@@ -168,6 +168,8 @@ public sealed class ToolRegistry
             "introduce-field", "Turn a selected local variable or expression into a class field");
         r.RegisterRefactoring<SafeDeleteOperation, SafeDeleteParams>(
             "safe-delete", "Delete a selected symbol only when it has no remaining references");
+        r.RegisterRefactoring<MakeStaticOperation, MakeStaticParams>(
+            "make-static", "Make a selected instance method static when it does not use instance state");
 
         // ── Refactoring: Rename (1) ───────────────────────────────────
         r.RegisterRefactoring<RenameSymbolOperation, RenameSymbolParams>(
