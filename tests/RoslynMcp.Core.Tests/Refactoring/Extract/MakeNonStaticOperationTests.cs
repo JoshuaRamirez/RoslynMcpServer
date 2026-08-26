@@ -519,6 +519,413 @@ public class MakeNonStaticOperationTests
 
     #endregion
 
+    #region Review fold
+
+    [SkippableFact]
+    public async Task MakeNonStatic_GenericReceiverTypeArgumentMismatch_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Container<T>
+            {
+                public static T Get(T value)
+                {
+                    return value;
+                }
+            }
+
+            public class Consumer
+            {
+                public string Use(Container<string> strings)
+                {
+                    return Container<int>.Get(1).ToString();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var span = FindIdentifierSpan(source, "Get");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MakeNonStaticParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                SymbolName = "Get"
+            }));
+
+        Assert.Equal(ErrorCodes.NoValidInstanceReceiver, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("Container<int>.Get(1)", before);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_MatchingGenericReceiver_RewritesToThatInstance()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Container<T>
+            {
+                public static T Get(T value)
+                {
+                    return value;
+                }
+            }
+
+            public class Consumer
+            {
+                public int Use(Container<int> ints)
+                {
+                    return Container<int>.Get(1);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var span = FindIdentifierSpan(source, "Get");
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            SymbolName = "Get"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public T Get(T value)", updated);
+        Assert.Contains("return ints.Get(1);", updated);
+        Assert.DoesNotContain("Container<int>.Get(1)", updated);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_HidingDerivedMethod_CastsThisToSelectedType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Base
+            {
+                public static int Value()
+                {
+                    return 1;
+                }
+            }
+
+            public class Derived : Base
+            {
+                public int Value()
+                {
+                    return 2;
+                }
+
+                public int Use()
+                {
+                    return Base.Value();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var span = FindIdentifierSpan(source, "Value");
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            SymbolName = "Value"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public int Value()", updated);
+        Assert.DoesNotContain("public static int Value()", updated);
+        Assert.Contains("return ((Base)this).Value();", updated);
+        Assert.DoesNotContain("return this.Value();", updated);
+        Assert.DoesNotContain("return Base.Value();", updated);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_DerivedWithoutHiding_RewritesToThis()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Base
+            {
+                public static int Value()
+                {
+                    return 1;
+                }
+            }
+
+            public class Derived : Base
+            {
+                public int Use()
+                {
+                    return Base.Value();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var span = FindIdentifierSpan(source, "Value");
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            SymbolName = "Value"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return this.Value();", updated);
+        Assert.DoesNotContain("return Base.Value();", updated);
+        Assert.DoesNotContain("((Base)this)", updated);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_ConstructorInitializerThis_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class C
+            {
+                public static int CreateValue()
+                {
+                    return 1;
+                }
+
+                public C() : this(C.CreateValue())
+                {
+                }
+
+                public C(int value)
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var span = FindIdentifierSpan(source, "CreateValue");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MakeNonStaticParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                SymbolName = "CreateValue"
+            }));
+
+        Assert.Equal(ErrorCodes.NoValidInstanceReceiver, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains(": this(C.CreateValue())", before);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_UnassignedLocal_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public static int Add(int a, int b)
+                {
+                    return a + b;
+                }
+            }
+
+            public class Consumer
+            {
+                public int Use()
+                {
+                    Calculator calc;
+                    return Calculator.Add(1, 2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var span = FindIdentifierSpan(source, "Add");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MakeNonStaticParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                SymbolName = "Add"
+            }));
+
+        Assert.Equal(ErrorCodes.NoValidInstanceReceiver, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("Calculator calc;", before);
+        Assert.Contains("return Calculator.Add(1, 2);", before);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AssignedLocal_RewritesToThatInstance()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public static int Add(int a, int b)
+                {
+                    return a + b;
+                }
+            }
+
+            public class Consumer
+            {
+                public int Use()
+                {
+                    var calc = new Calculator();
+                    return Calculator.Add(1, 2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var span = FindIdentifierSpan(source, "Add");
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            SymbolName = "Add"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return calc.Add(1, 2);", updated);
+        Assert.DoesNotContain("return Calculator.Add(1, 2);", updated);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_NestedFunctionInStaticMember_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public static int Add(int a, int b)
+                {
+                    return a + b;
+                }
+
+                public static int Use()
+                {
+                    System.Func<int> local = () => Calculator.Add(1, 2);
+                    return local();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var span = FindIdentifierSpan(source, "Add");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MakeNonStaticParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                SymbolName = "Add"
+            }));
+
+        Assert.Equal(ErrorCodes.NoValidInstanceReceiver, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("() => Calculator.Add(1, 2)", before);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_VerbatimKeywordReceiver_PreservesAtPrefix()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public static int Add(int a, int b)
+                {
+                    return a + b;
+                }
+            }
+
+            public class Consumer
+            {
+                public int Use(Calculator @class)
+                {
+                    return Calculator.Add(1, 2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var span = FindIdentifierSpan(source, "Add");
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            SymbolName = "Add"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return @class.Add(1, 2);", updated);
+        Assert.DoesNotContain("return class.Add(1, 2);", updated);
+        Assert.DoesNotContain("return Calculator.Add(1, 2);", updated);
+    }
+
+    #endregion
+
     #region Helpers
 
     private static string AbsoluteTestPath() =>
@@ -536,6 +943,39 @@ public class MakeNonStaticOperationTests
         return (GetLineColumn(source, index).Line, GetLineColumn(source, index).Column,
             GetLineColumn(source, index + snippet.Length).Line, GetLineColumn(source, index + snippet.Length).Column);
     }
+
+    /// <summary>
+    /// Finds the first identifier occurrence that is a standalone token, not a
+    /// prefix of a longer identifier (for example <c>Get</c> in <c>Get()</c>
+    /// rather than the <c>Get</c> inside <c>GetHashCode</c>).
+    /// </summary>
+    private static (int StartLine, int StartColumn, int EndLine, int EndColumn) FindIdentifierSpan(
+        string source,
+        string identifier)
+    {
+        var start = 0;
+        while (start < source.Length)
+        {
+            var index = source.IndexOf(identifier, start, StringComparison.Ordinal);
+            if (index < 0)
+                throw new InvalidOperationException($"Identifier not found: {identifier}");
+
+            var beforeOk = index == 0 || !IsIdentifierPart(source[index - 1]);
+            var afterIndex = index + identifier.Length;
+            var afterOk = afterIndex >= source.Length || !IsIdentifierPart(source[afterIndex]);
+            if (beforeOk && afterOk)
+            {
+                return (GetLineColumn(source, index).Line, GetLineColumn(source, index).Column,
+                    GetLineColumn(source, afterIndex).Line, GetLineColumn(source, afterIndex).Column);
+            }
+
+            start = index + 1;
+        }
+
+        throw new InvalidOperationException($"Identifier not found: {identifier}");
+    }
+
+    private static bool IsIdentifierPart(char c) => char.IsLetterOrDigit(c) || c == '_';
 
     private static (int Line, int Column) GetLineColumn(string source, int index)
     {

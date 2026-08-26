@@ -550,20 +550,24 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         SemanticModel model,
         CancellationToken cancellationToken)
     {
+        var requiredType = GetRequiredReceiverType(name, method, model, cancellationToken);
+        if (requiredType == null)
+            throw CreateNoValidInstanceReceiverException(method, name);
+
         if (name.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == name)
         {
             if (!IsTypeReceiver(memberAccess.Expression, model))
                 return null;
 
-            var receiver = FindInstanceReceiver(name, method, model, cancellationToken)
+            var receiver = FindInstanceReceiver(name, method, requiredType, model, cancellationToken)
                 ?? throw CreateNoValidInstanceReceiverException(method, name);
             return new CallSiteRewrite(memberAccess, receiver);
         }
 
-        if (CanUseImplicitThis(name, method, model, cancellationToken))
+        if (CanUseImplicitThis(name, method, requiredType, model, cancellationToken))
             return null;
 
-        var prefixed = FindInstanceReceiver(name, method, model, cancellationToken)
+        var prefixed = FindInstanceReceiver(name, method, requiredType, model, cancellationToken)
             ?? throw CreateNoValidInstanceReceiverException(method, name);
         return new CallSiteRewrite(name, prefixed);
     }
@@ -574,30 +578,64 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         return symbol is INamespaceOrTypeSymbol;
     }
 
-    internal static bool CanUseImplicitThis(
-        SyntaxNode callSite,
-        IMethodSymbol method,
+    private static INamedTypeSymbol? GetRequiredReceiverType(
+        SyntaxNode nameNode,
+        IMethodSymbol selectedMethod,
         SemanticModel model,
         CancellationToken cancellationToken)
     {
-        return CanUseThis(callSite, method, model, cancellationToken);
+        var info = model.GetSymbolInfo(nameNode, cancellationToken);
+        var bound = info.Symbol as IMethodSymbol
+            ?? info.CandidateSymbols.OfType<IMethodSymbol>().FirstOrDefault();
+        return bound?.ContainingType ?? selectedMethod.ContainingType;
+    }
+
+    internal static bool CanUseImplicitThis(
+        SyntaxNode callSite,
+        IMethodSymbol method,
+        INamedTypeSymbol requiredType,
+        SemanticModel model,
+        CancellationToken cancellationToken)
+    {
+        if (!CanUseThis(callSite, requiredType, model, cancellationToken))
+            return false;
+
+        var enclosing = GetEnclosingMember(model, callSite, cancellationToken);
+        var enclosingType = enclosing?.ContainingType;
+        return enclosingType != null && !WouldRebindToHidingMember(enclosingType, method);
     }
 
     private static bool CanUseThis(
         SyntaxNode callSite,
-        IMethodSymbol method,
+        INamedTypeSymbol requiredType,
         SemanticModel model,
         CancellationToken cancellationToken)
     {
-        if (method.ContainingType == null)
+        if (IsInConstructorInitializer(callSite))
             return false;
 
         var enclosing = GetEnclosingMember(model, callSite, cancellationToken);
-        if (enclosing == null || enclosing.IsStatic)
+        if (enclosing == null || !IsInstanceThisContext(enclosing))
             return false;
 
         var enclosingType = enclosing.ContainingType;
-        return enclosingType != null && IsCompatibleReceiverType(enclosingType, method.ContainingType);
+        return enclosingType != null && IsCompatibleReceiverType(enclosingType, requiredType);
+    }
+
+    private static bool IsInConstructorInitializer(SyntaxNode node) =>
+        node.AncestorsAndSelf().OfType<ConstructorInitializerSyntax>().Any();
+
+    private static bool IsInstanceThisContext(ISymbol enclosing)
+    {
+        for (ISymbol? current = enclosing;
+             current is not null and not INamedTypeSymbol;
+             current = current.ContainingSymbol)
+        {
+            if (current.IsStatic)
+                return false;
+        }
+
+        return true;
     }
 
     private static ISymbol? GetEnclosingMember(
@@ -628,19 +666,31 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
     private static ExpressionSyntax? FindInstanceReceiver(
         SyntaxNode callSite,
         IMethodSymbol method,
+        INamedTypeSymbol requiredType,
         SemanticModel model,
         CancellationToken cancellationToken)
     {
-        if (method.ContainingType == null)
-            return null;
-
-        if (CanUseThis(callSite, method, model, cancellationToken))
-            return SyntaxFactory.ThisExpression();
+        if (CanUseThis(callSite, requiredType, model, cancellationToken))
+        {
+            var enclosingType = GetEnclosingMember(model, callSite, cancellationToken)?.ContainingType;
+            if (enclosingType != null)
+            {
+                var thisReceiver = QualifyReceiverIfNeeded(
+                    SyntaxFactory.ThisExpression(),
+                    enclosingType,
+                    method,
+                    requiredType,
+                    model,
+                    callSite.SpanStart);
+                if (thisReceiver != null)
+                    return thisReceiver;
+            }
+        }
 
         var candidates = new List<ISymbol>();
         foreach (var symbol in model.LookupSymbols(callSite.SpanStart))
         {
-            if (!IsUsableInstanceCandidate(symbol, method, model, callSite, cancellationToken))
+            if (!IsUsableInstanceCandidate(symbol, requiredType, model, callSite, cancellationToken))
                 continue;
 
             candidates.Add(symbol);
@@ -652,50 +702,208 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         if (unique.Count != 1 || string.IsNullOrEmpty(unique[0].Name))
             return null;
 
-        return SyntaxFactory.IdentifierName(unique[0].Name);
+        var receiverType = GetDeclaredType(unique[0]);
+        if (receiverType == null)
+            return null;
+
+        return QualifyReceiverIfNeeded(
+            CreateReceiverIdentifier(unique[0].Name),
+            receiverType,
+            method,
+            requiredType,
+            model,
+            callSite.SpanStart);
     }
 
     private static bool IsUsableInstanceCandidate(
         ISymbol symbol,
-        IMethodSymbol method,
+        INamedTypeSymbol requiredType,
         SemanticModel model,
         SyntaxNode callSite,
         CancellationToken cancellationToken)
     {
-        if (method.ContainingType == null)
-            return false;
-
         if (symbol is IParameterSymbol { IsThis: true })
             return false;
 
-        ITypeSymbol? type = symbol switch
-        {
-            ILocalSymbol local => local.Type,
-            IParameterSymbol parameter => parameter.Type,
-            IFieldSymbol field => field.Type,
-            IPropertySymbol { GetMethod: not null } property => property.Type,
-            _ => null
-        };
-
-        if (type == null || !IsCompatibleReceiverType(type, method.ContainingType))
+        ITypeSymbol? type = GetDeclaredType(symbol);
+        if (type == null || !IsCompatibleReceiverType(type, requiredType))
             return false;
 
-        if (symbol.IsStatic)
+        if (symbol is ILocalSymbol local
+            && !IsDefinitelyAssignedAt(local, callSite, model))
+        {
+            return false;
+        }
+
+        if (symbol.IsStatic || symbol is ILocalSymbol or IParameterSymbol)
             return true;
 
         var enclosing = GetEnclosingMember(model, callSite, cancellationToken);
-        return enclosing is { IsStatic: false };
+        return enclosing != null && IsInstanceThisContext(enclosing);
+    }
+
+    private static ITypeSymbol? GetDeclaredType(ISymbol symbol) => symbol switch
+    {
+        ILocalSymbol local => local.Type,
+        IParameterSymbol parameter => parameter.Type,
+        IFieldSymbol field => field.Type,
+        IPropertySymbol { GetMethod: not null } property => property.Type,
+        _ => null
+    };
+
+    private static bool IsDefinitelyAssignedAt(
+        ILocalSymbol local,
+        SyntaxNode callSite,
+        SemanticModel model)
+    {
+        var statement = callSite.FirstAncestorOrSelf<StatementSyntax>();
+        var expression = callSite.FirstAncestorOrSelf<ExpressionSyntax>();
+
+        DataFlowAnalysis? analysis;
+        try
+        {
+            analysis = statement != null
+                ? model.AnalyzeDataFlow(statement)
+                : expression != null
+                    ? model.AnalyzeDataFlow(expression)
+                    : null;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+
+        if (analysis is null || !analysis.Succeeded)
+            return false;
+
+        foreach (var assigned in analysis.DefinitelyAssignedOnEntry)
+        {
+            if (SymbolEqualityComparer.Default.Equals(assigned, local))
+                return true;
+        }
+
+        return false;
     }
 
     internal static bool IsCompatibleReceiverType(ITypeSymbol type, INamedTypeSymbol target)
     {
         for (ITypeSymbol? current = type; current != null; current = current.BaseType)
         {
-            if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, target.OriginalDefinition))
+            if (ConstructedTypesMatch(current, target))
                 return true;
         }
 
         return false;
+    }
+
+    private static bool ConstructedTypesMatch(ITypeSymbol candidate, INamedTypeSymbol required)
+    {
+        if (!SymbolEqualityComparer.Default.Equals(candidate.OriginalDefinition, required.OriginalDefinition))
+            return false;
+
+        if (candidate is not INamedTypeSymbol namedCandidate)
+            return false;
+
+        if (namedCandidate.TypeArguments.Length != required.TypeArguments.Length)
+            return false;
+
+        for (var i = 0; i < required.TypeArguments.Length; i++)
+        {
+            if (!SymbolEqualityComparer.Default.Equals(namedCandidate.TypeArguments[i], required.TypeArguments[i]))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool WouldRebindToHidingMember(INamedTypeSymbol receiverType, IMethodSymbol method)
+    {
+        for (INamedTypeSymbol? type = receiverType; type != null; type = type.BaseType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(
+                    type.OriginalDefinition,
+                    method.ContainingType.OriginalDefinition))
+            {
+                return false;
+            }
+
+            if (DeclaresHidingInstanceMethod(type, method))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool DeclaresHidingInstanceMethod(INamedTypeSymbol type, IMethodSymbol method)
+    {
+        foreach (var member in type.GetMembers(method.Name))
+        {
+            if (member is not IMethodSymbol candidate
+                || candidate.IsStatic
+                || candidate.IsOverride
+                || candidate.Parameters.Length != method.Parameters.Length
+                || candidate.TypeParameters.Length != method.TypeParameters.Length)
+            {
+                continue;
+            }
+
+            var parametersMatch = true;
+            for (var i = 0; i < method.Parameters.Length; i++)
+            {
+                if (!SymbolEqualityComparer.Default.Equals(
+                        candidate.Parameters[i].Type.OriginalDefinition,
+                        method.Parameters[i].Type.OriginalDefinition))
+                {
+                    parametersMatch = false;
+                    break;
+                }
+            }
+
+            if (parametersMatch)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static ExpressionSyntax? QualifyReceiverIfNeeded(
+        ExpressionSyntax receiver,
+        ITypeSymbol receiverType,
+        IMethodSymbol method,
+        INamedTypeSymbol requiredType,
+        SemanticModel model,
+        int position)
+    {
+        var namedReceiver = receiverType as INamedTypeSymbol ?? receiverType.BaseType;
+        if (namedReceiver == null || !WouldRebindToHidingMember(namedReceiver, method))
+            return receiver;
+
+        var typeName = requiredType.ToMinimalDisplayString(model, position);
+        if (string.IsNullOrWhiteSpace(typeName))
+            return null;
+
+        var typeSyntax = SyntaxFactory.ParseTypeName(typeName);
+        if (typeSyntax.ContainsDiagnostics)
+            return null;
+
+        return SyntaxFactory.ParenthesizedExpression(
+            SyntaxFactory.CastExpression(typeSyntax, receiver));
+    }
+
+    private static IdentifierNameSyntax CreateReceiverIdentifier(string name)
+    {
+        var keywordKind = SyntaxFacts.GetKeywordKind(name);
+        if (keywordKind != SyntaxKind.None && SyntaxFacts.IsReservedKeyword(keywordKind))
+        {
+            return SyntaxFactory.IdentifierName(
+                SyntaxFactory.VerbatimIdentifier(
+                    SyntaxFactory.TriviaList(),
+                    "@" + name,
+                    name,
+                    SyntaxFactory.TriviaList()));
+        }
+
+        return SyntaxFactory.IdentifierName(name);
     }
 
     private static RefactoringException CreateNoValidInstanceReceiverException(
