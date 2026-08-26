@@ -47,7 +47,7 @@ public sealed class ToolEntry
 }
 
 /// <summary>
-/// Maps tool names to execution delegates for all 50 Roslyn tools.
+/// Maps tool names to execution delegates for all 51 Roslyn tools.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -139,7 +139,7 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 50 tools registered.
+    /// Build the default registry with all 51 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
@@ -207,9 +207,11 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ConvertToPatternMatchingOperation, ConvertToPatternMatchingParams>(
             "convert-to-pattern-matching", "Convert type checks to pattern matching");
 
-        // ── Refactoring: Generate (6) ─────────────────────────────────
+        // ── Refactoring: Generate (7) ─────────────────────────────────
         r.RegisterRefactoring<GenerateConstructorOperation, GenerateConstructorParams>(
             "generate-constructor", "Generate a constructor from fields/properties");
+        r.RegisterRefactoring<GeneratePropertyOperation, GeneratePropertyParams>(
+            "generate-property", "Generate a property on a type (auto, init-only, or backing-field)");
         r.RegisterRefactoring<GenerateEqualsHashCodeOperation, GenerateEqualsHashCodeParams>(
             "generate-equals-hashcode", "Generate Equals and GetHashCode overrides");
         r.RegisterRefactoring<GenerateOverridesOperation, GenerateOverridesParams>(

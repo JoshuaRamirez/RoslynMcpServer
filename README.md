@@ -8,7 +8,7 @@
 
 Let AI assistants like Claude safely refactor your C# codebase using the same Roslyn compiler platform that powers Visual Studio.
 
-Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **50 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 27 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 4 code generation tools, and 8 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
+Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **51 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 28 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 4 code generation tools, and 8 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
 
 ---
 
@@ -30,7 +30,7 @@ Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotoc
 
 ## Why RoslynMcpServer?
 
-- **50 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
+- **51 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
 - **Preview mode on every operation** -- see exactly what will change before applying
 - **Atomic file writes with rollback** -- if any file write fails, all changes are reverted
 - **Solution-wide reference updates** -- renames and moves propagate across your entire solution
@@ -102,7 +102,7 @@ Claude will use the `rename_symbol` tool to rename the class and update every re
 
 ## Standalone CLI
 
-All 50 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
+All 51 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
 
 ### Install
 
@@ -228,6 +228,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `generate_constructor` | Generate a constructor that initializes fields and/or properties of a type. | `sourceFile`, `typeName`, `members`, `addNullChecks` |
+| `generate_property` | Generate a property on a type: auto-property `{ get; set; }`, init-only `{ get; init; }`, or a backing-field form when a field is the target. | `sourceFile`, `typeName`, `propertyName`, `propertyType`, `fieldName`, `visibility`, `initOnly` |
 | `generate_overrides` | Generate override methods for base class virtual/abstract members. | `sourceFile`, `typeName`, `members`, `callBase` |
 | `implement_interface` | Generate interface member implementations for a type. | `sourceFile`, `typeName`, `interfaceName`, `explicitImplementation`, `members` |
 
