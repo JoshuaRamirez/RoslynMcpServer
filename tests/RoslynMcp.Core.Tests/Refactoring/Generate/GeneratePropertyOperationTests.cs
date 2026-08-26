@@ -120,6 +120,45 @@ public class GeneratePropertyOperationTests
         Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
     }
 
+    [Fact]
+    public void Validate_ReservedKeywordPropertyName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.Validate(new GeneratePropertyParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                PropertyName = "class",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NamespaceKeywordPropertyName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.Validate(new GeneratePropertyParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                PropertyName = "namespace",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void IsValidIdentifier_ReservedKeyword_IsFalse()
+    {
+        Assert.False(GeneratePropertyOperation.IsValidIdentifier("class"));
+        Assert.False(GeneratePropertyOperation.IsValidIdentifier("namespace"));
+        Assert.True(GeneratePropertyOperation.IsValidIdentifier("Name"));
+        Assert.True(GeneratePropertyOperation.IsValidIdentifier("@class"));
+    }
+
     #endregion
 
     #region P0 Happy Path
@@ -372,6 +411,211 @@ public class GeneratePropertyOperationTests
             }));
 
         Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReadonlyField_DefaultSetter_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                private readonly string _name;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                FieldName = "_name"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Contains("readonly", ex.Message);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReadonlyField_InitOnly_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                private readonly string _name;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            FieldName = "_name",
+            InitOnly = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("get => _name;", updated);
+        Assert.Contains("init => _name = value;", updated);
+        Assert.DoesNotContain("set => _name = value;", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_IncompatibleBackingFieldType_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                private int _count;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                FieldName = "_count",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidReturnType, ex.ErrorCode);
+        Assert.Contains("incompatible", ex.Message);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_CompatibleBackingFieldType_UsesFieldType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                private int _count;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            FieldName = "_count",
+            PropertyType = "int"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public int Count", updated);
+        Assert.Contains("get => _count;", updated);
+        Assert.Contains("set => _count = value;", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReadonlyStruct_SettableAutoProperty_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public readonly struct Point
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Point",
+                PropertyName = "X",
+                PropertyType = "int"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Contains("readonly struct", ex.Message);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReadonlyStruct_InitOnly_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public readonly struct Point
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Point",
+            PropertyName = "X",
+            PropertyType = "int",
+            InitOnly = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public int X { get; init; }", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_StaticField_AddsStaticModifier()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                private static string _name;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            FieldName = "_name"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public static string Name", updated);
+        Assert.Contains("get => _name;", updated);
+        Assert.Contains("set => _name = value;", updated);
     }
 
     #endregion

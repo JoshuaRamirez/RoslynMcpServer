@@ -139,19 +139,20 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         if (!string.IsNullOrWhiteSpace(@params.FieldName))
         {
             backingField = ResolveBackingField(typeSymbol, @params.FieldName);
-            ValidateFieldCanBeWrapped(backingField);
+            ValidateFieldCanBeWrapped(backingField, @params.InitOnly);
         }
 
         var propertyName = ResolvePropertyName(@params, backingField);
         var propertyType = ResolvePropertyType(@params, backingField);
         ValidateNoNameClash(typeSymbol, propertyName);
+        ValidateAutoPropertyAccessors(typeSymbol, @params.InitOnly, hasBackingField: backingField != null);
 
         var visibility = string.IsNullOrWhiteSpace(@params.Visibility) ? "public" : @params.Visibility.Trim();
         var property = backingField != null
             ? CreatePropertyWithBackingField(propertyName, propertyType, backingField, visibility, @params.InitOnly)
             : CreateAutoProperty(propertyName, propertyType, visibility, @params.InitOnly);
 
-        if (typeSymbol.IsStatic && !property.Modifiers.Any(SyntaxKind.StaticKeyword))
+        if (ShouldBeStatic(typeSymbol, backingField) && !property.Modifiers.Any(SyntaxKind.StaticKeyword))
         {
             property = property.AddModifiers(SyntaxFactory.Token(SyntaxKind.StaticKeyword));
         }
@@ -192,7 +193,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         }
     }
 
-    internal static void ValidateFieldCanBeWrapped(IFieldSymbol field)
+    internal static void ValidateFieldCanBeWrapped(IFieldSymbol field, bool initOnly)
     {
         if (field.IsConst)
         {
@@ -207,7 +208,40 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
                 ErrorCodes.InvalidSymbolKind,
                 $"Field '{field.Name}' is not a supported target.");
         }
+
+        if (field.IsReadOnly && !initOnly)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolKind,
+                $"Field '{field.Name}' is readonly and cannot be assigned from a property setter. Use initOnly or wrap a non-readonly field.");
+        }
+
+        if (field.IsReadOnly && field.IsStatic && initOnly)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolKind,
+                $"Static readonly field '{field.Name}' cannot be assigned from a property accessor.");
+        }
     }
+
+    internal static void ValidateAutoPropertyAccessors(
+        INamedTypeSymbol typeSymbol,
+        bool initOnly,
+        bool hasBackingField)
+    {
+        if (hasBackingField)
+            return;
+
+        if (!initOnly && typeSymbol.IsReadOnly && typeSymbol.TypeKind == TypeKind.Struct)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolKind,
+                $"Cannot generate a settable auto-property on readonly struct '{typeSymbol.Name}'. Use initOnly.");
+        }
+    }
+
+    internal static bool ShouldBeStatic(INamedTypeSymbol typeSymbol, IFieldSymbol? backingField) =>
+        typeSymbol.IsStatic || backingField is { IsStatic: true };
 
     internal static void ValidateNoNameClash(INamedTypeSymbol typeSymbol, string propertyName)
     {
@@ -245,12 +279,63 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         return DerivePropertyName(backingField!.Name);
     }
 
-    private static string ResolvePropertyType(GeneratePropertyParams @params, IFieldSymbol? backingField)
+    internal static string ResolvePropertyType(GeneratePropertyParams @params, IFieldSymbol? backingField)
     {
-        if (!string.IsNullOrWhiteSpace(@params.PropertyType))
-            return @params.PropertyType;
+        if (backingField != null)
+        {
+            var fieldType = backingField.Type.ToDisplayString();
+            if (!string.IsNullOrWhiteSpace(@params.PropertyType) &&
+                !PropertyTypeMatchesField(@params.PropertyType, backingField.Type))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.InvalidReturnType,
+                    $"Property type '{@params.PropertyType}' is incompatible with backing field type '{fieldType}'.");
+            }
 
-        return backingField!.Type.ToDisplayString();
+            return fieldType;
+        }
+
+        return @params.PropertyType!;
+    }
+
+    internal static bool PropertyTypeMatchesField(string requestedType, ITypeSymbol fieldType)
+    {
+        requestedType = requestedType.Trim();
+        var candidates = new HashSet<string>(StringComparer.Ordinal)
+        {
+            fieldType.ToDisplayString(),
+            fieldType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat).Replace("global::", "", StringComparison.Ordinal),
+            fieldType.Name
+        };
+
+        if (TryGetSpecialTypeAlias(fieldType.SpecialType, out var alias))
+            candidates.Add(alias);
+
+        return candidates.Contains(requestedType);
+    }
+
+    private static bool TryGetSpecialTypeAlias(SpecialType specialType, out string alias)
+    {
+        alias = specialType switch
+        {
+            SpecialType.System_Boolean => "bool",
+            SpecialType.System_Byte => "byte",
+            SpecialType.System_SByte => "sbyte",
+            SpecialType.System_Int16 => "short",
+            SpecialType.System_UInt16 => "ushort",
+            SpecialType.System_Int32 => "int",
+            SpecialType.System_UInt32 => "uint",
+            SpecialType.System_Int64 => "long",
+            SpecialType.System_UInt64 => "ulong",
+            SpecialType.System_Single => "float",
+            SpecialType.System_Double => "double",
+            SpecialType.System_Decimal => "decimal",
+            SpecialType.System_Char => "char",
+            SpecialType.System_String => "string",
+            SpecialType.System_Object => "object",
+            _ => ""
+        };
+        return alias.Length > 0;
     }
 
     internal static string DerivePropertyName(string fieldName)
@@ -387,12 +472,18 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         _ => SyntaxFactory.Token(SyntaxKind.PublicKeyword)
     };
 
-    private static bool IsValidIdentifier(string name)
+    internal static bool IsValidIdentifier(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
             return false;
-        if (!char.IsLetter(name[0]) && name[0] != '_')
+
+        if (name.StartsWith('@') && name.Length > 1)
+            return SyntaxFacts.IsValidIdentifier(name);
+
+        if (!SyntaxFacts.IsValidIdentifier(name))
             return false;
-        return name.All(c => char.IsLetterOrDigit(c) || c == '_');
+
+        var keywordKind = SyntaxFacts.GetKeywordKind(name);
+        return keywordKind == SyntaxKind.None || !SyntaxFacts.IsReservedKeyword(keywordKind);
     }
 }
