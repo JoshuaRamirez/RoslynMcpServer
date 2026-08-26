@@ -292,12 +292,104 @@ public static class ErrorCodes
     /// <summary>Cannot inline expression with side effects.</summary>
     public const string CannotInlineSideEffects = "3093";
 
+    /// <summary>Recursive methods cannot be inlined.</summary>
+    public const string MethodIsRecursive = "3094";
+
+    /// <summary>Virtual, override, or abstract methods cannot be inlined.</summary>
+    public const string MethodIsVirtual = "3095";
+
+    /// <summary>Method has no body (abstract, extern, partial declaration, or interface member).</summary>
+    public const string MethodHasNoBody = "3096";
+
+    /// <summary>No call sites found for the method.</summary>
+    public const string NoCallSitesFound = "3097";
+
     // --------------------------------------------
     // Region/Range Errors (3100-3109)
     // --------------------------------------------
 
     /// <summary>Start/end line range is invalid for data or control flow analysis.</summary>
     public const string InvalidRegion = "3100";
+
+    // --------------------------------------------
+    // Hierarchy Errors (3105-3110)
+    // --------------------------------------------
+
+    /// <summary>Member depends on derived-only members that are not being pulled.</summary>
+    public const string MemberDependsOnDerived = "3105";
+
+    /// <summary>Target base class is sealed.</summary>
+    public const string BaseClassIsSealed = "3106";
+
+    /// <summary>Type has no base class or interface to pull members to.</summary>
+    public const string NoCommonBase = "3107";
+
+    /// <summary>Member name or signature already exists on the target type.</summary>
+    public const string ConflictsWithExistingMember = "3108";
+
+    /// <summary>Base class or interface is not editable (external assembly).</summary>
+    public const string BaseClassNotEditable = "3109";
+
+    /// <summary>Member cannot be declared on an interface (field, constructor, static, or non-public).</summary>
+    public const string MemberNotInterfaceCompatible = "3110";
+
+    /// <summary>Derived class or interface is not editable (external assembly).</summary>
+    public const string DerivedClassNotEditable = "3111";
+
+    /// <summary>Member is required by an interface or abstract contract and cannot be removed from the base.</summary>
+    public const string MemberRequiredByContract = "3112";
+
+    /// <summary>No type-annotation references can be rewritten to the chosen base.</summary>
+    public const string NoEligibleReferences = "3113";
+
+    /// <summary>Candidate references use members that do not exist on the chosen base.</summary>
+    public const string BaseCannotSatisfyUsedMembers = "3114";
+
+    /// <summary>A document containing eligible references is not editable.</summary>
+    public const string DocumentNotEditable = "3115";
+
+    // --------------------------------------------
+    // Introduce Field Errors (3116-3118)
+    // --------------------------------------------
+
+    /// <summary>Containing type cannot host the field, or the expression type is not a valid field type.</summary>
+    public const string InvalidTargetType = "3116";
+
+    /// <summary>Expression cannot be used as a field initializer.</summary>
+    public const string ExpressionNotFieldInitializable = "3117";
+
+    /// <summary>Expression captures local variable or parameter state.</summary>
+    public const string ExpressionCapturesLocal = "3118";
+
+    // --------------------------------------------
+    // Safe Delete Errors (3119)
+    // --------------------------------------------
+
+    /// <summary>Cannot safely delete the symbol because remaining references exist.</summary>
+    public const string MemberHasUsages = "3119";
+
+    // --------------------------------------------
+    // Make Static / Make Non-Static Errors (3120-3123)
+    // --------------------------------------------
+
+    /// <summary>Cannot make static because the method uses instance members.</summary>
+    public const string UsesInstanceMembers = "3120";
+
+    /// <summary>Member is already static.</summary>
+    public const string AlreadyStatic = "3121";
+
+    /// <summary>Member is already an instance member.</summary>
+    public const string AlreadyInstance = "3122";
+
+    /// <summary>Cannot make non-static because no valid instance receiver exists for a call site.</summary>
+    public const string NoValidInstanceReceiver = "3123";
+
+    // --------------------------------------------
+    // Convert Body Errors (3124)
+    // --------------------------------------------
+
+    /// <summary>Member already uses a block body.</summary>
+    public const string AlreadyBlockBody = "3124";
 
     // ============================================
     // System Errors (4xxx)

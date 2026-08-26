@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RoslynMcp.Server.Tests.TestHelpers;
 using RoslynMcp.Server.Tools;
 using RoslynMcp.Server.Transport;
 using Xunit;
@@ -15,8 +16,8 @@ public class ConvertToInterpolatedStringToolTests
 
     public ConvertToInterpolatedStringToolTests()
     {
-        // Use a null workspace provider since we're only testing argument validation
-        _tool = new ConvertToInterpolatedStringTool(null!);
+        // Fails loudly if workspace creation is attempted; argument validation is exercised via ExecuteAsync error paths.
+        _tool = new ConvertToInterpolatedStringTool(new ThrowingWorkspaceProvider());
     }
 
     #region GetDefinition Tests

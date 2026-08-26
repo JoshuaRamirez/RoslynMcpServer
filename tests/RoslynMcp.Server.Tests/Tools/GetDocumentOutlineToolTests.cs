@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RoslynMcp.Server.Tests.TestHelpers;
 using RoslynMcp.Server.Tools;
 using RoslynMcp.Server.Transport;
 using Xunit;
@@ -14,7 +15,7 @@ public class GetDocumentOutlineToolTests
 
     public GetDocumentOutlineToolTests()
     {
-        _tool = new GetDocumentOutlineTool(null!);
+        _tool = new GetDocumentOutlineTool(new ThrowingWorkspaceProvider());
     }
 
     [Fact]
