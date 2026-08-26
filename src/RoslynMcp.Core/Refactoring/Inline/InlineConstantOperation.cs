@@ -278,34 +278,34 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         {
             SpecialType.System_Int32 => SyntaxFactory.LiteralExpression(
                 SyntaxKind.NumericLiteralExpression,
-                SyntaxFactory.Literal(Convert.ToInt32(value))),
+                SyntaxFactory.Literal(System.Convert.ToInt32(value))),
 
             SpecialType.System_Int64 => SyntaxFactory.LiteralExpression(
                 SyntaxKind.NumericLiteralExpression,
-                SyntaxFactory.Literal(Convert.ToInt64(value))),
+                SyntaxFactory.Literal(System.Convert.ToInt64(value))),
 
             SpecialType.System_Single => SyntaxFactory.LiteralExpression(
                 SyntaxKind.NumericLiteralExpression,
-                SyntaxFactory.Literal(Convert.ToSingle(value))),
+                SyntaxFactory.Literal(System.Convert.ToSingle(value))),
 
             SpecialType.System_Double => SyntaxFactory.LiteralExpression(
                 SyntaxKind.NumericLiteralExpression,
-                SyntaxFactory.Literal(Convert.ToDouble(value))),
+                SyntaxFactory.Literal(System.Convert.ToDouble(value))),
 
             SpecialType.System_Decimal => SyntaxFactory.LiteralExpression(
                 SyntaxKind.NumericLiteralExpression,
-                SyntaxFactory.Literal(Convert.ToDecimal(value))),
+                SyntaxFactory.Literal(System.Convert.ToDecimal(value))),
 
             SpecialType.System_String => SyntaxFactory.LiteralExpression(
                 SyntaxKind.StringLiteralExpression,
                 SyntaxFactory.Literal((string)value)),
 
             SpecialType.System_Boolean => SyntaxFactory.LiteralExpression(
-                Convert.ToBoolean(value) ? SyntaxKind.TrueLiteralExpression : SyntaxKind.FalseLiteralExpression),
+                System.Convert.ToBoolean(value) ? SyntaxKind.TrueLiteralExpression : SyntaxKind.FalseLiteralExpression),
 
             SpecialType.System_Char => SyntaxFactory.LiteralExpression(
                 SyntaxKind.CharacterLiteralExpression,
-                SyntaxFactory.Literal(Convert.ToChar(value))),
+                SyntaxFactory.Literal(System.Convert.ToChar(value))),
 
             _ => throw new RefactoringException(
                 ErrorCodes.NotCompileTimeConstant,

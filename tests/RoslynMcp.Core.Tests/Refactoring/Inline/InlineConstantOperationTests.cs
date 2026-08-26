@@ -292,7 +292,7 @@ public class InlineConstantOperationTests
         var libText = await File.ReadAllTextAsync(workspace.GetPath(Path.Combine("Lib", "Limits.cs")));
         var appText = await File.ReadAllTextAsync(workspace.GetPath(Path.Combine("App", "Worker.cs")));
         Assert.Contains("public const int MaxRetries = 5;", libText);
-        Assert.Contains("return 5;", appText);
+        Assert.Contains("public int Run() => 5;", appText);
         Assert.DoesNotContain("Limits.MaxRetries", appText);
     }
 
