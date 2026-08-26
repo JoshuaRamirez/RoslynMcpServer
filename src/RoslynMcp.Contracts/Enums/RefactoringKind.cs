@@ -66,6 +66,10 @@ public enum RefactoringKind
     /// <summary>Inline a constant by replacing references with its literal value.</summary>
     InlineConstant,
 
+    // Signature Operations
+    /// <summary>Add a parameter to a method and update call sites.</summary>
+    AddParameter,
+
     // Generate Operations
     /// <summary>Generate constructor from fields/properties.</summary>
     GenerateConstructor,

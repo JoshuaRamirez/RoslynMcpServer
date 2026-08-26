@@ -8,7 +8,7 @@
 
 Let AI assistants like Claude safely refactor your C# codebase using the same Roslyn compiler platform that powers Visual Studio.
 
-Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **54 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 30 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 5 code generation tools, and 8 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
+Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **55 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 31 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 5 code generation tools, and 8 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
 
 ---
 
@@ -30,7 +30,7 @@ Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotoc
 
 ## Why RoslynMcpServer?
 
-- **54 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
+- **55 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
 - **Preview mode on every operation** -- see exactly what will change before applying
 - **Atomic file writes with rollback** -- if any file write fails, all changes are reverted
 - **Solution-wide reference updates** -- renames and moves propagate across your entire solution
@@ -102,7 +102,7 @@ Claude will use the `rename_symbol` tool to rename the class and update every re
 
 ## Standalone CLI
 
-All 54 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
+All 55 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
 
 ### Install
 
@@ -222,6 +222,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `change_signature` | Add, remove, or reorder method parameters and update all call sites. | `sourceFile`, `methodName`, `parameters` (array of changes), `line` |
+| `add_parameter` | Add a named parameter to a method and update call sites, overrides, and interface implementations. | `sourceFile`, `methodName`, `parameterName`, `parameterType`, `defaultValue`, `position`, `line`, `column`, `updateOverrides`, `updateImplementations` |
 | `encapsulate_field` | Convert a field to a property with backing field. | `sourceFile`, `fieldName`, `propertyName`, `readOnly` |
 
 ### Generate

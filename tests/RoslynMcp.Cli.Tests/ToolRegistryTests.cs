@@ -6,11 +6,11 @@ namespace RoslynMcp.Cli.Tests;
 public class ToolRegistryTests
 {
     [Fact]
-    public void BuildDefault_Registers54Tools()
+    public void BuildDefault_Registers55Tools()
     {
         var registry = ToolRegistry.BuildDefault();
         var tools = registry.GetAllTools();
-        Assert.Equal(54, tools.Count);
+        Assert.Equal(55, tools.Count);
     }
 
     [Fact]
@@ -85,6 +85,7 @@ public class ToolRegistryTests
     [InlineData("extract-method", "Refactoring")]
     [InlineData("inline-method", "Refactoring")]
     [InlineData("inline-constant", "Refactoring")]
+    [InlineData("add-parameter", "Refactoring")]
     [InlineData("pull-members-up", "Refactoring")]
     [InlineData("push-members-down", "Refactoring")]
     [InlineData("use-base-type", "Refactoring")]
@@ -114,11 +115,11 @@ public class ToolRegistryTests
     }
 
     [Fact]
-    public void RefactoringToolCount_Is41()
+    public void RefactoringToolCount_Is42()
     {
         var registry = ToolRegistry.BuildDefault();
         var count = registry.GetAllTools().Count(t => t.Category == "Refactoring");
-        Assert.Equal(41, count);
+        Assert.Equal(42, count);
     }
 
     [Fact]
