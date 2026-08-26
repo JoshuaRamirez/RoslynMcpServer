@@ -152,10 +152,8 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
             ? CreatePropertyWithBackingField(propertyName, propertyType, backingField, visibility, @params.InitOnly)
             : CreateAutoProperty(propertyName, propertyType, visibility, @params.InitOnly);
 
-        if (ShouldBeStatic(typeSymbol, backingField) && !property.Modifiers.Any(SyntaxKind.StaticKeyword))
-        {
-            property = property.AddModifiers(SyntaxFactory.Token(SyntaxKind.StaticKeyword));
-        }
+        if (ShouldBeStatic(typeSymbol, backingField))
+            property = AddStaticModifier(property);
 
         if (@params.Preview)
             return CreatePreviewResult(operationId, @params, propertyName, property);
@@ -242,6 +240,37 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
 
     internal static bool ShouldBeStatic(INamedTypeSymbol typeSymbol, IFieldSymbol? backingField) =>
         typeSymbol.IsStatic || backingField is { IsStatic: true };
+
+    internal static PropertyDeclarationSyntax AddStaticModifier(PropertyDeclarationSyntax property)
+    {
+        if (property.Modifiers.Any(SyntaxKind.StaticKeyword))
+            return property;
+
+        var staticToken = SyntaxFactory.Token(SyntaxKind.StaticKeyword)
+            .WithTrailingTrivia(SyntaxFactory.Space);
+        var modifiers = property.Modifiers;
+        var insertIndex = 0;
+        for (var i = 0; i < modifiers.Count; i++)
+        {
+            if (modifiers[i].IsKind(SyntaxKind.PublicKeyword) ||
+                modifiers[i].IsKind(SyntaxKind.PrivateKeyword) ||
+                modifiers[i].IsKind(SyntaxKind.ProtectedKeyword) ||
+                modifiers[i].IsKind(SyntaxKind.InternalKeyword))
+            {
+                insertIndex = i + 1;
+            }
+        }
+
+        if (insertIndex == 0 && modifiers.Count > 0)
+        {
+            var first = modifiers[0];
+            staticToken = staticToken.WithLeadingTrivia(first.LeadingTrivia);
+            modifiers = modifiers.Replace(first, first.WithLeadingTrivia(SyntaxFactory.TriviaList()));
+            return property.WithModifiers(modifiers.Insert(0, staticToken)).NormalizeWhitespace();
+        }
+
+        return property.WithModifiers(modifiers.Insert(insertIndex, staticToken)).NormalizeWhitespace();
+    }
 
     internal static void ValidateNoNameClash(INamedTypeSymbol typeSymbol, string propertyName)
     {
@@ -478,7 +507,11 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
             return false;
 
         if (name.StartsWith('@') && name.Length > 1)
-            return SyntaxFacts.IsValidIdentifier(name);
+        {
+            var bare = name[1..];
+            return SyntaxFacts.IsValidIdentifier(bare) ||
+                   SyntaxFacts.GetKeywordKind(bare) != SyntaxKind.None;
+        }
 
         if (!SyntaxFacts.IsValidIdentifier(name))
             return false;
