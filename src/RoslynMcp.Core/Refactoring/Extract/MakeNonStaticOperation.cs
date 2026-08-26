@@ -605,6 +605,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         return enclosingType != null && !WouldRebindToHidingMember(enclosingType, method);
     }
 
+    // Receiver eligibility is decided per call site; this helper never mutates syntax.
     private static bool CanUseThis(
         SyntaxNode callSite,
         INamedTypeSymbol requiredType,
