@@ -182,6 +182,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             MemberDeclarationSyntax? impl = member switch
             {
                 IMethodSymbol method => CreateMethodStub(method),
+                IPropertySymbol { IsIndexer: true } indexer => CreateIndexerStub(indexer),
                 IPropertySymbol property => CreatePropertyStub(property),
                 _ => null
             };
@@ -201,7 +202,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     {
         var parameters = method.Parameters.Select(CreateParameter);
         var methodDecl = SyntaxFactory.MethodDeclaration(
-                SyntaxFactory.ParseTypeName(method.ReturnType.ToDisplayString()).WithTrailingTrivia(SyntaxFactory.Space),
+                CreateMemberType(method.ReturnType, method.ReturnsByRef, method.ReturnsByRefReadonly),
                 method.Name)
             .WithModifiers(CreateOverrideModifiers(method.DeclaredAccessibility))
             .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(parameters)))
@@ -220,31 +221,105 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// <summary>
     /// Creates an override property stub whose accessors throw
     /// <c>new global::System.NotImplementedException()</c>.
+    /// Preserves init setters, accessor-specific accessibility, and required.
     /// </summary>
     internal static PropertyDeclarationSyntax CreatePropertyStub(IPropertySymbol property)
+    {
+        return SyntaxFactory.PropertyDeclaration(
+                CreateMemberType(property.Type, property.ReturnsByRef, property.ReturnsByRefReadonly),
+                property.Name)
+            .WithModifiers(CreateOverrideModifiers(property.DeclaredAccessibility, property.IsRequired))
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(property))))
+            .NormalizeWhitespace();
+    }
+
+    /// <summary>
+    /// Creates an override indexer stub whose accessors throw
+    /// <c>new global::System.NotImplementedException()</c>.
+    /// </summary>
+    internal static IndexerDeclarationSyntax CreateIndexerStub(IPropertySymbol indexer)
+    {
+        var parameters = indexer.Parameters.Select(CreateParameter);
+        return SyntaxFactory.IndexerDeclaration(
+                CreateMemberType(indexer.Type, indexer.ReturnsByRef, indexer.ReturnsByRefReadonly))
+            .WithModifiers(CreateOverrideModifiers(indexer.DeclaredAccessibility, indexer.IsRequired))
+            .WithParameterList(SyntaxFactory.BracketedParameterList(SyntaxFactory.SeparatedList(parameters)))
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(indexer))))
+            .NormalizeWhitespace();
+    }
+
+    private static List<AccessorDeclarationSyntax> CreateAccessors(IPropertySymbol property)
     {
         var accessors = new List<AccessorDeclarationSyntax>();
 
         if (property.GetMethod != null)
         {
-            accessors.Add(
-                SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                    .WithBody(CreateThrowNotImplementedBody()));
+            accessors.Add(CreateAccessor(
+                property.GetMethod,
+                property.DeclaredAccessibility,
+                SyntaxKind.GetAccessorDeclaration));
         }
 
         if (property.SetMethod != null)
         {
-            accessors.Add(
-                SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
-                    .WithBody(CreateThrowNotImplementedBody()));
+            var kind = property.SetMethod.IsInitOnly
+                ? SyntaxKind.InitAccessorDeclaration
+                : SyntaxKind.SetAccessorDeclaration;
+            accessors.Add(CreateAccessor(property.SetMethod, property.DeclaredAccessibility, kind));
         }
 
-        return SyntaxFactory.PropertyDeclaration(
-                SyntaxFactory.ParseTypeName(property.Type.ToDisplayString()).WithTrailingTrivia(SyntaxFactory.Space),
-                property.Name)
-            .WithModifiers(CreateOverrideModifiers(property.DeclaredAccessibility))
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
-            .NormalizeWhitespace();
+        return accessors;
+    }
+
+    private static AccessorDeclarationSyntax CreateAccessor(
+        IMethodSymbol accessor,
+        Accessibility propertyAccessibility,
+        SyntaxKind kind)
+    {
+        var declaration = SyntaxFactory.AccessorDeclaration(kind)
+            .WithBody(CreateThrowNotImplementedBody());
+
+        var modifiers = CreateAccessorModifiers(accessor.DeclaredAccessibility, propertyAccessibility);
+        if (modifiers.Count > 0)
+            declaration = declaration.WithModifiers(modifiers);
+
+        return declaration;
+    }
+
+    private static SyntaxTokenList CreateAccessorModifiers(
+        Accessibility accessorAccessibility,
+        Accessibility propertyAccessibility)
+    {
+        if (accessorAccessibility == Accessibility.NotApplicable
+            || accessorAccessibility == propertyAccessibility)
+        {
+            return default;
+        }
+
+        return SyntaxFactory.TokenList(ParseAccessibility(accessorAccessibility));
+    }
+
+    private static TypeSyntax CreateMemberType(ITypeSymbol type, bool returnsByRef, bool returnsByRefReadonly)
+    {
+        var inner = SyntaxFactory.ParseTypeName(type.ToDisplayString());
+        if (returnsByRefReadonly)
+        {
+            return SyntaxFactory.RefType(
+                    SyntaxFactory.Token(SyntaxKind.RefKeyword).WithTrailingTrivia(SyntaxFactory.Space),
+                    SyntaxFactory.Token(SyntaxKind.ReadOnlyKeyword).WithTrailingTrivia(SyntaxFactory.Space),
+                    inner)
+                .WithTrailingTrivia(SyntaxFactory.Space);
+        }
+
+        if (returnsByRef)
+        {
+            return SyntaxFactory.RefType(
+                    SyntaxFactory.Token(SyntaxKind.RefKeyword).WithTrailingTrivia(SyntaxFactory.Space),
+                    inner)
+                .WithTrailingTrivia(SyntaxFactory.Space);
+        }
+
+        return inner.WithTrailingTrivia(SyntaxFactory.Space);
     }
 
     internal static BlockSyntax CreateThrowNotImplementedBody()
@@ -276,11 +351,13 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             SyntaxFactory.Token(refKeyword).WithTrailingTrivia(SyntaxFactory.Space)));
     }
 
-    private static SyntaxTokenList CreateOverrideModifiers(Accessibility accessibility)
+    private static SyntaxTokenList CreateOverrideModifiers(Accessibility accessibility, bool isRequired = false)
     {
         var tokens = new List<SyntaxToken>();
         tokens.AddRange(ParseAccessibility(accessibility));
         tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword).WithTrailingTrivia(SyntaxFactory.Space));
+        if (isRequired)
+            tokens.Add(SyntaxFactory.Token(SyntaxKind.RequiredKeyword).WithTrailingTrivia(SyntaxFactory.Space));
         return SyntaxFactory.TokenList(tokens);
     }
 

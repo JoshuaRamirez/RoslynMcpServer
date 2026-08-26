@@ -45,16 +45,16 @@ public static class MemberAnalyzer
     }
 
     /// <summary>
-    /// Gets abstract methods and properties inherited from base types that the
-    /// selected type has not yet implemented.
+    /// Gets abstract methods, properties, and indexers inherited from base types
+    /// that the selected type has not yet implemented.
     /// </summary>
     /// <param name="type">The type to analyze.</param>
-    /// <returns>Unimplemented inherited abstract members (methods and properties).</returns>
+    /// <returns>Unimplemented inherited abstract members (methods, properties, and indexers).</returns>
     public static IEnumerable<ISymbol> GetUnimplementedAbstractMembers(INamedTypeSymbol type)
     {
         var declared = new HashSet<string>(
             type.GetMembers()
-                .Where(m => m is IMethodSymbol { MethodKind: MethodKind.Ordinary } or IPropertySymbol { IsIndexer: false })
+                .Where(m => m is IMethodSymbol { MethodKind: MethodKind.Ordinary } or IPropertySymbol)
                 .Select(GetMemberSignature));
 
         var current = type.BaseType;
@@ -76,7 +76,7 @@ public static class MemberAnalyzer
                         isAbstract = method.IsAbstract;
                         isConcreteOverride = method.IsOverride && !method.IsAbstract;
                         break;
-                    case IPropertySymbol property when !property.IsIndexer:
+                    case IPropertySymbol property:
                         signature = GetMemberSignature(property);
                         isAbstract = property.IsAbstract;
                         isConcreteOverride = property.IsOverride && !property.IsAbstract;
@@ -242,9 +242,24 @@ public static class MemberAnalyzer
     {
         return member switch
         {
-            IMethodSymbol method => $"{method.Name}({string.Join(",", method.Parameters.Select(p => p.Type.ToDisplayString()))})",
+            IMethodSymbol method => $"{method.Name}({string.Join(",", method.Parameters.Select(FormatParameterSignature))})",
+            IPropertySymbol { IsIndexer: true } indexer =>
+                $"this[{string.Join(",", indexer.Parameters.Select(FormatParameterSignature))}]",
             IPropertySymbol prop => prop.Name,
             _ => member.Name
+        };
+    }
+
+    private static string FormatParameterSignature(IParameterSymbol parameter)
+    {
+        var type = parameter.Type.ToDisplayString();
+        return parameter.RefKind switch
+        {
+            RefKind.Ref => $"ref {type}",
+            RefKind.Out => $"out {type}",
+            RefKind.In => $"in {type}",
+            RefKind.RefReadOnlyParameter => $"ref readonly {type}",
+            _ => type
         };
     }
 

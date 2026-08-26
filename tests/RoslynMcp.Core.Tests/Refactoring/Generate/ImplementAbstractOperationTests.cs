@@ -310,6 +310,236 @@ public class ImplementAbstractOperationTests
 
     #endregion
 
+    #region Review Fold
+
+    [SkippableFact]
+    public async Task ImplementAbstract_InitSetter_EmitsInitNotSet()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract int Area { get; init; }
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override int Area", updated);
+        Assert.Contains("init", updated);
+        Assert.DoesNotContain("set", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ProtectedSetter_PreservesAccessorAccessibility()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract string Name { get; protected set; }
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override string Name", updated);
+        Assert.Contains("protected set", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_RefKindOverloads_GeneratesBoth()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Resize(int size);
+                public abstract void Resize(ref int size);
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override void Resize(int size)", updated);
+        Assert.Contains("public override void Resize(ref int size)", updated);
+        Assert.Equal(2, CountOccurrences(updated, "public override void Resize("));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ByRefReturns_PreservesRefAndRefReadonly()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract ref int GetCell();
+                public abstract ref readonly int GetOrigin();
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override ref int GetCell()", updated);
+        Assert.Contains("public override ref readonly int GetOrigin()", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_Indexer_AddsOverrideStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract int this[int index] { get; set; }
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override int this[int index]", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_IndexerOverloads_GeneratesBoth()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract int this[int index] { get; }
+                public abstract int this[string name] { get; }
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override int this[int index]", updated);
+        Assert.Contains("public override int this[string name]", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_RequiredProperty_KeepsRequired()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract required string Name { get; set; }
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("required", updated);
+        Assert.Contains("public override required string Name", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+    }
+
+    #endregion
+
     #region Reject Cases
 
     [SkippableFact]
