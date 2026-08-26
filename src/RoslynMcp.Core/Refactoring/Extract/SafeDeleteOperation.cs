@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Text;
@@ -107,8 +108,8 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
 
         var sourceText = await document.GetTextAsync(cancellationToken);
         var span = GetSelectionSpan(sourceText, @params);
-        var symbol = await ResolveSelectedSymbolAsync(
-            document, root, semanticModel, span, @params, cancellationToken);
+        var symbol = ResolveSelectedSymbol(
+            root, semanticModel, span, @params, cancellationToken);
 
         symbol = NormalizeDeletableSymbol(symbol);
         ValidateSymbolCanBeDeleted(symbol);
@@ -164,39 +165,40 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         return TextSpan.FromBounds(startPosition, endPosition);
     }
 
-    private async Task<ISymbol> ResolveSelectedSymbolAsync(
-        Document document,
+    private static ISymbol ResolveSelectedSymbol(
         SyntaxNode root,
         SemanticModel semanticModel,
         TextSpan span,
         SafeDeleteParams @params,
         CancellationToken cancellationToken)
     {
+        var token = root.FindToken(span.Start);
+        if (token.Span.OverlapsWith(span) || span.OverlapsWith(token.Span))
+        {
+            var tokenNode = token.Parent;
+            if (tokenNode != null)
+            {
+                var declaredOnToken = semanticModel.GetDeclaredSymbol(tokenNode, cancellationToken);
+                if (declaredOnToken != null && IdentifierOverlaps(tokenNode, span))
+                    return ConfirmSymbolName(declaredOnToken, @params.SymbolName);
+
+                if (token.IsKind(SyntaxKind.IdentifierToken))
+                {
+                    var tokenSymbol = semanticModel.GetSymbolInfo(tokenNode, cancellationToken).Symbol;
+                    if (tokenSymbol != null)
+                        return ConfirmSymbolName(tokenSymbol, @params.SymbolName);
+                }
+            }
+        }
+
         var node = root.FindNode(span, getInnermostNodeForTie: true);
-        for (var current = node; current != null; current = current.Parent)
-        {
-            var declared = semanticModel.GetDeclaredSymbol(current, cancellationToken);
-            if (declared != null && SelectionCoversDeclaration(current, span))
-                return ConfirmSymbolName(declared, @params.SymbolName);
-        }
+        var declared = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+        if (declared != null && IdentifierOverlaps(node, span))
+            return ConfirmSymbolName(declared, @params.SymbolName);
 
-        var symbolInfo = semanticModel.GetSymbolInfo(node, cancellationToken);
-        if (symbolInfo.Symbol != null)
-            return ConfirmSymbolName(symbolInfo.Symbol, @params.SymbolName);
-
-        var resolver = Context.CreateGeneralSymbolResolver();
-        try
-        {
-            var resolved = await resolver.ResolveAtPositionAsync(
-                document, @params.StartLine, @params.StartColumn, cancellationToken);
-            return ConfirmSymbolName(resolved.Symbol, @params.SymbolName);
-        }
-        catch (RefactoringException ex) when (ex.ErrorCode == ErrorCodes.SymbolNotFound)
-        {
-            throw new RefactoringException(
-                ErrorCodes.SymbolNotFound,
-                "No symbol found at the specified selection.");
-        }
+        throw new RefactoringException(
+            ErrorCodes.SymbolNotFound,
+            "No symbol found at the specified selection.");
     }
 
     private static ISymbol ConfirmSymbolName(ISymbol symbol, string? expectedName)
@@ -211,10 +213,31 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         return symbol;
     }
 
-    private static bool SelectionCoversDeclaration(SyntaxNode declaration, TextSpan span)
+    private static bool IdentifierOverlaps(SyntaxNode node, TextSpan span)
     {
-        return declaration.Span.Contains(span) || span.Contains(declaration.Span) || declaration.Span.OverlapsWith(span);
+        var identifier = GetDeclarationIdentifier(node);
+        if (identifier != null)
+            return identifier.Value.Span.OverlapsWith(span) || span.OverlapsWith(identifier.Value.Span);
+
+        return node is MemberDeclarationSyntax && node.Span.OverlapsWith(span);
     }
+
+    private static SyntaxToken? GetDeclarationIdentifier(SyntaxNode node) => node switch
+    {
+        MethodDeclarationSyntax method => method.Identifier,
+        PropertyDeclarationSyntax property => property.Identifier,
+        EventDeclarationSyntax @event => @event.Identifier,
+        VariableDeclaratorSyntax variable => variable.Identifier,
+        TypeDeclarationSyntax type => type.Identifier,
+        EnumDeclarationSyntax @enum => @enum.Identifier,
+        DelegateDeclarationSyntax @delegate => @delegate.Identifier,
+        EnumMemberDeclarationSyntax member => member.Identifier,
+        ParameterSyntax parameter => parameter.Identifier,
+        LocalFunctionStatementSyntax localFunction => localFunction.Identifier,
+        ConstructorDeclarationSyntax constructor => constructor.Identifier,
+        DestructorDeclarationSyntax destructor => destructor.Identifier,
+        _ => null
+    };
 
     private static ISymbol NormalizeDeletableSymbol(ISymbol symbol)
     {
