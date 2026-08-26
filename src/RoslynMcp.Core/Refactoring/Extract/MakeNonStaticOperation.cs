@@ -649,11 +649,10 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         var unique = candidates
             .Distinct<ISymbol>(SymbolEqualityComparer.Default)
             .ToList();
-        if (unique.Count != 1)
+        if (unique.Count != 1 || string.IsNullOrEmpty(unique[0].Name))
             return null;
 
-        var name = unique[0].ToMinimalDisplayString(model, callSite.SpanStart);
-        return SyntaxFactory.ParseExpression(name);
+        return SyntaxFactory.IdentifierName(unique[0].Name);
     }
 
     private static bool IsUsableInstanceCandidate(
