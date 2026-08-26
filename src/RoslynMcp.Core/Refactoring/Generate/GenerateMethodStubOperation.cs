@@ -14,7 +14,7 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// <summary>
 /// Generates a method declaration from an undefined call site, inferring the
 /// signature from usage. The placeholder body is
-/// <c>throw new NotImplementedException();</c>.
+/// <c>throw new global::System.NotImplementedException();</c>.
 /// </summary>
 public sealed class GenerateMethodStubOperation : RefactoringOperationBase<GenerateMethodStubParams>
 {
@@ -118,7 +118,12 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
                 $"No method invocation found at line {@params.Line}, column {@params.Column}.");
         }
 
-        var methodName = ResolveMethodName(@params, invocation);
+        ValidateInvocationIsUnresolved(invocation, semanticModel, cancellationToken);
+
+        var invokedName = GetInvokedName(invocation);
+        var methodName = ResolveMethodName(@params, invokedName);
+        var typeParameters = InferTypeParameters(invokedName);
+        var rewriteCallSite = ShouldRewriteCallSite(@params.MethodName, invokedName, methodName);
         var callSiteType = GetEnclosingType(invocation, semanticModel, cancellationToken);
         var target = ResolveTarget(invocation, semanticModel, callSiteType, cancellationToken);
         ValidateTypeCanHostMethod(target.Type);
@@ -131,36 +136,29 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         ValidateDocumentIsEditable(targetDocument, Context.Workspace);
 
         var parameters = InferParameters(invocation, semanticModel);
-        ValidateNoCompatibleMethod(target.Type, methodName, parameters);
+        ValidateNoCompatibleMethod(target.Type, methodName, parameters, typeParameters.Count);
 
         var returnType = InferReturnType(invocation, semanticModel, @params, cancellationToken);
         var isAsync = @params.GenerateAsync || IsAwaited(invocation);
         if (isAsync)
             returnType = ToAsyncReturnType(returnType);
 
-        var isStatic = ShouldBeStatic(target, callSiteType, invocation);
+        var isStatic = ShouldBeStatic(target, invocation, semanticModel, cancellationToken);
         var visibility = ResolveVisibility(@params, target.SameTypeAsCaller);
-        var method = CreateMethodStub(methodName, returnType, parameters, visibility, isStatic, isAsync);
+        var method = CreateMethodStub(methodName, returnType, parameters, visibility, isStatic, isAsync, typeParameters);
 
         if (@params.Preview)
-            return CreatePreviewResult(operationId, targetDocument, target.Type.Name, methodName, method);
+            return CreatePreviewResult(operationId, callSiteDocument, targetDocument, target.Type.Name, methodName, method, rewriteCallSite, invokedName);
 
-        var newTypeDecl = InsertMethod(targetDeclaration, method);
-        Solution newSolution;
-        if (targetDocument.Id == callSiteDocument.Id)
-        {
-            var targetInCallSite = (TypeDeclarationSyntax)root.FindNode(targetDeclaration.Span);
-            var newRoot = root.ReplaceNode(targetInCallSite, newTypeDecl);
-            newSolution = callSiteDocument.WithSyntaxRoot(newRoot).Project.Solution;
-        }
-        else
-        {
-            var targetRoot = await targetDocument.GetSyntaxRootAsync(cancellationToken)
-                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse target file.");
-            var currentDecl = (TypeDeclarationSyntax)targetRoot.FindNode(targetDeclaration.Span);
-            var newRoot = targetRoot.ReplaceNode(currentDecl, newTypeDecl);
-            newSolution = targetDocument.WithSyntaxRoot(newRoot).Project.Solution;
-        }
+        var newSolution = await ApplyChangesAsync(
+            callSiteDocument,
+            root,
+            targetDocument,
+            targetDeclaration,
+            method,
+            rewriteCallSite ? invokedName : null,
+            methodName,
+            cancellationToken);
 
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
 
@@ -212,21 +210,56 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         };
     }
 
-    private static string ResolveMethodName(GenerateMethodStubParams @params, InvocationExpressionSyntax invocation)
+    internal static void ValidateInvocationIsUnresolved(
+        InvocationExpressionSyntax invocation,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var symbol = semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol;
+        if (symbol != null)
+        {
+            throw new RefactoringException(
+                ErrorCodes.NameCollision,
+                $"The call already resolves to '{symbol.ToDisplayString()}'.");
+        }
+    }
+
+    private static string ResolveMethodName(
+        GenerateMethodStubParams @params,
+        SimpleNameSyntax? invokedName)
     {
         if (!string.IsNullOrWhiteSpace(@params.MethodName))
             return @params.MethodName;
 
-        var name = GetInvokedName(invocation);
-        if (name == null || string.IsNullOrWhiteSpace(name.Identifier.ValueText))
+        if (invokedName == null || string.IsNullOrWhiteSpace(invokedName.Identifier.ValueText))
         {
             throw new RefactoringException(
                 ErrorCodes.MethodNotFound,
                 "No method invocation found at the specified location.");
         }
 
-        return name.Identifier.ValueText;
+        return invokedName.Identifier.ValueText;
     }
+
+    internal static bool ShouldRewriteCallSite(string? requestedName, SimpleNameSyntax? invokedName, string methodName) =>
+        !string.IsNullOrWhiteSpace(requestedName)
+        && invokedName != null
+        && !string.Equals(invokedName.Identifier.ValueText, methodName, StringComparison.Ordinal);
+
+    internal static IReadOnlyList<string> InferTypeParameters(SimpleNameSyntax? name)
+    {
+        if (name is not GenericNameSyntax generic || generic.TypeArgumentList.Arguments.Count == 0)
+            return Array.Empty<string>();
+
+        var names = new List<string>(generic.TypeArgumentList.Arguments.Count);
+        for (var i = 0; i < generic.TypeArgumentList.Arguments.Count; i++)
+            names.Add(i == 0 ? "T" : $"T{i + 1}");
+
+        return names;
+    }
+
+    internal static SimpleNameSyntax RenameInvokedName(SimpleNameSyntax current, string newName) =>
+        current.WithIdentifier(SyntaxFactory.Identifier(newName).WithTriviaFrom(current.Identifier));
 
     private static INamedTypeSymbol GetEnclosingType(
         SyntaxNode node,
@@ -379,7 +412,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             index++;
             var typeName = InferArgumentType(argument.Expression, semanticModel);
             var name = InferParameterName(argument, index, usedNames);
-            parameters.Add(new InferredParameter(name, typeName));
+            parameters.Add(new InferredParameter(name, typeName, InferRefKind(argument)));
         }
 
         return parameters;
@@ -433,6 +466,12 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         {
             candidate = identifier.Identifier.ValueText;
         }
+        else if (Unwrap(argument.Expression) is DeclarationExpressionSyntax declaration
+                 && declaration.Designation is SingleVariableDesignationSyntax single
+                 && IsValidIdentifier(single.Identifier.ValueText))
+        {
+            candidate = single.Identifier.ValueText;
+        }
         else
         {
             candidate = $"arg{index}";
@@ -448,6 +487,14 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
 
         return name;
     }
+
+    internal static RefKind InferRefKind(ArgumentSyntax argument) => argument.RefKindKeyword.Kind() switch
+    {
+        SyntaxKind.RefKeyword => RefKind.Ref,
+        SyntaxKind.OutKeyword => RefKind.Out,
+        SyntaxKind.InKeyword => RefKind.In,
+        _ => RefKind.None
+    };
 
     private static ExpressionSyntax Unwrap(ExpressionSyntax expression)
     {
@@ -470,11 +517,15 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
     internal static void ValidateNoCompatibleMethod(
         INamedTypeSymbol typeSymbol,
         string methodName,
-        IReadOnlyList<InferredParameter> parameters)
+        IReadOnlyList<InferredParameter> parameters,
+        int typeParameterCount)
     {
         foreach (var existing in typeSymbol.GetMembers(methodName).OfType<IMethodSymbol>())
         {
             if (existing.MethodKind != MethodKind.Ordinary || existing.IsImplicitlyDeclared)
+                continue;
+
+            if (existing.TypeParameters.Length != typeParameterCount)
                 continue;
 
             if (existing.Parameters.Length != parameters.Count)
@@ -597,46 +648,57 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
 
     internal static bool ShouldBeStatic(
         TargetResolution target,
-        INamedTypeSymbol enclosingType,
-        InvocationExpressionSyntax invocation)
+        SyntaxNode invocation,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         if (target.Type.IsStatic || target.ReceiverIsTypeName)
             return true;
 
-        if (target.SameTypeAsCaller && IsInStaticContext(invocation, enclosingType))
-            return true;
-
-        return false;
+        return target.SameTypeAsCaller && IsInStaticContext(invocation, semanticModel, cancellationToken);
     }
 
-    private static bool IsInStaticContext(
+    internal static bool IsInStaticContext(
         SyntaxNode node,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        var member = node.Ancestors().FirstOrDefault(n =>
-            n is MethodDeclarationSyntax or LocalFunctionStatementSyntax
-                or PropertyDeclarationSyntax or AccessorDeclarationSyntax
-                or ConstructorDeclarationSyntax);
-
-        return member switch
-        {
-            MethodDeclarationSyntax method => method.Modifiers.Any(SyntaxKind.StaticKeyword)
-                || semanticModel.GetDeclaredSymbol(method, cancellationToken)?.IsStatic == true,
-            LocalFunctionStatementSyntax local => local.Modifiers.Any(SyntaxKind.StaticKeyword),
-            PropertyDeclarationSyntax property => property.Modifiers.Any(SyntaxKind.StaticKeyword),
-            ConstructorDeclarationSyntax => false,
-            _ => false
-        };
-    }
-
-    private static bool IsInStaticContext(SyntaxNode node, INamedTypeSymbol enclosingType)
-    {
-        if (enclosingType.IsStatic)
+        var enclosingType = node.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
+        if (enclosingType?.Modifiers.Any(SyntaxKind.StaticKeyword) == true)
             return true;
 
-        var method = node.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault();
-        return method?.Modifiers.Any(SyntaxKind.StaticKeyword) == true;
+        foreach (var ancestor in node.Ancestors())
+        {
+            switch (ancestor)
+            {
+                case MethodDeclarationSyntax method:
+                    return method.Modifiers.Any(SyntaxKind.StaticKeyword)
+                        || semanticModel.GetDeclaredSymbol(method, cancellationToken)?.IsStatic == true;
+                case LocalFunctionStatementSyntax local:
+                    return local.Modifiers.Any(SyntaxKind.StaticKeyword);
+                case ConstructorDeclarationSyntax constructor:
+                    return constructor.Modifiers.Any(SyntaxKind.StaticKeyword);
+                case PropertyDeclarationSyntax property:
+                    return property.Modifiers.Any(SyntaxKind.StaticKeyword);
+                case EventDeclarationSyntax evt:
+                    return evt.Modifiers.Any(SyntaxKind.StaticKeyword);
+                case AccessorDeclarationSyntax accessor:
+                    return IsContainingMemberStatic(accessor);
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsContainingMemberStatic(AccessorDeclarationSyntax accessor)
+    {
+        return accessor.Parent?.Parent switch
+        {
+            PropertyDeclarationSyntax property => property.Modifiers.Any(SyntaxKind.StaticKeyword),
+            EventDeclarationSyntax evt => evt.Modifiers.Any(SyntaxKind.StaticKeyword),
+            IndexerDeclarationSyntax => false,
+            _ => false
+        };
     }
 
     internal static string ResolveVisibility(GenerateMethodStubParams @params, bool sameTypeAsCaller)
@@ -648,7 +710,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
     }
 
     /// <summary>
-    /// Creates a method stub with a <c>throw new NotImplementedException();</c> body.
+    /// Creates a method stub with a <c>throw new global::System.NotImplementedException();</c> body.
     /// </summary>
     internal static MethodDeclarationSyntax CreateMethodStub(
         string name,
@@ -656,12 +718,11 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         IReadOnlyList<InferredParameter> parameters,
         string visibility,
         bool isStatic,
-        bool isAsync)
+        bool isAsync,
+        IReadOnlyList<string>? typeParameters = null)
     {
         var parameterList = SyntaxFactory.ParameterList(
-            SyntaxFactory.SeparatedList(parameters.Select(p =>
-                SyntaxFactory.Parameter(SyntaxFactory.Identifier(p.Name))
-                    .WithType(SyntaxFactory.ParseTypeName(p.TypeName).WithTrailingTrivia(SyntaxFactory.Space)))));
+            SyntaxFactory.SeparatedList(parameters.Select(CreateParameter)));
 
         var modifiers = new List<SyntaxToken>(ParseVisibilityTokens(visibility));
         if (isStatic)
@@ -669,13 +730,41 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         if (isAsync)
             modifiers.Add(SyntaxFactory.Token(SyntaxKind.AsyncKeyword).WithTrailingTrivia(SyntaxFactory.Space));
 
-        return SyntaxFactory.MethodDeclaration(
+        var method = SyntaxFactory.MethodDeclaration(
                 SyntaxFactory.ParseTypeName(returnType).WithTrailingTrivia(SyntaxFactory.Space),
                 name)
             .WithModifiers(SyntaxFactory.TokenList(modifiers))
             .WithParameterList(parameterList)
-            .WithBody(CreateThrowNotImplementedBody())
-            .NormalizeWhitespace();
+            .WithBody(CreateThrowNotImplementedBody());
+
+        if (typeParameters is { Count: > 0 })
+        {
+            method = method.WithTypeParameterList(
+                SyntaxFactory.TypeParameterList(
+                    SyntaxFactory.SeparatedList(typeParameters.Select(SyntaxFactory.TypeParameter))));
+        }
+
+        return method.NormalizeWhitespace();
+    }
+
+    private static ParameterSyntax CreateParameter(InferredParameter parameter)
+    {
+        var syntax = SyntaxFactory.Parameter(SyntaxFactory.Identifier(parameter.Name))
+            .WithType(SyntaxFactory.ParseTypeName(parameter.TypeName).WithTrailingTrivia(SyntaxFactory.Space));
+
+        var refKeyword = parameter.RefKind switch
+        {
+            RefKind.Ref => SyntaxKind.RefKeyword,
+            RefKind.Out => SyntaxKind.OutKeyword,
+            RefKind.In => SyntaxKind.InKeyword,
+            _ => SyntaxKind.None
+        };
+
+        if (refKeyword == SyntaxKind.None)
+            return syntax;
+
+        return syntax.WithModifiers(SyntaxFactory.TokenList(
+            SyntaxFactory.Token(refKeyword).WithTrailingTrivia(SyntaxFactory.Space)));
     }
 
     internal static BlockSyntax CreateThrowNotImplementedBody()
@@ -683,7 +772,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         return SyntaxFactory.Block(
             SyntaxFactory.ThrowStatement(
                 SyntaxFactory.ObjectCreationExpression(
-                    SyntaxFactory.IdentifierName("NotImplementedException"))
+                    SyntaxFactory.ParseTypeName("global::System.NotImplementedException"))
                 .WithArgumentList(SyntaxFactory.ArgumentList())));
     }
 
@@ -700,12 +789,76 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         return typeDeclaration.WithMembers(SyntaxFactory.List(members));
     }
 
+    private async Task<Solution> ApplyChangesAsync(
+        Document callSiteDocument,
+        SyntaxNode callSiteRoot,
+        Document targetDocument,
+        TypeDeclarationSyntax targetDeclaration,
+        MethodDeclarationSyntax method,
+        SimpleNameSyntax? invokedNameToRewrite,
+        string methodName,
+        CancellationToken cancellationToken)
+    {
+        if (targetDocument.Id == callSiteDocument.Id)
+        {
+            var targetInCallSite = (TypeDeclarationSyntax)callSiteRoot.FindNode(targetDeclaration.Span);
+            SyntaxNode newRoot;
+            if (invokedNameToRewrite != null && targetInCallSite.FullSpan.Contains(invokedNameToRewrite.Span))
+            {
+                var renamed = RenameInvokedName(invokedNameToRewrite, methodName);
+                var typeWithRename = (TypeDeclarationSyntax)targetInCallSite.ReplaceNode(invokedNameToRewrite, renamed);
+                newRoot = callSiteRoot.ReplaceNode(targetInCallSite, InsertMethod(typeWithRename, method));
+            }
+            else if (invokedNameToRewrite != null)
+            {
+                var renamed = RenameInvokedName(invokedNameToRewrite, methodName);
+                newRoot = callSiteRoot.ReplaceNodes(
+                    new SyntaxNode[] { invokedNameToRewrite, targetInCallSite },
+                    (original, _) => original == invokedNameToRewrite
+                        ? renamed
+                        : InsertMethod(targetInCallSite, method));
+            }
+            else
+            {
+                newRoot = callSiteRoot.ReplaceNode(targetInCallSite, InsertMethod(targetInCallSite, method));
+            }
+
+            return callSiteDocument.WithSyntaxRoot(newRoot).Project.Solution;
+        }
+
+        var targetRoot = await targetDocument.GetSyntaxRootAsync(cancellationToken)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse target file.");
+        var currentDecl = (TypeDeclarationSyntax)targetRoot.FindNode(targetDeclaration.Span);
+        var newTargetRoot = targetRoot.ReplaceNode(currentDecl, InsertMethod(currentDecl, method));
+        var solution = targetDocument.WithSyntaxRoot(newTargetRoot).Project.Solution;
+
+        if (invokedNameToRewrite == null)
+            return solution;
+
+        var updatedCallSite = solution.GetDocument(callSiteDocument.Id)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not locate the call-site document.");
+        var updatedRoot = await updatedCallSite.GetSyntaxRootAsync(cancellationToken)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+        if (updatedRoot.FindNode(invokedNameToRewrite.Span) is not SimpleNameSyntax currentName)
+        {
+            throw new RefactoringException(
+                ErrorCodes.MethodNotFound,
+                "Could not rewrite the call site to the overridden method name.");
+        }
+
+        var rewrittenRoot = updatedRoot.ReplaceNode(currentName, RenameInvokedName(currentName, methodName));
+        return updatedCallSite.WithSyntaxRoot(rewrittenRoot).Project.Solution;
+    }
+
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,
+        Document callSiteDocument,
         Document targetDocument,
         string typeName,
         string methodName,
-        MethodDeclarationSyntax method)
+        MethodDeclarationSyntax method,
+        bool rewriteCallSite,
+        SimpleNameSyntax? invokedName)
     {
         var afterSnippet = method.NormalizeWhitespace().ToFullString();
         var pendingChanges = new List<PendingChange>
@@ -719,6 +872,18 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
                 AfterSnippet = afterSnippet
             }
         };
+
+        if (rewriteCallSite && invokedName != null)
+        {
+            pendingChanges.Add(new PendingChange
+            {
+                File = callSiteDocument.FilePath ?? invokedName.ToString(),
+                ChangeType = ChangeKind.Modify,
+                Description = $"Rewrite call site '{invokedName.Identifier.ValueText}' to '{methodName}'",
+                BeforeSnippet = invokedName.ToString(),
+                AfterSnippet = RenameInvokedName(invokedName, methodName).ToString()
+            });
+        }
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
@@ -812,5 +977,5 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         bool SameTypeAsCaller,
         bool ReceiverIsTypeName);
 
-    internal readonly record struct InferredParameter(string Name, string TypeName);
+    internal readonly record struct InferredParameter(string Name, string TypeName, RefKind RefKind);
 }
