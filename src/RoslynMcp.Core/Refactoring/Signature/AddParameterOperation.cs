@@ -130,6 +130,14 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         var attachDefaultToDeclaration = CanAttachDefaultToDeclaration(methodDecl.ParameterList, insertIndex);
         ValidateResultingSignature(methodDecl.ParameterList, insertIndex, @params, attachDefaultToDeclaration);
 
+        if (!string.IsNullOrEmpty(@params.DefaultValue))
+        {
+            ValidateDefaultValue(
+                semanticModel,
+                @params.ParameterType,
+                @params.DefaultValue);
+        }
+
         var relatedMethods = await GetRelatedMethodsAsync(
             methodSymbol,
             @params.UpdateOverrides,
@@ -363,22 +371,28 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
 
         if (updateImplementations)
         {
-            if (method.ContainingType.TypeKind == TypeKind.Interface)
+            foreach (var candidate in results.ToList())
             {
-                var implementations = await SymbolFinder.FindImplementationsAsync(
-                    method, Context.Solution, cancellationToken: cancellationToken);
-                foreach (var impl in implementations.OfType<IMethodSymbol>())
-                    results.Add(impl);
-            }
-
-            foreach (var iface in method.ContainingType.AllInterfaces)
-            {
-                foreach (var ifaceMethod in iface.GetMembers(method.Name).OfType<IMethodSymbol>())
+                if (candidate.ContainingType.TypeKind == TypeKind.Interface)
                 {
-                    var impl = method.ContainingType.FindImplementationForInterfaceMember(ifaceMethod);
-                    if (impl is IMethodSymbol implMethod &&
-                        SymbolEqualityComparer.Default.Equals(implMethod, method))
+                    var implementations = await SymbolFinder.FindImplementationsAsync(
+                        candidate, Context.Solution, cancellationToken: cancellationToken);
+                    foreach (var impl in implementations.OfType<IMethodSymbol>())
+                        results.Add(impl);
+                    continue;
+                }
+
+                foreach (var iface in candidate.ContainingType.AllInterfaces)
+                {
+                    foreach (var ifaceMethod in iface.GetMembers(candidate.Name).OfType<IMethodSymbol>())
                     {
+                        var impl = candidate.ContainingType.FindImplementationForInterfaceMember(ifaceMethod);
+                        if (impl is not IMethodSymbol implMethod ||
+                            !ShareOverrideRoot(implMethod, candidate))
+                        {
+                            continue;
+                        }
+
                         results.Add(ifaceMethod);
                         var otherImpls = await SymbolFinder.FindImplementationsAsync(
                             ifaceMethod,
@@ -416,7 +430,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
                         ErrorCodes.DocumentNotEditable,
                         $"Could not locate the document for method '{method.Name}'.");
 
-                targets.Add(new DeclarationTarget(document, declaration.Span, method.Name));
+                targets.Add(new DeclarationTarget(document, declaration.Span));
             }
         }
 
@@ -452,22 +466,26 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
                     if (root == null)
                         continue;
 
-                    var node = root.FindNode(location.Location.SourceSpan);
-                    var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-                    if (invocation == null)
+                    var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
+                    if (IsDeclarationName(node, location.Location.SourceSpan))
                         continue;
 
-                    if (invocation.ArgumentList.Span.Contains(location.Location.SourceSpan) ||
-                        node.AncestorsAndSelf().OfType<MethodDeclarationSyntax>().Any(m =>
-                            m.Identifier.Span.IntersectsWith(location.Location.SourceSpan)))
+                    var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
+                    if (invocation != null && IsInvokedMethodName(invocation, location.Location.SourceSpan))
                     {
+                        if (!seen.Add((document.Id, invocation.Span)))
+                            continue;
+
+                        callSites.Add(new CallSite(document, invocation.Span));
                         continue;
                     }
 
-                    if (!seen.Add((document.Id, invocation.Span)))
+                    if (IsNameOfArgument(node))
                         continue;
 
-                    callSites.Add(new CallSite(document, invocation.Span));
+                    throw new RefactoringException(
+                        ErrorCodes.UnsupportedCallSite,
+                        $"Method '{method.Name}' is used as a method group or other unsupported reference and cannot be updated automatically.");
                 }
             }
         }
@@ -507,23 +525,14 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
                 .Where(c => c.Document.Id == documentId)
                 .Select(c => c.Span)
                 .ToHashSet();
-            var targetNames = declarations
-                .Where(d => d.Document.Id == documentId)
-                .Select(d => d.MethodName)
-                .ToHashSet();
 
             var methods = root.DescendantNodes()
                 .OfType<MethodDeclarationSyntax>()
-                .Where(m =>
-                    declarationSpans.Contains(m.Span) ||
-                    (targetNames.Contains(m.Identifier.Text) &&
-                     m.ParameterList.Parameters.Count == originalParams.Count))
+                .Where(m => declarationSpans.Contains(m.Span))
                 .ToList();
             var invocations = root.DescendantNodes()
                 .OfType<InvocationExpressionSyntax>()
-                .Where(i =>
-                    invocationSpans.Contains(i.Span) ||
-                    (targetNames.Count > 0 && IsInvocationOf(i, targetNames)))
+                .Where(i => invocationSpans.Contains(i.Span))
                 .ToList();
 
             var rewriter = new AddParameterRewriter(
@@ -728,6 +737,109 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         return !expression.ContainsDiagnostics && !expression.IsMissing;
     }
 
+    internal static void ValidateDefaultValue(
+        SemanticModel semanticModel,
+        string parameterType,
+        string defaultValue)
+    {
+        var expression = SyntaxFactory.ParseExpression(defaultValue);
+        if (expression.IsMissing || expression.ContainsDiagnostics)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidDefaultValue,
+                $"'{defaultValue}' is not a valid default value expression.");
+        }
+
+        var parseOptions = (CSharpParseOptions)semanticModel.SyntaxTree.Options;
+        var probeTree = CSharpSyntaxTree.ParseText($$"""
+            namespace __RoslynMcpProbe
+            {
+                static class Probe
+                {
+                    static void M()
+                    {
+                        {{parameterType}} __v = {{defaultValue}};
+                    }
+                }
+            }
+            """, parseOptions);
+
+        var probeCompilation = semanticModel.Compilation.AddSyntaxTrees(probeTree);
+        var probeModel = probeCompilation.GetSemanticModel(probeTree);
+        var local = probeTree.GetRoot().DescendantNodes().OfType<LocalDeclarationStatementSyntax>().FirstOrDefault();
+        var initializer = local?.Declaration.Variables.FirstOrDefault()?.Initializer?.Value;
+        if (local == null || initializer == null)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidDefaultValue,
+                $"'{defaultValue}' is not a valid default value expression.");
+        }
+
+        var targetType = probeModel.GetTypeInfo(local.Declaration.Type).Type;
+        if (targetType == null || targetType.TypeKind == TypeKind.Error)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidParameterType,
+                $"'{parameterType}' is not a valid C# parameter type.");
+        }
+
+        var conversion = probeModel.ClassifyConversion(initializer, targetType);
+        if (!conversion.Exists || (!conversion.IsIdentity && !conversion.IsImplicit))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidDefaultValue,
+                $"'{defaultValue}' is not implicitly convertible to '{parameterType}'.");
+        }
+
+        if (IsDefaultValueExpression(initializer))
+            return;
+
+        if (!probeModel.GetConstantValue(initializer).HasValue)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidDefaultValue,
+                $"'{defaultValue}' is not a compile-time constant or default(T).");
+        }
+    }
+
+    private static bool IsDefaultValueExpression(ExpressionSyntax expression) =>
+        expression.IsKind(SyntaxKind.DefaultLiteralExpression) ||
+        expression is DefaultExpressionSyntax;
+
+    private static bool IsDeclarationName(SyntaxNode node, TextSpan referenceSpan)
+    {
+        return node.AncestorsAndSelf().OfType<MethodDeclarationSyntax>()
+            .Any(m => m.Identifier.Span.IntersectsWith(referenceSpan));
+    }
+
+    private static bool IsInvokedMethodName(InvocationExpressionSyntax invocation, TextSpan referenceSpan)
+    {
+        if (invocation.ArgumentList.Span.Contains(referenceSpan))
+            return false;
+
+        return invocation.Expression switch
+        {
+            IdentifierNameSyntax identifier => identifier.Span.IntersectsWith(referenceSpan),
+            MemberAccessExpressionSyntax member => member.Name.Span.IntersectsWith(referenceSpan),
+            MemberBindingExpressionSyntax binding => binding.Name.Span.IntersectsWith(referenceSpan),
+            _ => invocation.Expression.Span.IntersectsWith(referenceSpan)
+        };
+    }
+
+    private static bool IsNameOfArgument(SyntaxNode node)
+    {
+        foreach (var invocation in node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>())
+        {
+            if (invocation.Expression is IdentifierNameSyntax identifier &&
+                identifier.Identifier.Text == "nameof")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool IsParams(ParameterSyntax parameter) =>
         parameter.Modifiers.Any(m => m.IsKind(SyntaxKind.ParamsKeyword));
 
@@ -737,6 +849,17 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
     private static bool HasSourceDeclaration(IMethodSymbol method) =>
         method.DeclaringSyntaxReferences.Length > 0 &&
         method.Locations.Any(l => l.IsInSource);
+
+    private static bool ShareOverrideRoot(IMethodSymbol left, IMethodSymbol right) =>
+        SymbolEqualityComparer.Default.Equals(GetOverrideRoot(left), GetOverrideRoot(right));
+
+    private static IMethodSymbol GetOverrideRoot(IMethodSymbol method)
+    {
+        var current = method;
+        while (current.OverriddenMethod != null)
+            current = current.OverriddenMethod;
+        return current;
+    }
 
     private static string NormalizeIdentifier(string name) =>
         name.StartsWith('@') && name.Length > 1 ? name[1..] : name;
@@ -756,20 +879,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         return SyntaxFactory.SeparatedList(nodes, separators);
     }
 
-    private static bool IsInvocationOf(InvocationExpressionSyntax invocation, HashSet<string> methodNames)
-    {
-        var name = invocation.Expression switch
-        {
-            IdentifierNameSyntax identifier => identifier.Identifier.Text,
-            MemberAccessExpressionSyntax member => member.Name.Identifier.Text,
-            MemberBindingExpressionSyntax binding => binding.Name.Identifier.Text,
-            _ => null
-        };
-
-        return name != null && methodNames.Contains(name);
-    }
-
-    private sealed record DeclarationTarget(Document Document, TextSpan Span, string MethodName);
+    private sealed record DeclarationTarget(Document Document, TextSpan Span);
 
     private sealed record CallSite(Document Document, TextSpan Span);
 

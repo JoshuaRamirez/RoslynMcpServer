@@ -373,6 +373,55 @@ public class AddParameterOperationTests
         Assert.Contains("public void Process(int count, string label = \"x\", params string[] rest)", text);
     }
 
+    [SkippableFact]
+    public async Task AddParameter_SameNameOnOtherType_LeavesUnselectedMethodUntouched()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Alpha
+            {
+                public void Process(int count)
+                {
+                }
+
+                public void Run() => Process(1);
+            }
+
+            public class Beta
+            {
+                public void Process(string name)
+                {
+                }
+
+                public void Run() => Process("x");
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "label",
+            ParameterType = "string",
+            DefaultValue = "\"ok\"",
+            Line = 5
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public void Process(int count, string label = \"ok\")", text);
+        Assert.Contains("public void Run() => Process(1, \"ok\");", text);
+        Assert.Contains("public void Process(string name)", text);
+        Assert.Contains("public void Run() => Process(\"x\");", text);
+        Assert.DoesNotContain("Process(string name, string label", text);
+        Assert.DoesNotContain("Process(\"x\", \"ok\")", text);
+    }
+
     #endregion
 
     #region Rejects
@@ -540,6 +589,139 @@ public class AddParameterOperationTests
             AddParameterOperation.ValidateDocumentIsEditable(document, workspace));
 
         Assert.Equal(ErrorCodes.DocumentNotEditable, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_MethodGroup_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public int Process(int count) => count;
+
+                public void Run()
+                {
+                    System.Func<int, int> handler = Process;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddParameterParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                ParameterName = "timeout",
+                ParameterType = "int",
+                DefaultValue = "30"
+            }));
+
+        Assert.Equal(ErrorCodes.UnsupportedCallSite, ex.ErrorCode);
+        Assert.Equal("3130", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_NonConstantDefault_DateTimeNow_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Process(int count)
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddParameterParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                ParameterName = "when",
+                ParameterType = "System.DateTime",
+                DefaultValue = "System.DateTime.Now"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidDefaultValue, ex.ErrorCode);
+        Assert.Equal("1013", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_NonConstantDefault_NewObject_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Process(int count)
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddParameterParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                ParameterName = "state",
+                ParameterType = "object",
+                DefaultValue = "new object()"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidDefaultValue, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_IncompatibleDefault_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Process(int count)
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddParameterParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                ParameterName = "timeout",
+                ParameterType = "int",
+                DefaultValue = "\"hello\""
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidDefaultValue, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
     #endregion

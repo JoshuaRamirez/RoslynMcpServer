@@ -424,6 +424,9 @@ public static class ErrorCodes
     /// <summary>A params parameter must remain last in the parameter list.</summary>
     public const string ParamsNotLast = "3129";
 
+    /// <summary>A method reference is not a supported invocation and cannot be updated (method group, delegate).</summary>
+    public const string UnsupportedCallSite = "3130";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================
