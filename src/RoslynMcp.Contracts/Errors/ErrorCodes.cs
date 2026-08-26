@@ -410,6 +410,23 @@ public static class ErrorCodes
     /// <summary>No unimplemented abstract members remain on the selected type.</summary>
     public const string NoUnimplementedAbstractMembers = "3126";
 
+    // --------------------------------------------
+    // Signature Errors (3127-3129)
+    // 3060-3066 and 3080-3089 are already shipped for generate/async.
+    // --------------------------------------------
+
+    /// <summary>Parameter with this name already exists on the method.</summary>
+    public const string ParameterAlreadyExists = "3127";
+
+    /// <summary>Required parameters cannot follow optional parameters.</summary>
+    public const string RequiredAfterOptional = "3128";
+
+    /// <summary>A params parameter must remain last in the parameter list.</summary>
+    public const string ParamsNotLast = "3129";
+
+    /// <summary>A method reference is not a supported invocation and cannot be updated (method group, delegate).</summary>
+    public const string UnsupportedCallSite = "3130";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================
