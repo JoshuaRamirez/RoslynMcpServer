@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RoslynMcp.Server.Tests.TestHelpers;
 using RoslynMcp.Server.Tools;
 using RoslynMcp.Server.Transport;
 using Xunit;
@@ -14,7 +15,7 @@ public class GetDiagnosticsToolTests
 
     public GetDiagnosticsToolTests()
     {
-        _tool = new GetDiagnosticsTool(null!);
+        _tool = new GetDiagnosticsTool(new ThrowingWorkspaceProvider());
     }
 
     [Fact]

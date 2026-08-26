@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RoslynMcp.Server.Tests.TestHelpers;
 using RoslynMcp.Server.Tools;
 using RoslynMcp.Server.Transport;
 using Xunit;
@@ -14,7 +15,7 @@ public class FindCallersToolTests
 
     public FindCallersToolTests()
     {
-        _tool = new FindCallersTool(null!);
+        _tool = new FindCallersTool(new ThrowingWorkspaceProvider());
     }
 
     [Fact]

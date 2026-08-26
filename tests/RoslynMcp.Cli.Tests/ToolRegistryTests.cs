@@ -6,11 +6,11 @@ namespace RoslynMcp.Cli.Tests;
 public class ToolRegistryTests
 {
     [Fact]
-    public void BuildDefault_Registers41Tools()
+    public void BuildDefault_Registers51Tools()
     {
         var registry = ToolRegistry.BuildDefault();
         var tools = registry.GetAllTools();
-        Assert.Equal(41, tools.Count);
+        Assert.Equal(51, tools.Count);
     }
 
     [Fact]
@@ -83,12 +83,22 @@ public class ToolRegistryTests
 
     [Theory]
     [InlineData("extract-method", "Refactoring")]
+    [InlineData("inline-method", "Refactoring")]
+    [InlineData("pull-members-up", "Refactoring")]
+    [InlineData("push-members-down", "Refactoring")]
+    [InlineData("use-base-type", "Refactoring")]
+    [InlineData("introduce-field", "Refactoring")]
+    [InlineData("safe-delete", "Refactoring")]
+    [InlineData("make-static", "Refactoring")]
+    [InlineData("make-non-static", "Refactoring")]
     [InlineData("find-references", "Query")]
     [InlineData("get-diagnostics", "Query")]
     [InlineData("diagnose", "Diagnostic")]
     [InlineData("move-type-to-file", "Refactoring")]
     [InlineData("convert-to-async", "Refactoring")]
+    [InlineData("convert-to-block-body", "Refactoring")]
     [InlineData("generate-constructor", "Refactoring")]
+    [InlineData("generate-property", "Refactoring")]
     [InlineData("add-missing-usings", "Refactoring")]
     [InlineData("format-document", "Refactoring")]
     [InlineData("get-symbol-info", "Query")]
@@ -101,11 +111,11 @@ public class ToolRegistryTests
     }
 
     [Fact]
-    public void RefactoringToolCount_Is28()
+    public void RefactoringToolCount_Is38()
     {
         var registry = ToolRegistry.BuildDefault();
         var count = registry.GetAllTools().Count(t => t.Category == "Refactoring");
-        Assert.Equal(28, count);
+        Assert.Equal(38, count);
     }
 
     [Fact]

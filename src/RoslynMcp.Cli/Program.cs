@@ -80,7 +80,7 @@ try
     // Special handling for diagnose (needs IWorkspaceProvider, not WorkspaceContext)
     if (parsed.ToolName.Equals("diagnose", StringComparison.OrdinalIgnoreCase))
     {
-        var diagnoseResult = await ExecuteDiagnoseAsync(workspaceProvider, parsed, cts.Token);
+        var diagnoseResult = await ExecuteDiagnoseAsync(workspaceProvider, registry, parsed, cts.Token);
         OutputResult(diagnoseResult, parsed.Format);
         return diagnoseResult is DiagnoseResult dr && dr.Healthy ? ExitSuccess : ExitToolError;
     }
@@ -157,6 +157,7 @@ bool IsEnvironmentError(Exception ex)
 
 async Task<DiagnoseResult> ExecuteDiagnoseAsync(
     MSBuildWorkspaceProvider provider,
+    ToolRegistry toolRegistry,
     ParsedArgs args,
     CancellationToken ct)
 {
@@ -221,9 +222,7 @@ async Task<DiagnoseResult> ExecuteDiagnoseAsync(
             DotnetSdkVersion = envDiag.DotnetSdkVersion
         },
         Workspace = workspaceStatus,
-        Capabilities = envDiag.MsBuildFound
-            ? ["move_type_to_file", "move_type_to_namespace", "diagnose"]
-            : ["diagnose"],
+        Capabilities = toolRegistry.GetAllTools().Select(tool => tool.Name).ToArray(),
         Errors = errors,
         Warnings = []
     };

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RoslynMcp.Server.Tests.TestHelpers;
 using RoslynMcp.Server.Tools;
 using RoslynMcp.Server.Transport;
 using Xunit;
@@ -15,7 +16,7 @@ public class GenerateConstructorToolTests
 
     public GenerateConstructorToolTests()
     {
-        _tool = new GenerateConstructorTool(null!);
+        _tool = new GenerateConstructorTool(new ThrowingWorkspaceProvider());
     }
 
     #region GetDefinition Tests
