@@ -368,6 +368,16 @@ public static class ErrorCodes
     /// <summary>Cannot safely delete the symbol because remaining references exist.</summary>
     public const string MemberHasUsages = "3119";
 
+    // --------------------------------------------
+    // Make Static Errors (3120-3121)
+    // --------------------------------------------
+
+    /// <summary>Cannot make static because the method uses instance members.</summary>
+    public const string UsesInstanceMembers = "3120";
+
+    /// <summary>Member is already static.</summary>
+    public const string AlreadyStatic = "3121";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================
