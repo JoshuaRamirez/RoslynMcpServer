@@ -67,6 +67,9 @@ public enum RefactoringKind
     /// <summary>Generate constructor from fields/properties.</summary>
     GenerateConstructor,
 
+    /// <summary>Generate a property on a type.</summary>
+    GenerateProperty,
+
     /// <summary>Generate method stub.</summary>
     GenerateMethodStub,
 

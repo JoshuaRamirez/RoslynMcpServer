@@ -77,6 +77,7 @@ public sealed class McpServerHost : IAsyncDisposable
         // Code Generation & Formatting Tools
         _toolRegistry.Register(new GenerateEqualsHashCodeTool(workspaceProvider));
         _toolRegistry.Register(new GenerateToStringTool(workspaceProvider));
+        _toolRegistry.Register(new GeneratePropertyTool(workspaceProvider));
         _toolRegistry.Register(new FormatDocumentTool(workspaceProvider));
         _toolRegistry.Register(new AddNullChecksTool(workspaceProvider));
 
