@@ -70,6 +70,9 @@ public enum RefactoringKind
     /// <summary>Add a parameter to a method and update call sites.</summary>
     AddParameter,
 
+    /// <summary>Remove a parameter from a method and update call sites.</summary>
+    RemoveParameter,
+
     // Generate Operations
     /// <summary>Generate constructor from fields/properties.</summary>
     GenerateConstructor,
