@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `pull_members_up` — move selected members from a derived type onto an existing base class or interface, with preview mode and rejects for missing bases, interface-incompatible members, and name/signature conflicts
+- `push_members_down` — move selected members from a base type down onto derived types, with optional named targets, preview mode, and rejects for missing derived types, conflicts, interface-incompatible members, and uneditable targets
+- `use_base_type` — replace derived-type references with a compatible base type or interface, rewriting only usages whose members exist on that base, with preview mode and rejects for missing bases, uneditable documents, and no eligible references
+- `introduce_field` — turn a selected local variable or expression into a class field, optionally initializing it in a constructor, with preview mode and rejects for missing expressions, uneditable documents, and invalid target types
+- `safe_delete` — delete a selected symbol only when it has no remaining references, with preview mode and rejects that include usage locations, missing symbols, and uneditable documents
+- `make_static` — add the static modifier to a selected instance method that does not use instance state, update call sites and method-group conversions to the containing type name, with preview mode and rejects for instance-member access, already-static methods, and uneditable documents
+- `make_non_static` — remove the static modifier from a selected static method, rewrite type-name call sites and method-group conversions to an instance receiver (or `this` in the same type), with preview mode and rejects for already-instance methods, missing receivers, extern methods, and uneditable documents
+- `convert_to_block_body` — convert a selected expression-bodied member (`=> expr`) to a block body (`{ return expr; }` or `{ expr; }` as appropriate), including properties and accessors, with preview mode and rejects for missing symbols, already-block bodies, unsupported members, and uneditable documents
+- `generate_property` — generate an auto-property `{ get; set; }`, init-only property `{ get; init; }`, or backing-field property `{ get => field; set => field = value; }` on a selected type, with preview mode and rejects for missing symbols, uneditable documents, unsupported targets, and name clashes
+
 ## [0.4.0] - 2026-02-23
 
 ### Added

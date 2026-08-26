@@ -10,6 +10,7 @@ using RoslynMcp.Core.Refactoring.Encapsulate;
 using RoslynMcp.Core.Refactoring.Extract;
 using RoslynMcp.Core.Refactoring.Format;
 using RoslynMcp.Core.Refactoring.Generate;
+using RoslynMcp.Core.Refactoring.Hierarchy;
 using RoslynMcp.Core.Refactoring.Inline;
 using RoslynMcp.Core.Refactoring.Organize;
 using RoslynMcp.Core.Refactoring.Rename;
@@ -46,7 +47,7 @@ public sealed class ToolEntry
 }
 
 /// <summary>
-/// Maps tool names to execution delegates for all 41 Roslyn tools.
+/// Maps tool names to execution delegates for all 51 Roslyn tools.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -138,13 +139,13 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 41 tools registered.
+    /// Build the default registry with all 51 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
         var r = new ToolRegistry();
 
-        // ── Refactoring: Extract (6) ──────────────────────────────────
+        // ── Refactoring: Extract (7) ──────────────────────────────────
         r.RegisterRefactoring<ExtractMethodOperation, ExtractMethodParams>(
             "extract-method", "Extract selected code into a new method");
         r.RegisterRefactoring<ExtractVariableOperation, ExtractVariableParams>(
@@ -157,14 +158,30 @@ public sealed class ToolRegistry
             "extract-base-class", "Extract a base class from common members");
         r.RegisterRefactoring<IntroduceParameterOperation, IntroduceParameterParams>(
             "introduce-parameter", "Introduce a method parameter from an expression");
+        r.RegisterRefactoring<PullMembersUpOperation, PullMembersUpParams>(
+            "pull-members-up", "Move selected members from a derived type onto an existing base class or interface");
+        r.RegisterRefactoring<PushMembersDownOperation, PushMembersDownParams>(
+            "push-members-down", "Move selected members from a base type down onto derived types");
+        r.RegisterRefactoring<UseBaseTypeOperation, UseBaseTypeParams>(
+            "use-base-type", "Replace derived-type references with a compatible base type or interface");
+        r.RegisterRefactoring<IntroduceFieldOperation, IntroduceFieldParams>(
+            "introduce-field", "Turn a selected local variable or expression into a class field");
+        r.RegisterRefactoring<SafeDeleteOperation, SafeDeleteParams>(
+            "safe-delete", "Delete a selected symbol only when it has no remaining references");
+        r.RegisterRefactoring<MakeStaticOperation, MakeStaticParams>(
+            "make-static", "Make a selected instance method static when it does not use instance state");
+        r.RegisterRefactoring<MakeNonStaticOperation, MakeNonStaticParams>(
+            "make-non-static", "Make a selected static method an instance method when a valid instance receiver exists");
 
         // ── Refactoring: Rename (1) ───────────────────────────────────
         r.RegisterRefactoring<RenameSymbolOperation, RenameSymbolParams>(
             "rename-symbol", "Rename any C# symbol with automatic reference updates");
 
-        // ── Refactoring: Inline (1) ───────────────────────────────────
+        // ── Refactoring: Inline (2) ───────────────────────────────────
         r.RegisterRefactoring<InlineVariableOperation, InlineVariableParams>(
             "inline-variable", "Inline a variable, replacing all references with its value");
+        r.RegisterRefactoring<InlineMethodOperation, InlineMethodParams>(
+            "inline-method", "Inline a method by replacing call sites with the method body");
 
         // ── Refactoring: Signature (1) ────────────────────────────────
         r.RegisterRefactoring<ChangeSignatureOperation, ChangeSignatureParams>(
@@ -174,11 +191,13 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<EncapsulateFieldOperation, EncapsulateFieldParams>(
             "encapsulate-field", "Encapsulate a field into a property");
 
-        // ── Refactoring: Convert (6) ──────────────────────────────────
+        // ── Refactoring: Convert (7) ──────────────────────────────────
         r.RegisterRefactoring<ConvertToAsyncOperation, ConvertToAsyncParams>(
             "convert-to-async", "Convert a synchronous method to async");
         r.RegisterRefactoring<ConvertExpressionBodyOperation, ConvertExpressionBodyParams>(
             "convert-expression-body", "Toggle between expression body and block body");
+        r.RegisterRefactoring<ConvertToBlockBodyOperation, ConvertToBlockBodyParams>(
+            "convert-to-block-body", "Convert an expression-bodied member to a block body");
         r.RegisterRefactoring<ConvertPropertyOperation, ConvertPropertyParams>(
             "convert-property", "Convert between auto-property and full property");
         r.RegisterRefactoring<ConvertForeachLinqOperation, ConvertForeachLinqParams>(
@@ -188,9 +207,11 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ConvertToPatternMatchingOperation, ConvertToPatternMatchingParams>(
             "convert-to-pattern-matching", "Convert type checks to pattern matching");
 
-        // ── Refactoring: Generate (6) ─────────────────────────────────
+        // ── Refactoring: Generate (7) ─────────────────────────────────
         r.RegisterRefactoring<GenerateConstructorOperation, GenerateConstructorParams>(
             "generate-constructor", "Generate a constructor from fields/properties");
+        r.RegisterRefactoring<GeneratePropertyOperation, GeneratePropertyParams>(
+            "generate-property", "Generate a property on a type (auto, init-only, or backing-field)");
         r.RegisterRefactoring<GenerateEqualsHashCodeOperation, GenerateEqualsHashCodeParams>(
             "generate-equals-hashcode", "Generate Equals and GetHashCode overrides");
         r.RegisterRefactoring<GenerateOverridesOperation, GenerateOverridesParams>(
