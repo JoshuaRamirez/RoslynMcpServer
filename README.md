@@ -8,7 +8,7 @@
 
 Let AI assistants like Claude safely refactor your C# codebase using the same Roslyn compiler platform that powers Visual Studio.
 
-Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **48 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 26 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 4 code generation tools, and 7 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
+Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **49 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 27 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 4 code generation tools, and 7 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
 
 ---
 
@@ -30,7 +30,7 @@ Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotoc
 
 ## Why RoslynMcpServer?
 
-- **48 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
+- **49 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
 - **Preview mode on every operation** -- see exactly what will change before applying
 - **Atomic file writes with rollback** -- if any file write fails, all changes are reverted
 - **Solution-wide reference updates** -- renames and moves propagate across your entire solution
@@ -102,7 +102,7 @@ Claude will use the `rename_symbol` tool to rename the class and update every re
 
 ## Standalone CLI
 
-All 48 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
+All 49 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
 
 ### Install
 
@@ -207,6 +207,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 | `introduce_field` | Turn a selected local variable or expression into a class field, optionally initializing it in a constructor. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `fieldName`, `isReadonly`, `isStatic`, `initializeInConstructor`, `replaceAll` |
 | `safe_delete` | Delete a selected symbol only when it has no remaining references. If usages exist, reject with their locations. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `symbolName` |
 | `make_static` | Make a selected instance method static when it does not use instance state. Adds the static modifier and updates call sites and method-group conversions to the containing type name. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `symbolName` |
+| `make_non_static` | Make a selected static method an instance method when a valid instance receiver exists. Removes the static modifier and updates type-name call sites and method-group conversions to an instance receiver (or `this` in the same type). | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `symbolName` |
 
 ### Inline
 

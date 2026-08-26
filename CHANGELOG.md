@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `introduce_field` — turn a selected local variable or expression into a class field, optionally initializing it in a constructor, with preview mode and rejects for missing expressions, uneditable documents, and invalid target types
 - `safe_delete` — delete a selected symbol only when it has no remaining references, with preview mode and rejects that include usage locations, missing symbols, and uneditable documents
 - `make_static` — add the static modifier to a selected instance method that does not use instance state, update call sites and method-group conversions to the containing type name, with preview mode and rejects for instance-member access, already-static methods, and uneditable documents
+- `make_non_static` — remove the static modifier from a selected static method, rewrite type-name call sites and method-group conversions to an instance receiver (or `this` in the same type), with preview mode and rejects for already-instance methods, missing receivers, extern methods, and uneditable documents
 
 ## [0.4.0] - 2026-02-23
 

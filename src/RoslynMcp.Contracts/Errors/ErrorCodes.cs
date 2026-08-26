@@ -369,7 +369,7 @@ public static class ErrorCodes
     public const string MemberHasUsages = "3119";
 
     // --------------------------------------------
-    // Make Static Errors (3120-3121)
+    // Make Static / Make Non-Static Errors (3120-3123)
     // --------------------------------------------
 
     /// <summary>Cannot make static because the method uses instance members.</summary>
@@ -377,6 +377,12 @@ public static class ErrorCodes
 
     /// <summary>Member is already static.</summary>
     public const string AlreadyStatic = "3121";
+
+    /// <summary>Member is already an instance member.</summary>
+    public const string AlreadyInstance = "3122";
+
+    /// <summary>Cannot make non-static because no valid instance receiver exists for a call site.</summary>
+    public const string NoValidInstanceReceiver = "3123";
 
     // ============================================
     // System Errors (4xxx)
