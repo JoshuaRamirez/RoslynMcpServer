@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `push_members_down` — move selected members from a base type down onto derived types, with optional named targets, preview mode, and rejects for missing derived types, conflicts, interface-incompatible members, and uneditable targets
 - `use_base_type` — replace derived-type references with a compatible base type or interface, rewriting only usages whose members exist on that base, with preview mode and rejects for missing bases, uneditable documents, and no eligible references
 - `introduce_field` — turn a selected local variable or expression into a class field, optionally initializing it in a constructor, with preview mode and rejects for missing expressions, uneditable documents, and invalid target types
+- `safe_delete` — delete a selected symbol only when it has no remaining references, with preview mode and rejects that include usage locations, missing symbols, and uneditable documents
 
 ## [0.4.0] - 2026-02-23
 

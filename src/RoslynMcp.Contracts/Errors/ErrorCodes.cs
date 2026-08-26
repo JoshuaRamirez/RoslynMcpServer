@@ -361,6 +361,13 @@ public static class ErrorCodes
     /// <summary>Expression captures local variable or parameter state.</summary>
     public const string ExpressionCapturesLocal = "3118";
 
+    // --------------------------------------------
+    // Safe Delete Errors (3119)
+    // --------------------------------------------
+
+    /// <summary>Cannot safely delete the symbol because remaining references exist.</summary>
+    public const string MemberHasUsages = "3119";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================
