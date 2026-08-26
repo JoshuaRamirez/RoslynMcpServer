@@ -384,6 +384,13 @@ public static class ErrorCodes
     /// <summary>Cannot make non-static because no valid instance receiver exists for a call site.</summary>
     public const string NoValidInstanceReceiver = "3123";
 
+    // --------------------------------------------
+    // Convert Body Errors (3124)
+    // --------------------------------------------
+
+    /// <summary>Member already uses a block body.</summary>
+    public const string AlreadyBlockBody = "3124";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================
