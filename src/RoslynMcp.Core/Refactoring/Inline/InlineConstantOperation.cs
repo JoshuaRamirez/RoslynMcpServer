@@ -14,8 +14,8 @@ using RoslynMcp.Core.Workspace;
 namespace RoslynMcp.Core.Refactoring.Inline;
 
 /// <summary>
-/// Inlines a const (or static readonly compile-time constant) field by replacing
-/// references with a formatted literal and optionally removing the declaration.
+/// Inlines a const field by replacing references with a formatted literal
+/// and optionally removing the declaration.
 /// </summary>
 public sealed class InlineConstantOperation : RefactoringOperationBase<InlineConstantParams>
 {
@@ -104,7 +104,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         var fieldSymbol = semanticModel.GetDeclaredSymbol(declarator, cancellationToken) as IFieldSymbol
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve constant symbol.");
 
-        ValidateIsConstant(fieldSymbol, declarator, semanticModel, cancellationToken);
+        ValidateIsConstant(fieldSymbol);
 
         if (@params.RemoveConstant && IsPublicApiConstant(fieldSymbol))
         {
@@ -224,16 +224,9 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                || type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == "global::" + typeName;
     }
 
-    private static void ValidateIsConstant(
-        IFieldSymbol field,
-        VariableDeclaratorSyntax declarator,
-        SemanticModel semanticModel,
-        CancellationToken cancellationToken)
+    private static void ValidateIsConstant(IFieldSymbol field)
     {
         if (field.IsConst)
-            return;
-
-        if (field.IsStatic && field.IsReadOnly && TryGetConstantValue(field, declarator, semanticModel, cancellationToken, out _))
             return;
 
         throw new RefactoringException(
@@ -267,7 +260,15 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
 
         var type = constant.Type;
         if (value == null)
-            return SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression);
+        {
+            var declaredType = (declarator.Parent as VariableDeclarationSyntax)?.Type
+                ?? throw new RefactoringException(
+                    ErrorCodes.NotCompileTimeConstant,
+                    $"Cannot inline constant of type {type}");
+            return SyntaxFactory.CastExpression(
+                declaredType.WithoutTrivia(),
+                SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression));
+        }
 
         return type.SpecialType switch
         {
@@ -483,8 +484,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
 
             if (targets.Count > 0)
             {
-                var declaredType = (declarator.Parent as VariableDeclarationSyntax)?.Type;
-                var rewriter = new InlineConstantRewriter(targets, literal, declaredType);
+                var rewriter = new InlineConstantRewriter(targets, literal);
                 root = rewriter.Visit(root)
                     ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to rewrite constant references.");
             }
@@ -623,22 +623,19 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
     {
         private readonly HashSet<ExpressionSyntax> _targets;
         private readonly ExpressionSyntax _literal;
-        private readonly TypeSyntax? _declaredType;
 
         public InlineConstantRewriter(
             IReadOnlyList<ExpressionSyntax> targets,
-            ExpressionSyntax literal,
-            TypeSyntax? declaredType)
+            ExpressionSyntax literal)
         {
             _targets = new HashSet<ExpressionSyntax>(targets);
             _literal = literal;
-            _declaredType = declaredType;
         }
 
         public override SyntaxNode? Visit(SyntaxNode? node)
         {
             if (node is ExpressionSyntax expression && _targets.Contains(expression))
-                return AdaptReplacement(_literal, expression, _declaredType).WithTriviaFrom(expression);
+                return AdaptReplacement(_literal, expression).WithTriviaFrom(expression);
 
             return base.Visit(node);
         }
@@ -646,37 +643,13 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
 
     private static ExpressionSyntax AdaptReplacement(
         ExpressionSyntax literal,
-        ExpressionSyntax original,
-        TypeSyntax? declaredType)
+        ExpressionSyntax original)
     {
         var replacement = literal;
-
-        if (literal.IsKind(SyntaxKind.NullLiteralExpression) &&
-            declaredType != null &&
-            NeedsTypedNull(original))
-        {
-            replacement = SyntaxFactory.CastExpression(
-                declaredType.WithoutTrivia(),
-                SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression));
-        }
-
         if (NeedsReceiverParentheses(replacement, original))
             replacement = SyntaxFactory.ParenthesizedExpression(replacement);
 
         return replacement;
-    }
-
-    private static bool NeedsTypedNull(ExpressionSyntax original)
-    {
-        if (original.Parent is EqualsValueClauseSyntax &&
-            original.Parent.Parent is VariableDeclaratorSyntax &&
-            original.Parent.Parent.Parent is VariableDeclarationSyntax declaration &&
-            declaration.Type.IsVar)
-        {
-            return true;
-        }
-
-        return original.Parent is ArgumentSyntax;
     }
 
     private static bool NeedsReceiverParentheses(ExpressionSyntax replacement, ExpressionSyntax original)

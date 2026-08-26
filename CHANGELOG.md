@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `generate_property` — generate an auto-property `{ get; set; }`, init-only property `{ get; init; }`, or backing-field property `{ get => field; set => field = value; }` on a selected type, with preview mode and rejects for missing symbols, uneditable documents, unsupported targets, and name clashes
 - `generate_method_stub` — generate a method from an undefined call site, inferring target type, parameters, and return type from usage, with a `throw new NotImplementedException();` body, preview mode, and rejects for missing call sites, existing methods, uneditable or external targets, and uninferable return types
 - `implement_abstract` — generate implementation stubs for unimplemented abstract methods and properties inherited by a selected class, with a `throw new NotImplementedException();` body, preview mode, and rejects for missing symbols, no unimplemented abstract members, uneditable documents, and unsupported targets
-- `inline_constant` — replace references to a `const` (or static readonly compile-time constant) field with a formatted literal, optionally remove the declaration, with preview mode and rejects for non-constants, public API constants, attribute usages, missing symbols, and uneditable documents
+- `inline_constant` — replace references to a `const` field with a formatted literal (typed null casts), optionally remove the declaration, with preview mode and rejects for non-constants (including static readonly), public API constants, attribute usages, missing symbols, and uneditable documents
 
 ## [0.4.0] - 2026-02-23
 

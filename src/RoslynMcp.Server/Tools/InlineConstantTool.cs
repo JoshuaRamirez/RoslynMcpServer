@@ -32,7 +32,7 @@ public sealed class InlineConstantTool : IToolHandler
     public string Name => "inline_constant";
 
     /// <inheritdoc />
-    public string Description => "Inline a const (or static readonly compile-time constant) field by replacing references with its literal value. Optionally remove the constant.";
+    public string Description => "Inline a const field by replacing references with its literal value. Optionally remove the constant.";
 
     /// <inheritdoc />
     public object InputSchema => new

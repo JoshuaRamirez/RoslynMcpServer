@@ -215,7 +215,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 |------|-------------|----------------|
 | `inline_method` | Inline a method by replacing call sites with the method body. Optionally remove the method. | `sourceFile`, `methodName`, `line`, `column`, `callSiteLocation`, `removeMethod` |
 | `inline_variable` | Inline a local variable by replacing all usages with its initializer value. | `sourceFile`, `variableName`, `line` |
-| `inline_constant` | Inline a const (or static readonly compile-time constant) field by replacing references with a formatted literal. Optionally remove the constant. | `sourceFile`, `constantName`, `typeName`, `removeConstant` |
+| `inline_constant` | Inline a const field by replacing references with a formatted literal. Optionally remove the constant. | `sourceFile`, `constantName`, `typeName`, `removeConstant` |
 
 ### Signature and Encapsulation
 

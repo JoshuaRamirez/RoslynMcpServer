@@ -239,7 +239,37 @@ public class InlineConstantOperationTests
 
         var text = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.DoesNotContain("Missing", text);
-        Assert.Contains("return null;", text);
+        Assert.Contains("return (string?)null;", text);
+        Assert.DoesNotContain("return null;", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_Null_InArrayInitializer_EmitsTypedCast()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Messages
+            {
+                private const string? Missing = null;
+
+                public string?[] Run() => new[] { Missing };
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "Missing"
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("new[] { (string?)null }", text);
+        Assert.DoesNotContain("new[] { null }", text);
     }
 
     [SkippableFact]
@@ -377,7 +407,7 @@ public class InlineConstantOperationTests
     }
 
     [SkippableFact]
-    public async Task InlineConstant_StaticReadonly_InlinesCompileTimeValue()
+    public async Task InlineConstant_StaticReadonly_Throws()
     {
         const string source = """
             namespace TestApp;
@@ -393,17 +423,15 @@ public class InlineConstantOperationTests
         await using var workspace = await TempWorkspace.CreateAsync(source);
         var operation = new InlineConstantOperation(workspace.Context);
 
-        var result = await operation.ExecuteAsync(new InlineConstantParams
-        {
-            SourceFile = workspace.SourcePath,
-            ConstantName = "MaxRetries"
-        });
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                ConstantName = "MaxRetries"
+            }));
 
-        Assert.True(result.Success);
-
-        var text = await File.ReadAllTextAsync(workspace.SourcePath);
-        Assert.DoesNotContain("MaxRetries", text);
-        Assert.Contains("public int Run() => 5;", text);
+        Assert.Equal(ErrorCodes.NotAConstant, ex.ErrorCode);
+        Assert.Equal("3055", ex.ErrorCode);
     }
 
     [SkippableFact]

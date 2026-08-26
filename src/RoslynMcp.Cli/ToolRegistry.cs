@@ -183,7 +183,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<InlineMethodOperation, InlineMethodParams>(
             "inline-method", "Inline a method by replacing call sites with the method body");
         r.RegisterRefactoring<InlineConstantOperation, InlineConstantParams>(
-            "inline-constant", "Inline a const (or static readonly compile-time constant) by replacing references with its literal value");
+            "inline-constant", "Inline a const field by replacing references with its literal value");
 
         // ── Refactoring: Signature (1) ────────────────────────────────
         r.RegisterRefactoring<ChangeSignatureOperation, ChangeSignatureParams>(
