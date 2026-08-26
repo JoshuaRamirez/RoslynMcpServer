@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `make_non_static` — remove the static modifier from a selected static method, rewrite type-name call sites and method-group conversions to an instance receiver (or `this` in the same type), with preview mode and rejects for already-instance methods, missing receivers, extern methods, and uneditable documents
 - `convert_to_block_body` — convert a selected expression-bodied member (`=> expr`) to a block body (`{ return expr; }` or `{ expr; }` as appropriate), including properties and accessors, with preview mode and rejects for missing symbols, already-block bodies, unsupported members, and uneditable documents
 - `generate_property` — generate an auto-property `{ get; set; }`, init-only property `{ get; init; }`, or backing-field property `{ get => field; set => field = value; }` on a selected type, with preview mode and rejects for missing symbols, uneditable documents, unsupported targets, and name clashes
+- `generate_method_stub` — generate a method from an undefined call site, inferring target type, parameters, and return type from usage, with a `throw new NotImplementedException();` body, preview mode, and rejects for missing call sites, existing methods, uneditable or external targets, and uninferable return types
 
 ## [0.4.0] - 2026-02-23
 

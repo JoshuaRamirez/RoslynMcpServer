@@ -78,6 +78,7 @@ public sealed class McpServerHost : IAsyncDisposable
         _toolRegistry.Register(new GenerateEqualsHashCodeTool(workspaceProvider));
         _toolRegistry.Register(new GenerateToStringTool(workspaceProvider));
         _toolRegistry.Register(new GeneratePropertyTool(workspaceProvider));
+        _toolRegistry.Register(new GenerateMethodStubTool(workspaceProvider));
         _toolRegistry.Register(new FormatDocumentTool(workspaceProvider));
         _toolRegistry.Register(new AddNullChecksTool(workspaceProvider));
 

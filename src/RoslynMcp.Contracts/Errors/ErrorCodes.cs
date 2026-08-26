@@ -391,6 +391,13 @@ public static class ErrorCodes
     /// <summary>Member already uses a block body.</summary>
     public const string AlreadyBlockBody = "3124";
 
+    // --------------------------------------------
+    // Generate Method Stub Errors (3125)
+    // --------------------------------------------
+
+    /// <summary>Cannot infer a return type from the call-site usage; provide returnType.</summary>
+    public const string CannotInferReturnType = "3125";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================
