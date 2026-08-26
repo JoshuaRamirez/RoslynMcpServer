@@ -47,7 +47,7 @@ public sealed class ToolEntry
 }
 
 /// <summary>
-/// Maps tool names to execution delegates for all 53 Roslyn tools.
+/// Maps tool names to execution delegates for all 54 Roslyn tools.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -139,7 +139,7 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 53 tools registered.
+    /// Build the default registry with all 54 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
@@ -177,11 +177,13 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<RenameSymbolOperation, RenameSymbolParams>(
             "rename-symbol", "Rename any C# symbol with automatic reference updates");
 
-        // ── Refactoring: Inline (2) ───────────────────────────────────
+        // ── Refactoring: Inline (3) ───────────────────────────────────
         r.RegisterRefactoring<InlineVariableOperation, InlineVariableParams>(
             "inline-variable", "Inline a variable, replacing all references with its value");
         r.RegisterRefactoring<InlineMethodOperation, InlineMethodParams>(
             "inline-method", "Inline a method by replacing call sites with the method body");
+        r.RegisterRefactoring<InlineConstantOperation, InlineConstantParams>(
+            "inline-constant", "Inline a const (or static readonly compile-time constant) by replacing references with its literal value");
 
         // ── Refactoring: Signature (1) ────────────────────────────────
         r.RegisterRefactoring<ChangeSignatureOperation, ChangeSignatureParams>(

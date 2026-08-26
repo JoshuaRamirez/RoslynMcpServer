@@ -63,6 +63,9 @@ public enum RefactoringKind
     /// <summary>Inline a method by replacing call sites with the method body.</summary>
     InlineMethod,
 
+    /// <summary>Inline a constant by replacing references with its literal value.</summary>
+    InlineConstant,
+
     // Generate Operations
     /// <summary>Generate constructor from fields/properties.</summary>
     GenerateConstructor,
