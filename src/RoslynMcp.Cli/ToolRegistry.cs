@@ -47,7 +47,7 @@ public sealed class ToolEntry
 }
 
 /// <summary>
-/// Maps tool names to execution delegates for all 49 Roslyn tools.
+/// Maps tool names to execution delegates for all 50 Roslyn tools.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -139,7 +139,7 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 49 tools registered.
+    /// Build the default registry with all 50 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
@@ -191,11 +191,13 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<EncapsulateFieldOperation, EncapsulateFieldParams>(
             "encapsulate-field", "Encapsulate a field into a property");
 
-        // ── Refactoring: Convert (6) ──────────────────────────────────
+        // ── Refactoring: Convert (7) ──────────────────────────────────
         r.RegisterRefactoring<ConvertToAsyncOperation, ConvertToAsyncParams>(
             "convert-to-async", "Convert a synchronous method to async");
         r.RegisterRefactoring<ConvertExpressionBodyOperation, ConvertExpressionBodyParams>(
             "convert-expression-body", "Toggle between expression body and block body");
+        r.RegisterRefactoring<ConvertToBlockBodyOperation, ConvertToBlockBodyParams>(
+            "convert-to-block-body", "Convert an expression-bodied member to a block body");
         r.RegisterRefactoring<ConvertPropertyOperation, ConvertPropertyParams>(
             "convert-property", "Convert between auto-property and full property");
         r.RegisterRefactoring<ConvertForeachLinqOperation, ConvertForeachLinqParams>(

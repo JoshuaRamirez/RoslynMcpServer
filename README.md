@@ -8,7 +8,7 @@
 
 Let AI assistants like Claude safely refactor your C# codebase using the same Roslyn compiler platform that powers Visual Studio.
 
-Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **49 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 27 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 4 code generation tools, and 7 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
+Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **50 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 27 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 4 code generation tools, and 8 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
 
 ---
 
@@ -30,7 +30,7 @@ Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotoc
 
 ## Why RoslynMcpServer?
 
-- **49 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
+- **50 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
 - **Preview mode on every operation** -- see exactly what will change before applying
 - **Atomic file writes with rollback** -- if any file write fails, all changes are reverted
 - **Solution-wide reference updates** -- renames and moves propagate across your entire solution
@@ -102,7 +102,7 @@ Claude will use the `rename_symbol` tool to rename the class and update every re
 
 ## Standalone CLI
 
-All 49 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
+All 50 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
 
 ### Install
 
@@ -237,6 +237,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 |------|-------------|----------------|
 | `convert_to_async` | Convert a synchronous method to async/await pattern. | `sourceFile`, `methodName`, `line`, `renameToAsync` |
 | `convert_expression_body` | Toggle between expression body (`=> expr;`) and block body (`{ return expr; }`). | `sourceFile`, `direction`, `memberName`, `line` |
+| `convert_to_block_body` | Convert a selected expression-bodied member (`=> expr`) to a block body. Methods become `{ return expr; }` or `{ expr; }` as appropriate; properties and accessors that are expression-bodied are converted too. | `sourceFile`, `memberName`, `line` |
 | `convert_property` | Convert between auto-property and full property with backing field. | `sourceFile`, `direction`, `propertyName`, `line` |
 | `convert_foreach_linq` | Convert foreach loops with Add patterns to LINQ Select/Where expressions. | `sourceFile`, `line` |
 | `convert_to_pattern_matching` | Convert if/is chains and switch statements to switch expressions. | `sourceFile`, `line` |
