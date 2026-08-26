@@ -44,6 +44,9 @@ public enum RefactoringKind
     /// <summary>Promote a local variable or expression to a class field.</summary>
     IntroduceField,
 
+    /// <summary>Delete a symbol only when it has no remaining references.</summary>
+    SafeDelete,
+
     /// <summary>Extract expression to variable.</summary>
     ExtractVariable,
 

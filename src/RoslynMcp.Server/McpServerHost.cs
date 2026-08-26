@@ -53,6 +53,7 @@ public sealed class McpServerHost : IAsyncDisposable
         _toolRegistry.Register(new PushMembersDownTool(workspaceProvider));
         _toolRegistry.Register(new UseBaseTypeTool(workspaceProvider));
         _toolRegistry.Register(new IntroduceFieldTool(workspaceProvider));
+        _toolRegistry.Register(new SafeDeleteTool(workspaceProvider));
 
         // Code Navigation / Query Tools
         _toolRegistry.Register(new FindReferencesTool(workspaceProvider));

@@ -8,7 +8,7 @@
 
 Let AI assistants like Claude safely refactor your C# codebase using the same Roslyn compiler platform that powers Visual Studio.
 
-Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **46 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 24 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 4 code generation tools, and 7 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
+Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **47 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 25 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 4 code generation tools, and 7 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
 
 ---
 
@@ -30,7 +30,7 @@ Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotoc
 
 ## Why RoslynMcpServer?
 
-- **46 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
+- **47 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
 - **Preview mode on every operation** -- see exactly what will change before applying
 - **Atomic file writes with rollback** -- if any file write fails, all changes are reverted
 - **Solution-wide reference updates** -- renames and moves propagate across your entire solution
@@ -102,7 +102,7 @@ Claude will use the `rename_symbol` tool to rename the class and update every re
 
 ## Standalone CLI
 
-All 46 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
+All 47 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
 
 ### Install
 
@@ -205,6 +205,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 | `push_members_down` | Move selected members from a base type down onto derived types. | `sourceFile`, `typeName`, `members`, `targetDerivedTypes`, `leaveAbstract` |
 | `use_base_type` | Replace derived-type references with a compatible base type or interface. | `sourceFile`, `typeName`, `targetBaseType` |
 | `introduce_field` | Turn a selected local variable or expression into a class field, optionally initializing it in a constructor. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `fieldName`, `isReadonly`, `isStatic`, `initializeInConstructor`, `replaceAll` |
+| `safe_delete` | Delete a selected symbol only when it has no remaining references. If usages exist, reject with their locations. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `symbolName` |
 
 ### Inline
 
