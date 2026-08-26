@@ -8,7 +8,7 @@ on:
 
 jobs:
   code-quality:
-    name: Code Quality Checks
+    name: quality
     runs-on: windows-latest
 
     steps:

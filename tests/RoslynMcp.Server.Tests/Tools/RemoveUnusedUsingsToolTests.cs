@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RoslynMcp.Server.Tests.TestHelpers;
 using RoslynMcp.Server.Tools;
 using RoslynMcp.Server.Transport;
 using Xunit;
@@ -15,7 +16,7 @@ public class RemoveUnusedUsingsToolTests
 
     public RemoveUnusedUsingsToolTests()
     {
-        _tool = new RemoveUnusedUsingsTool(null!);
+        _tool = new RemoveUnusedUsingsTool(new ThrowingWorkspaceProvider());
     }
 
     #region GetDefinition Tests
