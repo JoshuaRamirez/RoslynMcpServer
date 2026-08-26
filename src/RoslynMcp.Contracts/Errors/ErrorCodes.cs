@@ -304,6 +304,15 @@ public static class ErrorCodes
     /// <summary>No call sites found for the method.</summary>
     public const string NoCallSitesFound = "3097";
 
+    /// <summary>Field is not a const or compile-time constant (inline spec 3055 NOT_A_CONSTANT).</summary>
+    public const string NotAConstant = "3055";
+
+    /// <summary>Removing a public API constant would break ABI (inline spec 3056 PUBLIC_API_CONSTANT).</summary>
+    public const string PublicApiConstant = "3056";
+
+    /// <summary>Constant is used in an attribute argument (inline spec 3059 CONSTANT_IN_ATTRIBUTE).</summary>
+    public const string ConstantInAttribute = "3059";
+
     // --------------------------------------------
     // Region/Range Errors (3100-3109)
     // --------------------------------------------
