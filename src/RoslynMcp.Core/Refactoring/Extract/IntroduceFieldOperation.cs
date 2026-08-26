@@ -279,7 +279,6 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         var replaceAnn = new SyntaxAnnotation("introduce-field-replace");
         var removeDeclAnn = new SyntaxAnnotation("introduce-field-remove-decl");
         var removeVarAnn = new SyntaxAnnotation("introduce-field-remove-var");
-        var typeAnn = new SyntaxAnnotation("introduce-field-type");
 
         var annotateTargets = plan.Replacements
             .Concat(plan.DeclarationToRemove != null ? new SyntaxNode[] { plan.DeclarationToRemove } : Array.Empty<SyntaxNode>())
@@ -287,24 +286,19 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             .Distinct()
             .ToList();
 
-        var containingType = root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .First(t => t.Identifier.Text == plan.ContainingTypeName);
-        annotateTargets.Add(containingType);
-
-        var annotated = root.ReplaceNodes(annotateTargets, (original, _) =>
-        {
-            var node = original;
-            if (plan.Replacements.Contains(original))
-                node = node.WithAdditionalAnnotations(replaceAnn);
-            if (plan.DeclarationToRemove == original)
-                node = node.WithAdditionalAnnotations(removeDeclAnn);
-            if (plan.DeclaratorToRemove == original)
-                node = node.WithAdditionalAnnotations(removeVarAnn);
-            if (original == containingType)
-                node = node.WithAdditionalAnnotations(typeAnn);
-            return node;
-        });
+        var annotated = annotateTargets.Count == 0
+            ? root
+            : root.ReplaceNodes(annotateTargets, (original, _) =>
+            {
+                var node = original;
+                if (plan.Replacements.Contains(original))
+                    node = node.WithAdditionalAnnotations(replaceAnn);
+                if (plan.DeclarationToRemove == original)
+                    node = node.WithAdditionalAnnotations(removeDeclAnn);
+                if (plan.DeclaratorToRemove == original)
+                    node = node.WithAdditionalAnnotations(removeVarAnn);
+                return node;
+            });
 
         var fieldRef = SyntaxFactory.IdentifierName(@params.FieldName);
         var replacements = annotated.GetAnnotatedNodes(replaceAnn).ToList();
@@ -330,7 +324,9 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             newRoot = newRoot.ReplaceNode(statement, statement.WithDeclaration(newDeclaration));
         }
 
-        var updatedType = newRoot.GetAnnotatedNodes(typeAnn).OfType<TypeDeclarationSyntax>().First();
+        var updatedType = newRoot.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == plan.ContainingTypeName);
         var typeWithField = InsertField(updatedType, plan.Field);
         if (@params.InitializeInConstructor && plan.Initializer != null)
             typeWithField = EnsureConstructorInitialization(typeWithField, @params, plan.Initializer);
@@ -357,9 +353,9 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             return semanticModel.GetDeclaredSymbol(localStatement.Declaration.Variables[0], cancellationToken) as ILocalSymbol;
 
         IdentifierNameSyntax? identifier = node as IdentifierNameSyntax
-            ?? node.DescendantNodesAndSelf()
+            ?? node.AncestorsAndSelf()
                 .OfType<IdentifierNameSyntax>()
-                .FirstOrDefault(id => span.OverlapsWith(id.Span) || id.Span.Contains(span) || span.Contains(id.Span));
+                .FirstOrDefault(id => id.Span.Contains(span));
 
         if (identifier == null)
             return null;
