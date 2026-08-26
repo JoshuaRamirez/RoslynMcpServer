@@ -232,7 +232,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     {
         EnsureExpressionBody(method.ExpressionBody, method.Body, "Method");
         var expr = method.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: !IsVoidReturn(method.ReturnType));
+        var stmt = CreateStatement(expr, useReturn: !IsNonReturning(method.ReturnType, method.Modifiers));
         var before = FormatExpressionBody(expr);
         var newMethod = method
             .WithExpressionBody(null)
@@ -247,7 +247,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     {
         EnsureExpressionBody(localFunction.ExpressionBody, localFunction.Body, "Local function");
         var expr = localFunction.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: !IsVoidReturn(localFunction.ReturnType));
+        var stmt = CreateStatement(expr, useReturn: !IsNonReturning(localFunction.ReturnType, localFunction.Modifiers));
         var before = FormatExpressionBody(expr);
         var converted = localFunction
             .WithExpressionBody(null)
@@ -408,18 +408,19 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
                 $"{accessor.Keyword.Text} {FormatExpressionBody(accessor.ExpressionBody!.Expression)}"));
 
         var convertedAccessors = accessorList.Accessors.Select(accessor =>
-        {
-            if (accessor.ExpressionBody == null)
-                return accessor;
-
-            var useReturn = accessor.IsKind(SyntaxKind.GetAccessorDeclaration) ||
-                            accessor.IsKind(SyntaxKind.InitAccessorDeclaration);
-            return CreateBlockAccessor(accessor.Kind(), accessor.ExpressionBody.Expression, useReturn)
-                .WithModifiers(accessor.Modifiers);
-        });
+            accessor.ExpressionBody == null ? accessor : ConvertAccessorToBlock(accessor));
 
         var converted = withAccessors(accessorList.WithAccessors(SyntaxFactory.List(convertedAccessors)));
         return (converted, before, afterSnippet(converted));
+    }
+
+    private static AccessorDeclarationSyntax ConvertAccessorToBlock(AccessorDeclarationSyntax accessor)
+    {
+        var useReturn = accessor.IsKind(SyntaxKind.GetAccessorDeclaration);
+        return accessor
+            .WithExpressionBody(null)
+            .WithSemicolonToken(default)
+            .WithBody(SyntaxFactory.Block(CreateStatement(accessor.ExpressionBody!.Expression, useReturn)));
     }
 
     private static AccessorDeclarationSyntax CreateBlockAccessor(
@@ -459,8 +460,23 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         return SyntaxFactory.ExpressionStatement(expression);
     }
 
+    private static bool IsNonReturning(TypeSyntax returnType, SyntaxTokenList modifiers) =>
+        IsVoidReturn(returnType) ||
+        (modifiers.Any(SyntaxKind.AsyncKeyword) && IsNonGenericTaskLike(returnType));
+
     private static bool IsVoidReturn(TypeSyntax returnType) =>
         returnType is PredefinedTypeSyntax predefined && predefined.Keyword.IsKind(SyntaxKind.VoidKeyword);
+
+    private static bool IsNonGenericTaskLike(TypeSyntax returnType) => returnType switch
+    {
+        GenericNameSyntax => false,
+        QualifiedNameSyntax qualified => IsNonGenericTaskLike(qualified.Right),
+        AliasQualifiedNameSyntax alias => IsNonGenericTaskLike(alias.Name),
+        IdentifierNameSyntax identifier => IsTaskLikeName(identifier.Identifier.Text),
+        _ => false
+    };
+
+    private static bool IsTaskLikeName(string name) => name is "Task" or "ValueTask";
 
     private static string FormatExpressionBody(ExpressionSyntax expression) =>
         $"=> {expression.NormalizeWhitespace()};";

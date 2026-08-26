@@ -233,6 +233,193 @@ public class ConvertToBlockBodyOperationTests
         Assert.Contains("return 42;", updated);
     }
 
+    [SkippableFact]
+    public async Task Convert_AsyncTaskMethod_InsertsExpressionStatement()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public async System.Threading.Tasks.Task Run() => await WorkAsync();
+
+                private static System.Threading.Tasks.Task WorkAsync() => System.Threading.Tasks.Task.CompletedTask;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            MemberName = "Run"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("await WorkAsync();", updated);
+        Assert.DoesNotContain("return await WorkAsync", updated);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AsyncValueTaskMethod_InsertsExpressionStatement()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public async System.Threading.Tasks.ValueTask Run() => await WorkAsync();
+
+                private static System.Threading.Tasks.ValueTask WorkAsync() => System.Threading.Tasks.ValueTask.CompletedTask;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            MemberName = "Run"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("await WorkAsync();", updated);
+        Assert.DoesNotContain("return await WorkAsync", updated);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AsyncTaskOfTMethod_InsertsReturn()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public async System.Threading.Tasks.Task<int> Get() => await WorkAsync();
+
+                private static System.Threading.Tasks.Task<int> WorkAsync() => System.Threading.Tasks.Task.FromResult(1);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            MemberName = "Get"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return await WorkAsync();", updated);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AsyncTaskLocalFunction_InsertsExpressionStatement()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Host()
+                {
+                    async System.Threading.Tasks.Task Run() => await WorkAsync();
+                }
+
+                private static System.Threading.Tasks.Task WorkAsync() => System.Threading.Tasks.Task.CompletedTask;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            MemberName = "Run"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("await WorkAsync();", updated);
+        Assert.DoesNotContain("return await WorkAsync", updated);
+    }
+
+    [SkippableFact]
+    public async Task Convert_InitAccessor_InsertsExpressionStatement()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                private string _name = "Ada";
+                public string Name
+                {
+                    get => _name;
+                    init => _name = value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            MemberName = "Name"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("init =>", updated);
+        Assert.Contains("return _name;", updated);
+        Assert.Contains("_name = value;", updated);
+        Assert.DoesNotContain("return _name = value", updated);
+    }
+
+    [SkippableFact]
+    public async Task Convert_Accessor_PreservesAttributes()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                private string _name = "Ada";
+                public string Name
+                {
+                    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+                    get => _name;
+                    set => _name = value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            MemberName = "Name"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("MethodImpl", updated);
+        Assert.Contains("AggressiveInlining", updated);
+        Assert.Contains("return _name;", updated);
+        Assert.DoesNotContain("get =>", updated);
+    }
+
     #endregion
 
     #region P0 Preview
