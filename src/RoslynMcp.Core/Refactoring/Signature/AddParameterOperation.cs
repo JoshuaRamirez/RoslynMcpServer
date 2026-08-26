@@ -325,7 +325,11 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         if (!string.IsNullOrEmpty(defaultValue))
         {
             paramSyntax = paramSyntax.WithDefault(
-                SyntaxFactory.EqualsValueClause(SyntaxFactory.ParseExpression(defaultValue)));
+                SyntaxFactory.EqualsValueClause(
+                    SyntaxFactory.Token(SyntaxKind.EqualsToken)
+                        .WithLeadingTrivia(SyntaxFactory.Space)
+                        .WithTrailingTrivia(SyntaxFactory.Space),
+                    SyntaxFactory.ParseExpression(defaultValue)));
         }
 
         return paramSyntax;
@@ -412,7 +416,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
                         ErrorCodes.DocumentNotEditable,
                         $"Could not locate the document for method '{method.Name}'.");
 
-                targets.Add(new DeclarationTarget(document, declaration.Span));
+                targets.Add(new DeclarationTarget(document, declaration.Span, method.Name));
             }
         }
 
@@ -503,14 +507,23 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
                 .Where(c => c.Document.Id == documentId)
                 .Select(c => c.Span)
                 .ToHashSet();
+            var targetNames = declarations
+                .Where(d => d.Document.Id == documentId)
+                .Select(d => d.MethodName)
+                .ToHashSet();
 
             var methods = root.DescendantNodes()
                 .OfType<MethodDeclarationSyntax>()
-                .Where(m => declarationSpans.Contains(m.Span))
+                .Where(m =>
+                    declarationSpans.Contains(m.Span) ||
+                    (targetNames.Contains(m.Identifier.Text) &&
+                     m.ParameterList.Parameters.Count == originalParams.Count))
                 .ToList();
             var invocations = root.DescendantNodes()
                 .OfType<InvocationExpressionSyntax>()
-                .Where(i => invocationSpans.Contains(i.Span))
+                .Where(i =>
+                    invocationSpans.Contains(i.Span) ||
+                    (targetNames.Count > 0 && IsInvocationOf(i, targetNames)))
                 .ToList();
 
             var rewriter = new AddParameterRewriter(
@@ -606,7 +619,8 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         }
 
         return invocation.WithArgumentList(
-            SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList(newArgs)));
+            SyntaxFactory.ArgumentList(SeparatedWithSpaces(newArgs))
+                .WithTriviaFrom(invocation.ArgumentList));
     }
 
     internal static ArgumentSyntax CreateArgument(string paramName, string? defaultValue)
@@ -727,7 +741,35 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
     private static string NormalizeIdentifier(string name) =>
         name.StartsWith('@') && name.Length > 1 ? name[1..] : name;
 
-    private sealed record DeclarationTarget(Document Document, TextSpan Span);
+    private static SeparatedSyntaxList<T> SeparatedWithSpaces<T>(IReadOnlyList<T> nodes)
+        where T : SyntaxNode
+    {
+        if (nodes.Count == 0)
+            return SyntaxFactory.SeparatedList<T>();
+
+        var separators = nodes.Count == 1
+            ? Array.Empty<SyntaxToken>()
+            : Enumerable.Repeat(
+                SyntaxFactory.Token(SyntaxKind.CommaToken).WithTrailingTrivia(SyntaxFactory.Space),
+                nodes.Count - 1).ToArray();
+
+        return SyntaxFactory.SeparatedList(nodes, separators);
+    }
+
+    private static bool IsInvocationOf(InvocationExpressionSyntax invocation, HashSet<string> methodNames)
+    {
+        var name = invocation.Expression switch
+        {
+            IdentifierNameSyntax identifier => identifier.Identifier.Text,
+            MemberAccessExpressionSyntax member => member.Name.Identifier.Text,
+            MemberBindingExpressionSyntax binding => binding.Name.Identifier.Text,
+            _ => null
+        };
+
+        return name != null && methodNames.Contains(name);
+    }
+
+    private sealed record DeclarationTarget(Document Document, TextSpan Span, string MethodName);
 
     private sealed record CallSite(Document Document, TextSpan Span);
 
@@ -773,7 +815,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
             var insertAt = Math.Min(_insertIndex, parameters.Count);
             parameters.Insert(insertAt, _newParameter);
             return visited.WithParameterList(
-                SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(parameters))
+                SyntaxFactory.ParameterList(SeparatedWithSpaces(parameters))
                     .WithTriviaFrom(visited.ParameterList));
         }
 
