@@ -898,7 +898,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
             return SyntaxFactory.IdentifierName(
                 SyntaxFactory.VerbatimIdentifier(
                     SyntaxFactory.TriviaList(),
-                    "@" + name,
+                    name,
                     name,
                     SyntaxFactory.TriviaList()));
         }
