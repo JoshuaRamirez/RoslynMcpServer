@@ -239,6 +239,7 @@ public class GeneratePropertyOperationTests
 
         Assert.True(result.Success);
         Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
         Assert.NotEmpty(result.PendingChanges);
         Assert.Contains("get; set;", result.PendingChanges[0].AfterSnippet);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));

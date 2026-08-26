@@ -108,7 +108,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var typeDecl = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+        var typeDecl = root.DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
             .FirstOrDefault(t => t.Identifier.Text == @params.TypeName);
 
         if (typeDecl == null)
@@ -127,6 +127,13 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         }
 
         ValidateTypeCanHostProperty(typeSymbol);
+
+        if (typeDecl is not TypeDeclarationSyntax hostTypeDecl)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolKind,
+                $"Type '{typeSymbol.Name}' is not a supported target for generate_property.");
+        }
 
         IFieldSymbol? backingField = null;
         if (!string.IsNullOrWhiteSpace(@params.FieldName))
@@ -152,8 +159,8 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         if (@params.Preview)
             return CreatePreviewResult(operationId, @params, propertyName, property);
 
-        var newTypeDecl = InsertProperty(typeDecl, property);
-        var newRoot = root.ReplaceNode(typeDecl, newTypeDecl);
+        var newTypeDecl = InsertProperty(hostTypeDecl, property);
+        var newRoot = root.ReplaceNode(hostTypeDecl, newTypeDecl);
         var newDocument = document.WithSyntaxRoot(newRoot);
         var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
 
