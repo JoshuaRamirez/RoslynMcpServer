@@ -160,6 +160,8 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             namesAtIndex,
             cancellationToken);
 
+        await EnsureNoNewCompilationErrorsAsync(document.Project.Solution, newSolution, cancellationToken);
+
         if (@params.Preview)
         {
             return await CreatePreviewResultAsync(
@@ -390,7 +392,11 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                         if (!seen.Add((document.Id, invocation.Span)))
                             continue;
 
-                        callSites.Add(new CallSite(document, invocation.Span));
+                        var model = await document.GetSemanticModelAsync(cancellationToken);
+                        var invoked = model?.GetSymbolInfo(invocation, cancellationToken).Symbol as IMethodSymbol;
+                        var isReduced = invoked?.MethodKind == MethodKind.ReducedExtension ||
+                                        invoked?.ReducedFrom != null;
+                        callSites.Add(new CallSite(document, invocation.Span, isReduced));
                         continue;
                     }
 
@@ -447,7 +453,11 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                     if (!seen.Add((document.Id, identifier.Span)))
                         continue;
 
-                    usages.Add(new BodyUsage(document, identifier.Span, CanReplaceWithDefault(identifier)));
+                    usages.Add(new BodyUsage(
+                        document,
+                        identifier.Span,
+                        GetParameterTypeDisplay(parameter),
+                        CanReplaceWithDefault(identifier)));
                 }
             }
         }
@@ -482,14 +492,17 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                 .Where(d => d.Document.Id == documentId)
                 .Select(d => d.Span)
                 .ToHashSet();
-            var invocationSpans = callSites
-                .Where(c => c.Document.Id == documentId)
+            var documentCallSites = callSites.Where(c => c.Document.Id == documentId).ToList();
+            var invocationSpans = documentCallSites.Select(c => c.Span).ToHashSet();
+            var reducedSpans = documentCallSites
+                .Where(c => c.IsReducedExtension)
                 .Select(c => c.Span)
                 .ToHashSet();
-            var usageSpans = bodyUsages
-                .Where(u => u.Document.Id == documentId)
-                .Select(u => u.Span)
-                .ToHashSet();
+            var documentUsages = bodyUsages.Where(u => u.Document.Id == documentId).ToList();
+            var usageSpans = documentUsages.Select(u => u.Span).ToHashSet();
+            var identifierTypes = documentUsages
+                .GroupBy(u => u.Span)
+                .ToDictionary(g => g.Key, g => g.First().TypeDisplay);
 
             var methods = root.DescendantNodes()
                 .OfType<MethodDeclarationSyntax>()
@@ -508,6 +521,8 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                 methods,
                 invocations,
                 identifiers,
+                identifierTypes,
+                reducedSpans,
                 removeIndex,
                 originalParams,
                 namesAtIndex);
@@ -524,9 +539,15 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         InvocationExpressionSyntax invocation,
         IReadOnlyList<IParameterSymbol> originalParams,
         int removeIndex,
-        IReadOnlySet<string> namesAtIndex)
+        IReadOnlySet<string> namesAtIndex,
+        bool isReducedExtension = false)
     {
-        var newArgs = RemoveArgument(invocation.ArgumentList, removeIndex, originalParams, namesAtIndex);
+        var newArgs = RemoveArgument(
+            invocation.ArgumentList,
+            removeIndex,
+            originalParams,
+            namesAtIndex,
+            isReducedExtension);
         return invocation.WithArgumentList(newArgs);
     }
 
@@ -534,21 +555,23 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         ArgumentListSyntax args,
         int removeIndex,
         IReadOnlyList<IParameterSymbol> originalParams,
-        IReadOnlySet<string> namesAtIndex)
+        IReadOnlySet<string> namesAtIndex,
+        bool isReducedExtension = false)
     {
         var originalArgs = args.Arguments.ToList();
-        var namedOriginal = new Dictionary<string, ArgumentSyntax>();
+        var namedOriginal = new Dictionary<string, ArgumentSyntax>(StringComparer.Ordinal);
         var positionalOriginal = new List<ArgumentSyntax>();
         foreach (var arg in originalArgs)
         {
             if (arg.NameColon != null)
-                namedOriginal[arg.NameColon.Name.Identifier.Text] = arg;
+                namedOriginal[arg.NameColon.Name.Identifier.ValueText] = arg;
             else
                 positionalOriginal.Add(arg);
         }
 
         var newArgs = new List<ArgumentSyntax>();
         var positionalIndex = 0;
+        var firstExplicitOrdinal = isReducedExtension ? 1 : 0;
         var removingParams = removeIndex >= 0 &&
                              removeIndex < originalParams.Count &&
                              originalParams[removeIndex].IsParams;
@@ -562,6 +585,9 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                     newArgs.Add(namedArg);
                 continue;
             }
+
+            if (i < firstExplicitOrdinal)
+                continue;
 
             if (positionalIndex >= positionalOriginal.Count)
                 continue;
@@ -588,7 +614,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                 newArgs.Add(leftover.Value);
         }
 
-        return SyntaxFactory.ArgumentList(SeparatedWithSpaces(newArgs))
+        return SyntaxFactory.ArgumentList(KeepNodesPreservingSeparators(args.Arguments, newArgs))
             .WithTriviaFrom(args);
     }
 
@@ -732,32 +758,143 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
     private static string NormalizeIdentifier(string name) =>
         name.StartsWith('@') && name.Length > 1 ? name[1..] : name;
 
-    private static SeparatedSyntaxList<T> SeparatedWithSpaces<T>(IReadOnlyList<T> nodes)
+    private static string GetParameterTypeDisplay(IParameterSymbol parameter)
+    {
+        foreach (var syntaxRef in parameter.DeclaringSyntaxReferences)
+        {
+            if (syntaxRef.GetSyntax() is ParameterSyntax { Type: { } type })
+                return type.ToString().Trim();
+        }
+
+        return parameter.Type.ToDisplayString();
+    }
+
+    private static async Task EnsureNoNewCompilationErrorsAsync(
+        Solution original,
+        Solution updated,
+        CancellationToken cancellationToken)
+    {
+        var before = await CollectErrorKeysAsync(original, cancellationToken);
+        var after = await CollectErrorKeysAsync(updated, cancellationToken);
+        var introduced = after.Where(key => !before.Contains(key)).ToList();
+        if (introduced.Count == 0)
+            return;
+
+        throw new RefactoringException(
+            ErrorCodes.CompilationError,
+            "Removing the parameter would leave the solution uncompilable.");
+    }
+
+    private static async Task<HashSet<string>> CollectErrorKeysAsync(
+        Solution solution,
+        CancellationToken cancellationToken)
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var project in solution.Projects)
+        {
+            var compilation = await project.GetCompilationAsync(cancellationToken);
+            if (compilation == null)
+                continue;
+
+            foreach (var diagnostic in compilation.GetDiagnostics(cancellationToken))
+            {
+                if (diagnostic.Severity != DiagnosticSeverity.Error)
+                    continue;
+
+                keys.Add($"{diagnostic.Id}:{diagnostic.GetMessage()}");
+            }
+        }
+
+        return keys;
+    }
+
+    internal static SeparatedSyntaxList<T> RemoveAtPreservingSeparators<T>(
+        SeparatedSyntaxList<T> list,
+        int index)
         where T : SyntaxNode
     {
+        if (index < 0 || index >= list.Count)
+            return list;
+
+        var nodes = list.ToList();
+        var separators = list.GetSeparators().ToList();
+        nodes.RemoveAt(index);
+
+        if (separators.Count > 0)
+        {
+            if (index >= separators.Count)
+                separators.RemoveAt(separators.Count - 1);
+            else
+                separators.RemoveAt(index);
+        }
+
         if (nodes.Count == 0)
             return SyntaxFactory.SeparatedList<T>();
 
-        var separators = nodes.Count == 1
-            ? Array.Empty<SyntaxToken>()
-            : Enumerable.Repeat(
-                SyntaxFactory.Token(SyntaxKind.CommaToken).WithTrailingTrivia(SyntaxFactory.Space),
-                nodes.Count - 1).ToArray();
+        if (separators.Count >= nodes.Count)
+            separators = separators.Take(nodes.Count - 1).ToList();
 
         return SyntaxFactory.SeparatedList(nodes, separators);
     }
 
+    internal static SeparatedSyntaxList<T> KeepNodesPreservingSeparators<T>(
+        SeparatedSyntaxList<T> original,
+        IReadOnlyList<T> keep)
+        where T : SyntaxNode
+    {
+        if (keep.Count == 0)
+            return SyntaxFactory.SeparatedList<T>();
+
+        var originalNodes = original.ToList();
+        var separators = original.GetSeparators().ToList();
+        var keepIndices = new List<int>(keep.Count);
+        foreach (var node in keep)
+        {
+            var index = originalNodes.IndexOf(node);
+            if (index < 0)
+                return SyntaxFactory.SeparatedList(keep, DefaultCommaSeparators(keep.Count));
+
+            keepIndices.Add(index);
+        }
+
+        var newSeparators = new List<SyntaxToken>();
+        for (var i = 0; i < keepIndices.Count - 1; i++)
+        {
+            var from = keepIndices[i];
+            var to = keepIndices[i + 1];
+            if (to == from + 1 && from < separators.Count)
+                newSeparators.Add(separators[from]);
+            else
+                newSeparators.Add(CommaWithSpace());
+        }
+
+        return SyntaxFactory.SeparatedList(keep, newSeparators);
+    }
+
+    private static IReadOnlyList<SyntaxToken> DefaultCommaSeparators(int nodeCount)
+    {
+        if (nodeCount <= 1)
+            return Array.Empty<SyntaxToken>();
+
+        return Enumerable.Repeat(CommaWithSpace(), nodeCount - 1).ToArray();
+    }
+
+    private static SyntaxToken CommaWithSpace() =>
+        SyntaxFactory.Token(SyntaxKind.CommaToken).WithTrailingTrivia(SyntaxFactory.Space);
+
     private sealed record DeclarationTarget(Document Document, TextSpan Span);
 
-    private sealed record CallSite(Document Document, TextSpan Span);
+    private sealed record CallSite(Document Document, TextSpan Span, bool IsReducedExtension);
 
-    private sealed record BodyUsage(Document Document, TextSpan Span, bool CanReplaceWithDefault);
+    private sealed record BodyUsage(Document Document, TextSpan Span, string TypeDisplay, bool CanReplaceWithDefault);
 
     private sealed class RemoveParameterRewriter : CSharpSyntaxRewriter
     {
         private readonly HashSet<MethodDeclarationSyntax> _methods;
         private readonly HashSet<InvocationExpressionSyntax> _invocations;
         private readonly HashSet<IdentifierNameSyntax> _identifiers;
+        private readonly IReadOnlyDictionary<TextSpan, string> _identifierTypes;
+        private readonly HashSet<TextSpan> _reducedSpans;
         private readonly int _removeIndex;
         private readonly IReadOnlyList<IParameterSymbol> _originalParams;
         private readonly IReadOnlySet<string> _namesAtIndex;
@@ -766,6 +903,8 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             IReadOnlyList<MethodDeclarationSyntax> methods,
             IReadOnlyList<InvocationExpressionSyntax> invocations,
             IReadOnlyList<IdentifierNameSyntax> identifiers,
+            IReadOnlyDictionary<TextSpan, string> identifierTypes,
+            HashSet<TextSpan> reducedSpans,
             int removeIndex,
             IReadOnlyList<IParameterSymbol> originalParams,
             IReadOnlySet<string> namesAtIndex)
@@ -773,6 +912,8 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             _methods = new HashSet<MethodDeclarationSyntax>(methods);
             _invocations = new HashSet<InvocationExpressionSyntax>(invocations);
             _identifiers = new HashSet<IdentifierNameSyntax>(identifiers);
+            _identifierTypes = identifierTypes;
+            _reducedSpans = reducedSpans;
             _removeIndex = removeIndex;
             _originalParams = originalParams;
             _namesAtIndex = namesAtIndex;
@@ -785,13 +926,12 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             if (original == null)
                 return visited;
 
-            var parameters = visited.ParameterList.Parameters.ToList();
-            if (_removeIndex < 0 || _removeIndex >= parameters.Count)
+            if (_removeIndex < 0 || _removeIndex >= visited.ParameterList.Parameters.Count)
                 return visited;
 
-            parameters.RemoveAt(_removeIndex);
             return visited.WithParameterList(
-                SyntaxFactory.ParameterList(SeparatedWithSpaces(parameters))
+                SyntaxFactory.ParameterList(
+                        RemoveAtPreservingSeparators(visited.ParameterList.Parameters, _removeIndex))
                     .WithTriviaFrom(visited.ParameterList));
         }
 
@@ -801,7 +941,8 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             if (!_invocations.Contains(node) && !_invocations.Any(i => i.Span == node.Span))
                 return visited;
 
-            return UpdateInvocation(visited, _originalParams, _removeIndex, _namesAtIndex);
+            var isReduced = _reducedSpans.Contains(node.Span);
+            return UpdateInvocation(visited, _originalParams, _removeIndex, _namesAtIndex, isReduced);
         }
 
         public override SyntaxNode? VisitIdentifierName(IdentifierNameSyntax node)
@@ -809,7 +950,10 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             if (!_identifiers.Contains(node) && !_identifiers.Any(i => i.Span == node.Span && i.Identifier.Text == node.Identifier.Text))
                 return base.VisitIdentifierName(node);
 
-            return SyntaxFactory.LiteralExpression(SyntaxKind.DefaultLiteralExpression)
+            var typeDisplay = _identifierTypes.TryGetValue(node.Span, out var stored)
+                ? stored
+                : "object";
+            return SyntaxFactory.DefaultExpression(SyntaxFactory.ParseTypeName(typeDisplay))
                 .WithTriviaFrom(node);
         }
     }

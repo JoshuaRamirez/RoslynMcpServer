@@ -272,7 +272,165 @@ public class RemoveParameterOperationTests
 
         var text = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.Contains("public int Process()", text);
-        Assert.Contains("return default;", text);
+        Assert.Contains("return default(int);", text);
+        Assert.DoesNotContain("int unused", text);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_ForceTrue_VarCopy_UsesTypedDefault()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public int Process(int unused)
+                {
+                    var copy = unused;
+                    return copy;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "unused",
+            Force = true
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public int Process()", text);
+        Assert.Contains("var copy = default(int);", text);
+        Assert.DoesNotContain("unused", text);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_ReducedExtensionCall_DropsExplicitArg()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public static class Exts
+            {
+                public static void Ext(this string value, int unused)
+                {
+                }
+            }
+
+            public class Worker
+            {
+                public void Run()
+                {
+                    var text = "hi";
+                    text.Ext(1);
+                    Exts.Ext(text, 2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Ext",
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public static void Ext(this string value)", text);
+        Assert.Contains("text.Ext();", text);
+        Assert.Contains("Exts.Ext(text);", text);
+        Assert.DoesNotContain("text.Ext(1)", text);
+        Assert.DoesNotContain("Exts.Ext(text, 2)", text);
+        Assert.DoesNotContain("int unused", text);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_EscapedNamedArg_UsesValueText()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Process(int count, int @class)
+                {
+                    System.Console.WriteLine(count);
+                }
+
+                public void Run()
+                {
+                    Process(count: 3, @class: 1);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "@class"
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public void Process(int count)", text);
+        Assert.Contains("Process(count: 3)", text);
+        Assert.DoesNotContain("@class", text);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_PreservesSurvivingSeparatorTrivia()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Process(int a, // explanation
+                    int b, int unused)
+                {
+                    System.Console.WriteLine(a + b);
+                }
+
+                public void Run()
+                {
+                    Process(1, 2, 3);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("explanation", text);
+        Assert.Contains("public void Process(int a, // explanation", text);
+        Assert.Contains("Process(1, 2)", text);
         Assert.DoesNotContain("int unused", text);
     }
 
