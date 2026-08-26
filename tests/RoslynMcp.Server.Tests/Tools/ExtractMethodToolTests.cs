@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RoslynMcp.Server.Tests.TestHelpers;
 using RoslynMcp.Server.Tools;
 using RoslynMcp.Server.Transport;
 using Xunit;
@@ -15,7 +16,7 @@ public class ExtractMethodToolTests
 
     public ExtractMethodToolTests()
     {
-        _tool = new ExtractMethodTool(null!);
+        _tool = new ExtractMethodTool(new ThrowingWorkspaceProvider());
     }
 
     #region GetDefinition Tests

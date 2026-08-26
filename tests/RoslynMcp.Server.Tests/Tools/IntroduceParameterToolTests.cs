@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RoslynMcp.Server.Tests.TestHelpers;
 using RoslynMcp.Server.Tools;
 using RoslynMcp.Server.Transport;
 using Xunit;
@@ -15,8 +16,8 @@ public class IntroduceParameterToolTests
 
     public IntroduceParameterToolTests()
     {
-        // Use a null workspace provider since we're only testing argument validation
-        _tool = new IntroduceParameterTool(null!);
+        // Fails loudly if workspace creation is attempted; argument validation is exercised via ExecuteAsync error paths.
+        _tool = new IntroduceParameterTool(new ThrowingWorkspaceProvider());
     }
 
     #region GetDefinition Tests

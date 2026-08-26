@@ -27,7 +27,7 @@ public sealed class McpServerHost : IAsyncDisposable
         // Register tools
         _toolRegistry.Register(new MoveTypeToFileTool(workspaceProvider));
         _toolRegistry.Register(new MoveTypeToNamespaceTool(workspaceProvider));
-        _toolRegistry.Register(new DiagnoseTool(workspaceProvider));
+        _toolRegistry.Register(new DiagnoseTool(workspaceProvider, _toolRegistry.GetToolNames));
 
         // Phase 1 - Tier 1 Operations
         _toolRegistry.Register(new RenameSymbolTool(workspaceProvider));
@@ -43,11 +43,19 @@ public sealed class McpServerHost : IAsyncDisposable
         _toolRegistry.Register(new GenerateOverridesTool(workspaceProvider));
         _toolRegistry.Register(new ExtractVariableTool(workspaceProvider));
         _toolRegistry.Register(new InlineVariableTool(workspaceProvider));
+        _toolRegistry.Register(new InlineMethodTool(workspaceProvider));
         _toolRegistry.Register(new ExtractConstantTool(workspaceProvider));
         _toolRegistry.Register(new ChangeSignatureTool(workspaceProvider));
         _toolRegistry.Register(new EncapsulateFieldTool(workspaceProvider));
         _toolRegistry.Register(new ConvertToAsyncTool(workspaceProvider));
         _toolRegistry.Register(new ExtractBaseClassTool(workspaceProvider));
+        _toolRegistry.Register(new PullMembersUpTool(workspaceProvider));
+        _toolRegistry.Register(new PushMembersDownTool(workspaceProvider));
+        _toolRegistry.Register(new UseBaseTypeTool(workspaceProvider));
+        _toolRegistry.Register(new IntroduceFieldTool(workspaceProvider));
+        _toolRegistry.Register(new SafeDeleteTool(workspaceProvider));
+        _toolRegistry.Register(new MakeStaticTool(workspaceProvider));
+        _toolRegistry.Register(new MakeNonStaticTool(workspaceProvider));
 
         // Code Navigation / Query Tools
         _toolRegistry.Register(new FindReferencesTool(workspaceProvider));
@@ -69,12 +77,14 @@ public sealed class McpServerHost : IAsyncDisposable
         // Code Generation & Formatting Tools
         _toolRegistry.Register(new GenerateEqualsHashCodeTool(workspaceProvider));
         _toolRegistry.Register(new GenerateToStringTool(workspaceProvider));
+        _toolRegistry.Register(new GeneratePropertyTool(workspaceProvider));
         _toolRegistry.Register(new FormatDocumentTool(workspaceProvider));
         _toolRegistry.Register(new AddNullChecksTool(workspaceProvider));
 
         // Data Flow & Conversion Tools
         _toolRegistry.Register(new AnalyzeDataFlowTool(workspaceProvider));
         _toolRegistry.Register(new ConvertExpressionBodyTool(workspaceProvider));
+        _toolRegistry.Register(new ConvertToBlockBodyTool(workspaceProvider));
         _toolRegistry.Register(new ConvertPropertyTool(workspaceProvider));
         _toolRegistry.Register(new IntroduceParameterTool(workspaceProvider));
 

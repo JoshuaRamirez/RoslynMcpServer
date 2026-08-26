@@ -8,7 +8,7 @@
 
 Let AI assistants like Claude safely refactor your C# codebase using the same Roslyn compiler platform that powers Visual Studio.
 
-Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **41 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 19 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 4 code generation tools, and 7 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
+Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **51 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 28 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 4 code generation tools, and 8 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
 
 ---
 
@@ -30,7 +30,7 @@ Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotoc
 
 ## Why RoslynMcpServer?
 
-- **41 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
+- **51 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
 - **Preview mode on every operation** -- see exactly what will change before applying
 - **Atomic file writes with rollback** -- if any file write fails, all changes are reverted
 - **Solution-wide reference updates** -- renames and moves propagate across your entire solution
@@ -102,7 +102,7 @@ Claude will use the `rename_symbol` tool to rename the class and update every re
 
 ## Standalone CLI
 
-All 41 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
+All 51 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
 
 ### Install
 
@@ -201,11 +201,19 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 | `extract_constant` | Extract a literal value to a named constant. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `constantName`, `visibility`, `replaceAll` |
 | `extract_interface` | Extract an interface from a class's public members. | `sourceFile`, `typeName`, `interfaceName`, `members`, `targetFile` |
 | `extract_base_class` | Extract members to a new base class. | `sourceFile`, `typeName`, `baseClassName`, `members`, `targetFile`, `makeAbstract` |
+| `pull_members_up` | Move selected members from a derived type onto an existing base class or interface. | `sourceFile`, `typeName`, `members`, `targetBaseType`, `makeAbstract` |
+| `push_members_down` | Move selected members from a base type down onto derived types. | `sourceFile`, `typeName`, `members`, `targetDerivedTypes`, `leaveAbstract` |
+| `use_base_type` | Replace derived-type references with a compatible base type or interface. | `sourceFile`, `typeName`, `targetBaseType` |
+| `introduce_field` | Turn a selected local variable or expression into a class field, optionally initializing it in a constructor. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `fieldName`, `isReadonly`, `isStatic`, `initializeInConstructor`, `replaceAll` |
+| `safe_delete` | Delete a selected symbol only when it has no remaining references. If usages exist, reject with their locations. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `symbolName` |
+| `make_static` | Make a selected instance method static when it does not use instance state. Adds the static modifier and updates call sites and method-group conversions to the containing type name. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `symbolName` |
+| `make_non_static` | Make a selected static method an instance method when a valid instance receiver exists. Removes the static modifier and updates type-name call sites and method-group conversions to an instance receiver (or `this` in the same type). | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `symbolName` |
 
 ### Inline
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
+| `inline_method` | Inline a method by replacing call sites with the method body. Optionally remove the method. | `sourceFile`, `methodName`, `line`, `column`, `callSiteLocation`, `removeMethod` |
 | `inline_variable` | Inline a local variable by replacing all usages with its initializer value. | `sourceFile`, `variableName`, `line` |
 
 ### Signature and Encapsulation
@@ -220,6 +228,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `generate_constructor` | Generate a constructor that initializes fields and/or properties of a type. | `sourceFile`, `typeName`, `members`, `addNullChecks` |
+| `generate_property` | Generate a property on a type: auto-property `{ get; set; }`, init-only `{ get; init; }`, or a backing-field form when a field is the target. | `sourceFile`, `typeName`, `propertyName`, `propertyType`, `fieldName`, `visibility`, `initOnly` |
 | `generate_overrides` | Generate override methods for base class virtual/abstract members. | `sourceFile`, `typeName`, `members`, `callBase` |
 | `implement_interface` | Generate interface member implementations for a type. | `sourceFile`, `typeName`, `interfaceName`, `explicitImplementation`, `members` |
 
@@ -229,6 +238,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 |------|-------------|----------------|
 | `convert_to_async` | Convert a synchronous method to async/await pattern. | `sourceFile`, `methodName`, `line`, `renameToAsync` |
 | `convert_expression_body` | Toggle between expression body (`=> expr;`) and block body (`{ return expr; }`). | `sourceFile`, `direction`, `memberName`, `line` |
+| `convert_to_block_body` | Convert a selected expression-bodied member (`=> expr`) to a block body. Methods become `{ return expr; }` or `{ expr; }` as appropriate; properties and accessors that are expression-bodied are converted too. | `sourceFile`, `memberName`, `line` |
 | `convert_property` | Convert between auto-property and full property with backing field. | `sourceFile`, `direction`, `propertyName`, `line` |
 | `convert_foreach_linq` | Convert foreach loops with Add patterns to LINQ Select/Where expressions. | `sourceFile`, `line` |
 | `convert_to_pattern_matching` | Convert if/is chains and switch statements to switch expressions. | `sourceFile`, `line` |

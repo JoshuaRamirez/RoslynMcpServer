@@ -15,11 +15,20 @@ public class HelpGeneratorTests
     }
 
     [Fact]
-    public void GenerateGlobalHelp_Lists41Tools()
+    public void GenerateGlobalHelp_Lists51Tools()
     {
         var registry = ToolRegistry.BuildDefault();
         var help = HelpGenerator.GenerateGlobalHelp(registry);
-        Assert.Contains("Total: 41 tools", help);
+        Assert.Contains("Total: 51 tools", help);
+        Assert.Contains("pull-members-up", help);
+        Assert.Contains("push-members-down", help);
+        Assert.Contains("use-base-type", help);
+        Assert.Contains("introduce-field", help);
+        Assert.Contains("safe-delete", help);
+        Assert.Contains("make-static", help);
+        Assert.Contains("make-non-static", help);
+        Assert.Contains("convert-to-block-body", help);
+        Assert.Contains("generate-property", help);
     }
 
     [Fact]

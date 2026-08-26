@@ -32,15 +32,43 @@ public enum RefactoringKind
     /// <summary>Extract base class from type.</summary>
     ExtractBaseClass,
 
+    /// <summary>Move selected members from a derived type onto an existing base class or interface.</summary>
+    PullMembersUp,
+
+    /// <summary>Move selected members from a base type down onto derived types.</summary>
+    PushMembersDown,
+
+    /// <summary>Replace derived-type references with a compatible base type or interface.</summary>
+    UseBaseType,
+
+    /// <summary>Promote a local variable or expression to a class field.</summary>
+    IntroduceField,
+
+    /// <summary>Delete a symbol only when it has no remaining references.</summary>
+    SafeDelete,
+
+    /// <summary>Add the static modifier to an instance method that does not use instance state.</summary>
+    MakeStatic,
+
+    /// <summary>Remove the static modifier from a method and rewrite call sites to an instance receiver.</summary>
+    MakeNonStatic,
+
     /// <summary>Extract expression to variable.</summary>
     ExtractVariable,
 
     /// <summary>Extract expression to constant.</summary>
     ExtractConstant,
 
+    // Inline Operations
+    /// <summary>Inline a method by replacing call sites with the method body.</summary>
+    InlineMethod,
+
     // Generate Operations
     /// <summary>Generate constructor from fields/properties.</summary>
     GenerateConstructor,
+
+    /// <summary>Generate a property on a type.</summary>
+    GenerateProperty,
 
     /// <summary>Generate method stub.</summary>
     GenerateMethodStub,
