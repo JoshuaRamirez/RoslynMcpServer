@@ -50,6 +50,9 @@ public enum RefactoringKind
     /// <summary>Add the static modifier to an instance method that does not use instance state.</summary>
     MakeStatic,
 
+    /// <summary>Remove the static modifier from a method and rewrite call sites to an instance receiver.</summary>
+    MakeNonStatic,
+
     /// <summary>Extract expression to variable.</summary>
     ExtractVariable,
 
