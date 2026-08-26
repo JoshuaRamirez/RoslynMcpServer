@@ -307,6 +307,127 @@ public class SafeDeleteOperationTests
         Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
     }
 
+    [SkippableFact]
+    public async Task SafeDelete_BodyText_ThrowsSymbolNotFound()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Get()
+                {
+                    return 42;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new SafeDeleteOperation(workspace.Context);
+        var span = FindSpan(source, "42");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SafeDeleteParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public int Get()", updated);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_ForeachVariable_ThrowsWithoutDeletingMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public void Walk(int[] items)
+                {
+                    foreach (var unusedItem in items)
+                    {
+                    }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new SafeDeleteOperation(workspace.Context);
+        var span = FindSpan(source, "unusedItem");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SafeDeleteParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                SymbolName = "unusedItem"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public void Walk(int[] items)", before);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_UnusedInterfaceImplementation_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface ICalculator
+            {
+                int Get();
+            }
+
+            public class Calculator : ICalculator
+            {
+                public int Get()
+                {
+                    return 42;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new SafeDeleteOperation(workspace.Context);
+        var span = FindSpan(source, "public int Get()");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SafeDeleteParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn + "public int ".Length,
+                EndLine = span.EndLine,
+                EndColumn = span.StartColumn + "public int Get".Length,
+                SymbolName = "Get"
+            }));
+
+        Assert.Equal(ErrorCodes.MemberHasUsages, ex.ErrorCode);
+        Assert.NotNull(ex.Details);
+        Assert.True(Convert.ToInt32(ex.Details["usageCount"]) >= 1);
+        var locations = Assert.IsAssignableFrom<IEnumerable>(ex.Details["locations"]);
+        var locationMaps = locations.Cast<Dictionary<string, object>>().ToList();
+        Assert.Contains(locationMaps, location =>
+            location["snippet"] is string snippet &&
+            snippet.Contains("implements", StringComparison.Ordinal) &&
+            snippet.Contains("Get", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public int Get()", before);
+    }
+
     [Fact]
     public void SafeDelete_UneditableDocument_Throws()
     {

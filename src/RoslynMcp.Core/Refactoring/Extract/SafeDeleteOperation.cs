@@ -216,10 +216,8 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
     private static bool IdentifierOverlaps(SyntaxNode node, TextSpan span)
     {
         var identifier = GetDeclarationIdentifier(node);
-        if (identifier != null)
-            return identifier.Value.Span.OverlapsWith(span) || span.OverlapsWith(identifier.Value.Span);
-
-        return node is MemberDeclarationSyntax && node.Span.OverlapsWith(span);
+        return identifier != null &&
+            (identifier.Value.Span.OverlapsWith(span) || span.OverlapsWith(identifier.Value.Span));
     }
 
     private static SyntaxToken? GetDeclarationIdentifier(SyntaxNode node) => node switch
@@ -236,6 +234,10 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         LocalFunctionStatementSyntax localFunction => localFunction.Identifier,
         ConstructorDeclarationSyntax constructor => constructor.Identifier,
         DestructorDeclarationSyntax destructor => destructor.Identifier,
+        CatchDeclarationSyntax catchDeclaration => catchDeclaration.Identifier,
+        ForEachStatementSyntax forEach => forEach.Identifier,
+        SingleVariableDesignationSyntax designation => designation.Identifier,
+        LabeledStatementSyntax labeled => labeled.Identifier,
         _ => null
     };
 
@@ -335,7 +337,93 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
             }
         }
 
+        usages.AddRange(FindContractObligations(symbol));
         return usages;
+    }
+
+    private static IReadOnlyList<UsageLocation> FindContractObligations(ISymbol symbol)
+    {
+        var obligations = new List<UsageLocation>();
+
+        switch (symbol)
+        {
+            case IMethodSymbol method:
+                AddOverrideObligation(obligations, method.OverriddenMethod, method.IsOverride);
+                AddExplicitImplementations(obligations, method.ExplicitInterfaceImplementations);
+                AddImplicitInterfaceImplementations(obligations, method);
+                break;
+            case IPropertySymbol property:
+                AddOverrideObligation(obligations, property.OverriddenProperty, property.IsOverride);
+                AddExplicitImplementations(obligations, property.ExplicitInterfaceImplementations);
+                AddImplicitInterfaceImplementations(obligations, property);
+                break;
+            case IEventSymbol @event:
+                AddOverrideObligation(obligations, @event.OverriddenEvent, @event.IsOverride);
+                AddExplicitImplementations(obligations, @event.ExplicitInterfaceImplementations);
+                AddImplicitInterfaceImplementations(obligations, @event);
+                break;
+        }
+
+        return obligations;
+    }
+
+    private static void AddOverrideObligation(List<UsageLocation> usages, ISymbol? overridden, bool isOverride)
+    {
+        if (!isOverride || overridden == null)
+            return;
+
+        usages.Add(ToContractUsage(overridden, "overrides"));
+    }
+
+    private static void AddExplicitImplementations(List<UsageLocation> usages, IEnumerable<ISymbol> implementations)
+    {
+        foreach (var implemented in implementations)
+            usages.Add(ToContractUsage(implemented, "implements"));
+    }
+
+    private static void AddImplicitInterfaceImplementations(List<UsageLocation> usages, ISymbol symbol)
+    {
+        if (symbol.ContainingType == null)
+            return;
+
+        foreach (var iface in symbol.ContainingType.AllInterfaces)
+        {
+            foreach (var member in iface.GetMembers(symbol.Name))
+            {
+                var implementation = symbol.ContainingType.FindImplementationForInterfaceMember(member);
+                if (implementation == null)
+                    continue;
+
+                if (!SymbolEqualityComparer.Default.Equals(implementation, symbol) &&
+                    !SymbolEqualityComparer.Default.Equals(implementation.OriginalDefinition, symbol.OriginalDefinition))
+                {
+                    continue;
+                }
+
+                usages.Add(ToContractUsage(member, "implements"));
+            }
+        }
+    }
+
+    private static UsageLocation ToContractUsage(ISymbol contractMember, string relation)
+    {
+        var location = contractMember.Locations.FirstOrDefault(candidate => candidate.IsInSource);
+        var display = contractMember.ToDisplayString();
+        if (location == null)
+        {
+            return new UsageLocation(
+                contractMember.ContainingType?.ToDisplayString() ?? display,
+                0,
+                0,
+                $"{relation} {display}");
+        }
+
+        var lineSpan = location.GetLineSpan();
+        return new UsageLocation(
+            lineSpan.Path,
+            lineSpan.StartLinePosition.Line + 1,
+            lineSpan.StartLinePosition.Character + 1,
+            $"{relation} {display}");
     }
 
     private static bool CanSafelyDelete(IReadOnlyList<UsageLocation> usages) => usages.Count == 0;
@@ -410,18 +498,14 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
 
     private static SyntaxNode GetRemovableNode(SyntaxNode declaration)
     {
-        if (declaration is VariableDeclaratorSyntax declarator)
+        if (declaration is VariableDeclaratorSyntax declarator &&
+            declarator.Parent is VariableDeclarationSyntax variableDeclaration &&
+            variableDeclaration.Parent is FieldDeclarationSyntax or EventFieldDeclarationSyntax
+                or LocalDeclarationStatementSyntax)
         {
-            if (declarator.Parent is VariableDeclarationSyntax { Variables.Count: 1 } variableDeclaration)
-            {
-                if (variableDeclaration.Parent is FieldDeclarationSyntax or EventFieldDeclarationSyntax
-                    or LocalDeclarationStatementSyntax)
-                {
-                    return variableDeclaration.Parent;
-                }
-            }
-
-            return declarator;
+            return variableDeclaration.Variables.Count == 1
+                ? variableDeclaration.Parent
+                : declarator;
         }
 
         if (declaration is MemberDeclarationSyntax member)
@@ -430,9 +514,10 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         if (declaration is LocalFunctionStatementSyntax localFunction)
             return localFunction;
 
-        return declaration.FirstAncestorOrSelf<MemberDeclarationSyntax>()
-            ?? declaration.FirstAncestorOrSelf<LocalDeclarationStatementSyntax>()
-            ?? declaration;
+        var name = GetDeclarationIdentifier(declaration)?.Text ?? declaration.Kind().ToString();
+        throw new RefactoringException(
+            ErrorCodes.InvalidSymbolKind,
+            $"Declaration '{name}' is not a form that can be safely deleted.");
     }
 
     private static async Task<Solution> ApplyPlanAsync(
