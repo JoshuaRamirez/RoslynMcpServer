@@ -40,6 +40,7 @@ public sealed class McpServerHost : IAsyncDisposable
         // Phase 2 - Expanded Operations
         _toolRegistry.Register(new ExtractInterfaceTool(workspaceProvider));
         _toolRegistry.Register(new ImplementInterfaceTool(workspaceProvider));
+        _toolRegistry.Register(new ImplementAbstractTool(workspaceProvider));
         _toolRegistry.Register(new GenerateOverridesTool(workspaceProvider));
         _toolRegistry.Register(new ExtractVariableTool(workspaceProvider));
         _toolRegistry.Register(new InlineVariableTool(workspaceProvider));

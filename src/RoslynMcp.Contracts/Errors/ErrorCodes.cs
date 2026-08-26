@@ -398,6 +398,9 @@ public static class ErrorCodes
     /// <summary>Cannot infer a return type from the call-site usage; provide returnType.</summary>
     public const string CannotInferReturnType = "3125";
 
+    /// <summary>No unimplemented abstract members remain on the selected type.</summary>
+    public const string NoUnimplementedAbstractMembers = "3126";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

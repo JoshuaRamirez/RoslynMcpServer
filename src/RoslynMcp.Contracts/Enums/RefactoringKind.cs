@@ -79,6 +79,9 @@ public enum RefactoringKind
     /// <summary>Implement interface members.</summary>
     ImplementInterface,
 
+    /// <summary>Implement inherited abstract members.</summary>
+    ImplementAbstract,
+
     // Organize Operations
     /// <summary>Sort using directives.</summary>
     SortUsings,

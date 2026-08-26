@@ -45,6 +45,65 @@ public static class MemberAnalyzer
     }
 
     /// <summary>
+    /// Gets abstract methods, properties, and indexers inherited from base types
+    /// that the selected type has not yet implemented.
+    /// </summary>
+    /// <param name="type">The type to analyze.</param>
+    /// <returns>Unimplemented inherited abstract members (methods, properties, and indexers).</returns>
+    public static IEnumerable<ISymbol> GetUnimplementedAbstractMembers(INamedTypeSymbol type)
+    {
+        var declared = new HashSet<string>(
+            type.GetMembers()
+                .Where(m => m is IMethodSymbol { MethodKind: MethodKind.Ordinary } or IPropertySymbol)
+                .Select(GetMemberSignature));
+
+        var current = type.BaseType;
+        while (current != null && current.SpecialType != SpecialType.System_Object)
+        {
+            foreach (var member in current.GetMembers())
+            {
+                if (member.IsImplicitlyDeclared || member.IsStatic)
+                    continue;
+
+                string? signature = null;
+                var isAbstract = false;
+                var isConcreteOverride = false;
+
+                switch (member)
+                {
+                    case IMethodSymbol method when method.MethodKind == MethodKind.Ordinary:
+                        signature = GetMemberSignature(method);
+                        isAbstract = method.IsAbstract;
+                        isConcreteOverride = method.IsOverride && !method.IsAbstract;
+                        break;
+                    case IPropertySymbol property:
+                        signature = GetMemberSignature(property);
+                        isAbstract = property.IsAbstract;
+                        isConcreteOverride = property.IsOverride && !property.IsAbstract;
+                        break;
+                }
+
+                if (signature == null || declared.Contains(signature))
+                    continue;
+
+                if (isConcreteOverride)
+                {
+                    declared.Add(signature);
+                    continue;
+                }
+
+                if (!isAbstract)
+                    continue;
+
+                declared.Add(signature);
+                yield return member;
+            }
+
+            current = current.BaseType;
+        }
+    }
+
+    /// <summary>
     /// Gets virtual/abstract members from base classes that can be overridden.
     /// </summary>
     /// <param name="type">The type to analyze.</param>
@@ -183,9 +242,24 @@ public static class MemberAnalyzer
     {
         return member switch
         {
-            IMethodSymbol method => $"{method.Name}({string.Join(",", method.Parameters.Select(p => p.Type.ToDisplayString()))})",
+            IMethodSymbol method => $"{method.Name}({string.Join(",", method.Parameters.Select(FormatParameterSignature))})",
+            IPropertySymbol { IsIndexer: true } indexer =>
+                $"this[{string.Join(",", indexer.Parameters.Select(FormatParameterSignature))}]",
             IPropertySymbol prop => prop.Name,
             _ => member.Name
+        };
+    }
+
+    private static string FormatParameterSignature(IParameterSymbol parameter)
+    {
+        var type = parameter.Type.ToDisplayString();
+        return parameter.RefKind switch
+        {
+            RefKind.Ref => $"ref {type}",
+            RefKind.Out => $"out {type}",
+            RefKind.In => $"in {type}",
+            RefKind.RefReadOnlyParameter => $"ref readonly {type}",
+            _ => type
         };
     }
 
