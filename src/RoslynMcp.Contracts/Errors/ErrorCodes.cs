@@ -411,7 +411,7 @@ public static class ErrorCodes
     public const string NoUnimplementedAbstractMembers = "3126";
 
     // --------------------------------------------
-    // Signature Errors (3127-3129)
+    // Signature Errors (3127-3131)
     // 3060-3066 and 3080-3089 are already shipped for generate/async.
     // --------------------------------------------
 
@@ -426,6 +426,10 @@ public static class ErrorCodes
 
     /// <summary>A method reference is not a supported invocation and cannot be updated (method group, delegate).</summary>
     public const string UnsupportedCallSite = "3130";
+
+    /// <summary>Parameter is referenced in the method body and force is false.</summary>
+    public const string ParameterUsedInBody = "3131";
+
 
     // ============================================
     // System Errors (4xxx)

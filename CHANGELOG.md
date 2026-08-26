@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `implement_abstract` — generate implementation stubs for unimplemented abstract methods and properties inherited by a selected class, with a `throw new NotImplementedException();` body, preview mode, and rejects for missing symbols, no unimplemented abstract members, uneditable documents, and unsupported targets
 - `inline_constant` — replace references to a `const` field with a formatted literal (typed null casts), optionally remove the declaration, with preview mode and rejects for non-constants (including static readonly), public API constants, attribute usages, missing symbols, and uneditable documents
 - `add_parameter` — add a named parameter to a method and update call sites, overrides, and interface implementations, with preview mode and rejects for duplicate names, invalid types, out-of-range positions, required-after-optional, params-not-last, missing methods, and uneditable documents
+- `remove_parameter` — remove a named parameter from a method and drop matching call-site arguments, with override/interface updates, preview mode, force-gated body handling that must stay compiling, and rejects for a missing parameter, used-in-body without force, method-group references, missing methods, and uneditable documents
 
 ## [0.4.0] - 2026-02-23
 

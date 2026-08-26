@@ -47,7 +47,7 @@ public sealed class ToolEntry
 }
 
 /// <summary>
-/// Maps tool names to execution delegates for all 55 Roslyn tools.
+/// Maps tool names to execution delegates for all 56 Roslyn tools.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -139,7 +139,7 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 55 tools registered.
+    /// Build the default registry with all 56 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
@@ -185,11 +185,13 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<InlineConstantOperation, InlineConstantParams>(
             "inline-constant", "Inline a const field by replacing references with its literal value");
 
-        // ── Refactoring: Signature (2) ────────────────────────────────
+        // ── Refactoring: Signature (3) ────────────────────────────────
         r.RegisterRefactoring<ChangeSignatureOperation, ChangeSignatureParams>(
             "change-signature", "Add, remove, or reorder method parameters");
         r.RegisterRefactoring<AddParameterOperation, AddParameterParams>(
             "add-parameter", "Add a named parameter to a method and update call sites");
+        r.RegisterRefactoring<RemoveParameterOperation, RemoveParameterParams>(
+            "remove-parameter", "Remove a named parameter from a method and update call sites");
 
         // ── Refactoring: Encapsulate (1) ──────────────────────────────
         r.RegisterRefactoring<EncapsulateFieldOperation, EncapsulateFieldParams>(
