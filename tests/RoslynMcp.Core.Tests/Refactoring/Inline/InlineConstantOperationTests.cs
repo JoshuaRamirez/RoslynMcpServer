@@ -91,6 +91,16 @@ public class InlineConstantOperationTests
         }
     }
 
+    [Fact]
+    public void IsValidIdentifier_AcceptsVerbatimAndUnicode()
+    {
+        Assert.True(InlineConstantOperation.IsValidIdentifier("@default"));
+        Assert.True(InlineConstantOperation.IsValidIdentifier("Δ"));
+        Assert.True(InlineConstantOperation.IsValidIdentifier("MaxRetries"));
+        Assert.False(InlineConstantOperation.IsValidIdentifier("123bad"));
+        Assert.False(InlineConstantOperation.IsValidIdentifier("class"));
+    }
+
     #endregion
 
     #region §9.3 Happy Path
@@ -459,6 +469,96 @@ public class InlineConstantOperationTests
         Assert.True(result.Success);
         var text = await File.ReadAllTextAsync(workspace.SourcePath);
         Assert.Contains("public float FloatValue() => 1.5F;", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_NegativeInt_ParenthesizesMemberAccessReceiver()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                private const int Offset = -1;
+
+                public string Run() => Offset.ToString();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "Offset"
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public string Run() => (-1).ToString();", text);
+        Assert.DoesNotContain("-1.ToString()", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_VerbatimIdentifier_InlinesByValueText()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                private const int @default = 4;
+
+                public int Run() => @default;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "@default"
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.DoesNotContain("@default", text);
+        Assert.Contains("public int Run() => 4;", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_NullAssignedToVar_EmitsTypedCast()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Messages
+            {
+                private const string? Missing = null;
+
+                public string? Run()
+                {
+                    var value = Missing;
+                    return value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "Missing"
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("var value = (string?)null;", text);
     }
 
     [SkippableFact]

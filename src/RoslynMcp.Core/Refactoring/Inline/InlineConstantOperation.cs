@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -20,10 +19,6 @@ namespace RoslynMcp.Core.Refactoring.Inline;
 /// </summary>
 public sealed class InlineConstantOperation : RefactoringOperationBase<InlineConstantParams>
 {
-    private static readonly Regex IdentifierPattern = new(
-        @"^[A-Za-z_][A-Za-z0-9_]*$",
-        RegexOptions.Compiled);
-
     private static readonly SyntaxAnnotation TargetConstantAnnotation = new("RoslynMcp.InlineConstant.Target");
 
     /// <summary>
@@ -57,7 +52,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (!IdentifierPattern.IsMatch(@params.ConstantName))
+        if (!IsValidIdentifier(@params.ConstantName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"'{@params.ConstantName}' is not a valid constant name.");
 
         if (@params.TypeName != null && string.IsNullOrWhiteSpace(@params.TypeName))
@@ -183,7 +178,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
     {
         var candidates = root.DescendantNodes()
             .OfType<VariableDeclaratorSyntax>()
-            .Where(v => v.Identifier.Text == @params.ConstantName && v.Parent?.Parent is FieldDeclarationSyntax)
+            .Where(v => NamesMatch(v.Identifier, @params.ConstantName) && v.Parent?.Parent is FieldDeclarationSyntax)
             .ToList();
 
         if (!string.IsNullOrWhiteSpace(@params.TypeName))
@@ -488,13 +483,14 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
 
             if (targets.Count > 0)
             {
-                var rewriter = new InlineConstantRewriter(targets, literal);
+                var declaredType = (declarator.Parent as VariableDeclarationSyntax)?.Type;
+                var rewriter = new InlineConstantRewriter(targets, literal, declaredType);
                 root = rewriter.Visit(root)
                     ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to rewrite constant references.");
             }
 
             if (removeConstant && documentId == declaringDocument.Id)
-                root = RemoveAnnotatedConstant(root, declarator.Identifier.Text);
+                root = RemoveAnnotatedConstant(root, declarator.Identifier.ValueText);
 
             solution = document.WithSyntaxRoot(root).Project.Solution;
         }
@@ -519,7 +515,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             ? annotated[0]
             : root.DescendantNodes()
                 .OfType<VariableDeclaratorSyntax>()
-                .Where(v => v.Identifier.Text == constantName && v.Parent?.Parent is FieldDeclarationSyntax)
+                .Where(v => NamesMatch(v.Identifier, constantName) && v.Parent?.Parent is FieldDeclarationSyntax)
                 .ToList() switch
             {
                 { Count: 1 } list => list[0],
@@ -596,23 +592,126 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         bool CanReplace,
         bool InAttribute);
 
+    internal static bool IsValidIdentifier(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return false;
+
+        if (name.StartsWith('@') && name.Length > 1)
+        {
+            var bare = name[1..];
+            return SyntaxFacts.IsValidIdentifier(bare) ||
+                   SyntaxFacts.GetKeywordKind(bare) != SyntaxKind.None;
+        }
+
+        if (!SyntaxFacts.IsValidIdentifier(name))
+            return false;
+
+        var keywordKind = SyntaxFacts.GetKeywordKind(name);
+        return keywordKind == SyntaxKind.None || !SyntaxFacts.IsReservedKeyword(keywordKind);
+    }
+
+    private static bool NamesMatch(SyntaxToken identifier, string constantName)
+    {
+        return identifier.ValueText == NormalizeIdentifier(constantName);
+    }
+
+    private static string NormalizeIdentifier(string name) =>
+        name.StartsWith('@') && name.Length > 1 ? name[1..] : name;
+
     private sealed class InlineConstantRewriter : CSharpSyntaxRewriter
     {
         private readonly HashSet<ExpressionSyntax> _targets;
         private readonly ExpressionSyntax _literal;
+        private readonly TypeSyntax? _declaredType;
 
-        public InlineConstantRewriter(IReadOnlyList<ExpressionSyntax> targets, ExpressionSyntax literal)
+        public InlineConstantRewriter(
+            IReadOnlyList<ExpressionSyntax> targets,
+            ExpressionSyntax literal,
+            TypeSyntax? declaredType)
         {
             _targets = new HashSet<ExpressionSyntax>(targets);
             _literal = literal;
+            _declaredType = declaredType;
         }
 
         public override SyntaxNode? Visit(SyntaxNode? node)
         {
             if (node is ExpressionSyntax expression && _targets.Contains(expression))
-                return _literal.WithTriviaFrom(expression);
+                return AdaptReplacement(_literal, expression, _declaredType).WithTriviaFrom(expression);
 
             return base.Visit(node);
         }
+    }
+
+    private static ExpressionSyntax AdaptReplacement(
+        ExpressionSyntax literal,
+        ExpressionSyntax original,
+        TypeSyntax? declaredType)
+    {
+        var replacement = literal;
+
+        if (literal.IsKind(SyntaxKind.NullLiteralExpression) &&
+            declaredType != null &&
+            NeedsTypedNull(original))
+        {
+            replacement = SyntaxFactory.CastExpression(
+                declaredType.WithoutTrivia(),
+                SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression));
+        }
+
+        if (NeedsReceiverParentheses(replacement, original))
+            replacement = SyntaxFactory.ParenthesizedExpression(replacement);
+
+        return replacement;
+    }
+
+    private static bool NeedsTypedNull(ExpressionSyntax original)
+    {
+        if (original.Parent is EqualsValueClauseSyntax &&
+            original.Parent.Parent is VariableDeclaratorSyntax &&
+            original.Parent.Parent.Parent is VariableDeclarationSyntax declaration &&
+            declaration.Type.IsVar)
+        {
+            return true;
+        }
+
+        return original.Parent is ArgumentSyntax;
+    }
+
+    private static bool NeedsReceiverParentheses(ExpressionSyntax replacement, ExpressionSyntax original)
+    {
+        if (!IsNegativeNumeric(replacement))
+            return false;
+
+        return original.Parent switch
+        {
+            MemberAccessExpressionSyntax memberAccess => memberAccess.Expression == original,
+            ElementAccessExpressionSyntax elementAccess => elementAccess.Expression == original,
+            ConditionalAccessExpressionSyntax conditional => conditional.Expression == original,
+            _ => false
+        };
+    }
+
+    private static bool IsNegativeNumeric(ExpressionSyntax expression)
+    {
+        if (expression is PrefixUnaryExpressionSyntax prefix &&
+            prefix.IsKind(SyntaxKind.UnaryMinusExpression))
+        {
+            return true;
+        }
+
+        if (expression is not LiteralExpressionSyntax literal)
+            return false;
+
+        return literal.Token.Value switch
+        {
+            int value => value < 0,
+            long value => value < 0,
+            float value => value < 0,
+            double value => value < 0,
+            decimal value => value < 0,
+            _ => false
+        };
     }
 }
