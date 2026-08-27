@@ -448,6 +448,12 @@ public static class ErrorCodes
     /// <summary>Folder layout updates are not implemented for this operation.</summary>
     public const string FolderUpdateNotSupported = "3136";
 
+    /// <summary>Destination folder already exists.</summary>
+    public const string DestinationFolderExists = "3137";
+
+    /// <summary>Folder path does not correspond to the namespace being renamed.</summary>
+    public const string FolderDoesNotMatchNamespace = "3138";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

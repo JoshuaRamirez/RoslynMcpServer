@@ -31,8 +31,8 @@ public sealed class RenameNamespaceParams
     public int? Column { get; init; }
 
     /// <summary>
-    /// Also move folders to match the new namespace. Default: false.
-    /// Folder moves are not implemented; <c>true</c> is rejected.
+    /// Also move folders whose path matches the old namespace so they
+    /// match <see cref="NewName"/>. Default: false (rewrite only).
     /// </summary>
     public bool UpdateFolders { get; init; }
 

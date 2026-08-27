@@ -33,7 +33,7 @@ public sealed class RenameNamespaceTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Rename a C# namespace across the solution, updating declarations, using directives, and qualified name references. Does not move folders unless updateFolders is true (not implemented in this version).";
+        "Rename a C# namespace across the solution, updating declarations, using directives, and qualified name references. When updateFolders is true, also move folders whose path matches the old namespace.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -77,7 +77,7 @@ public sealed class RenameNamespaceTool : IToolHandler
             updateFolders = new
             {
                 type = "boolean",
-                description = "Also move folders to match the new namespace. Default false. True is rejected because folder moves are not implemented.",
+                description = "Also move folders whose path matches the old namespace (for example src/Old/Ns to src/New/Ns). Default false leaves folders in place.",
                 @default = false
             },
             preview = new
