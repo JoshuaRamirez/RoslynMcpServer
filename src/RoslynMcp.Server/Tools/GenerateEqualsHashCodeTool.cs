@@ -92,6 +92,12 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 description = "Use HashCode.Combine() (or a HashCode builder for more than 8 members) instead of a classic unchecked prime-multiply GetHashCode",
                 @default = true
             },
+            callSuper = new
+            {
+                type = "boolean",
+                description = "Fold the immediate base type's Equals/GetHashCode into the generated methods. Rejected when the immediate base is System.Object or System.ValueType, or when the base Equals(object) or GetHashCode is abstract",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -135,6 +141,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 GenerateOperators = args.GenerateOperators ?? false,
                 ReplaceExisting = args.ReplaceExisting ?? false,
                 UseHashCodeCombine = args.UseHashCodeCombine ?? true,
+                CallSuper = args.CallSuper ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -171,6 +178,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
         public bool? GenerateOperators { get; init; }
         public bool? ReplaceExisting { get; init; }
         public bool? UseHashCodeCombine { get; init; }
+        public bool? CallSuper { get; init; }
         public bool? Preview { get; init; }
     }
 }

@@ -143,6 +143,7 @@ public class HelpGeneratorTests
         Assert.Contains("--replace-existing", help);
         Assert.Contains("--use-hash-code-combine", help);
         Assert.Contains("--include-properties", help);
+        Assert.Contains("--call-super", help);
     }
 
     [Fact]

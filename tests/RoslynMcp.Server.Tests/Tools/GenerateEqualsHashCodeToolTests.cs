@@ -90,6 +90,7 @@ public class GenerateEqualsHashCodeToolTests
         Assert.True(properties.TryGetProperty("generateOperators", out _));
         Assert.True(properties.TryGetProperty("replaceExisting", out _));
         Assert.True(properties.TryGetProperty("useHashCodeCombine", out _));
+        Assert.True(properties.TryGetProperty("callSuper", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
     }
 
@@ -151,6 +152,18 @@ public class GenerateEqualsHashCodeToolTests
 
         Assert.Equal("boolean", useHashCodeCombine.GetProperty("type").GetString());
         Assert.True(useHashCodeCombine.GetProperty("default").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_CallSuperProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var callSuper = doc.RootElement.GetProperty("properties").GetProperty("callSuper");
+
+        Assert.Equal("boolean", callSuper.GetProperty("type").GetString());
+        Assert.False(callSuper.GetProperty("default").GetBoolean());
     }
 
     #endregion
