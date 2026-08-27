@@ -8,7 +8,7 @@
 
 Let AI assistants like Claude safely refactor your C# codebase using the same Roslyn compiler platform that powers Visual Studio.
 
-Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **59 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 34 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 5 code generation tools, and 9 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
+Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes **60 Roslyn-powered tools** to AI assistants and other MCP clients. It combines 34 refactoring operations, 5 code navigation tools, 6 analysis and metrics tools, 5 code generation tools, and 10 code conversion tools -- giving your AI deep code intelligence, comprehensive refactoring, and modern C# syntax transformations with full solution-wide reference tracking and preview support.
 
 ---
 
@@ -30,7 +30,7 @@ Roslyn MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotoc
 
 ## Why RoslynMcpServer?
 
-- **59 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
+- **60 tools** -- refactoring, navigation, analysis, generation, and conversion tools, the most comprehensive Roslyn MCP server available
 - **Preview mode on every operation** -- see exactly what will change before applying
 - **Atomic file writes with rollback** -- if any file write fails, all changes are reverted
 - **Solution-wide reference updates** -- renames and moves propagate across your entire solution
@@ -102,7 +102,7 @@ Claude will use the `rename_symbol` tool to rename the class and update every re
 
 ## Standalone CLI
 
-All 59 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
+All 60 tools are also available as a standalone CLI for use in scripts, CI/CD pipelines, and terminals without an AI assistant.
 
 ### Install
 
@@ -249,6 +249,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 | `convert_property` | Convert between auto-property and full property with backing field. | `sourceFile`, `direction`, `propertyName`, `line` |
 | `convert_foreach_linq` | Convert foreach loops with Add patterns to LINQ Select/Where expressions. | `sourceFile`, `line` |
 | `convert_anonymous_to_class` | Convert an anonymous type (`new { ... }`) to a named class or record, replacing same-shape anonymous creations in the solution. | `sourceFile`, `line`, `newTypeName`, `column`, `asRecord` |
+| `convert_tuple_to_struct` | Convert a tuple (`(int X, int Y)` / `(1, 2)` / `ValueTuple`) to a named struct, replacing same-shape tuple creations in the solution. | `sourceFile`, `line`, `newTypeName`, `column` |
 | `convert_to_pattern_matching` | Convert if/is chains and switch statements to switch expressions. | `sourceFile`, `line` |
 | `convert_to_interpolated_string` | Convert string.Format() calls and concatenation to interpolated strings. | `sourceFile`, `line` |
 | `introduce_parameter` | Promote a local variable to a method parameter, updating all call sites. | `sourceFile`, `variableName`, `line` |
