@@ -548,6 +548,9 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         CancellationToken cancellationToken)
     {
         var documentIds = await CollectDocumentsToRewriteAsync(namespaceSymbol, cancellationToken);
+        // Bind every document against the original compilation. Updating the
+        // solution incrementally would produce a new compilation whose
+        // INamespaceSymbols no longer equal the resolved source symbol.
         var originalSolution = Context.Solution;
         var updates = new List<(DocumentId Id, SyntaxNode Root)>();
 
