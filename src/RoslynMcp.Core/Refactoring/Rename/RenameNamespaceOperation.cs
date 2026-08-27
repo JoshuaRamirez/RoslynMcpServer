@@ -1032,7 +1032,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                 $"Folder path '{Path.GetDirectoryName(sourceDocument.FilePath)}' does not correspond to namespace '{oldFullName}'.");
         }
 
-        if (!workspace.CanApplyChange(ApplyChangesKind.ChangeDocumentInfo))
+        if (!workspace.CanApplyChange(ApplyChangesKind.ChangeDocument) &&
+            !workspace.CanApplyChange(ApplyChangesKind.ChangeDocumentInfo))
         {
             throw new RefactoringException(
                 ErrorCodes.DocumentNotEditable,
