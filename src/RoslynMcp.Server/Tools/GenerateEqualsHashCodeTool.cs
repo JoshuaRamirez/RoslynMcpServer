@@ -95,7 +95,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
             callSuper = new
             {
                 type = "boolean",
-                description = "Fold the immediate base type's Equals/GetHashCode into the generated methods. Rejected when the immediate base is System.Object or System.ValueType",
+                description = "Fold the immediate base type's Equals/GetHashCode into the generated methods. Rejected when the immediate base is System.Object or System.ValueType, or when the base Equals(object) or GetHashCode is abstract",
                 @default = false
             },
             preview = new

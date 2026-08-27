@@ -1823,6 +1823,74 @@ public class GenerateEqualsHashCodeOperationTests
         Assert.Equal(PointSource, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    private const string AbstractEntityPersonSource = """
+        namespace TestApp;
+
+        public abstract class Entity
+        {
+            public abstract override bool Equals(object? obj);
+
+            public abstract override int GetHashCode();
+        }
+
+        public class Person : Entity
+        {
+            public string Name { get; set; }
+
+            public int Age { get; set; }
+
+            public override bool Equals(object? obj) => false;
+
+            public override int GetHashCode() => 42;
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperTrue_AbstractBaseEqualsAndGetHashCode_FailsWith3147()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEntityPersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                CallSuper = true
+            }));
+
+        Assert.Equal(ErrorCodes.CallSuperOnAbstractBase, ex.ErrorCode);
+        Assert.Equal("3147", ex.ErrorCode);
+        Assert.Contains("abstract", ex.Message);
+        Assert.Equal(AbstractEntityPersonSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperTrue_ReplaceExisting_AbstractBase_FailsWith3147_DoesNotRewrite()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEntityPersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                CallSuper = true,
+                ReplaceExisting = true
+            }));
+
+        Assert.Equal(ErrorCodes.CallSuperOnAbstractBase, ex.ErrorCode);
+        Assert.Equal("3147", ex.ErrorCode);
+        Assert.Contains("abstract", ex.Message);
+        Assert.Equal(AbstractEntityPersonSource, await File.ReadAllTextAsync(workspace.SourcePath));
+        var unchanged = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("=> false", unchanged);
+        Assert.Contains("=> 42", unchanged);
+        Assert.DoesNotContain("base.Equals", unchanged);
+        Assert.DoesNotContain("base.GetHashCode", unchanged);
+    }
+
     [SkippableFact]
     public async Task GenerateEquals_CallSuperTrue_NoMembers_GeneratesBaseOnly()
     {

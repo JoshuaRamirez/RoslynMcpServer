@@ -59,7 +59,8 @@ public sealed class GenerateEqualsHashCodeParams
     /// When true, fold the immediate base type's equality into Equals/GetHashCode
     /// (<c>base.Equals</c> before member comparisons; <c>base.GetHashCode</c> as the
     /// first Combine/Add argument or prime-multiply seed). Rejected when the
-    /// immediate base is <c>System.Object</c> or <c>System.ValueType</c>.
+    /// immediate base is <c>System.Object</c> or <c>System.ValueType</c>, or when
+    /// the immediate base's <c>Equals(object)</c> or <c>GetHashCode</c> is abstract.
     /// Default: false (member-only Equals/GetHashCode).
     /// </summary>
     public bool CallSuper { get; init; }

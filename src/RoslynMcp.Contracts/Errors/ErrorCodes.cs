@@ -478,6 +478,9 @@ public static class ErrorCodes
     /// <summary>callSuper was requested but the immediate base is System.Object or System.ValueType.</summary>
     public const string CallSuperOnObjectBase = "3146";
 
+    /// <summary>callSuper was requested but the immediate base's Equals(object) or GetHashCode is abstract.</summary>
+    public const string CallSuperOnAbstractBase = "3147";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

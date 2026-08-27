@@ -75,6 +75,13 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 "callSuper cannot be used when the immediate base type is System.Object or System.ValueType.");
         }
 
+        if (@params.CallSuper && HasAbstractBaseEquality(typeSymbol))
+        {
+            throw new RefactoringException(
+                ErrorCodes.CallSuperOnAbstractBase,
+                "callSuper cannot be used when the immediate base type's Equals(object) or GetHashCode is abstract.");
+        }
+
         if (!@params.ReplaceExisting)
         {
             if (@params.ImplementIEquatable &&
@@ -488,6 +495,51 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         var baseType = typeSymbol.BaseType;
         return baseType == null
             || baseType.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
+    }
+
+    private static bool HasAbstractBaseEquality(INamedTypeSymbol typeSymbol)
+    {
+        var baseType = typeSymbol.BaseType;
+        if (baseType == null)
+            return false;
+
+        var equals = FindObjectEquals(baseType);
+        var getHashCode = FindParameterlessGetHashCode(baseType);
+        return equals?.IsAbstract == true || getHashCode?.IsAbstract == true;
+    }
+
+    private static IMethodSymbol? FindObjectEquals(INamedTypeSymbol type)
+    {
+        for (var current = type; current != null; current = current.BaseType)
+        {
+            foreach (var method in current.GetMembers("Equals").OfType<IMethodSymbol>())
+            {
+                if (method.IsStatic || method.Parameters.Length != 1)
+                    continue;
+
+                var paramType = UnwrapNullable(method.Parameters[0].Type);
+                if (paramType.SpecialType == SpecialType.System_Object)
+                    return method;
+            }
+        }
+
+        return null;
+    }
+
+    private static IMethodSymbol? FindParameterlessGetHashCode(INamedTypeSymbol type)
+    {
+        for (var current = type; current != null; current = current.BaseType)
+        {
+            foreach (var method in current.GetMembers("GetHashCode").OfType<IMethodSymbol>())
+            {
+                if (method.IsStatic || method.Parameters.Length != 0)
+                    continue;
+
+                return method;
+            }
+        }
+
+        return null;
     }
 
     private static string BuildDescription(
