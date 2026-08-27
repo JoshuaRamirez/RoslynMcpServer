@@ -196,7 +196,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
                         SyntaxFactory.VariableDeclarator(SyntaxFactory.Identifier("sb"))
                             .WithInitializer(SyntaxFactory.EqualsValueClause(
                                 SyntaxFactory.ObjectCreationExpression(
-                                        SyntaxFactory.ParseTypeName("System.Text.StringBuilder"))
+                                        SyntaxFactory.ParseTypeName("global::System.Text.StringBuilder"))
                                     .WithArgumentList(SyntaxFactory.ArgumentList()))))))
         };
 
@@ -207,7 +207,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
             var member = members[i];
             var prefix = i == 0 ? "" : ", ";
             statements.Add(AppendLiteral($"{prefix}{member.Name} = "));
-            statements.Add(AppendExpression(SyntaxFactory.IdentifierName(member.Name)));
+            statements.Add(AppendExpression(MemberAccess(member.Name)));
         }
 
         statements.Add(AppendLiteral(" }"));
@@ -231,6 +231,12 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
                 SyntaxFactory.Token(SyntaxKind.OverrideKeyword)))
             .WithBody(body)
             .NormalizeWhitespace();
+
+    private static MemberAccessExpressionSyntax MemberAccess(string memberName) =>
+        SyntaxFactory.MemberAccessExpression(
+            SyntaxKind.SimpleMemberAccessExpression,
+            SyntaxFactory.ThisExpression(),
+            SyntaxFactory.IdentifierName(memberName));
 
     private static ExpressionStatementSyntax AppendLiteral(string text) =>
         AppendExpression(SyntaxFactory.LiteralExpression(

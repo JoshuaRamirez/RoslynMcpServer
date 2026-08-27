@@ -223,6 +223,67 @@ public class GenerateToStringOperationTests
         Assert.DoesNotContain("Age = ", updated);
     }
 
+    [SkippableFact]
+    public async Task GenerateToString_FormatStringBuilder_FieldNamedSb_UsesThisQualification()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Holder
+            {
+                public string sb;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Holder.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Holder",
+            Format = "stringbuilder"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.Contains("global::System.Text.StringBuilder", toString);
+        Assert.Contains("Append(this.sb)", toString);
+        Assert.DoesNotContain("Append(sb)", toString);
+        Assert.Contains("sb.ToString()", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_FormatStringBuilder_NamespaceNamedSystem_UsesGlobalQualifiedStringBuilder()
+    {
+        const string source = """
+            namespace System;
+
+            public class Widget
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Format = "stringbuilder"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.Contains("global::System.Text.StringBuilder", toString);
+        Assert.Contains("Append(this.Name)", toString);
+        Assert.DoesNotContain("new System.Text.StringBuilder", toString);
+    }
+
     #endregion
 
     #region Preview
@@ -299,13 +360,13 @@ public class GenerateToStringOperationTests
     private static void AssertStringBuilderToString(string text, params string[] members)
     {
         Assert.Contains("public override string ToString()", text);
-        Assert.Contains("System.Text.StringBuilder", text);
+        Assert.Contains("global::System.Text.StringBuilder", text);
         Assert.Contains("sb.ToString()", text);
         Assert.Contains("Person { ", text);
         foreach (var member in members)
         {
             Assert.Contains($"{member} = ", text);
-            Assert.Contains($"Append({member})", text);
+            Assert.Contains($"Append(this.{member})", text);
         }
 
         Assert.DoesNotContain("$\"Person", text);
