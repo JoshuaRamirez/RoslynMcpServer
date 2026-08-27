@@ -51,6 +51,7 @@ public sealed class McpServerHost : IAsyncDisposable
         _toolRegistry.Register(new AddParameterTool(workspaceProvider));
         _toolRegistry.Register(new RemoveParameterTool(workspaceProvider));
         _toolRegistry.Register(new ReorderParametersTool(workspaceProvider));
+        _toolRegistry.Register(new ChangeReturnTypeTool(workspaceProvider));
         _toolRegistry.Register(new EncapsulateFieldTool(workspaceProvider));
         _toolRegistry.Register(new ConvertToAsyncTool(workspaceProvider));
         _toolRegistry.Register(new ExtractBaseClassTool(workspaceProvider));

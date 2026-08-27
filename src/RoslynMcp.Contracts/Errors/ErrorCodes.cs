@@ -411,7 +411,7 @@ public static class ErrorCodes
     public const string NoUnimplementedAbstractMembers = "3126";
 
     // --------------------------------------------
-    // Signature Errors (3127-3132)
+    // Signature Errors (3127-3135)
     // 3060-3066 and 3080-3089 are already shipped for generate/async.
     // --------------------------------------------
 
@@ -430,8 +430,18 @@ public static class ErrorCodes
     /// <summary>Parameter is referenced in the method body and force is false.</summary>
     public const string ParameterUsedInBody = "3131";
 
-    /// <summary>Reordered signature matches an existing overload on the containing type.</summary>
+    /// <summary>Modified signature matches an existing overload on the containing type.</summary>
     public const string SignatureMatchesOverload = "3132";
+
+    /// <summary>New return type is not compatible with existing return statements.</summary>
+    public const string ReturnTypeIncompatible = "3133";
+
+    /// <summary>Return statements cannot be converted to the new type.</summary>
+    public const string CannotConvertReturn = "3134";
+
+    /// <summary>Async methods and Task/ValueTask return types are out of leftover scope.</summary>
+    public const string AsyncReturnTypeUnsupported = "3135";
+
 
 
     // ============================================
