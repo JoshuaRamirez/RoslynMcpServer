@@ -41,7 +41,7 @@ public class ExtractInterfaceOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("interface ICalculator", updated);
-        Assert.Contains("Calculator : ICalculator", updated);
+        AssertImplementsInterface(updated, "Calculator", "ICalculator");
         Assert.False(File.Exists(sibling));
         Assert.DoesNotContain(sibling, result.Changes!.FilesCreated);
     }
@@ -64,7 +64,7 @@ public class ExtractInterfaceOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("interface ICalculator", updated);
-        Assert.Contains("Calculator : ICalculator", updated);
+        AssertImplementsInterface(updated, "Calculator", "ICalculator");
         Assert.False(File.Exists(sibling));
     }
 
@@ -91,7 +91,7 @@ public class ExtractInterfaceOperationTests
         var interfaceFile = NormalizeNewlines(await File.ReadAllTextAsync(sibling));
 
         Assert.DoesNotContain("interface ICalculator", source);
-        Assert.Contains("Calculator : ICalculator", source);
+        AssertImplementsInterface(source, "Calculator", "ICalculator");
         Assert.Contains("interface ICalculator", interfaceFile);
         Assert.Contains("int Add(int a, int b);", interfaceFile);
         Assert.Contains("int Multiply(int a, int b);", interfaceFile);
@@ -125,7 +125,7 @@ public class ExtractInterfaceOperationTests
 
         Assert.DoesNotContain("interface ICalculator", source);
         Assert.Contains("interface ICalculator", custom);
-        Assert.Contains("Calculator : ICalculator", source);
+        AssertImplementsInterface(source, "Calculator", "ICalculator");
     }
 
     [SkippableFact]
@@ -213,6 +213,15 @@ public class ExtractInterfaceOperationTests
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
+
+    /// <summary>
+    /// Base-list trivia from <c>WithBaseList</c> may omit spaces; compare a compacted form.
+    /// </summary>
+    private static void AssertImplementsInterface(string source, string typeName, string interfaceName)
+    {
+        var compact = new string(source.Where(c => !char.IsWhiteSpace(c)).ToArray());
+        Assert.Contains($"class{typeName}:{interfaceName}", compact);
+    }
 
     private sealed class TempWorkspace : IAsyncDisposable
     {
