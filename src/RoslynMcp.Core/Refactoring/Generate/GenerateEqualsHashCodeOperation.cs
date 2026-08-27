@@ -16,7 +16,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// optionally generates <c>operator ==</c> / <c>operator !=</c>,
 /// optionally replaces existing equality members when <c>replaceExisting</c> is true,
 /// honors <c>useHashCodeCombine</c> for the GetHashCode body shape,
-/// and honors <c>includeProperties</c> when collecting equality members.
+/// honors <c>includeProperties</c> when collecting equality members,
+/// and honors <c>callSuper</c> to fold the immediate base type's equality into Equals/GetHashCode.
 /// </summary>
 public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<GenerateEqualsHashCodeParams>
 {
@@ -67,6 +68,13 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         if (typeSymbol == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve type symbol.");
 
+        if (@params.CallSuper && IsObjectOrValueTypeBase(typeSymbol))
+        {
+            throw new RefactoringException(
+                ErrorCodes.CallSuperOnObjectBase,
+                "callSuper cannot be used when the immediate base type is System.Object or System.ValueType.");
+        }
+
         if (!@params.ReplaceExisting)
         {
             if (@params.ImplementIEquatable &&
@@ -90,7 +98,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         }
 
         var members = EqualityMemberCollector.CollectMembers(typeSymbol, @params.Fields, @params.IncludeProperties);
-        if (members.Count == 0)
+        if (members.Count == 0 && !@params.CallSuper)
             throw new RefactoringException(ErrorCodes.NoMembersToGenerate, "No fields or properties available for equality generation.");
 
         var selfTypeName = GetSelfTypeName(typeDecl);
@@ -99,15 +107,15 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         MethodDeclarationSyntax objectEquals;
         if (@params.ImplementIEquatable)
         {
-            typedEquals = GenerateTypedEquals(selfTypeName, isValueType, members);
+            typedEquals = GenerateTypedEquals(selfTypeName, isValueType, members, @params.CallSuper);
             objectEquals = GenerateDelegatingObjectEquals(selfTypeName);
         }
         else
         {
-            objectEquals = GenerateEquals(selfTypeName, members);
+            objectEquals = GenerateEquals(selfTypeName, members, @params.CallSuper);
         }
 
-        var hashCodeMethod = GenerateGetHashCode(members, @params.UseHashCodeCombine);
+        var hashCodeMethod = GenerateGetHashCode(members, @params.UseHashCodeCombine, @params.CallSuper);
         OperatorDeclarationSyntax? equalityOperator = null;
         OperatorDeclarationSyntax? inequalityOperator = null;
         if (@params.GenerateOperators)
@@ -133,6 +141,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 @params.GenerateOperators,
                 @params.ReplaceExisting,
                 @params.UseHashCodeCombine,
+                @params.CallSuper,
                 members.Count);
             var pendingChanges = new List<PendingChange>
             {
@@ -474,6 +483,13 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         return typeDecl.WithBaseList(typeDecl.BaseList.AddTypes(interfaceType));
     }
 
+    private static bool IsObjectOrValueTypeBase(INamedTypeSymbol typeSymbol)
+    {
+        var baseType = typeSymbol.BaseType;
+        return baseType == null
+            || baseType.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
+    }
+
     private static string BuildDescription(
         string typeName,
         string selfTypeName,
@@ -481,19 +497,22 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         bool generateOperators,
         bool replaceExisting,
         bool useHashCodeCombine,
+        bool callSuper,
         int memberCount)
     {
         var verb = replaceExisting ? "Replace" : "Generate";
+        var hashArgCount = memberCount + (callSuper ? 1 : 0);
         var hashStyle = useHashCodeCombine
-            ? (memberCount <= 8 ? "HashCode.Combine" : "HashCode builder")
+            ? (hashArgCount <= 8 ? "HashCode.Combine" : "HashCode builder")
             : "unchecked prime-multiply";
+        var baseNote = callSuper ? " including base equality" : "";
         if (implementIEquatable && generateOperators)
-            return $"{verb} Equals, GetHashCode ({hashStyle}), IEquatable<{selfTypeName}>, and equality operators for {typeName}";
+            return $"{verb} Equals, GetHashCode ({hashStyle}), IEquatable<{selfTypeName}>, and equality operators{baseNote} for {typeName}";
         if (implementIEquatable)
-            return $"{verb} Equals, GetHashCode ({hashStyle}), and IEquatable<{selfTypeName}> for {typeName}";
+            return $"{verb} Equals, GetHashCode ({hashStyle}), and IEquatable<{selfTypeName}>{baseNote} for {typeName}";
         if (generateOperators)
-            return $"{verb} Equals, GetHashCode ({hashStyle}), and equality operators for {typeName}";
-        return $"{verb} Equals and GetHashCode ({hashStyle}) for {typeName}";
+            return $"{verb} Equals, GetHashCode ({hashStyle}), and equality operators{baseNote} for {typeName}";
+        return $"{verb} Equals and GetHashCode ({hashStyle}){baseNote} for {typeName}";
     }
 
     private static string BuildPreviewSnippet(
@@ -586,7 +605,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             .NormalizeWhitespace();
     }
 
-    private static ExpressionSyntax BuildMemberComparisons(List<ISymbol> members)
+    private static ExpressionSyntax? BuildMemberComparisons(List<ISymbol> members)
     {
         ExpressionSyntax? comparison = null;
         foreach (var member in members)
@@ -631,33 +650,68 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 : SyntaxFactory.BinaryExpression(SyntaxKind.LogicalAndExpression, comparison, eq);
         }
 
-        return comparison!;
+        return comparison;
     }
 
-    private static MethodDeclarationSyntax GenerateTypedEquals(string selfTypeName, bool isValueType, List<ISymbol> members)
+    private static ExpressionSyntax AndAlso(params ExpressionSyntax?[] parts)
+    {
+        ExpressionSyntax? result = null;
+        foreach (var part in parts)
+        {
+            if (part == null)
+                continue;
+
+            result = result == null
+                ? part
+                : SyntaxFactory.BinaryExpression(SyntaxKind.LogicalAndExpression, result, part);
+        }
+
+        return result ?? throw new InvalidOperationException("Equals body requires at least one condition.");
+    }
+
+    private static InvocationExpressionSyntax BaseEqualsCall() =>
+        SyntaxFactory.InvocationExpression(
+                SyntaxFactory.MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    SyntaxFactory.BaseExpression(),
+                    SyntaxFactory.IdentifierName("Equals")))
+            .WithArgumentList(SyntaxFactory.ArgumentList(SyntaxFactory.SingletonSeparatedList(
+                SyntaxFactory.Argument(SyntaxFactory.IdentifierName("other")))));
+
+    private static InvocationExpressionSyntax BaseGetHashCodeCall() =>
+        SyntaxFactory.InvocationExpression(
+            SyntaxFactory.MemberAccessExpression(
+                SyntaxKind.SimpleMemberAccessExpression,
+                SyntaxFactory.BaseExpression(),
+                SyntaxFactory.IdentifierName("GetHashCode")));
+
+    private static MethodDeclarationSyntax GenerateTypedEquals(
+        string selfTypeName,
+        bool isValueType,
+        List<ISymbol> members,
+        bool callSuper)
     {
         var comparison = BuildMemberComparisons(members);
+        var baseEquals = callSuper ? BaseEqualsCall() : null;
         ExpressionSyntax returnExpr;
         TypeSyntax parameterType;
 
         if (isValueType)
         {
             parameterType = SelfTypeSyntax(selfTypeName);
-            returnExpr = comparison;
+            returnExpr = AndAlso(baseEquals, comparison);
         }
         else
         {
             // Person? other — IEquatable<T> for a class uses a nullable parameter.
             parameterType = SyntaxFactory.NullableType(SelfTypeSyntax(selfTypeName));
-            returnExpr = SyntaxFactory.BinaryExpression(
-                SyntaxKind.LogicalAndExpression,
-                SyntaxFactory.IsPatternExpression(
-                    SyntaxFactory.IdentifierName("other"),
-                    SyntaxFactory.UnaryPattern(
-                        SyntaxFactory.Token(SyntaxKind.NotKeyword),
-                        SyntaxFactory.ConstantPattern(
-                            SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression)))),
-                comparison);
+            var notNull = SyntaxFactory.IsPatternExpression(
+                SyntaxFactory.IdentifierName("other"),
+                SyntaxFactory.UnaryPattern(
+                    SyntaxFactory.Token(SyntaxKind.NotKeyword),
+                    SyntaxFactory.ConstantPattern(
+                        SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression))));
+            returnExpr = AndAlso(notNull, baseEquals, comparison);
         }
 
         return SyntaxFactory.MethodDeclaration(
@@ -698,22 +752,20 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             .NormalizeWhitespace();
     }
 
-    private static MethodDeclarationSyntax GenerateEquals(string selfTypeName, List<ISymbol> members)
+    private static MethodDeclarationSyntax GenerateEquals(string selfTypeName, List<ISymbol> members, bool callSuper)
     {
         var comparison = BuildMemberComparisons(members);
 
         // public override bool Equals(object? obj)
         // {
-        //     return obj is TypeName other && field1 == other.field1 && ...;
+        //     return obj is TypeName other && [base.Equals(other) &&] field1 == other.field1 && ...;
         // }
-        var returnExpr = SyntaxFactory.BinaryExpression(
-            SyntaxKind.LogicalAndExpression,
-            SyntaxFactory.IsPatternExpression(
-                SyntaxFactory.IdentifierName("obj"),
-                SyntaxFactory.DeclarationPattern(
-                    SelfTypeSyntax(selfTypeName),
-                    SyntaxFactory.SingleVariableDesignation(SyntaxFactory.Identifier("other")))),
-            comparison);
+        var typeCheck = SyntaxFactory.IsPatternExpression(
+            SyntaxFactory.IdentifierName("obj"),
+            SyntaxFactory.DeclarationPattern(
+                SelfTypeSyntax(selfTypeName),
+                SyntaxFactory.SingleVariableDesignation(SyntaxFactory.Identifier("other"))));
+        var returnExpr = AndAlso(typeCheck, callSuper ? BaseEqualsCall() : null, comparison);
 
         return SyntaxFactory.MethodDeclaration(
                 SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.BoolKeyword)),
@@ -728,24 +780,25 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             .NormalizeWhitespace();
     }
 
-    private static MethodDeclarationSyntax GenerateGetHashCode(List<ISymbol> members, bool useHashCodeCombine)
+    private static MethodDeclarationSyntax GenerateGetHashCode(List<ISymbol> members, bool useHashCodeCombine, bool callSuper)
     {
         return useHashCodeCombine
-            ? GenerateHashCodeCombineGetHashCode(members)
-            : GeneratePrimeMultiplyGetHashCode(members);
+            ? GenerateHashCodeCombineGetHashCode(members, callSuper)
+            : GeneratePrimeMultiplyGetHashCode(members, callSuper);
     }
 
     private static TypeSyntax SystemHashCodeType() =>
         SyntaxFactory.ParseTypeName("global::System.HashCode");
 
-    private static MethodDeclarationSyntax GenerateHashCodeCombineGetHashCode(List<ISymbol> members)
+    private static MethodDeclarationSyntax GenerateHashCodeCombineGetHashCode(List<ISymbol> members, bool callSuper)
     {
         // Qualify System.HashCode so a type-local HashCode cannot steal the call.
-        var arguments = members.Select(m =>
-            SyntaxFactory.Argument(InstanceMemberAccess(m.Name)))
-            .ToArray();
+        var arguments = new List<ArgumentSyntax>();
+        if (callSuper)
+            arguments.Add(SyntaxFactory.Argument(BaseGetHashCodeCall()));
+        arguments.AddRange(members.Select(m => SyntaxFactory.Argument(InstanceMemberAccess(m.Name))));
 
-        if (arguments.Length <= 8) // HashCode.Combine supports up to 8 args
+        if (arguments.Count <= 8) // HashCode.Combine supports up to 8 args
         {
             var hashExpr = SyntaxFactory.InvocationExpression(
                 SyntaxFactory.MemberAccessExpression(
@@ -768,6 +821,19 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                                 SyntaxFactory.ObjectCreationExpression(SystemHashCodeType())
                                     .WithArgumentList(SyntaxFactory.ArgumentList()))))))
         };
+
+        if (callSuper)
+        {
+            statements.Add(SyntaxFactory.ExpressionStatement(
+                SyntaxFactory.InvocationExpression(
+                    SyntaxFactory.MemberAccessExpression(
+                        SyntaxKind.SimpleMemberAccessExpression,
+                        SyntaxFactory.IdentifierName("hash"),
+                        SyntaxFactory.IdentifierName("Add")))
+                    .WithArgumentList(SyntaxFactory.ArgumentList(
+                        SyntaxFactory.SingletonSeparatedList(
+                            SyntaxFactory.Argument(BaseGetHashCodeCall()))))));
+        }
 
         foreach (var member in members)
         {
@@ -792,18 +858,21 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         return GetHashCodeMethod(SyntaxFactory.Block(statements));
     }
 
-    private static MethodDeclarationSyntax GeneratePrimeMultiplyGetHashCode(List<ISymbol> members)
+    private static MethodDeclarationSyntax GeneratePrimeMultiplyGetHashCode(List<ISymbol> members, bool callSuper)
     {
+        ExpressionSyntax seed = callSuper
+            ? BaseGetHashCodeCall()
+            : SyntaxFactory.LiteralExpression(
+                SyntaxKind.NumericLiteralExpression,
+                SyntaxFactory.Literal(17));
+
         var statements = new List<StatementSyntax>
         {
             SyntaxFactory.LocalDeclarationStatement(
                 SyntaxFactory.VariableDeclaration(SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.IntKeyword)))
                     .WithVariables(SyntaxFactory.SingletonSeparatedList(
                         SyntaxFactory.VariableDeclarator("hash")
-                            .WithInitializer(SyntaxFactory.EqualsValueClause(
-                                SyntaxFactory.LiteralExpression(
-                                    SyntaxKind.NumericLiteralExpression,
-                                    SyntaxFactory.Literal(17)))))))
+                            .WithInitializer(SyntaxFactory.EqualsValueClause(seed)))))
         };
 
         foreach (var member in members)

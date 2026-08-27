@@ -56,6 +56,15 @@ public sealed class GenerateEqualsHashCodeParams
     public bool UseHashCodeCombine { get; init; } = true;
 
     /// <summary>
+    /// When true, fold the immediate base type's equality into Equals/GetHashCode
+    /// (<c>base.Equals</c> before member comparisons; <c>base.GetHashCode</c> as the
+    /// first Combine/Add argument or prime-multiply seed). Rejected when the
+    /// immediate base is <c>System.Object</c> or <c>System.ValueType</c>.
+    /// Default: false (member-only Equals/GetHashCode).
+    /// </summary>
+    public bool CallSuper { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }

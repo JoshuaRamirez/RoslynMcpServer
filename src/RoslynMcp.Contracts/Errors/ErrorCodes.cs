@@ -475,6 +475,9 @@ public static class ErrorCodes
     /// <summary>Type already declares operator == or operator !=.</summary>
     public const string AlreadyHasEqualityOperators = "3145";
 
+    /// <summary>callSuper was requested but the immediate base is System.Object or System.ValueType.</summary>
+    public const string CallSuperOnObjectBase = "3146";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

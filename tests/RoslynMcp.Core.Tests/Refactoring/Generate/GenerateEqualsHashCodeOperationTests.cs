@@ -8,7 +8,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
-/// Operation-level tests for <see cref="GenerateEqualsHashCodeOperation"/>, including <c>implementIEquatable</c>, <c>generateOperators</c>, <c>replaceExisting</c>, <c>useHashCodeCombine</c>, and <c>includeProperties</c>.
+/// Operation-level tests for <see cref="GenerateEqualsHashCodeOperation"/>, including <c>implementIEquatable</c>, <c>generateOperators</c>, <c>replaceExisting</c>, <c>useHashCodeCombine</c>, <c>includeProperties</c>, and <c>callSuper</c>.
 /// </summary>
 public class GenerateEqualsHashCodeOperationTests
 {
@@ -1552,7 +1552,347 @@ public class GenerateEqualsHashCodeOperationTests
 
     #endregion
 
+    #region callSuper
+
+    private const string EntityPersonSource = """
+        namespace TestApp;
+
+        public class Entity
+        {
+            public int Id { get; set; }
+
+            public override bool Equals(object? obj) => obj is Entity other && Id == other.Id;
+
+            public override int GetHashCode() => Id.GetHashCode();
+        }
+
+        public class Person : Entity
+        {
+            public string Name { get; set; }
+
+            public int Age { get; set; }
+        }
+        """;
+
+    private const string EntityEmployeeEmptySource = """
+        namespace TestApp;
+
+        public class Entity
+        {
+            public int Id { get; set; }
+
+            public override bool Equals(object? obj) => obj is Entity other && Id == other.Id;
+
+            public override int GetHashCode() => Id.GetHashCode();
+        }
+
+        public class Employee : Entity
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperOmitted_DoesNotCallBase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertDefaultEqualsShape(updated);
+        AssertNoBaseEqualityCalls(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperFalse_DoesNotCallBase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EntityPersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertDefaultEqualsShape(updated);
+        AssertNoBaseEqualityCalls(updated);
+        AssertEqualityMembers(updated, "Name", "Age");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperTrue_FoldsBaseEqualsAndGetHashCode()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EntityPersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var objectEquals = ExtractMethod(updated, "public override bool Equals(object?");
+        Assert.Contains("obj is Person other", objectEquals);
+        Assert.Contains("base.Equals(other)", objectEquals);
+        Assert.Contains("other.Name", objectEquals);
+        Assert.Contains("other.Age", objectEquals);
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        Assert.Contains("base.GetHashCode()", getHashCode);
+        Assert.Contains("this.Name", getHashCode);
+        Assert.Contains("this.Age", getHashCode);
+        Assert.Contains("global::System.HashCode.Combine(base.GetHashCode()", getHashCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperTrue_UseHashCodeCombine_IncludesBaseHashFirst()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EntityPersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = true,
+            UseHashCodeCombine = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        Assert.Contains("global::System.HashCode.Combine(base.GetHashCode(), this.Name, this.Age)", getHashCode);
+        Assert.DoesNotContain("new global::System.HashCode()", getHashCode);
+        AssertNoPrimeMultiply(getHashCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperTrue_UseHashCodeCombine_MoreThanEightMembers_AddsBaseHashFirst()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Entity
+            {
+                public int Id { get; set; }
+
+                public override bool Equals(object? obj) => obj is Entity other && Id == other.Id;
+
+                public override int GetHashCode() => Id.GetHashCode();
+            }
+
+            public class Wide : Entity
+            {
+                public int A { get; set; }
+                public int B { get; set; }
+                public int C { get; set; }
+                public int D { get; set; }
+                public int E { get; set; }
+                public int F { get; set; }
+                public int G { get; set; }
+                public int H { get; set; }
+                public int I { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Wide.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Wide",
+            CallSuper = true,
+            UseHashCodeCombine = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        Assert.Contains("new global::System.HashCode()", getHashCode);
+        Assert.Contains("hash.Add(base.GetHashCode())", getHashCode);
+        Assert.Contains("hash.Add(this.A)", getHashCode);
+        Assert.Contains("hash.Add(this.I)", getHashCode);
+        Assert.Contains("hash.ToHashCode()", getHashCode);
+        Assert.DoesNotContain("HashCode.Combine", getHashCode);
+        AssertNoPrimeMultiply(getHashCode);
+        var addBase = getHashCode.IndexOf("hash.Add(base.GetHashCode())", StringComparison.Ordinal);
+        var addA = getHashCode.IndexOf("hash.Add(this.A)", StringComparison.Ordinal);
+        Assert.True(addBase >= 0 && addA > addBase, "base.GetHashCode() should be Add-ed before members");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperTrue_UseHashCodeCombineFalse_SeedsFromBaseGetHashCode()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EntityPersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = true,
+            UseHashCodeCombine = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        Assert.Contains("unchecked", getHashCode);
+        Assert.Contains("int hash = base.GetHashCode()", getHashCode);
+        Assert.DoesNotContain("int hash = 17", getHashCode);
+        Assert.Contains("(hash * 31)", getHashCode);
+        Assert.Contains("this.Name.GetHashCode()", getHashCode);
+        Assert.Contains("this.Age.GetHashCode()", getHashCode);
+        AssertNoHashCodeCombineOrBuilder(getHashCode);
+        var objectEquals = ExtractMethod(updated, "public override bool Equals(object?");
+        Assert.Contains("base.Equals(other)", objectEquals);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperTrue_ImplementIEquatable_FoldsBaseIntoTypedEquals()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EntityPersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = true,
+            ImplementIEquatable = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("global::System.IEquatable<Person>", updated);
+        var typedEquals = ExtractMethod(updated, "public bool Equals(Person? other)");
+        Assert.Contains("base.Equals(other)", typedEquals);
+        Assert.Contains("Name", typedEquals);
+        Assert.Contains("Age", typedEquals);
+        var notNull = typedEquals.IndexOf("other is not null", StringComparison.Ordinal);
+        var baseEquals = typedEquals.IndexOf("base.Equals(other)", StringComparison.Ordinal);
+        var nameCompare = typedEquals.IndexOf("Name", StringComparison.Ordinal);
+        Assert.True(notNull >= 0 && baseEquals > notNull && nameCompare > baseEquals,
+            "base.Equals should come after the null check and before member comparisons");
+        AssertObjectEqualsDelegates(updated, "Person");
+        var objectEquals = ExtractMethod(updated, "public override bool Equals(object?");
+        Assert.DoesNotContain("base.Equals", objectEquals);
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        Assert.Contains("base.GetHashCode()", getHashCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperTrue_ObjectBase_FailsWith3146()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                CallSuper = true
+            }));
+
+        Assert.Equal(ErrorCodes.CallSuperOnObjectBase, ex.ErrorCode);
+        Assert.Equal("3146", ex.ErrorCode);
+        Assert.Contains("Object", ex.Message);
+        Assert.Equal(PersonSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperTrue_Struct_FailsWith3146()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointSource, "Point.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Point",
+                CallSuper = true
+            }));
+
+        Assert.Equal(ErrorCodes.CallSuperOnObjectBase, ex.ErrorCode);
+        Assert.Equal("3146", ex.ErrorCode);
+        Assert.Contains("ValueType", ex.Message);
+        Assert.Equal(PointSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperTrue_NoMembers_GeneratesBaseOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EntityEmployeeEmptySource, "Employee.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            CallSuper = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var objectEquals = ExtractMethod(updated, "public override bool Equals(object?");
+        Assert.Contains("obj is Employee other", objectEquals);
+        Assert.Contains("base.Equals(other)", objectEquals);
+        Assert.DoesNotContain("other.Id", objectEquals);
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        Assert.Contains("global::System.HashCode.Combine(base.GetHashCode())", getHashCode);
+        Assert.DoesNotContain("this.Id", getHashCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_CallSuperTrue_Preview_DoesNotWriteFiles_AndDescribesBase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EntityPersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("base equality", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        Assert.Contains("base.Equals(other)", snippet);
+        Assert.Contains("base.GetHashCode()", snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Helpers
+
+    private static void AssertNoBaseEqualityCalls(string text)
+    {
+        Assert.DoesNotContain("base.Equals", text);
+        Assert.DoesNotContain("base.GetHashCode", text);
+    }
 
     private static void AssertEqualityMembers(string text, params string[] members)
     {
@@ -1616,7 +1956,9 @@ public class GenerateEqualsHashCodeOperationTests
         var objectEquals = ExtractMethod(text, "public override bool Equals(object?");
         Assert.Contains("obj is Person other", objectEquals);
         Assert.DoesNotContain("Equals(other)", objectEquals);
+        Assert.DoesNotContain("base.Equals", objectEquals);
         Assert.Contains("public override int GetHashCode()", text);
+        Assert.DoesNotContain("base.GetHashCode", text);
     }
 
     private static void AssertIEquatableClassShape(string text)
