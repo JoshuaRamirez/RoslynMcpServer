@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -93,13 +94,6 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                 ErrorCodes.SameLocation,
                 "New name is the same as current name.");
         }
-
-        if (@params.UpdateFolders)
-        {
-            throw new RefactoringException(
-                ErrorCodes.FolderUpdateNotSupported,
-                "updateFolders is not implemented. Leave updateFolders false to rename the namespace without moving folders.");
-        }
     }
 
     /// <summary>
@@ -169,22 +163,49 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
 
         ValidateChangedDocumentsAreEditable(Context.Solution, newSolution);
 
+        FolderMovePlan? folderPlan = null;
+        if (@params.UpdateFolders)
+            folderPlan = PlanFolderMoves(document, oldFullName, newFullName, Context.Solution, Context.Workspace);
+
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, Context.Solution, newSolution, oldFullName, newFullName);
+            return CreatePreviewResult(operationId, Context.Solution, newSolution, oldFullName, newFullName, folderPlan);
         }
 
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
+
+        var filesModified = commitResult.FilesModified.ToList();
+        var filesCreated = commitResult.FilesCreated.ToList();
+        var filesDeleted = commitResult.FilesDeleted.ToList();
+        var resultSourceFile = document.FilePath;
+
+        if (folderPlan != null)
+        {
+            ApplyFolderMoves(folderPlan);
+            WriteProjectUpdates(folderPlan);
+            Context.UpdateSolution(ApplyDocumentPathUpdates(Context.Solution, folderPlan));
+
+            filesModified = filesModified.Select(path => RemapCommittedPath(path, folderPlan)).ToList();
+            filesModified.AddRange(folderPlan.ProjectTexts.Keys);
+            foreach (var file in folderPlan.Files)
+            {
+                filesCreated.Add(file.DestinationFile);
+                filesDeleted.Add(file.SourceFile);
+            }
+
+            if (resultSourceFile != null)
+                resultSourceFile = RemapCommittedPath(resultSourceFile, folderPlan);
+        }
 
         return RefactoringResult.Succeeded(
             operationId,
             new FileChanges
             {
-                FilesModified = commitResult.FilesModified,
-                FilesCreated = commitResult.FilesCreated,
-                FilesDeleted = commitResult.FilesDeleted
+                FilesModified = filesModified,
+                FilesCreated = filesCreated,
+                FilesDeleted = filesDeleted
             },
-            CreateSymbolInfo(namespaceSymbol, oldFullName, newFullName, document.FilePath),
+            CreateSymbolInfo(namespaceSymbol, oldFullName, newFullName, resultSourceFile),
             references.TotalReferenceCount,
             0);
     }
@@ -650,7 +671,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         Solution oldSolution,
         Solution newSolution,
         string oldFullName,
-        string newFullName)
+        string newFullName,
+        FolderMovePlan? folderPlan = null)
     {
         var pending = new List<PendingChange>();
         foreach (var projectChange in newSolution.GetChanges(oldSolution).GetProjectChanges())
@@ -663,6 +685,35 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                     File = document?.FilePath ?? document?.Name ?? "(unknown)",
                     ChangeType = ChangeKind.Modify,
                     Description = $"Rename namespace '{oldFullName}' to '{newFullName}'"
+                });
+            }
+        }
+
+        if (folderPlan != null)
+        {
+            foreach (var folder in folderPlan.Folders)
+            {
+                pending.Add(new PendingChange
+                {
+                    File = folder.SourceFolder,
+                    ChangeType = ChangeKind.Delete,
+                    Description = $"Move folder to match namespace '{newFullName}'"
+                });
+                pending.Add(new PendingChange
+                {
+                    File = folder.DestinationFolder,
+                    ChangeType = ChangeKind.Create,
+                    Description = $"Move '{folder.SourceFolder}' to '{folder.DestinationFolder}'"
+                });
+            }
+
+            foreach (var projectPath in folderPlan.ProjectTexts.Keys)
+            {
+                pending.Add(new PendingChange
+                {
+                    File = projectPath,
+                    ChangeType = ChangeKind.Modify,
+                    Description = "Update explicit Compile items to the moved folder"
                 });
             }
         }
@@ -728,6 +779,739 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             PreviousNamespace = oldFullName,
             NewNamespace = newFullName
         };
+    }
+
+    /// <summary>
+    /// Finds a directory whose trailing segments equal the namespace parts
+    /// by walking from <paramref name="filePath"/>'s directory toward the root.
+    /// When <paramref name="stopAtDirectory"/> is set, that directory and its
+    /// ancestors are not considered (so the project root is never a match).
+    /// </summary>
+    internal static string? TryFindMatchingFolder(
+        string filePath,
+        string namespaceName,
+        string? stopAtDirectory = null)
+    {
+        var parts = SplitNamespace(namespaceName);
+        if (parts.Length == 0)
+            return null;
+
+        var stop = string.IsNullOrWhiteSpace(stopAtDirectory)
+            ? null
+            : PathResolver.NormalizePath(stopAtDirectory);
+
+        var directory = Path.GetDirectoryName(PathResolver.NormalizePath(filePath));
+        while (!string.IsNullOrEmpty(directory))
+        {
+            var normalized = PathResolver.NormalizePath(directory);
+            if (stop != null && string.Equals(normalized, stop, StringComparison.OrdinalIgnoreCase))
+                break;
+
+            if (DirectoryTrailingSegmentsMatch(directory, parts))
+                return normalized;
+
+            directory = Path.GetDirectoryName(directory);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// True when the last <paramref name="namespaceParts"/>.Length segments of
+    /// <paramref name="directory"/> equal those identifiers.
+    /// </summary>
+    internal static bool DirectoryTrailingSegmentsMatch(string directory, IReadOnlyList<string> namespaceParts)
+    {
+        var current = PathResolver.NormalizePath(directory);
+        for (var i = namespaceParts.Count - 1; i >= 0; i--)
+        {
+            var segment = Path.GetFileName(current);
+            if (string.IsNullOrEmpty(segment))
+                return false;
+            if (!string.Equals(segment, namespaceParts[i], StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent))
+                return false;
+            current = parent;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Replaces the trailing namespace segments of <paramref name="sourceFolder"/>
+    /// with the parts of <paramref name="newNamespace"/>.
+    /// </summary>
+    internal static string GetDestinationFolder(string sourceFolder, string oldNamespace, string newNamespace)
+    {
+        var oldParts = SplitNamespace(oldNamespace);
+        var current = PathResolver.NormalizePath(sourceFolder);
+        for (var i = 0; i < oldParts.Length; i++)
+        {
+            current = Path.GetDirectoryName(current)
+                ?? throw new RefactoringException(
+                    ErrorCodes.FolderDoesNotMatchNamespace,
+                    $"Folder path '{sourceFolder}' does not correspond to namespace '{oldNamespace}'.");
+        }
+
+        var newParts = SplitNamespace(newNamespace);
+        return PathResolver.NormalizePath(Path.Combine(new[] { current }.Concat(newParts).ToArray()));
+    }
+
+    /// <summary>
+    /// Maps a path under <paramref name="sourceFolder"/> onto <paramref name="destFolder"/>.
+    /// </summary>
+    internal static string RemapPathUnderFolder(string path, string sourceFolder, string destFolder)
+    {
+        var normalized = PathResolver.NormalizePath(path);
+        var sourceNorm = PathResolver.NormalizePath(sourceFolder);
+        if (string.Equals(normalized, sourceNorm, StringComparison.OrdinalIgnoreCase))
+            return PathResolver.NormalizePath(destFolder);
+
+        var prefix = sourceNorm.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            return normalized;
+
+        return PathResolver.NormalizePath(Path.Combine(destFolder, normalized[prefix.Length..]));
+    }
+
+    /// <summary>
+    /// True when both paths identify the same existing directory, including
+    /// case-only differences on a case-insensitive volume.
+    /// </summary>
+    internal static bool ReferToSameDirectory(string left, string right)
+    {
+        var leftFull = PathResolver.NormalizePath(left);
+        var rightFull = PathResolver.NormalizePath(right);
+        if (string.Equals(leftFull, rightFull, StringComparison.Ordinal))
+            return true;
+
+        if (!string.Equals(leftFull, rightFull, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!Directory.Exists(leftFull) || !Directory.Exists(rightFull))
+            return false;
+
+        var parent = Path.GetDirectoryName(leftFull);
+        if (string.IsNullOrEmpty(parent) || !Directory.Exists(parent))
+            return OperatingSystem.IsWindows();
+
+        var name = Path.GetFileName(leftFull);
+        var distinctMatches = Directory.EnumerateDirectories(parent)
+            .Select(Path.GetFileName)
+            .Where(n => n != null && string.Equals(n, name, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.Ordinal)
+            .Take(2)
+            .Count();
+        return distinctMatches == 1;
+    }
+
+    /// <summary>
+    /// True when <paramref name="destFolder"/> exists as a different directory
+    /// than <paramref name="sourceFolder"/>.
+    /// </summary>
+    internal static bool IsDestinationOccupiedByDifferentDirectory(string sourceFolder, string destFolder)
+    {
+        if (!Directory.Exists(destFolder))
+            return false;
+        return !ReferToSameDirectory(sourceFolder, destFolder);
+    }
+
+    /// <summary>
+    /// True when <paramref name="destFolder"/> is a strict descendant of
+    /// <paramref name="sourceFolder"/> (moving the folder into itself).
+    /// </summary>
+    internal static bool IsDestinationNestedInSource(string sourceFolder, string destFolder)
+    {
+        var sourceNorm = PathResolver.NormalizePath(sourceFolder);
+        var destNorm = PathResolver.NormalizePath(destFolder);
+        if (string.Equals(sourceNorm, destNorm, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return IsUnderOrEqual(destNorm, sourceNorm);
+    }
+
+    /// <summary>
+    /// True when <paramref name="spec"/> is an MSBuild glob (<c>*</c> or <c>?</c>).
+    /// </summary>
+    internal static bool ContainsMsBuildGlob(string spec) =>
+        spec.Contains('*') || spec.Contains('?');
+
+    /// <summary>
+    /// Directory prefix of a compile item before the first wildcard, or the
+    /// full spec when it is a literal path.
+    /// </summary>
+    internal static string GetGlobDirectoryPrefix(string spec)
+    {
+        var trimmed = spec.Trim();
+        var globIndex = trimmed.IndexOfAny(['*', '?']);
+        if (globIndex < 0)
+            return trimmed.TrimEnd('/', '\\');
+
+        var before = trimmed[..globIndex];
+        var lastSep = Math.Max(before.LastIndexOf('/'), before.LastIndexOf('\\'));
+        return lastSep < 0 ? string.Empty : before[..lastSep];
+    }
+
+    /// <summary>
+    /// Moves <paramref name="sourceFolder"/> to <paramref name="destFolder"/>.
+    /// Case-only renames go through a temporary name so case-insensitive
+    /// volumes actually change the on-disk casing.
+    /// </summary>
+    internal static void MoveFolder(string sourceFolder, string destFolder)
+    {
+        if (RenameFileToMatchTypeOperation.PathsDifferOnlyByCase(sourceFolder, destFolder))
+        {
+            var parent = Path.GetDirectoryName(sourceFolder)
+                ?? throw new RefactoringException(ErrorCodes.InvalidSourcePath, "Folder has no parent directory.");
+            string tempPath;
+            do
+            {
+                tempPath = Path.Combine(parent, ".roslynmcp_rename_" + Guid.NewGuid().ToString("N"));
+            } while (Directory.Exists(tempPath));
+
+            Directory.Move(sourceFolder, tempPath);
+            try
+            {
+                Directory.Move(tempPath, destFolder);
+            }
+            catch
+            {
+                if (Directory.Exists(tempPath) && !Directory.Exists(sourceFolder))
+                    Directory.Move(tempPath, sourceFolder);
+                throw;
+            }
+
+            return;
+        }
+
+        var destParent = Path.GetDirectoryName(destFolder);
+        if (!string.IsNullOrEmpty(destParent) && !Directory.Exists(destParent))
+            Directory.CreateDirectory(destParent);
+
+        Directory.Move(sourceFolder, destFolder);
+    }
+
+    /// <summary>
+    /// Rewrites explicit <c>Compile Include</c>/<c>Update</c> items that point at
+    /// moved files so they point at the destination paths. Wildcard and
+    /// semicolon lists are rewritten at the folder-pattern level, or rejected
+    /// when they would drop sources after the move.
+    /// </summary>
+    internal static string UpdateExplicitCompileItemsForMoves(
+        string projectXml,
+        string projectDirectory,
+        IReadOnlyList<(string SourceFile, string NewFilePath)> moves,
+        IReadOnlyList<(string SourceFolder, string DestinationFolder)>? folderMoves = null)
+    {
+        if (moves.Count == 0 && (folderMoves == null || folderMoves.Count == 0))
+            return projectXml;
+
+        XDocument document;
+        try
+        {
+            document = XDocument.Parse(projectXml, LoadOptions.PreserveWhitespace | LoadOptions.SetLineInfo);
+        }
+        catch (System.Xml.XmlException)
+        {
+            return projectXml;
+        }
+
+        var ns = document.Root?.Name.Namespace ?? XNamespace.None;
+        var changed = false;
+        var folders = folderMoves ?? [];
+
+        foreach (var compile in document.Descendants(ns + "Compile").ToList())
+        {
+            changed |= TryRewriteMovedProjectItemAttribute(compile, "Include", projectDirectory, moves, folders);
+            changed |= TryRewriteMovedProjectItemAttribute(compile, "Update", projectDirectory, moves, folders);
+        }
+
+        if (!changed)
+            return projectXml;
+
+        return SerializeProjectXml(document, projectXml);
+    }
+
+    /// <summary>
+    /// Rewrites a compile item spec (literal, glob, or semicolon list) for
+    /// folder moves. Throws <see cref="ErrorCodes.UnsupportedCompileItem"/>
+    /// when a pattern would cover moved files but cannot be remapped.
+    /// </summary>
+    internal static string RewriteCompileItemSpec(
+        string spec,
+        string projectDirectory,
+        IReadOnlyList<(string SourceFolder, string DestinationFolder)> folderMoves)
+    {
+        if (spec.Contains(';'))
+        {
+            var parts = spec.Split(';');
+            for (var i = 0; i < parts.Length; i++)
+                parts[i] = RewriteSingleCompileItemSpec(parts[i], projectDirectory, folderMoves);
+            return string.Join(';', parts);
+        }
+
+        return RewriteSingleCompileItemSpec(spec, projectDirectory, folderMoves);
+    }
+
+    /// <summary>
+    /// Builds a project-item path for <paramref name="newFilePath"/> that keeps
+    /// the rootedness and separator style of <paramref name="includeOrUpdate"/>.
+    /// </summary>
+    internal static string RewriteProjectItemToTarget(
+        string includeOrUpdate,
+        string projectDirectory,
+        string newFilePath)
+    {
+        var trimmed = includeOrUpdate.Trim();
+        var separator = trimmed.Contains('\\') && !trimmed.Contains('/')
+            ? '\\'
+            : trimmed.Contains('/') && !trimmed.Contains('\\')
+                ? '/'
+                : Path.DirectorySeparatorChar;
+
+        var native = trimmed
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar);
+        var replacement = Path.IsPathRooted(native)
+            ? PathResolver.NormalizePath(newFilePath)
+            : Path.GetRelativePath(projectDirectory, PathResolver.NormalizePath(newFilePath));
+
+        return replacement
+            .Replace(Path.DirectorySeparatorChar, separator)
+            .Replace(Path.AltDirectorySeparatorChar, separator);
+    }
+
+    private FolderMovePlan PlanFolderMoves(
+        Document sourceDocument,
+        string oldFullName,
+        string newFullName,
+        Solution solution,
+        Microsoft.CodeAnalysis.Workspace workspace)
+    {
+        if (string.IsNullOrWhiteSpace(sourceDocument.FilePath) || !File.Exists(sourceDocument.FilePath))
+        {
+            throw new RefactoringException(
+                ErrorCodes.SourceFileNotFound,
+                $"Source file not found: {sourceDocument.FilePath}");
+        }
+
+        var sourceProjectDirectory = Path.GetDirectoryName(sourceDocument.Project.FilePath);
+        var sourceFolder = TryFindMatchingFolder(sourceDocument.FilePath, oldFullName, sourceProjectDirectory);
+        if (sourceFolder == null)
+        {
+            var unconstrained = TryFindMatchingFolder(sourceDocument.FilePath, oldFullName);
+            if (unconstrained != null && ProjectFileIsUnderFolder(unconstrained, solution))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.FolderContainsProjectFile,
+                    $"Cannot move folder '{unconstrained}' because it contains a project file.");
+            }
+
+            throw new RefactoringException(
+                ErrorCodes.FolderDoesNotMatchNamespace,
+                $"Folder path '{Path.GetDirectoryName(sourceDocument.FilePath)}' does not correspond to namespace '{oldFullName}'.");
+        }
+
+        if (!workspace.CanApplyChange(ApplyChangesKind.ChangeDocument) &&
+            !workspace.CanApplyChange(ApplyChangesKind.ChangeDocumentInfo))
+        {
+            throw new RefactoringException(
+                ErrorCodes.DocumentNotEditable,
+                $"Project '{sourceDocument.Project.Name}' is not editable (workspace cannot apply document path changes).");
+        }
+
+        var matchingFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            sourceFolder
+        };
+
+        foreach (var project in solution.Projects)
+        {
+            foreach (var document in project.Documents)
+            {
+                if (string.IsNullOrWhiteSpace(document.FilePath))
+                    continue;
+
+                var projectDirectory = Path.GetDirectoryName(document.Project.FilePath);
+                var folder = TryFindMatchingFolder(document.FilePath, oldFullName, projectDirectory);
+                if (folder != null)
+                    matchingFolders.Add(PathResolver.NormalizePath(folder));
+            }
+        }
+
+        var folderMoves = SelectRootFolders(matchingFolders)
+            .Select(folder => new FolderMove(folder, GetDestinationFolder(folder, oldFullName, newFullName)))
+            .ToList();
+
+        foreach (var folder in folderMoves)
+        {
+            if (ProjectFileIsUnderFolder(folder.SourceFolder, solution))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.FolderContainsProjectFile,
+                    $"Cannot move folder '{folder.SourceFolder}' because it contains a project file.");
+            }
+
+            if (IsDestinationNestedInSource(folder.SourceFolder, folder.DestinationFolder))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.DestinationNestedInSource,
+                    $"Destination folder '{folder.DestinationFolder}' is nested inside the source folder '{folder.SourceFolder}'.");
+            }
+
+            if (IsDestinationOccupiedByDifferentDirectory(folder.SourceFolder, folder.DestinationFolder))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.DestinationFolderExists,
+                    $"Destination folder already exists: {folder.DestinationFolder}");
+            }
+        }
+
+        var fileMoves = new List<FileMove>();
+        var destToSource = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var folder in folderMoves)
+        {
+            if (!Directory.Exists(folder.SourceFolder))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.SourceFileNotFound,
+                    $"Source file not found: {folder.SourceFolder}");
+            }
+
+            foreach (var file in Directory.GetFiles(folder.SourceFolder, "*", SearchOption.AllDirectories))
+            {
+                var destFile = RemapPathUnderFolder(file, folder.SourceFolder, folder.DestinationFolder);
+                if (RenameFileToMatchTypeOperation.IsDestinationOccupiedByDifferentFile(file, destFile))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.TargetFileExists,
+                        $"Destination file already exists: {destFile}");
+                }
+
+                if (destToSource.TryGetValue(destFile, out var other)
+                    && !RenameFileToMatchTypeOperation.ReferToSameFile(other, file))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.TargetFileExists,
+                        $"File name collision after move: {destFile}");
+                }
+
+                destToSource[destFile] = file;
+                fileMoves.Add(new FileMove(PathResolver.NormalizePath(file), destFile));
+            }
+        }
+
+        foreach (var project in solution.Projects)
+        {
+            foreach (var document in project.Documents)
+            {
+                if (string.IsNullOrWhiteSpace(document.FilePath))
+                    continue;
+                if (!TryRemapDocumentPath(document.FilePath, folderMoves, out _))
+                    continue;
+
+                if (!File.Exists(document.FilePath))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.SourceFileNotFound,
+                        $"Source file not found: {document.FilePath}");
+                }
+
+                ValidateDocumentIsEditable(document, workspace);
+            }
+        }
+
+        var projectTexts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var compileMoves = fileMoves
+            .Select(file => (file.SourceFile, file.DestinationFile))
+            .ToList();
+
+        foreach (var project in solution.Projects)
+        {
+            if (string.IsNullOrWhiteSpace(project.FilePath) || !File.Exists(project.FilePath))
+                continue;
+
+            var projectDirectory = Path.GetDirectoryName(project.FilePath);
+            if (string.IsNullOrEmpty(projectDirectory))
+                continue;
+
+            var original = File.ReadAllText(project.FilePath);
+            var folderPairs = folderMoves
+                .Select(folder => (folder.SourceFolder, folder.DestinationFolder))
+                .ToList();
+            var updated = UpdateExplicitCompileItemsForMoves(original, projectDirectory, compileMoves, folderPairs);
+            if (string.Equals(original, updated, StringComparison.Ordinal))
+                continue;
+
+            if (new FileInfo(project.FilePath).IsReadOnly)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Project '{project.Name}' is not editable.");
+            }
+
+            projectTexts[project.FilePath] = updated;
+        }
+
+        return new FolderMovePlan
+        {
+            Folders = folderMoves,
+            Files = fileMoves,
+            ProjectTexts = projectTexts
+        };
+    }
+
+    private static List<string> SelectRootFolders(IEnumerable<string> folders)
+    {
+        var list = folders.Select(PathResolver.NormalizePath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return list
+            .Where(folder => !list.Any(other =>
+                !string.Equals(other, folder, StringComparison.OrdinalIgnoreCase)
+                && IsUnderOrEqual(folder, other)))
+            .ToList();
+    }
+
+    private static bool IsUnderOrEqual(string path, string folder)
+    {
+        var pathNorm = PathResolver.NormalizePath(path);
+        var folderNorm = PathResolver.NormalizePath(folder);
+        if (string.Equals(pathNorm, folderNorm, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var prefix = folderNorm.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        return pathNorm.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryRemapDocumentPath(string path, IReadOnlyList<FolderMove> folders, out string remapped)
+    {
+        foreach (var folder in folders)
+        {
+            if (!IsUnderOrEqual(path, folder.SourceFolder))
+                continue;
+
+            remapped = RemapPathUnderFolder(path, folder.SourceFolder, folder.DestinationFolder);
+            return true;
+        }
+
+        remapped = path;
+        return false;
+    }
+
+    private static string RemapCommittedPath(string path, FolderMovePlan plan) =>
+        TryRemapDocumentPath(path, plan.Folders, out var remapped) ? remapped : path;
+
+    private static void ApplyFolderMoves(FolderMovePlan plan)
+    {
+        try
+        {
+            foreach (var folder in plan.Folders)
+                MoveFolder(folder.SourceFolder, folder.DestinationFolder);
+        }
+        catch (IOException ex)
+        {
+            throw new RefactoringException(
+                ErrorCodes.FilesystemError,
+                $"Failed to move folder: {ex.Message}",
+                ex);
+        }
+    }
+
+    private static Solution ApplyDocumentPathUpdates(Solution solution, FolderMovePlan plan)
+    {
+        foreach (var project in solution.Projects)
+        {
+            foreach (var document in project.Documents)
+            {
+                if (string.IsNullOrWhiteSpace(document.FilePath))
+                    continue;
+                if (!TryRemapDocumentPath(document.FilePath, plan.Folders, out var newPath))
+                    continue;
+                if (string.Equals(PathResolver.NormalizePath(document.FilePath), newPath, StringComparison.Ordinal))
+                    continue;
+
+                solution = solution.WithDocumentFilePath(document.Id, newPath);
+            }
+        }
+
+        return solution;
+    }
+
+    private static void WriteProjectUpdates(FolderMovePlan plan)
+    {
+        foreach (var (projectPath, text) in plan.ProjectTexts)
+        {
+            try
+            {
+                File.WriteAllText(projectPath, text);
+            }
+            catch (IOException ex)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.FilesystemError,
+                    $"Failed to update project file: {ex.Message}",
+                    ex);
+            }
+        }
+    }
+
+    private static bool ProjectFileIsUnderFolder(string folder, Solution solution)
+    {
+        foreach (var project in solution.Projects)
+        {
+            if (string.IsNullOrWhiteSpace(project.FilePath))
+                continue;
+            if (IsUnderOrEqual(project.FilePath, folder))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string RewriteSingleCompileItemSpec(
+        string spec,
+        string projectDirectory,
+        IReadOnlyList<(string SourceFolder, string DestinationFolder)> folderMoves)
+    {
+        if (!ContainsMsBuildGlob(spec))
+            return spec;
+
+        var prefix = GetGlobDirectoryPrefix(spec);
+        string resolvedPrefix;
+        try
+        {
+            resolvedPrefix = string.IsNullOrEmpty(prefix)
+                ? PathResolver.NormalizePath(projectDirectory)
+                : ResolveProjectItemPath(projectDirectory, prefix);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new RefactoringException(
+                ErrorCodes.UnsupportedCompileItem,
+                $"Explicit Compile item '{spec}' cannot be updated for the folder move.");
+        }
+
+        foreach (var (sourceFolder, destinationFolder) in folderMoves)
+        {
+            if (IsUnderOrEqual(resolvedPrefix, sourceFolder))
+                return ReplaceGlobDirectoryPrefix(spec, prefix, projectDirectory, sourceFolder, destinationFolder);
+
+            if (IsUnderOrEqual(sourceFolder, resolvedPrefix) && !IsUnderOrEqual(destinationFolder, resolvedPrefix))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.UnsupportedCompileItem,
+                    $"Explicit Compile item '{spec}' cannot be updated for the folder move.");
+            }
+        }
+
+        return spec;
+    }
+
+    private static string ReplaceGlobDirectoryPrefix(
+        string spec,
+        string oldPrefix,
+        string projectDirectory,
+        string sourceFolder,
+        string destinationFolder)
+    {
+        var resolvedOld = string.IsNullOrEmpty(oldPrefix)
+            ? PathResolver.NormalizePath(projectDirectory)
+            : ResolveProjectItemPath(projectDirectory, oldPrefix);
+        var resolvedNew = RemapPathUnderFolder(resolvedOld, sourceFolder, destinationFolder);
+        var dummyName = "dummy.cs";
+        var dummyOld = string.IsNullOrEmpty(oldPrefix)
+            ? dummyName
+            : oldPrefix.TrimEnd('/', '\\') + (oldPrefix.Contains('\\') && !oldPrefix.Contains('/') ? '\\' : '/') + dummyName;
+        var rewrittenDummy = RewriteProjectItemToTarget(
+            dummyOld,
+            projectDirectory,
+            Path.Combine(resolvedNew, dummyName));
+        var newPrefix = rewrittenDummy.EndsWith(dummyName, StringComparison.Ordinal)
+            ? rewrittenDummy[..^dummyName.Length].TrimEnd('/', '\\')
+            : rewrittenDummy;
+        return newPrefix + spec[oldPrefix.Length..];
+    }
+
+    private static string ResolveProjectItemPath(string projectDirectory, string includeOrUpdate)
+    {
+        var withNativeSeps = includeOrUpdate.Trim()
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar);
+        return Path.IsPathRooted(withNativeSeps)
+            ? PathResolver.NormalizePath(withNativeSeps)
+            : PathResolver.NormalizePath(Path.Combine(projectDirectory, withNativeSeps));
+    }
+
+    private static bool TryRewriteMovedProjectItemAttribute(
+        XElement compile,
+        string attributeName,
+        string projectDirectory,
+        IReadOnlyList<(string SourceFile, string NewFilePath)> moves,
+        IReadOnlyList<(string SourceFolder, string DestinationFolder)> folderMoves)
+    {
+        var attribute = compile.Attribute(attributeName);
+        if (attribute == null)
+            return false;
+
+        if (attribute.Value.Contains(';') || ContainsMsBuildGlob(attribute.Value))
+        {
+            var rewrittenGlob = RewriteCompileItemSpec(attribute.Value, projectDirectory, folderMoves);
+            if (string.Equals(attribute.Value, rewrittenGlob, StringComparison.Ordinal))
+                return false;
+
+            attribute.Value = rewrittenGlob;
+            return true;
+        }
+
+        foreach (var (sourceFile, newFilePath) in moves)
+        {
+            if (!RenameFileToMatchTypeOperation.ProjectItemRefersToFile(projectDirectory, attribute.Value, sourceFile))
+                continue;
+
+            var rewritten = RewriteProjectItemToTarget(attribute.Value, projectDirectory, newFilePath);
+            if (string.Equals(attribute.Value, rewritten, StringComparison.Ordinal))
+                return false;
+
+            attribute.Value = rewritten;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string SerializeProjectXml(XDocument document, string originalXml)
+    {
+        var writerSettings = new System.Xml.XmlWriterSettings
+        {
+            OmitXmlDeclaration = !originalXml.Contains("<?xml", StringComparison.OrdinalIgnoreCase),
+            NewLineHandling = System.Xml.NewLineHandling.Replace,
+            NewLineChars = originalXml.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n",
+            Indent = false
+        };
+
+        using var writer = new StringWriter();
+        using (var xmlWriter = System.Xml.XmlWriter.Create(writer, writerSettings))
+        {
+            document.Save(xmlWriter);
+        }
+
+        var serialized = writer.ToString();
+        if (originalXml.EndsWith('\n') && !serialized.EndsWith('\n'))
+            serialized += writerSettings.NewLineChars;
+        return serialized;
+    }
+
+    private sealed record FolderMove(string SourceFolder, string DestinationFolder);
+
+    private sealed record FileMove(string SourceFile, string DestinationFile);
+
+    private sealed class FolderMovePlan
+    {
+        public required IReadOnlyList<FolderMove> Folders { get; init; }
+        public required IReadOnlyList<FileMove> Files { get; init; }
+        public required IReadOnlyDictionary<string, string> ProjectTexts { get; init; }
     }
 
     private sealed class NamespaceNameRewriter : CSharpSyntaxRewriter
