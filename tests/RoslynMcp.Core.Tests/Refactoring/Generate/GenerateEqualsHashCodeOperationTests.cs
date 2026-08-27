@@ -8,7 +8,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
-/// Operation-level tests for <see cref="GenerateEqualsHashCodeOperation"/>, including <c>implementIEquatable</c>, <c>generateOperators</c>, <c>replaceExisting</c>, and <c>useHashCodeCombine</c>.
+/// Operation-level tests for <see cref="GenerateEqualsHashCodeOperation"/>, including <c>implementIEquatable</c>, <c>generateOperators</c>, <c>replaceExisting</c>, <c>useHashCodeCombine</c>, and <c>includeProperties</c>.
 /// </summary>
 public class GenerateEqualsHashCodeOperationTests
 {
@@ -1367,7 +1367,211 @@ public class GenerateEqualsHashCodeOperationTests
 
     #endregion
 
+    #region includeProperties
+
+    private const string WidgetWithFieldAndPropertySource = """
+        namespace TestApp;
+
+        public class Widget
+        {
+            public string _id;
+
+            public string Name { get; set; }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludePropertiesOmitted_IncludesFieldAndProperty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "_id", "Name");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludePropertiesTrue_IncludesFieldAndProperty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "_id", "Name");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludePropertiesFalse_IncludesFieldOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "_id");
+        AssertMemberNotCompared(updated, "Name");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludePropertiesFalse_EmptyFieldsList_IncludesFieldOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Fields = Array.Empty<string>(),
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "_id");
+        AssertMemberNotCompared(updated, "Name");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludePropertiesFalse_PropertiesOnly_FailsWithNoMembersToGenerate()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                IncludeProperties = false
+            }));
+
+        Assert.Equal(ErrorCodes.NoMembersToGenerate, ex.ErrorCode);
+        Assert.Equal("3055", ex.ErrorCode);
+        Assert.Contains("No fields or properties", ex.Message);
+        Assert.Equal(PersonSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludePropertiesFalse_FieldsNamesProperty_IncludesThatProperty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Fields = new[] { "Name" },
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "Name");
+        AssertMemberNotCompared(updated, "_id");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludePropertiesFalse_ImplementIEquatableGenerateOperatorsAndCombine_OnlyChangesCollectedSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = false,
+            ImplementIEquatable = true,
+            GenerateOperators = true,
+            UseHashCodeCombine = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("global::System.IEquatable<Widget>", updated);
+        Assert.Contains("public bool Equals(Widget? other)", updated);
+        AssertObjectEqualsDelegates(updated, "Widget");
+        AssertEqualityOperators(updated, "Widget?", nullableParameters: true);
+        AssertHashCodeCombine(updated, "_id");
+        var typedEquals = ExtractMethod(updated, "public bool Equals(Widget? other)");
+        Assert.Contains("other._id", typedEquals);
+        Assert.DoesNotContain("other.Name", typedEquals);
+        Assert.DoesNotContain("this.Name", ExtractMethod(updated, "public override int GetHashCode()"));
+        AssertNoPrimeMultiply(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludePropertiesFalse_Preview_DoesNotWriteFiles_AndDescribesFieldOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = false,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        Assert.Contains("this._id", snippet);
+        Assert.DoesNotContain("this.Name", snippet);
+        Assert.DoesNotContain("other.Name", snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Helpers
+
+    private static void AssertEqualityMembers(string text, params string[] members)
+    {
+        var objectEquals = ExtractMethod(text, "public override bool Equals(object?");
+        var getHashCode = ExtractMethod(text, "public override int GetHashCode()");
+        foreach (var member in members)
+        {
+            Assert.Contains($"other.{member}", objectEquals);
+            Assert.Contains($"this.{member}", getHashCode);
+        }
+    }
+
+    private static void AssertMemberNotCompared(string text, string member)
+    {
+        var objectEquals = ExtractMethod(text, "public override bool Equals(object?");
+        var getHashCode = ExtractMethod(text, "public override int GetHashCode()");
+        Assert.DoesNotContain($"other.{member}", objectEquals);
+        Assert.DoesNotContain($"this.{member}", getHashCode);
+    }
 
     private static void AssertHashCodeCombine(string text, params string[] members)
     {

@@ -15,7 +15,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// Optionally implements <c>IEquatable&lt;T&gt;</c> with a typed Equals when requested,
 /// optionally generates <c>operator ==</c> / <c>operator !=</c>,
 /// optionally replaces existing equality members when <c>replaceExisting</c> is true,
-/// and honors <c>useHashCodeCombine</c> for the GetHashCode body shape.
+/// honors <c>useHashCodeCombine</c> for the GetHashCode body shape,
+/// and honors <c>includeProperties</c> when collecting equality members.
 /// </summary>
 public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<GenerateEqualsHashCodeParams>
 {
@@ -88,7 +89,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 throw new RefactoringException(ErrorCodes.AlreadyHasOverride, "Type already has an Equals override.");
         }
 
-        var members = EqualityMemberCollector.CollectMembers(typeSymbol, @params.Fields);
+        var members = EqualityMemberCollector.CollectMembers(typeSymbol, @params.Fields, @params.IncludeProperties);
         if (members.Count == 0)
             throw new RefactoringException(ErrorCodes.NoMembersToGenerate, "No fields or properties available for equality generation.");
 

@@ -179,6 +179,36 @@ public class GenerateToStringOperationTests
         AssertInterpolatedToString(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
     }
 
+    [SkippableFact]
+    public async Task GenerateToString_Default_StillIncludesProperties()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string _id;
+
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.Contains("{_id}", toString);
+        Assert.Contains("{Name}", toString);
+    }
+
     #endregion
 
     #region StringBuilder

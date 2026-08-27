@@ -60,7 +60,13 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
             {
                 type = "array",
                 items = new { type = "string" },
-                description = "Specific field/property names to include. If not specified, uses all fields and properties."
+                description = "Specific field/property names to include. If not specified, uses instance fields and (when includeProperties is true) readable properties."
+            },
+            includeProperties = new
+            {
+                type = "boolean",
+                description = "Include readable instance properties as equality members. When false, only instance fields are used unless fields names a property",
+                @default = true
             },
             implementIEquatable = new
             {
@@ -124,6 +130,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
                 Fields = args.Fields,
+                IncludeProperties = args.IncludeProperties ?? true,
                 ImplementIEquatable = args.ImplementIEquatable ?? false,
                 GenerateOperators = args.GenerateOperators ?? false,
                 ReplaceExisting = args.ReplaceExisting ?? false,
@@ -159,6 +166,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
         public List<string>? Fields { get; init; }
+        public bool? IncludeProperties { get; init; }
         public bool? ImplementIEquatable { get; init; }
         public bool? GenerateOperators { get; init; }
         public bool? ReplaceExisting { get; init; }
