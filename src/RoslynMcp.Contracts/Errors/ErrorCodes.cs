@@ -472,6 +472,9 @@ public static class ErrorCodes
     /// <summary>Type already implements IEquatable&lt;T&gt; or already has a compatible typed Equals.</summary>
     public const string AlreadyImplementsIEquatable = "3144";
 
+    /// <summary>Type already declares operator == or operator !=.</summary>
+    public const string AlreadyHasEqualityOperators = "3145";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

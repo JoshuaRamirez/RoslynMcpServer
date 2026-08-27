@@ -27,6 +27,12 @@ public sealed class GenerateEqualsHashCodeParams
     public bool ImplementIEquatable { get; init; }
 
     /// <summary>
+    /// When true, also generate <c>operator ==</c> and <c>operator !=</c> that agree with
+    /// the generated Equals. Default: false (no equality operators).
+    /// </summary>
+    public bool GenerateOperators { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }

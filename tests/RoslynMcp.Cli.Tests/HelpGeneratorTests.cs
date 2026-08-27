@@ -139,6 +139,7 @@ public class HelpGeneratorTests
         var help = HelpGenerator.GenerateToolHelp(tool);
 
         Assert.Contains("--implement-i-equatable", help);
+        Assert.Contains("--generate-operators", help);
     }
 
     [Fact]
