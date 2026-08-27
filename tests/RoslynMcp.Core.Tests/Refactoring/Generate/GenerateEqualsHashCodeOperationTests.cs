@@ -1120,8 +1120,8 @@ public class GenerateEqualsHashCodeOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
         Assert.Contains("new global::System.HashCode()", getHashCode);
-        Assert.Contains("hash.Add(A)", getHashCode);
-        Assert.Contains("hash.Add(I)", getHashCode);
+        Assert.Contains("hash.Add(this.A)", getHashCode);
+        Assert.Contains("hash.Add(this.I)", getHashCode);
         Assert.Contains("hash.ToHashCode()", getHashCode);
         Assert.DoesNotContain("HashCode.Combine", getHashCode);
         AssertNoPrimeMultiply(getHashCode);
@@ -1144,9 +1144,9 @@ public class GenerateEqualsHashCodeOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
         AssertPrimeMultiply(getHashCode);
-        Assert.Contains("Name.GetHashCode()", getHashCode);
-        Assert.DoesNotContain("Name?.GetHashCode()", getHashCode);
-        Assert.Contains("Age.GetHashCode()", getHashCode);
+        Assert.Contains("this.Name.GetHashCode()", getHashCode);
+        Assert.DoesNotContain("this.Name?.GetHashCode()", getHashCode);
+        Assert.Contains("this.Age.GetHashCode()", getHashCode);
         AssertNoHashCodeCombineOrBuilder(updated);
         AssertDefaultEqualsShape(updated);
     }
@@ -1179,8 +1179,8 @@ public class GenerateEqualsHashCodeOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
         AssertPrimeMultiply(getHashCode);
-        Assert.Contains("(Name?.GetHashCode() ?? 0)", getHashCode);
-        Assert.Contains("Age.GetHashCode()", getHashCode);
+        Assert.Contains("(this.Name?.GetHashCode() ?? 0)", getHashCode);
+        Assert.Contains("this.Age.GetHashCode()", getHashCode);
         AssertNoHashCodeCombineOrBuilder(getHashCode);
     }
 
@@ -1284,8 +1284,85 @@ public class GenerateEqualsHashCodeOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
-        Assert.Contains("global::System.HashCode.Combine(Value)", getHashCode);
+        Assert.Contains("global::System.HashCode.Combine(this.Value)", getHashCode);
         Assert.DoesNotContain("return HashCode.Combine", getHashCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineFalse_MemberNamedHash_QualifiesWithThis()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Bucket
+            {
+                public int hash;
+
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Bucket.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Bucket",
+            UseHashCodeCombine = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        AssertPrimeMultiply(getHashCode);
+        Assert.Contains("this.hash.GetHashCode()", getHashCode);
+        Assert.Contains("this.Age.GetHashCode()", getHashCode);
+        Assert.DoesNotContain("(hash * 31) + hash.GetHashCode()", getHashCode);
+        Assert.DoesNotContain("hash?.GetHashCode()", getHashCode);
+        AssertNoHashCodeCombineOrBuilder(getHashCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineTrue_MoreThanEightMembers_MemberNamedHash_QualifiesWithThis()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Wide
+            {
+                public int A { get; set; }
+                public int B { get; set; }
+                public int C { get; set; }
+                public int D { get; set; }
+                public int E { get; set; }
+                public int F { get; set; }
+                public int G { get; set; }
+                public int H { get; set; }
+                public int hash { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Wide.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Wide",
+            UseHashCodeCombine = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        Assert.Contains("new global::System.HashCode()", getHashCode);
+        Assert.Contains("hash.Add(this.hash)", getHashCode);
+        Assert.Contains("hash.Add(this.A)", getHashCode);
+        Assert.Contains("hash.ToHashCode()", getHashCode);
+        Assert.DoesNotContain("hash.Add(hash)", getHashCode);
+        Assert.DoesNotContain("HashCode.Combine", getHashCode);
+        AssertNoPrimeMultiply(getHashCode);
     }
 
     #endregion
@@ -1297,7 +1374,7 @@ public class GenerateEqualsHashCodeOperationTests
         var getHashCode = ExtractMethod(text, "public override int GetHashCode()");
         Assert.Contains("global::System.HashCode.Combine(", getHashCode);
         foreach (var member in members)
-            Assert.Contains(member, getHashCode);
+            Assert.Contains($"this.{member}", getHashCode);
         Assert.DoesNotContain("new global::System.HashCode()", getHashCode);
         Assert.DoesNotContain("ToHashCode()", getHashCode);
     }

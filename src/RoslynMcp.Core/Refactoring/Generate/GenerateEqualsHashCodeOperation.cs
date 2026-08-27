@@ -741,7 +741,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
     {
         // Qualify System.HashCode so a type-local HashCode cannot steal the call.
         var arguments = members.Select(m =>
-            SyntaxFactory.Argument(SyntaxFactory.IdentifierName(m.Name)))
+            SyntaxFactory.Argument(InstanceMemberAccess(m.Name)))
             .ToArray();
 
         if (arguments.Length <= 8) // HashCode.Combine supports up to 8 args
@@ -778,7 +778,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                         SyntaxFactory.IdentifierName("Add")))
                     .WithArgumentList(SyntaxFactory.ArgumentList(
                         SyntaxFactory.SingletonSeparatedList(
-                            SyntaxFactory.Argument(SyntaxFactory.IdentifierName(member.Name)))))));
+                            SyntaxFactory.Argument(InstanceMemberAccess(member.Name)))))));
         }
 
         statements.Add(SyntaxFactory.ReturnStatement(
@@ -834,23 +834,30 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         return GetHashCodeMethod(SyntaxFactory.Block(uncheckedBlock));
     }
 
+    private static ExpressionSyntax InstanceMemberAccess(string memberName) =>
+        SyntaxFactory.MemberAccessExpression(
+            SyntaxKind.SimpleMemberAccessExpression,
+            SyntaxFactory.ThisExpression(),
+            SyntaxFactory.IdentifierName(memberName));
+
     private static ExpressionSyntax BuildMemberHashExpression(ISymbol member)
     {
         var memberType = EqualityMemberCollector.GetMemberType(member);
-        var memberName = SyntaxFactory.IdentifierName(member.Name);
+        // Qualify with this. so a member named hash is not shadowed by the local.
+        var memberAccess = InstanceMemberAccess(member.Name);
 
         if (!NeedsNullSafeHash(memberType))
         {
             return SyntaxFactory.InvocationExpression(
                 SyntaxFactory.MemberAccessExpression(
                     SyntaxKind.SimpleMemberAccessExpression,
-                    memberName,
+                    memberAccess,
                     SyntaxFactory.IdentifierName("GetHashCode")));
         }
 
-        // (Member?.GetHashCode() ?? 0) — parenthesized so ?? does not bind across +.
+        // (this.Member?.GetHashCode() ?? 0) — parenthesized so ?? does not bind across +.
         var conditionalAccess = SyntaxFactory.ConditionalAccessExpression(
-            memberName,
+            memberAccess,
             SyntaxFactory.InvocationExpression(
                 SyntaxFactory.MemberBindingExpression(SyntaxFactory.IdentifierName("GetHashCode"))));
 
