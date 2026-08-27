@@ -10,8 +10,8 @@ namespace RoslynMcp.Core.Refactoring.Organize.Utilities;
 /// <remarks>
 /// Sort order:
 /// <list type="number">
-///   <item>Regular using directives (System namespaces first, then alphabetical)</item>
-///   <item>Static using directives (System namespaces first, then alphabetical)</item>
+///   <item>Regular using directives (System namespaces first when <c>systemFirst</c> is true, then alphabetical)</item>
+///   <item>Static using directives (System namespaces first when <c>systemFirst</c> is true, then alphabetical)</item>
 ///   <item>Alias using directives (alphabetical by alias name)</item>
 /// </list>
 /// </remarks>
@@ -21,8 +21,12 @@ public static class UsingDirectiveSorter
     /// Sorts using directives following C# conventions.
     /// </summary>
     /// <param name="usings">The using directives to sort.</param>
+    /// <param name="systemFirst">
+    /// When true (default), System / System.* namespaces are placed first within regular and static groups.
+    /// When false, namespaces sort alphabetically with no System priority. Alias usings stay alphabetical by alias.
+    /// </param>
     /// <returns>A list of sorted using directives.</returns>
-    public static List<UsingDirectiveSyntax> Sort(IEnumerable<UsingDirectiveSyntax> usings)
+    public static List<UsingDirectiveSyntax> Sort(IEnumerable<UsingDirectiveSyntax> usings, bool systemFirst = true)
     {
         var usingsList = usings.ToList();
 
@@ -48,8 +52,8 @@ public static class UsingDirectiveSorter
         }
 
         // Sort each category
-        var sortedRegular = SortByNamespace(regularUsings);
-        var sortedStatic = SortByNamespace(staticUsings);
+        var sortedRegular = SortByNamespace(regularUsings, systemFirst);
+        var sortedStatic = SortByNamespace(staticUsings, systemFirst);
         var sortedAlias = SortByAlias(aliasUsings);
 
         // Combine in order: regular, static, alias
@@ -62,10 +66,17 @@ public static class UsingDirectiveSorter
     }
 
     /// <summary>
-    /// Sorts using directives by namespace with System namespaces first.
+    /// Sorts using directives by namespace, optionally placing System namespaces first.
     /// </summary>
-    private static List<UsingDirectiveSyntax> SortByNamespace(List<UsingDirectiveSyntax> usings)
+    private static List<UsingDirectiveSyntax> SortByNamespace(List<UsingDirectiveSyntax> usings, bool systemFirst)
     {
+        if (!systemFirst)
+        {
+            return usings
+                .OrderBy(u => u.Name?.ToString() ?? "", StringComparer.Ordinal)
+                .ToList();
+        }
+
         return usings
             .OrderBy(u => GetSortPriority(u.Name?.ToString() ?? ""))
             .ThenBy(u => u.Name?.ToString() ?? "", StringComparer.Ordinal)

@@ -11,6 +11,12 @@ public sealed class SortUsingsParams
     public required string SourceFile { get; init; }
 
     /// <summary>
+    /// Place System / System.* namespaces first within regular and static groups. Default: true.
+    /// Alias usings remain alphabetical by alias name regardless of this flag.
+    /// </summary>
+    public bool SystemFirst { get; init; } = true;
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }

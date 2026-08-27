@@ -71,7 +71,7 @@ public sealed class SortUsingsOperation : RefactoringOperationBase<SortUsingsPar
         }
 
         // Sort usings using the standardized sorter
-        var sortedUsings = UsingDirectiveSorter.Sort(root.Usings);
+        var sortedUsings = UsingDirectiveSorter.Sort(root.Usings, @params.SystemFirst);
 
         // Check if the order actually changed
         var alreadySorted = root.Usings

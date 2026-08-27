@@ -262,7 +262,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 |------|-------------|----------------|
 | `add_missing_usings` | Add missing using directives required to resolve unbound type references. Process a single file or all files in the solution. | `sourceFile`, `allFiles` |
 | `remove_unused_usings` | Remove unused using directives. Process a single file or all files in the solution. | `sourceFile`, `allFiles` |
-| `sort_usings` | Sort using directives alphabetically in a C# file. | `sourceFile` |
+| `sort_usings` | Sort using directives alphabetically in a C# file. | `sourceFile`, `systemFirst` |
 
 ### Diagnostics
 

@@ -32,7 +32,7 @@ public sealed class SortUsingsTool : IToolHandler
     public string Name => "sort_usings";
 
     /// <inheritdoc />
-    public string Description => "Sort using directives alphabetically in a C# file.";
+    public string Description => "Sort using directives in a C# file. When systemFirst is true (default), System / System.* namespaces are placed first within regular and static groups.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,6 +50,12 @@ public sealed class SortUsingsTool : IToolHandler
             {
                 type = "string",
                 description = "Absolute path to the source file"
+            },
+            systemFirst = new
+            {
+                type = "boolean",
+                description = "Place System / System.* namespaces first within regular and static groups",
+                @default = true
             },
             preview = new
             {
@@ -87,6 +93,7 @@ public sealed class SortUsingsTool : IToolHandler
             var @params = new SortUsingsParams
             {
                 SourceFile = args.SourceFile,
+                SystemFirst = args.SystemFirst ?? true,
                 Preview = args.Preview ?? false
             };
 
@@ -116,6 +123,7 @@ public sealed class SortUsingsTool : IToolHandler
     {
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
+        public bool? SystemFirst { get; init; }
         public bool? Preview { get; init; }
     }
 }

@@ -85,7 +85,20 @@ public class SortUsingsToolTests
         Assert.True(properties.TryGetProperty("sourceFile", out _));
 
         // Assert - Optional properties
+        Assert.True(properties.TryGetProperty("systemFirst", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_SystemFirstProperty_DefaultsToTrue()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var systemFirst = doc.RootElement.GetProperty("properties").GetProperty("systemFirst");
+
+        Assert.Equal("boolean", systemFirst.GetProperty("type").GetString());
+        Assert.True(systemFirst.GetProperty("default").GetBoolean());
     }
 
     [Fact]
