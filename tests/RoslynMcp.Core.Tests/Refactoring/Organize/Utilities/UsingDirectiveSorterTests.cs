@@ -247,6 +247,80 @@ public class UsingDirectiveSorterTests
 
     #endregion
 
+    #region Global Using Tests
+
+    [Fact]
+    public void Sort_SystemFirstFalse_GlobalSystemThenRegularMyApp_StaysGlobalFirst()
+    {
+        var usings = ParseUsings(
+            "global using System;",
+            "using MyApp;");
+
+        var sorted = UsingDirectiveSorter.Sort(usings, systemFirst: false);
+
+        Assert.Equal(2, sorted.Count);
+        Assert.True(IsGlobalUsing(sorted[0]));
+        Assert.Equal("System", GetNamespaceName(sorted[0]));
+        Assert.False(IsGlobalUsing(sorted[1]));
+        Assert.Equal("MyApp", GetNamespaceName(sorted[1]));
+    }
+
+    [Fact]
+    public void Sort_SystemFirstTrue_GlobalNonSystemThenRegularSystem_StaysGlobalFirst()
+    {
+        var usings = ParseUsings(
+            "global using MyApp;",
+            "using System;");
+
+        var sorted = UsingDirectiveSorter.Sort(usings, systemFirst: true);
+
+        Assert.Equal(2, sorted.Count);
+        Assert.True(IsGlobalUsing(sorted[0]));
+        Assert.Equal("MyApp", GetNamespaceName(sorted[0]));
+        Assert.False(IsGlobalUsing(sorted[1]));
+        Assert.Equal("System", GetNamespaceName(sorted[1]));
+    }
+
+    [Fact]
+    public void Sort_MixedGlobalStaticAndRegular_GlobalsStayAheadOfNonGlobals()
+    {
+        var usings = ParseUsings(
+            "using MyApp;",
+            "global using static System.Math;",
+            "using static ThirdParty.Utils;",
+            "global using System;");
+
+        var sortedTrue = UsingDirectiveSorter.Sort(usings, systemFirst: true);
+        Assert.Equal(4, sortedTrue.Count);
+        Assert.True(IsGlobalUsing(sortedTrue[0]));
+        Assert.False(IsStaticUsing(sortedTrue[0]));
+        Assert.Equal("System", GetNamespaceName(sortedTrue[0]));
+        Assert.True(IsGlobalUsing(sortedTrue[1]));
+        Assert.True(IsStaticUsing(sortedTrue[1]));
+        Assert.Equal("System.Math", GetNamespaceName(sortedTrue[1]));
+        Assert.False(IsGlobalUsing(sortedTrue[2]));
+        Assert.False(IsStaticUsing(sortedTrue[2]));
+        Assert.Equal("MyApp", GetNamespaceName(sortedTrue[2]));
+        Assert.False(IsGlobalUsing(sortedTrue[3]));
+        Assert.True(IsStaticUsing(sortedTrue[3]));
+        Assert.Equal("ThirdParty.Utils", GetNamespaceName(sortedTrue[3]));
+
+        var sortedFalse = UsingDirectiveSorter.Sort(usings, systemFirst: false);
+        Assert.True(IsGlobalUsing(sortedFalse[0]));
+        Assert.False(IsStaticUsing(sortedFalse[0]));
+        Assert.Equal("System", GetNamespaceName(sortedFalse[0]));
+        Assert.True(IsGlobalUsing(sortedFalse[1]));
+        Assert.True(IsStaticUsing(sortedFalse[1]));
+        Assert.Equal("System.Math", GetNamespaceName(sortedFalse[1]));
+        Assert.False(IsGlobalUsing(sortedFalse[2]));
+        Assert.Equal("MyApp", GetNamespaceName(sortedFalse[2]));
+        Assert.False(IsGlobalUsing(sortedFalse[3]));
+        Assert.True(IsStaticUsing(sortedFalse[3]));
+        Assert.Equal("ThirdParty.Utils", GetNamespaceName(sortedFalse[3]));
+    }
+
+    #endregion
+
     #region Mixed and Edge Case Tests
 
     [Fact]
@@ -429,6 +503,11 @@ using System;";
     private static bool IsAliasUsing(UsingDirectiveSyntax usingDirective)
     {
         return usingDirective.Alias != null;
+    }
+
+    private static bool IsGlobalUsing(UsingDirectiveSyntax usingDirective)
+    {
+        return usingDirective.GlobalKeyword.IsKind(SyntaxKind.GlobalKeyword);
     }
 
     #endregion
