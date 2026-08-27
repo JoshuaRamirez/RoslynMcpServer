@@ -10,14 +10,23 @@ public static class EqualityMemberCollector
     /// <summary>
     /// Gets all fields and auto-properties suitable for equality comparison.
     /// Excludes static, const, and implicitly declared members.
+    /// Forwards to the three-parameter overload with <c>includeProperties: true</c>
+    /// so existing NuGet callers keep a stable two-parameter IL signature.
+    /// </summary>
+    public static List<ISymbol> CollectMembers(INamedTypeSymbol typeSymbol, IReadOnlyList<string>? requestedFields = null)
+        => CollectMembers(typeSymbol, requestedFields, includeProperties: true);
+
+    /// <summary>
+    /// Gets fields and properties suitable for equality comparison.
+    /// Excludes static, const, and implicitly declared members.
     /// When <paramref name="includeProperties"/> is false and no requested names are given,
     /// only instance fields are collected. A non-empty <paramref name="requestedFields"/>
     /// list is authoritative and is resolved against both fields and properties.
     /// </summary>
     public static List<ISymbol> CollectMembers(
         INamedTypeSymbol typeSymbol,
-        IReadOnlyList<string>? requestedFields = null,
-        bool includeProperties = true)
+        IReadOnlyList<string>? requestedFields,
+        bool includeProperties)
     {
         var members = new List<ISymbol>();
         var hasRequestedFields = requestedFields != null && requestedFields.Count > 0;
