@@ -88,6 +88,18 @@ public class GenerateToStringToolTests
         Assert.Equal(2, values.Count);
     }
 
+    [Fact]
+    public void GetDefinition_IncludeInheritedMembersProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var includeInheritedMembers = doc.RootElement.GetProperty("properties").GetProperty("includeInheritedMembers");
+
+        Assert.Equal("boolean", includeInheritedMembers.GetProperty("type").GetString());
+        Assert.False(includeInheritedMembers.GetProperty("default").GetBoolean());
+    }
+
     #endregion
 
     #region ExecuteAsync Argument Validation Tests

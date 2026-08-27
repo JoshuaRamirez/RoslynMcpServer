@@ -68,6 +68,12 @@ public sealed class GenerateToStringTool : IToolHandler
                 description = "Format style: \"interpolated\" (default) or \"stringbuilder\"",
                 @enum = new[] { "interpolated", "stringbuilder" }
             },
+            includeInheritedMembers = new
+            {
+                type = "boolean",
+                description = "Also collect accessible instance fields and readable properties declared on base types",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -107,6 +113,7 @@ public sealed class GenerateToStringTool : IToolHandler
                 TypeName = args.TypeName,
                 Fields = args.Fields,
                 Format = args.Format,
+                IncludeInheritedMembers = args.IncludeInheritedMembers ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -139,6 +146,7 @@ public sealed class GenerateToStringTool : IToolHandler
         public string TypeName { get; init; } = "";
         public List<string>? Fields { get; init; }
         public string? Format { get; init; }
+        public bool? IncludeInheritedMembers { get; init; }
         public bool? Preview { get; init; }
     }
 }

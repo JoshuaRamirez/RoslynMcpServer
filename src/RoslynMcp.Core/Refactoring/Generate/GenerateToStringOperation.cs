@@ -12,6 +12,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
 /// Generates a ToString() override for a type.
+/// Honors <c>format</c> for interpolated vs StringBuilder bodies and
+/// <c>includeInheritedMembers</c> to append accessible base-type members.
 /// </summary>
 public sealed class GenerateToStringOperation : RefactoringOperationBase<GenerateToStringParams>
 {
@@ -77,7 +79,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         if (typeSymbol.GetMembers("ToString").Any(m => m is IMethodSymbol method && !method.IsImplicitlyDeclared && method.Parameters.Length == 0))
             throw new RefactoringException(ErrorCodes.AlreadyHasOverride, "Type already has a ToString override.");
 
-        var members = EqualityMemberCollector.CollectMembers(typeSymbol, @params.Fields);
+        var members = CollectToStringMembers(typeSymbol, @params);
         if (members.Count == 0)
             throw new RefactoringException(ErrorCodes.NoMembersToGenerate, "No fields or properties available for ToString generation.");
 
@@ -92,7 +94,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
                 {
                     File = @params.SourceFile,
                     ChangeType = Contracts.Enums.ChangeKind.Modify,
-                    Description = $"Generate ToString for {@params.TypeName}",
+                    Description = BuildDescription(@params.TypeName, members, @params.Format, @params.IncludeInheritedMembers),
                     BeforeSnippet = $"// Type '{@params.TypeName}' (no ToString)",
                     AfterSnippet = code
                 }
@@ -133,6 +135,32 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
     internal static bool IsStringBuilderFormat(string? format) =>
         !string.IsNullOrWhiteSpace(format)
         && format.Trim().Equals(StringBuilderFormat, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Collects ToString members, then drops any named <c>ToString</c> so the
+    /// generated override cannot hide <c>this.ToString</c> (recursive / CS0119).
+    /// </summary>
+    internal static List<ISymbol> CollectToStringMembers(INamedTypeSymbol typeSymbol, GenerateToStringParams @params)
+    {
+        var members = @params.IncludeInheritedMembers
+            ? EqualityMemberCollector.CollectMembers(
+                typeSymbol, @params.Fields, includeProperties: true, includeInheritedMembers: true)
+            : EqualityMemberCollector.CollectMembers(typeSymbol, @params.Fields);
+
+        return members.Where(m => !string.Equals(m.Name, "ToString", StringComparison.Ordinal)).ToList();
+    }
+
+    internal static string BuildDescription(
+        string typeName,
+        IReadOnlyList<ISymbol> members,
+        string? format,
+        bool includeInheritedMembers)
+    {
+        var formatName = IsStringBuilderFormat(format) ? StringBuilderFormat : InterpolatedFormat;
+        var inherited = includeInheritedMembers ? " including inherited members" : "";
+        var memberList = string.Join(", ", members.Select(m => m.Name));
+        return $"Generate ToString ({formatName}){inherited} for {typeName}: {memberList}";
+    }
 
     private static MethodDeclarationSyntax GenerateToString(string typeName, List<ISymbol> members, string? format)
     {

@@ -41,7 +41,9 @@ public static class EqualityMemberCollector
     /// (including accessible inherited members when <paramref name="includeInheritedMembers"/> is true).
     /// When <paramref name="includeInheritedMembers"/> is true, accessible instance members
     /// declared on base types (until <c>System.Object</c> / <c>System.ValueType</c>) are
-    /// appended after this type's members, immediate base first.
+    /// appended after this type's members, immediate base first. Inherited members hidden
+    /// by a closer non-implicit member of the same name (field, property, event, method,
+    /// or nested type) are skipped.
     /// </summary>
     public static List<ISymbol> CollectMembers(
         INamedTypeSymbol typeSymbol,
@@ -124,7 +126,9 @@ public static class EqualityMemberCollector
     /// <summary>
     /// True when a closer type hides or overrides <paramref name="member"/> so
     /// <c>this.Name</c> would bind to that closer member (or fail to compile)
-    /// instead of the inherited one.
+    /// instead of the inherited one. Any non-implicit closer member with the
+    /// same name counts as a hider, including methods and nested types.
+    /// Implicit members (for example auto-property backing fields) are ignored.
     /// </summary>
     private static bool IsHiddenFrom(ISymbol member, INamedTypeSymbol fromType)
     {
@@ -137,8 +141,7 @@ public static class EqualityMemberCollector
             {
                 if (candidate.IsImplicitlyDeclared)
                     continue;
-                if (candidate is IFieldSymbol or IPropertySymbol or IEventSymbol)
-                    return true;
+                return true;
             }
         }
 
