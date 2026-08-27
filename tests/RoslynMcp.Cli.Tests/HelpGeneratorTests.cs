@@ -122,6 +122,16 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_ExtractBaseClass_ShowsSeparateFile()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("extract-base-class")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("--separate-file", help);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ShowsParamsAsKebabCase()
     {
         var registry = ToolRegistry.BuildDefault();

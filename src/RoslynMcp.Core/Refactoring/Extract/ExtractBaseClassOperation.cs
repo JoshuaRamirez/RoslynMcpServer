@@ -1,3 +1,5 @@
+using System.Xml;
+using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -6,6 +8,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Rename;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Extract;
@@ -126,21 +129,49 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         // Get namespace
         var namespaceName = typeSymbol.ContainingNamespace?.ToDisplayString();
 
+        // Explicit targetFile always wins. separateFile=true with no targetFile
+        // writes {BaseClassName}.cs next to the source.
+        var targetFile = ResolveTargetFile(@params);
+        var isNewFile = targetFile != @params.SourceFile;
+
+        if (isNewFile && typeSymbol.ContainingType != null)
+        {
+            throw new RefactoringException(
+                ErrorCodes.CannotExtractNestedToSeparateFile,
+                $"Cannot extract a base class for nested type '{@params.TypeName}' to a separate file. Extract in the source file instead.");
+        }
+
+        ThrowIfSiblingTargetExists(@params, targetFile);
+
+        string? projectPath = null;
+        string? updatedProjectText = null;
+        if (isNewFile)
+        {
+            (projectPath, updatedProjectText) = PrepareExplicitCompileItemUpdate(document.Project, targetFile);
+        }
+
         // If preview mode, return without applying
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params, membersToExtract, baseClass, namespaceName);
+            return CreatePreviewResult(
+                operationId,
+                @params,
+                membersToExtract,
+                baseClass,
+                namespaceName,
+                targetFile,
+                updatedProjectText != null ? projectPath : null);
         }
 
         // Apply changes
         Solution newSolution;
-        if (@params.TargetFile != null && @params.TargetFile != @params.SourceFile)
+        if (targetFile != @params.SourceFile)
         {
             // Create new file with base class
             newSolution = await CreateBaseClassInNewFileAsync(
                 document.Project.Solution,
                 document.Project,
-                @params.TargetFile,
+                targetFile,
                 baseClass,
                 namespaceName,
                 root,
@@ -201,11 +232,19 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         // Commit changes
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
 
+        var filesModified = commitResult.FilesModified.ToList();
+        if (updatedProjectText != null && !string.IsNullOrWhiteSpace(projectPath))
+        {
+            WriteProjectFile(projectPath, updatedProjectText);
+            if (!filesModified.Contains(projectPath, StringComparer.OrdinalIgnoreCase))
+                filesModified.Add(projectPath);
+        }
+
         return RefactoringResult.Succeeded(
             operationId,
             new FileChanges
             {
-                FilesModified = commitResult.FilesModified,
+                FilesModified = filesModified,
                 FilesCreated = commitResult.FilesCreated,
                 FilesDeleted = commitResult.FilesDeleted
             },
@@ -373,18 +412,256 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         return newDoc.Project.Solution;
     }
 
+    /// <summary>
+    /// Resolves the destination for the extracted base class.
+    /// Explicit <see cref="ExtractBaseClassParams.TargetFile"/> always wins.
+    /// </summary>
+    private static string ResolveTargetFile(ExtractBaseClassParams @params)
+    {
+        if (!string.IsNullOrWhiteSpace(@params.TargetFile))
+            return @params.TargetFile;
+
+        if (!@params.SeparateFile)
+            return @params.SourceFile;
+
+        var directory = Path.GetDirectoryName(@params.SourceFile);
+        if (string.IsNullOrEmpty(directory))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSourcePath,
+                "sourceFile must have a parent directory.");
+        }
+
+        return PathResolver.Combine(directory, @params.BaseClassName + ".cs");
+    }
+
+    private static void ThrowIfSiblingTargetExists(ExtractBaseClassParams @params, string targetFile)
+    {
+        // Explicit targetFile keeps today's path; only the computed sibling is rejected.
+        if (!string.IsNullOrWhiteSpace(@params.TargetFile) || !@params.SeparateFile)
+            return;
+
+        if (!File.Exists(targetFile))
+            return;
+
+        throw new RefactoringException(
+            ErrorCodes.TargetFileExists,
+            $"Destination file already exists: {targetFile}");
+    }
+
+    /// <summary>
+    /// When default compile items are disabled, add an explicit
+    /// <c>Compile Include</c> for <paramref name="targetFile"/>.
+    /// SDK-style default glob projects are left unchanged.
+    /// </summary>
+    internal static string AddExplicitCompileItemIfNeeded(
+        string projectXml,
+        string projectDirectory,
+        string targetFile)
+    {
+        XDocument document;
+        try
+        {
+            document = XDocument.Parse(projectXml, LoadOptions.PreserveWhitespace | LoadOptions.SetLineInfo);
+        }
+        catch (XmlException)
+        {
+            if (LooksLikeExplicitCompileProject(projectXml))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    "Could not parse project file to add an explicit Compile item.");
+            }
+
+            return projectXml;
+        }
+
+        if (!RequiresExplicitCompileItems(document))
+            return projectXml;
+
+        var ns = document.Root?.Name.Namespace ?? XNamespace.None;
+        if (CompileItemRefersToFile(document, ns, projectDirectory, targetFile))
+            return projectXml;
+
+        var include = GetCompileIncludePath(projectDirectory, targetFile);
+        var compile = new XElement(ns + "Compile", new XAttribute("Include", include));
+        var lastCompile = document.Descendants(ns + "Compile").LastOrDefault();
+        if (lastCompile != null)
+        {
+            lastCompile.AddAfterSelf(new XText(Environment.NewLine + "    "));
+            lastCompile.AddAfterSelf(compile);
+        }
+        else if (document.Root != null)
+        {
+            var itemGroup = new XElement(
+                ns + "ItemGroup",
+                new XText(Environment.NewLine + "    "),
+                compile,
+                new XText(Environment.NewLine + "  "));
+            document.Root.Add(new XText(Environment.NewLine + "  "));
+            document.Root.Add(itemGroup);
+            document.Root.Add(new XText(Environment.NewLine));
+        }
+        else
+        {
+            throw new RefactoringException(
+                ErrorCodes.DocumentNotEditable,
+                "Project file has no root element; cannot add an explicit Compile item.");
+        }
+
+        return SerializeProjectXml(document, projectXml);
+    }
+
+    internal static string GetCompileIncludePath(string projectDirectory, string filePath)
+    {
+        var relative = Path.GetRelativePath(
+            PathResolver.NormalizePath(projectDirectory),
+            PathResolver.NormalizePath(filePath));
+        return relative.Replace('\\', '/');
+    }
+
+    private static (string? ProjectPath, string? UpdatedText) PrepareExplicitCompileItemUpdate(
+        Project project,
+        string targetFile)
+    {
+        var projectPath = project.FilePath;
+        if (string.IsNullOrWhiteSpace(projectPath) || !File.Exists(projectPath))
+        {
+            throw new RefactoringException(
+                ErrorCodes.DocumentNotEditable,
+                "Project file is not available to add an explicit Compile item for the new base class file.");
+        }
+
+        var projectDirectory = Path.GetDirectoryName(projectPath);
+        if (string.IsNullOrEmpty(projectDirectory))
+        {
+            throw new RefactoringException(
+                ErrorCodes.DocumentNotEditable,
+                $"Project '{project.Name}' is not editable.");
+        }
+
+        var original = File.ReadAllText(projectPath);
+        var updated = AddExplicitCompileItemIfNeeded(original, projectDirectory, targetFile);
+        if (string.Equals(original, updated, StringComparison.Ordinal))
+            return (projectPath, null);
+
+        if (new FileInfo(projectPath).IsReadOnly)
+        {
+            throw new RefactoringException(
+                ErrorCodes.DocumentNotEditable,
+                $"Project '{project.Name}' is not editable.");
+        }
+
+        return (projectPath, updated);
+    }
+
+    private static void WriteProjectFile(string projectPath, string projectText)
+    {
+        try
+        {
+            File.WriteAllText(projectPath, projectText);
+        }
+        catch (IOException ex)
+        {
+            throw new RefactoringException(
+                ErrorCodes.FilesystemError,
+                $"Failed to update project file: {ex.Message}",
+                ex);
+        }
+    }
+
+    private static bool RequiresExplicitCompileItems(XDocument document)
+    {
+        var ns = document.Root?.Name.Namespace ?? XNamespace.None;
+        var compileDefaults = GetMsBuildProperty(document, ns, "EnableDefaultCompileItems");
+        var defaultItems = GetMsBuildProperty(document, ns, "EnableDefaultItems");
+
+        if (string.Equals(compileDefaults, "false", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (string.Equals(compileDefaults, "true", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return string.Equals(defaultItems, "false", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksLikeExplicitCompileProject(string projectXml) =>
+        ContainsDisabledProperty(projectXml, "EnableDefaultCompileItems")
+        || ContainsDisabledProperty(projectXml, "EnableDefaultItems");
+
+    private static bool ContainsDisabledProperty(string projectXml, string propertyName)
+    {
+        var start = projectXml.IndexOf(propertyName, StringComparison.OrdinalIgnoreCase);
+        if (start < 0)
+            return false;
+
+        var close = projectXml.IndexOf('>', start);
+        if (close < 0 || close + 1 >= projectXml.Length)
+            return false;
+
+        return projectXml.AsSpan(close + 1).TrimStart().StartsWith("false", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? GetMsBuildProperty(XDocument document, XNamespace ns, string name) =>
+        document.Descendants(ns + name)
+            .Select(e => e.Value.Trim())
+            .LastOrDefault(v => v.Length > 0);
+
+    private static bool CompileItemRefersToFile(
+        XDocument document,
+        XNamespace ns,
+        string projectDirectory,
+        string filePath)
+    {
+        foreach (var compile in document.Descendants(ns + "Compile"))
+        {
+            foreach (var attributeName in new[] { "Include", "Update" })
+            {
+                var value = compile.Attribute(attributeName)?.Value;
+                if (!string.IsNullOrWhiteSpace(value)
+                    && RenameFileToMatchTypeOperation.ProjectItemRefersToFile(projectDirectory, value, filePath))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static string SerializeProjectXml(XDocument document, string originalXml)
+    {
+        var writerSettings = new XmlWriterSettings
+        {
+            OmitXmlDeclaration = !originalXml.Contains("<?xml", StringComparison.OrdinalIgnoreCase),
+            NewLineHandling = NewLineHandling.Replace,
+            NewLineChars = originalXml.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n",
+            Indent = false
+        };
+
+        using var writer = new StringWriter();
+        using (var xmlWriter = XmlWriter.Create(writer, writerSettings))
+        {
+            document.Save(xmlWriter);
+        }
+
+        var serialized = writer.ToString();
+        if (originalXml.EndsWith('\n') && !serialized.EndsWith('\n'))
+            serialized += writerSettings.NewLineChars;
+        return serialized;
+    }
+
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,
         ExtractBaseClassParams @params,
         List<MemberDeclarationSyntax> members,
         ClassDeclarationSyntax baseClass,
-        string? namespaceName)
+        string? namespaceName,
+        string targetFile,
+        string? projectPath)
     {
         var memberNames = string.Join(", ", members.Select(m => GetMemberName(m)));
         var baseClassCode = baseClass.NormalizeWhitespace().ToFullString();
 
-        var targetFile = @params.TargetFile ?? @params.SourceFile;
-        var isNewFile = @params.TargetFile != null && @params.TargetFile != @params.SourceFile;
+        var isNewFile = targetFile != @params.SourceFile;
 
         var pendingChanges = new List<PendingChange>
         {
@@ -405,6 +682,16 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 AfterSnippet = $"class {@params.TypeName} : {@params.BaseClassName}"
             }
         };
+
+        if (!string.IsNullOrWhiteSpace(projectPath))
+        {
+            pendingChanges.Add(new PendingChange
+            {
+                File = projectPath,
+                ChangeType = ChangeKind.Modify,
+                Description = "Add explicit Compile item for the new base class file"
+            });
+        }
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }

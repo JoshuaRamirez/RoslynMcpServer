@@ -26,9 +26,17 @@ public sealed class ExtractBaseClassParams
     public required IReadOnlyList<string> Members { get; init; }
 
     /// <summary>
-    /// Absolute path for the base class file. If null, creates in same file.
+    /// Absolute path for the base class file. If set, always wins over <see cref="SeparateFile"/>.
+    /// If null and <see cref="SeparateFile"/> is false, creates the base class in the source file.
     /// </summary>
     public string? TargetFile { get; init; }
+
+    /// <summary>
+    /// When true and <see cref="TargetFile"/> is omitted, write the base class to
+    /// <c>{BaseClassName}.cs</c> in the same directory as <see cref="SourceFile"/>.
+    /// Default: false (same-file extract unless <see cref="TargetFile"/> is set).
+    /// </summary>
+    public bool SeparateFile { get; init; }
 
     /// <summary>
     /// Make base class abstract. Default: false.

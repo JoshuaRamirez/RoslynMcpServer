@@ -32,7 +32,7 @@ public sealed class ExtractBaseClassTool : IToolHandler
     public string Name => "extract_base_class";
 
     /// <inheritdoc />
-    public string Description => "Extract members to a new base class.";
+    public string Description => "Extract members to a new base class. When separateFile is true and targetFile is omitted, the base class is written to {BaseClassName}.cs next to the source file.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -70,7 +70,13 @@ public sealed class ExtractBaseClassTool : IToolHandler
             targetFile = new
             {
                 type = "string",
-                description = "Absolute path for the base class file. If not specified, creates in same file."
+                description = "Absolute path for the base class file. If set, wins over separateFile. If neither is set, creates in the same file."
+            },
+            separateFile = new
+            {
+                type = "boolean",
+                description = "When true and targetFile is omitted, write the base class to {BaseClassName}.cs next to the source file.",
+                @default = false
             },
             makeAbstract = new
             {
@@ -116,6 +122,7 @@ public sealed class ExtractBaseClassTool : IToolHandler
                 BaseClassName = args.BaseClassName,
                 Members = args.Members ?? new List<string>(),
                 TargetFile = args.TargetFile,
+                SeparateFile = args.SeparateFile ?? false,
                 MakeAbstract = args.MakeAbstract ?? false,
                 Preview = args.Preview ?? false
             };
@@ -150,6 +157,7 @@ public sealed class ExtractBaseClassTool : IToolHandler
         public string BaseClassName { get; init; } = "";
         public List<string>? Members { get; init; }
         public string? TargetFile { get; init; }
+        public bool? SeparateFile { get; init; }
         public bool? MakeAbstract { get; init; }
         public bool? Preview { get; init; }
     }
