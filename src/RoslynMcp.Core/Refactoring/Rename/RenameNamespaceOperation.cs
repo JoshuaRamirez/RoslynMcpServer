@@ -214,7 +214,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
 
             foreach (var candidate in EnumerateNamespaceChain(declared))
             {
-                if (NamespaceMatches(candidate, declaration, requested))
+                if (NamespaceMatches(candidate, declaration, requested, declared))
                     matches.Add((candidate, declaration));
             }
         }
@@ -274,7 +274,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     internal static bool NamespaceMatches(
         INamespaceSymbol symbol,
         BaseNamespaceDeclarationSyntax declaration,
-        string requested)
+        string requested,
+        INamespaceSymbol declaredSymbol)
     {
         if (symbol.IsGlobalNamespace)
             return false;
@@ -285,8 +286,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         if (string.Equals(symbol.Name, requested, StringComparison.Ordinal))
             return true;
 
-        var written = declaration.Name.ToString();
-        return string.Equals(written, requested, StringComparison.Ordinal);
+        return SymbolEqualityComparer.Default.Equals(symbol, declaredSymbol)
+               && string.Equals(declaration.Name.ToString(), requested, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -326,6 +327,69 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     internal static bool IsLastSegmentRename(string oldFullName, string newFullName) =>
         string.Equals(GetParentName(oldFullName), GetParentName(newFullName), StringComparison.Ordinal)
         && !string.Equals(GetLastSegment(oldFullName), GetLastSegment(newFullName), StringComparison.Ordinal);
+
+    /// <summary>
+    /// True when <paramref name="prefix"/> is a proper dotted prefix of <paramref name="fullName"/>.
+    /// </summary>
+    internal static bool IsPrefixOfNamespace(string prefix, string fullName) =>
+        !string.IsNullOrEmpty(prefix)
+        && fullName.StartsWith(prefix + ".", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Declaration name to write inside <paramref name="enclosingFullName"/> so the
+    /// resulting fully qualified name is <paramref name="fullName"/>.
+    /// </summary>
+    internal static string GetRelativeNamespaceName(string fullName, string enclosingFullName)
+    {
+        if (string.IsNullOrEmpty(enclosingFullName))
+            return fullName;
+
+        if (IsPrefixOfNamespace(enclosingFullName, fullName))
+            return fullName[(enclosingFullName.Length + 1)..];
+
+        if (string.Equals(fullName, enclosingFullName, StringComparison.Ordinal))
+            return GetLastSegment(fullName);
+
+        return fullName;
+    }
+
+    /// <summary>
+    /// Maps an ancestor declaration of <paramref name="oldFullName"/> onto the
+    /// corresponding prefix of <paramref name="newFullName"/>.
+    /// </summary>
+    internal static string GetCorrespondingPrefix(string oldFullName, string newFullName, string declaredFullName)
+    {
+        if (string.Equals(declaredFullName, oldFullName, StringComparison.Ordinal)
+            || IsPrefixOfNamespace(oldFullName, declaredFullName))
+        {
+            return RewriteFullName(declaredFullName, oldFullName, newFullName);
+        }
+
+        if (!IsPrefixOfNamespace(declaredFullName, oldFullName))
+            return declaredFullName;
+
+        var declaredSegments = SplitNamespace(declaredFullName);
+        var newSegments = SplitNamespace(newFullName);
+        if (declaredSegments.Length >= newSegments.Length)
+            return newFullName;
+
+        return string.Join(".", newSegments.Take(declaredSegments.Length));
+    }
+
+    /// <summary>
+    /// Replaces <paramref name="oldFullName"/> (or that prefix) in <paramref name="current"/>
+    /// with <paramref name="newFullName"/>.
+    /// </summary>
+    internal static string RewriteFullName(string current, string oldFullName, string newFullName)
+    {
+        if (string.Equals(current, oldFullName, StringComparison.Ordinal))
+            return newFullName;
+
+        if (IsPrefixOfNamespace(oldFullName, current))
+            return newFullName + current[oldFullName.Length..];
+
+        return current;
+    }
 
     internal static bool SpanCoversLine(FileLinePositionSpan span, int line, int? column)
     {
@@ -376,20 +440,49 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                     suggestions: ["Choose a different new name"]);
             }
 
-            if (member is INamespaceSymbol existing && HasTypeNameCollision(source, existing))
+            if (member is INamespaceSymbol existing && HasNamespaceCollision(source, existing))
             {
                 throw new RefactoringException(
                     ErrorCodes.NameConflictScope,
-                    $"Namespace '{newFullName}' already contains a type that would collide with a type in '{GetFullName(source)}'.",
+                    $"Namespace '{newFullName}' already contains a type or namespace that would collide with '{GetFullName(source)}'.",
                     suggestions: ["Rename the conflicting type first", "Choose a different new name"]);
             }
         }
     }
 
-    private static bool HasTypeNameCollision(INamespaceSymbol source, INamespaceSymbol target)
+    /// <summary>
+    /// True when merging <paramref name="source"/> into <paramref name="target"/> would
+    /// create duplicate types or namespace/type name clashes, including descendants.
+    /// </summary>
+    internal static bool HasNamespaceCollision(INamespaceSymbol source, INamespaceSymbol target)
     {
-        var targetNames = target.GetTypeMembers().Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
-        return source.GetTypeMembers().Any(t => targetNames.Contains(t.Name));
+        if (SymbolEqualityComparer.Default.Equals(source, target))
+            return false;
+
+        var targetTypeNames = target.GetTypeMembers().Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
+        var targetNamespaceNames = target.GetNamespaceMembers().Select(n => n.Name).ToHashSet(StringComparer.Ordinal);
+
+        if (source.GetTypeMembers().Any(t =>
+                targetTypeNames.Contains(t.Name) || targetNamespaceNames.Contains(t.Name)))
+        {
+            return true;
+        }
+
+        if (target.GetTypeMembers().Any(t =>
+                source.GetNamespaceMembers().Any(n => string.Equals(n.Name, t.Name, StringComparison.Ordinal))))
+        {
+            return true;
+        }
+
+        foreach (var sourceChild in source.GetNamespaceMembers())
+        {
+            var targetChild = target.GetNamespaceMembers()
+                .FirstOrDefault(n => string.Equals(n.Name, sourceChild.Name, StringComparison.Ordinal));
+            if (targetChild != null && HasNamespaceCollision(sourceChild, targetChild))
+                return true;
+        }
+
+        return false;
     }
 
     private static INamespaceSymbol? FindNamespace(INamespaceSymbol current, string fullName)
@@ -433,6 +526,21 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         return await RewriteFullNamespaceAsync(namespaceSymbol, oldFullName, newFullName, cancellationToken);
     }
 
+    /// <summary>
+    /// Rewrites namespace declarations and references in <paramref name="root"/>.
+    /// Exposed for tests that must exercise the rewriter without MSBuild.
+    /// </summary>
+    internal static SyntaxNode RewriteNamespaceNames(
+        SemanticModel semanticModel,
+        SyntaxNode root,
+        INamespaceSymbol target,
+        string oldFullName,
+        string newFullName)
+    {
+        var rewriter = new NamespaceNameRewriter(semanticModel, target, oldFullName, newFullName);
+        return rewriter.Visit(root) ?? root;
+    }
+
     private async Task<Solution> RewriteFullNamespaceAsync(
         INamespaceSymbol namespaceSymbol,
         string oldFullName,
@@ -469,6 +577,15 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         CancellationToken cancellationToken)
     {
         var documentIds = new HashSet<DocumentId>();
+
+        foreach (var project in Context.Solution.Projects)
+        {
+            foreach (var document in project.Documents)
+            {
+                if (document.SupportsSyntaxTree)
+                    documentIds.Add(document.Id);
+            }
+        }
 
         foreach (var symbol in EnumerateSelfAndDescendants(namespaceSymbol))
         {
@@ -626,30 +743,22 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
 
         public override SyntaxNode? VisitFileScopedNamespaceDeclaration(FileScopedNamespaceDeclarationSyntax node)
         {
-            var declared = _semanticModel.GetDeclaredSymbol(node);
-            if (IsTargetOrDescendant(declared))
-            {
-                var rewritten = RewriteFullName(GetFullName(declared!));
-                node = node.WithName(SyntaxFactory.ParseName(rewritten).WithTriviaFrom(node.Name));
-                return node.WithMembers(VisitList(node.Members));
-            }
-
-            return base.VisitFileScopedNamespaceDeclaration(node);
+            var writeName = TryGetDeclarationWriteName(node);
+            var members = VisitList(node.Members);
+            if (writeName != null)
+                node = node.WithName(SyntaxFactory.ParseName(writeName).WithTriviaFrom(node.Name));
+            return node.WithMembers(members);
         }
 
         public override SyntaxNode? VisitNamespaceDeclaration(NamespaceDeclarationSyntax node)
         {
-            var declared = _semanticModel.GetDeclaredSymbol(node);
-            if (IsTargetOrDescendant(declared))
-            {
-                var rewritten = RewriteFullName(GetFullName(declared!));
-                node = node.WithName(SyntaxFactory.ParseName(rewritten).WithTriviaFrom(node.Name));
-                return node.WithMembers(VisitList(node.Members))
-                    .WithUsings(VisitList(node.Usings))
-                    .WithExterns(VisitList(node.Externs));
-            }
-
-            return base.VisitNamespaceDeclaration(node);
+            var writeName = TryGetDeclarationWriteName(node);
+            var members = VisitList(node.Members);
+            var usings = VisitList(node.Usings);
+            var externs = VisitList(node.Externs);
+            if (writeName != null)
+                node = node.WithName(SyntaxFactory.ParseName(writeName).WithTriviaFrom(node.Name));
+            return node.WithMembers(members).WithUsings(usings).WithExterns(externs);
         }
 
         public override SyntaxNode? VisitUsingDirective(UsingDirectiveSyntax node)
@@ -660,25 +769,132 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             var symbol = _semanticModel.GetSymbolInfo(node.Name).Symbol as INamespaceSymbol;
             if (IsTargetOrDescendant(symbol))
             {
-                var rewritten = RewriteFullName(GetFullName(symbol!));
+                var rewritten = RewriteFullName(GetFullName(symbol!), _oldFullName, _newFullName);
                 return node.WithName(SyntaxFactory.ParseName(rewritten).WithTriviaFrom(node.Name));
             }
 
             return base.VisitUsingDirective(node);
         }
 
+        public override SyntaxNode? VisitQualifiedName(QualifiedNameSyntax node)
+        {
+            if (node.Parent is BaseNamespaceDeclarationSyntax or UsingDirectiveSyntax)
+                return node;
+
+            // Rewrite the containing qualified name. A dotted replacement must
+            // never be substituted into Right (a SimpleNameSyntax slot).
+            if (TryRewriteReferencedName(node) is { } rewritten)
+                return rewritten;
+
+            return base.VisitQualifiedName(node);
+        }
+
+        public override SyntaxNode? VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
+        {
+            if (TryRewriteReferencedName(node) is { } rewritten)
+                return rewritten;
+
+            return base.VisitMemberAccessExpression(node);
+        }
+
         public override SyntaxNode? VisitIdentifierName(IdentifierNameSyntax node)
         {
-            if (node.Parent is BaseNamespaceDeclarationSyntax ns && ns.Name == node)
+            if (node.Parent is QualifiedNameSyntax or MemberAccessExpressionSyntax)
                 return node;
-            if (node.Parent is UsingDirectiveSyntax usingDirective && usingDirective.Name == node)
+            if (node.Parent is BaseNamespaceDeclarationSyntax or UsingDirectiveSyntax)
                 return node;
 
-            var symbol = _semanticModel.GetSymbolInfo(node).Symbol;
+            var symbol = GetReferencedSymbol(node);
             if (symbol is INamespaceSymbol nsSymbol && SymbolEqualityComparer.Default.Equals(nsSymbol, _target))
-                return SyntaxFactory.ParseName(_newFullName).WithTriviaFrom(node);
+            {
+                var replacement = SyntaxFactory.ParseName(_newFullName);
+                // IdentifierName is a SimpleName slot: only a single identifier fits.
+                if (replacement is SimpleNameSyntax simple)
+                    return simple.WithTriviaFrom(node);
+                return node;
+            }
 
             return base.VisitIdentifierName(node);
+        }
+
+        /// <summary>
+        /// Replaces the namespace prefix of a qualified type or namespace name.
+        /// Uses the bound symbol's containing namespace because intermediate
+        /// name nodes often have no <see cref="INamespaceSymbol"/> of their own.
+        /// </summary>
+        private NameSyntax? TryRewriteReferencedName(ExpressionSyntax node)
+        {
+            var symbol = GetReferencedSymbol(node);
+            var ns = symbol as INamespaceSymbol ?? symbol?.ContainingNamespace;
+            if (!IsTargetOrDescendant(ns))
+                return null;
+
+            var written = GetDottedNameText(node);
+            var rewritten = RewriteFullName(written, _oldFullName, _newFullName);
+            if (string.Equals(rewritten, written, StringComparison.Ordinal))
+            {
+                if (symbol is not INamespaceSymbol onlyNs)
+                    return null;
+
+                rewritten = RewriteFullName(GetFullName(onlyNs), _oldFullName, _newFullName);
+                if (string.Equals(rewritten, GetFullName(onlyNs), StringComparison.Ordinal))
+                    return null;
+            }
+
+            return SyntaxFactory.ParseName(rewritten).WithTriviaFrom(node);
+        }
+
+        private ISymbol? GetReferencedSymbol(SyntaxNode node)
+        {
+            var info = _semanticModel.GetSymbolInfo(node);
+            if (info.Symbol != null)
+                return info.Symbol;
+            if (info.CandidateSymbols.Length > 0)
+                return info.CandidateSymbols[0];
+
+            var type = _semanticModel.GetTypeInfo(node).Type;
+            if (type is { SpecialType: not SpecialType.System_Void } and not IErrorTypeSymbol)
+                return type;
+
+            return _semanticModel.GetDeclaredSymbol(node);
+        }
+
+        private static string GetDottedNameText(ExpressionSyntax node) =>
+            string.Join(".", node.ToString().Split('.', StringSplitOptions.TrimEntries));
+
+        private string? TryGetDeclarationWriteName(BaseNamespaceDeclarationSyntax node)
+        {
+            if (_semanticModel.GetDeclaredSymbol(node) is not INamespaceSymbol declared)
+                return null;
+
+            var declaredFull = GetFullName(declared);
+            string newFull;
+            if (IsTargetOrDescendant(declared))
+                newFull = RewriteFullName(declaredFull, _oldFullName, _newFullName);
+            else if (IsPrefixOfNamespace(declaredFull, _oldFullName))
+                newFull = GetCorrespondingPrefix(_oldFullName, _newFullName, declaredFull);
+            else
+                return null;
+
+            var enclosing = node.Parent as BaseNamespaceDeclarationSyntax;
+            var enclosingNew = GetEnclosingNewFullName(enclosing);
+            return GetRelativeNamespaceName(newFull, enclosingNew);
+        }
+
+        private string GetEnclosingNewFullName(BaseNamespaceDeclarationSyntax? enclosing)
+        {
+            if (enclosing == null)
+                return string.Empty;
+
+            if (_semanticModel.GetDeclaredSymbol(enclosing) is not INamespaceSymbol declared)
+                return string.Empty;
+
+            var declaredFull = GetFullName(declared);
+            if (IsTargetOrDescendant(declared))
+                return RewriteFullName(declaredFull, _oldFullName, _newFullName);
+            if (IsPrefixOfNamespace(declaredFull, _oldFullName))
+                return GetCorrespondingPrefix(_oldFullName, _newFullName, declaredFull);
+            return declaredFull;
         }
 
         private bool IsTargetOrDescendant(INamespaceSymbol? symbol)
@@ -693,17 +909,6 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             }
 
             return false;
-        }
-
-        private string RewriteFullName(string current)
-        {
-            if (string.Equals(current, _oldFullName, StringComparison.Ordinal))
-                return _newFullName;
-
-            if (current.StartsWith(_oldFullName + ".", StringComparison.Ordinal))
-                return _newFullName + current[_oldFullName.Length..];
-
-            return current;
         }
     }
 }

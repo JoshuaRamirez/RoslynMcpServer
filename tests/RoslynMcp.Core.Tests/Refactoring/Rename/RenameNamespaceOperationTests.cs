@@ -1,3 +1,5 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
@@ -135,6 +137,114 @@ public class RenameNamespaceOperationTests
         Assert.Equal("Core", RenameNamespaceOperation.GetLastSegment("MyApp.Services.Core"));
     }
 
+    [Fact]
+    public void GetRelativeNamespaceName_StripsEnclosingPrefix()
+    {
+        Assert.Equal("X.Y", RenameNamespaceOperation.GetRelativeNamespaceName("X.Y", ""));
+        Assert.Equal("Y", RenameNamespaceOperation.GetRelativeNamespaceName("X.Y", "X"));
+        Assert.Equal("C", RenameNamespaceOperation.GetRelativeNamespaceName("X.Y.C", "X.Y"));
+        Assert.Equal("Y.C", RenameNamespaceOperation.GetRelativeNamespaceName("X.Y.C", "X"));
+    }
+
+    [Fact]
+    public void GetCorrespondingPrefix_MapsAncestorOntoNewPath()
+    {
+        Assert.Equal("X", RenameNamespaceOperation.GetCorrespondingPrefix("A.B", "X.Y", "A"));
+        Assert.Equal("X.Y", RenameNamespaceOperation.GetCorrespondingPrefix("A.B", "X.Y", "A.B"));
+        Assert.Equal("X.Y.C", RenameNamespaceOperation.GetCorrespondingPrefix("A.B", "X.Y", "A.B.C"));
+    }
+
+    [Fact]
+    public void HasNamespaceCollision_DescendantTypes_IsDetected()
+    {
+        var compilation = CreateCompilation("""
+            namespace Old.Sub { public class Foo {} }
+            namespace Dest.New.Sub { public class Foo {} }
+            """);
+
+        Assert.True(RenameNamespaceOperation.HasNamespaceCollision(
+            FindCompilationNamespace(compilation, "Old"),
+            FindCompilationNamespace(compilation, "Dest.New")));
+    }
+
+    [Fact]
+    public void HasNamespaceCollision_NamespaceVersusType_IsDetected()
+    {
+        var compilation = CreateCompilation("""
+            namespace Old { public class Sub {} }
+            namespace Dest.New.Sub { public class Bar {} }
+            """);
+
+        Assert.True(RenameNamespaceOperation.HasNamespaceCollision(
+            FindCompilationNamespace(compilation, "Old"),
+            FindCompilationNamespace(compilation, "Dest.New")));
+    }
+
+    [Fact]
+    public void HasNamespaceCollision_NoOverlap_ReturnsFalse()
+    {
+        var compilation = CreateCompilation("""
+            namespace Old.Sub { public class Foo {} }
+            namespace Dest.New.Sub { public class Bar {} }
+            """);
+
+        Assert.False(RenameNamespaceOperation.HasNamespaceCollision(
+            FindCompilationNamespace(compilation, "Old"),
+            FindCompilationNamespace(compilation, "Dest.New")));
+    }
+
+    [Fact]
+    public void Rewriter_NestedDeclaration_WritesRelativeName()
+    {
+        var compilation = CreateCompilation("""
+            namespace A
+            {
+                namespace B
+                {
+                    public class Foo {}
+                }
+            }
+            """);
+        var tree = compilation.SyntaxTrees.Single();
+        var rewritten = RenameNamespaceOperation.RewriteNamespaceNames(
+            compilation.GetSemanticModel(tree),
+            tree.GetRoot(),
+            FindCompilationNamespace(compilation, "A.B"),
+            "A.B",
+            "X.Y");
+        var text = rewritten.ToFullString();
+
+        Assert.Contains("namespace X", text);
+        Assert.Contains("namespace Y", text);
+        Assert.DoesNotContain("namespace X.Y", text);
+        Assert.DoesNotContain("namespace A", text);
+        Assert.DoesNotContain("namespace B", text);
+    }
+
+    [Fact]
+    public void Rewriter_QualifiedTypeName_RewritesContainingNameWithoutThrowing()
+    {
+        var compilation = CreateCompilation("""
+            namespace A.B { public class Foo {} }
+            class C
+            {
+                A.B.Foo f = new A.B.Foo();
+            }
+            """);
+        var tree = compilation.SyntaxTrees.Single();
+        var rewritten = RenameNamespaceOperation.RewriteNamespaceNames(
+            compilation.GetSemanticModel(tree),
+            tree.GetRoot(),
+            FindCompilationNamespace(compilation, "A.B"),
+            "A.B",
+            "X.Y");
+        var text = rewritten.ToFullString();
+
+        Assert.Contains("namespace X.Y", text);
+        Assert.Contains("X.Y.Foo", text);
+        Assert.DoesNotContain("A.B.Foo", text);
+    }
+
     #endregion
 
     #region Happy Path
@@ -242,6 +352,124 @@ public class RenameNamespaceOperationTests
         Assert.Contains("using OldNs;", await File.ReadAllTextAsync(workspace.SecondarySourcePath));
     }
 
+    [SkippableFact]
+    public async Task RenameNamespace_NestedDeclaration_PreservesRelativeName()
+    {
+        const string source = """
+            namespace A
+            {
+                namespace B
+                {
+                    public class Foo
+                    {
+                    }
+                }
+            }
+            """;
+        const string consumer = """
+            namespace Other;
+
+            public class Consumer
+            {
+                public A.B.Foo Create() => new A.B.Foo();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", source),
+            ("Consumer.cs", consumer));
+        var originalSource = await File.ReadAllTextAsync(workspace.SourcePath);
+        var originalConsumer = await File.ReadAllTextAsync(workspace.SecondarySourcePath);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var preview = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceName = "A.B",
+            NewName = "X.Y",
+            Preview = true
+        });
+
+        Assert.True(preview.Success);
+        Assert.True(preview.Preview);
+        Assert.Equal(originalSource, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(originalConsumer, await File.ReadAllTextAsync(workspace.SecondarySourcePath));
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceName = "A.B",
+            NewName = "X.Y"
+        });
+
+        Assert.True(result.Success);
+
+        var declaration = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.DoesNotContain("namespace X.Y", declaration);
+        Assert.Contains("namespace X", declaration);
+        Assert.Contains("namespace Y", declaration);
+        Assert.DoesNotContain("namespace A", declaration);
+        Assert.DoesNotContain("namespace B", declaration);
+        Assert.Contains("public class Foo", declaration);
+
+        var usages = await File.ReadAllTextAsync(workspace.SecondarySourcePath);
+        Assert.Contains("X.Y.Foo", usages);
+        Assert.DoesNotContain("A.B.Foo", usages);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_QualifiedName_DottedRename_DoesNotThrow()
+    {
+        const string source = """
+            namespace A.B;
+
+            public class Foo
+            {
+            }
+            """;
+        const string consumer = """
+            namespace Other;
+
+            public class Consumer
+            {
+                public A.B.Foo Create() => new A.B.Foo();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", source),
+            ("Consumer.cs", consumer));
+        var originalSource = await File.ReadAllTextAsync(workspace.SourcePath);
+        var originalConsumer = await File.ReadAllTextAsync(workspace.SecondarySourcePath);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var preview = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceName = "A.B",
+            NewName = "X.Y",
+            Preview = true
+        });
+
+        Assert.True(preview.Success);
+        Assert.True(preview.Preview);
+        Assert.Equal(originalSource, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(originalConsumer, await File.ReadAllTextAsync(workspace.SecondarySourcePath));
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceName = "A.B",
+            NewName = "X.Y"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace X.Y;", await File.ReadAllTextAsync(workspace.SourcePath));
+        var usages = await File.ReadAllTextAsync(workspace.SecondarySourcePath);
+        Assert.Contains("X.Y.Foo", usages);
+        Assert.DoesNotContain("A.B.Foo", usages);
+    }
+
     #endregion
 
     #region Rejects
@@ -339,6 +567,44 @@ public class RenameNamespaceOperationTests
         Assert.Equal(originalExisting, await File.ReadAllTextAsync(workspace.SecondarySourcePath));
     }
 
+    [SkippableFact]
+    public async Task RenameNamespace_DescendantCollision_ThrowsNameConflictScope()
+    {
+        const string source = """
+            namespace Old.Sub;
+
+            public class Foo
+            {
+            }
+            """;
+        const string existing = """
+            namespace Dest.New.Sub;
+
+            public class Foo
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", source),
+            ("Existing.cs", existing));
+        var originalSource = await File.ReadAllTextAsync(workspace.SourcePath);
+        var originalExisting = await File.ReadAllTextAsync(workspace.SecondarySourcePath);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                NamespaceName = "Old",
+                NewName = "Dest.New"
+            }));
+
+        Assert.Equal(ErrorCodes.NameConflictScope, ex.ErrorCode);
+        Assert.Equal(originalSource, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(originalExisting, await File.ReadAllTextAsync(workspace.SecondarySourcePath));
+    }
+
     #endregion
 
     #region Helpers
@@ -356,6 +622,26 @@ public class RenameNamespaceOperationTests
             Line = line,
             UpdateFolders = updateFolders
         };
+
+    private static CSharpCompilation CreateCompilation(string source)
+    {
+        var tree = CSharpSyntaxTree.ParseText(source);
+        return CSharpCompilation.Create(
+            "RenameNamespaceCollisionTest",
+            [tree],
+            [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)]);
+    }
+
+    private static INamespaceSymbol FindCompilationNamespace(Compilation compilation, string fullName)
+    {
+        INamespaceSymbol current = compilation.GlobalNamespace;
+        foreach (var segment in fullName.Split('.'))
+        {
+            current = current.GetNamespaceMembers().Single(n => n.Name == segment);
+        }
+
+        return current;
+    }
 
     private sealed class TempWorkspace : IAsyncDisposable
     {
