@@ -31,6 +31,7 @@ public sealed class McpServerHost : IAsyncDisposable
 
         // Phase 1 - Tier 1 Operations
         _toolRegistry.Register(new RenameSymbolTool(workspaceProvider));
+        _toolRegistry.Register(new RenameFileToMatchTypeTool(workspaceProvider));
         _toolRegistry.Register(new ExtractMethodTool(workspaceProvider));
         _toolRegistry.Register(new AddMissingUsingsTool(workspaceProvider));
         _toolRegistry.Register(new RemoveUnusedUsingsTool(workspaceProvider));

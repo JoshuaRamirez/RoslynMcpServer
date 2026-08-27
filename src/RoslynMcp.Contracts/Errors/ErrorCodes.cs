@@ -175,6 +175,9 @@ public static class ErrorCodes
     /// <summary>Cannot rename symbols from external assemblies.</summary>
     public const string CannotRenameExternal = "3018";
 
+    /// <summary>Destination file already exists.</summary>
+    public const string TargetFileExists = "3019";
+
     // --------------------------------------------
     // Conversion Errors (3020-3029)
     // --------------------------------------------
