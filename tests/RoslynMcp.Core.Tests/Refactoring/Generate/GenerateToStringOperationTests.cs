@@ -8,7 +8,8 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
-/// Operation-level tests for <see cref="GenerateToStringOperation"/>, including <c>format</c>.
+/// Operation-level tests for <see cref="GenerateToStringOperation"/>, including <c>format</c>
+/// and <c>includeInheritedMembers</c>.
 /// </summary>
 public class GenerateToStringOperationTests
 {
@@ -394,6 +395,215 @@ public class GenerateToStringOperationTests
         Assert.NotNull(result.PendingChanges);
         Assert.NotEmpty(result.PendingChanges);
         AssertStringBuilderToString(result.PendingChanges[0].AfterSnippet!, "Name", "Age");
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
+    #region includeInheritedMembers
+
+    private const string DogOnAnimalSource = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public string Species;
+
+            protected int Legs;
+
+            private string Secret;
+
+            public string Nickname { get; set; }
+        }
+
+        public class Dog : Animal
+        {
+            public string Name;
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludeInheritedMembersFalse_DoesNotIncludeBaseField()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DogOnAnimalSource, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = false
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{Name}", toString);
+        Assert.DoesNotContain("Species", toString);
+        Assert.DoesNotContain("Legs", toString);
+        Assert.DoesNotContain("Secret", toString);
+        Assert.DoesNotContain("Nickname", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludeInheritedMembersTrue_IncludesPublicAndProtectedBaseFields()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DogOnAnimalSource, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{Name}", toString);
+        Assert.Contains("{Species}", toString);
+        Assert.Contains("{Legs}", toString);
+        Assert.Contains("{Nickname}", toString);
+        Assert.DoesNotContain("Secret", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludeInheritedMembersTrue_SkipsPrivateBaseField()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DogOnAnimalSource, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.DoesNotContain("Secret", toString);
+        Assert.DoesNotContain("{Secret}", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludeInheritedMembersTrue_FieldsNamesInheritedMember_IncludesIt()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DogOnAnimalSource, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true,
+            Fields = new[] { "Species" }
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{Species}", toString);
+        Assert.DoesNotContain("{Name}", toString);
+        Assert.DoesNotContain("Legs", toString);
+        Assert.DoesNotContain("Nickname", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludeInheritedMembersFalse_FieldsNamesInheritedMember_NotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DogOnAnimalSource, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateToStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                IncludeInheritedMembers = false,
+                Fields = new[] { "Species" }
+            }));
+
+        Assert.Equal(ErrorCodes.NoMembersToGenerate, ex.ErrorCode);
+        Assert.Equal("3055", ex.ErrorCode);
+        Assert.Equal(DogOnAnimalSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludeInheritedMembersTrue_ObjectOnlyBase_NoExtraMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{Name}", toString);
+        Assert.Contains("{Age}", toString);
+        Assert.DoesNotContain("Equals", toString);
+        Assert.DoesNotContain("GetHashCode", toString);
+        Assert.DoesNotContain("GetType", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludeInheritedMembersTrue_StringBuilder_IncludesInheritedMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DogOnAnimalSource, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true,
+            Format = "stringbuilder"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.Contains("global::System.Text.StringBuilder", toString);
+        Assert.Contains("Append(this.Name)", toString);
+        Assert.Contains("Append(this.Species)", toString);
+        Assert.Contains("Append(this.Legs)", toString);
+        Assert.Contains("Append(this.Nickname)", toString);
+        Assert.DoesNotContain("Secret", toString);
+        Assert.DoesNotContain("$\"Dog", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludeInheritedMembersTrue_Preview_DoesNotWriteFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DogOnAnimalSource, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("inherited members", result.PendingChanges[0].Description);
+        Assert.Contains("interpolated", result.PendingChanges[0].Description);
+        Assert.Contains("Name", result.PendingChanges[0].Description);
+        Assert.Contains("Species", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        Assert.Contains("{Name}", snippet);
+        Assert.Contains("{Species}", snippet);
+        Assert.Contains("{Legs}", snippet);
+        Assert.Contains("{Nickname}", snippet);
+        Assert.DoesNotContain("Secret", snippet);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 

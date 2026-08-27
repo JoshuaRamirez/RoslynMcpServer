@@ -148,6 +148,17 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_GenerateToString_ShowsIncludeInheritedMembers()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("generate-tostring")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("--include-inherited-members", help);
+        Assert.Contains("--format", help);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ShowsParamsAsKebabCase()
     {
         var registry = ToolRegistry.BuildDefault();
