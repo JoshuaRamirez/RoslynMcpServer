@@ -10,8 +10,8 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
-/// Operation-level tests for <see cref="GenerateToStringOperation"/>, including <c>format</c>
-/// and <c>includeInheritedMembers</c>.
+/// Operation-level tests for <see cref="GenerateToStringOperation"/>, including <c>format</c>,
+/// <c>includeInheritedMembers</c>, and <c>replaceExisting</c>.
 /// </summary>
 public class GenerateToStringOperationTests
 {
@@ -695,6 +695,299 @@ public class GenerateToStringOperationTests
 
     #endregion
 
+    #region replaceExisting
+
+    private const string PersonWithToStringSource = """
+        namespace TestApp;
+
+        public class Person
+        {
+            public string Name { get; set; }
+
+            public int Age { get; set; }
+
+            public override string ToString() => "old";
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingOmitted_ExistingToString_FailsWith3056()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithToStringSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateToStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person"
+            }));
+
+        Assert.Equal(ErrorCodes.AlreadyHasOverride, ex.ErrorCode);
+        Assert.Equal("3056", ex.ErrorCode);
+        Assert.Equal("Type already has a ToString override.", ex.Message);
+        Assert.Equal(PersonWithToStringSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingFalse_ExistingToString_FailsWith3056()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithToStringSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateToStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                ReplaceExisting = false
+            }));
+
+        Assert.Equal(ErrorCodes.AlreadyHasOverride, ex.ErrorCode);
+        Assert.Equal("3056", ex.ErrorCode);
+        Assert.Equal("Type already has a ToString override.", ex.Message);
+        Assert.Equal(PersonWithToStringSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingTrue_ReplacesParameterlessToString()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithToStringSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = true,
+            Fields = new[] { "Name" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.DoesNotContain("=> \"old\"", updated);
+        Assert.DoesNotContain("old", toString);
+        Assert.Contains("{Name}", toString);
+        Assert.DoesNotContain("{Age}", toString);
+        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingTrue_NoExistingToString_GeneratesAsToday()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        AssertInterpolatedToString(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingTrue_ExistingToStringStringOverload_LeavesOverloadAndGeneratesParameterless()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+
+                public string ToString(string format) => format;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public string ToString(string format) => format;", updated);
+        AssertInterpolatedToString(updated);
+        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+        Assert.Equal(1, CountOccurrences(updated, "ToString(string format)"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingTrue_PartialOtherFile_RemovesOtherPartToString()
+    {
+        const string fieldsPart = """
+            namespace TestApp;
+
+            public partial class Person
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+            }
+            """;
+
+        const string toStringPart = """
+            namespace TestApp;
+
+            public partial class Person
+            {
+                public override string ToString() => "old";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Person.cs", fieldsPart),
+            ("Person.ToString.cs", toStringPart));
+        var otherPath = workspace.PathFor("Person.ToString.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var selected = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var other = NormalizeNewlines(await File.ReadAllTextAsync(otherPath));
+        AssertInterpolatedToString(selected);
+        Assert.DoesNotContain("=> \"old\"", selected);
+        Assert.DoesNotContain("public override string ToString", other);
+        Assert.DoesNotContain("=> \"old\"", other);
+        Assert.Equal(1, CountOccurrences(selected, "public override string ToString()"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingTrue_StringBuilderAndInheritedMembers_StillWorks()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Species;
+            }
+
+            public class Dog : Animal
+            {
+                public string Name;
+
+                public override string ToString() => "old";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            ReplaceExisting = true,
+            Format = "stringbuilder",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.DoesNotContain("=> \"old\"", updated);
+        Assert.Contains("global::System.Text.StringBuilder", toString);
+        Assert.Contains("Append(this.Name)", toString);
+        Assert.Contains("Append(this.Species)", toString);
+        Assert.DoesNotContain("$\"Dog", toString);
+        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingTrue_Preview_DoesNotWriteFiles_AndDescribesReplacement()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithToStringSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = true,
+            Format = "stringbuilder",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Replace", result.PendingChanges[0].Description);
+        Assert.Contains("stringbuilder", result.PendingChanges[0].Description);
+        Assert.Contains("Name", result.PendingChanges[0].Description);
+        Assert.Contains("Age", result.PendingChanges[0].Description);
+        Assert.Contains("replacing existing ToString", result.PendingChanges[0].BeforeSnippet);
+        AssertStringBuilderToString(result.PendingChanges[0].AfterSnippet!, "Name", "Age");
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingTrue_PartialOtherFile_Preview_DoesNotWriteFiles()
+    {
+        const string fieldsPart = """
+            namespace TestApp;
+
+            public partial class Person
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+            }
+            """;
+
+        const string toStringPart = """
+            namespace TestApp;
+
+            public partial class Person
+            {
+                public override string ToString() => "old";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Person.cs", fieldsPart),
+            ("Person.ToString.cs", toStringPart));
+        var otherPath = workspace.PathFor("Person.ToString.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+        var beforeSelected = await File.ReadAllTextAsync(workspace.SourcePath);
+        var beforeOther = await File.ReadAllTextAsync(otherPath);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Equal(beforeSelected, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(beforeOther, await File.ReadAllTextAsync(otherPath));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static void AssertInterpolatedToString(string text)
@@ -749,6 +1042,19 @@ public class GenerateToStringOperationTests
         Assert.DoesNotContain("$\"Person", text);
     }
 
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
+    }
+
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateToStringMissing.cs");
 
@@ -762,7 +1068,12 @@ public class GenerateToStringOperationTests
         public required string SourcePath { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Person.cs")
+        public string PathFor(string fileName) => Path.Combine(DirectoryPath, fileName);
+
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Person.cs") =>
+            CreateAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -770,8 +1081,6 @@ public class GenerateToStringOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
-
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
@@ -780,7 +1089,16 @@ public class GenerateToStringOperationTests
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            string? sourcePath = null;
+            foreach (var (fileName, source) in files)
+            {
+                var path = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(path, source);
+                sourcePath ??= path;
+            }
+
+            sourcePath ??= Path.Combine(directory, "Person.cs");
 
             try
             {

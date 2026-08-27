@@ -156,6 +156,7 @@ public class HelpGeneratorTests
 
         Assert.Contains("--include-inherited-members", help);
         Assert.Contains("--format", help);
+        Assert.Contains("--replace-existing", help);
     }
 
     [Fact]

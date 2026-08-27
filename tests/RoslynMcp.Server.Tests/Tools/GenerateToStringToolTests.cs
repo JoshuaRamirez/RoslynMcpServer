@@ -100,6 +100,18 @@ public class GenerateToStringToolTests
         Assert.False(includeInheritedMembers.GetProperty("default").GetBoolean());
     }
 
+    [Fact]
+    public void GetDefinition_ReplaceExistingProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var replaceExisting = doc.RootElement.GetProperty("properties").GetProperty("replaceExisting");
+
+        Assert.Equal("boolean", replaceExisting.GetProperty("type").GetString());
+        Assert.False(replaceExisting.GetProperty("default").GetBoolean());
+    }
+
     #endregion
 
     #region ExecuteAsync Argument Validation Tests

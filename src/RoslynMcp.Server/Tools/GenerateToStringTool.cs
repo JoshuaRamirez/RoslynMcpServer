@@ -74,6 +74,12 @@ public sealed class GenerateToStringTool : IToolHandler
                 description = "Also collect accessible instance fields and readable properties declared on base types",
                 @default = false
             },
+            replaceExisting = new
+            {
+                type = "boolean",
+                description = "Replace an existing parameterless ToString() override instead of failing",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -114,6 +120,7 @@ public sealed class GenerateToStringTool : IToolHandler
                 Fields = args.Fields,
                 Format = args.Format,
                 IncludeInheritedMembers = args.IncludeInheritedMembers ?? false,
+                ReplaceExisting = args.ReplaceExisting ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -147,6 +154,7 @@ public sealed class GenerateToStringTool : IToolHandler
         public List<string>? Fields { get; init; }
         public string? Format { get; init; }
         public bool? IncludeInheritedMembers { get; init; }
+        public bool? ReplaceExisting { get; init; }
         public bool? Preview { get; init; }
     }
 }

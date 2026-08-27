@@ -12,8 +12,10 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
 /// Generates a ToString() override for a type.
-/// Honors <c>format</c> for interpolated vs StringBuilder bodies and
-/// <c>includeInheritedMembers</c> to append accessible base-type members.
+/// Honors <c>format</c> for interpolated vs StringBuilder bodies,
+/// <c>includeInheritedMembers</c> to append accessible base-type members,
+/// and <c>replaceExisting</c> to remove an existing parameterless ToString
+/// before generating a fresh override.
 /// </summary>
 public sealed class GenerateToStringOperation : RefactoringOperationBase<GenerateToStringParams>
 {
@@ -75,8 +77,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         if (typeSymbol == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve type symbol.");
 
-        // Check for existing ToString override
-        if (typeSymbol.GetMembers("ToString").Any(m => m is IMethodSymbol method && !method.IsImplicitlyDeclared && method.Parameters.Length == 0))
+        if (!@params.ReplaceExisting && HasExistingToStringOverride(typeSymbol))
             throw new RefactoringException(ErrorCodes.AlreadyHasOverride, "Type already has a ToString override.");
 
         var members = CollectToStringMembers(typeSymbol, @params);
@@ -94,12 +95,34 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
                 {
                     File = @params.SourceFile,
                     ChangeType = Contracts.Enums.ChangeKind.Modify,
-                    Description = BuildDescription(@params.TypeName, members, @params.Format, @params.IncludeInheritedMembers),
-                    BeforeSnippet = $"// Type '{@params.TypeName}' (no ToString)",
+                    Description = BuildDescription(
+                        @params.TypeName,
+                        members,
+                        @params.Format,
+                        @params.IncludeInheritedMembers,
+                        @params.ReplaceExisting),
+                    BeforeSnippet = @params.ReplaceExisting
+                        ? $"// Type '{@params.TypeName}' (replacing existing ToString)"
+                        : $"// Type '{@params.TypeName}' (no ToString)",
                     AfterSnippet = code
                 }
             };
             return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        }
+
+        var solution = document.Project.Solution;
+        if (@params.ReplaceExisting)
+        {
+            solution = await RemoveExistingToStringOverridesAcrossPartialsAsync(
+                solution, typeSymbol, cancellationToken);
+            document = solution.GetDocument(document.Id)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate the document for type '{@params.TypeName}'.");
+            root = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+            typeDecl = FindTypeDeclaration(root, @params.TypeName, typeDecl.SpanStart)
+                ?? throw new RefactoringException(ErrorCodes.TypeNotFound, $"Type '{@params.TypeName}' not found.");
         }
 
         var newTypeDecl = typeDecl.AddMembers(
@@ -150,16 +173,108 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         return members.Where(m => !string.Equals(m.Name, "ToString", StringComparison.Ordinal)).ToList();
     }
 
+    internal static bool HasExistingToStringOverride(INamedTypeSymbol typeSymbol) =>
+        typeSymbol.GetMembers("ToString").Any(m =>
+            m is IMethodSymbol method && !method.IsImplicitlyDeclared && method.Parameters.Length == 0);
+
     internal static string BuildDescription(
         string typeName,
         IReadOnlyList<ISymbol> members,
         string? format,
-        bool includeInheritedMembers)
+        bool includeInheritedMembers,
+        bool replaceExisting = false)
     {
+        var verb = replaceExisting ? "Replace" : "Generate";
         var formatName = IsStringBuilderFormat(format) ? StringBuilderFormat : InterpolatedFormat;
         var inherited = includeInheritedMembers ? " including inherited members" : "";
         var memberList = string.Join(", ", members.Select(m => m.Name));
-        return $"Generate ToString ({formatName}){inherited} for {typeName}: {memberList}";
+        return $"{verb} ToString ({formatName}){inherited} for {typeName}: {memberList}";
+    }
+
+    private static async Task<Solution> RemoveExistingToStringOverridesAcrossPartialsAsync(
+        Solution solution,
+        INamedTypeSymbol typeSymbol,
+        CancellationToken cancellationToken)
+    {
+        // Match by span/kind, not SyntaxNode reference — same seam as Equals.
+        var membersByTreeAndPart = new Dictionary<SyntaxTree, Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>>();
+
+        foreach (var method in CollectToStringOverridesToReplace(typeSymbol))
+        {
+            foreach (var reference in method.DeclaringSyntaxReferences)
+            {
+                var syntax = await reference.GetSyntaxAsync(cancellationToken);
+                if (syntax.Parent is not TypeDeclarationSyntax part)
+                    continue;
+
+                if (!membersByTreeAndPart.TryGetValue(syntax.SyntaxTree, out var byPart))
+                {
+                    byPart = new Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>();
+                    membersByTreeAndPart[syntax.SyntaxTree] = byPart;
+                }
+
+                if (!byPart.TryGetValue(part.SpanStart, out var keys))
+                {
+                    keys = new HashSet<(int Start, int End, SyntaxKind Kind)>();
+                    byPart[part.SpanStart] = keys;
+                }
+
+                keys.Add((syntax.SpanStart, syntax.Span.End, syntax.Kind()));
+            }
+        }
+
+        foreach (var (tree, byPart) in membersByTreeAndPart)
+        {
+            var document = solution.GetDocument(tree)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
+            var root = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+
+            var replacements = new Dictionary<TypeDeclarationSyntax, TypeDeclarationSyntax>();
+            foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
+            {
+                if (reference.SyntaxTree != tree)
+                    continue;
+                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax part)
+                    continue;
+                if (!byPart.TryGetValue(part.SpanStart, out var keys) || keys.Count == 0)
+                    continue;
+
+                var remainingMembers = part.Members
+                    .Where(m => !keys.Contains((m.SpanStart, m.Span.End, m.Kind())))
+                    .ToArray();
+                replacements[part] = part.WithMembers(SyntaxFactory.List(remainingMembers));
+            }
+
+            if (replacements.Count == 0)
+                continue;
+
+            var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+            solution = solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+        }
+
+        return solution;
+    }
+
+    private static IEnumerable<IMethodSymbol> CollectToStringOverridesToReplace(INamedTypeSymbol typeSymbol)
+    {
+        foreach (var method in typeSymbol.GetMembers("ToString").OfType<IMethodSymbol>())
+        {
+            if (method.IsImplicitlyDeclared || method.IsStatic || method.Parameters.Length != 0)
+                continue;
+
+            yield return method;
+        }
+    }
+
+    private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName, int preferredSpanStart)
+    {
+        var matches = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == typeName)
+            .ToList();
+        return matches.FirstOrDefault(t => t.SpanStart == preferredSpanStart) ?? matches.FirstOrDefault();
     }
 
     private static MethodDeclarationSyntax GenerateToString(string typeName, List<ISymbol> members, string? format)

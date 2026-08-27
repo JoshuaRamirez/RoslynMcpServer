@@ -38,6 +38,14 @@ public sealed class GenerateToStringParams
     public bool IncludeInheritedMembers { get; init; }
 
     /// <summary>
+    /// When true, remove an existing parameterless instance <c>ToString()</c>
+    /// override (including on other partials of the same type) before generating
+    /// a fresh one. Parameterized <c>ToString</c> overloads are left alone.
+    /// Default: false (fail if a non-implicit parameterless ToString exists).
+    /// </summary>
+    public bool ReplaceExisting { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }
