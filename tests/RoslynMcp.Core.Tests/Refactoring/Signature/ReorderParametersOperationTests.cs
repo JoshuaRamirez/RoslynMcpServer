@@ -423,6 +423,91 @@ public class ReorderParametersOperationTests
         Assert.Equal(original, after);
     }
 
+    [SkippableFact]
+    public async Task ReorderParameters_OmittedOptional_ConvertsPositionalToNamed()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Process(int a = 1, int b = 2)
+                {
+                    System.Console.WriteLine(a + b);
+                }
+
+                public void Run()
+                {
+                    Process(3);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ReorderParametersParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewOrder = new[] { 1, 0 }
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public void Process(int b = 2, int a = 1)", text);
+        Assert.Contains("Process(a: 3)", text);
+        Assert.DoesNotContain("Process(3)", text);
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_ImplNamedArgs_UseInvokedParameterNames()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWorker
+            {
+                void Process(int count, string name);
+            }
+
+            public class Worker : IWorker
+            {
+                public void Process(int value, string text)
+                {
+                    System.Console.WriteLine(value + text);
+                }
+            }
+
+            public static class Runner
+            {
+                public static void Run(Worker worker)
+                {
+                    worker.Process(1, text: "x");
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ReorderParametersParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewOrder = new[] { 1, 0 },
+            Line = 5
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("void Process(string name, int count);", text);
+        Assert.Contains("public void Process(string text, int value)", text);
+        Assert.Contains("worker.Process(text: \"x\", 1)", text);
+    }
+
     #endregion
 
     #region Rejects
@@ -551,6 +636,42 @@ public class ReorderParametersOperationTests
 
         Assert.Equal(ErrorCodes.UnsupportedCallSite, ex.ErrorCode);
         Assert.Equal("3130", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_RelatedInterfaceOptional_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWorker
+            {
+                void Process(int required, int optional = 0);
+            }
+
+            public class Worker : IWorker
+            {
+                public void Process(int required, int optional)
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ReorderParametersParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                NewOrder = new[] { 1, 0 },
+                Line = 10
+            }));
+
+        Assert.Equal(ErrorCodes.RequiredAfterOptional, ex.ErrorCode);
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 

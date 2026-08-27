@@ -120,11 +120,14 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
             @params.UpdateImplementations,
             cancellationToken);
 
+        await ValidateRelatedSignaturesAsync(relatedMethods, newOrder, cancellationToken);
+
         var declarationTargets = await CollectDeclarationTargetsAsync(relatedMethods, cancellationToken);
         foreach (var target in declarationTargets)
             ValidateDocumentIsEditable(target.Document, Context.Workspace);
 
-        var callSites = await CollectCallSitesAsync(relatedMethods, cancellationToken);
+        var fallbackNames = methodSymbol.Parameters.Select(p => p.Name).ToArray();
+        var callSites = await CollectCallSitesAsync(relatedMethods, fallbackNames, cancellationToken);
         foreach (var callSite in callSites)
             ValidateDocumentIsEditable(callSite.Document, Context.Workspace);
 
@@ -132,7 +135,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
             document,
             declarationTargets,
             callSites,
-            methodSymbol.Parameters.ToList(),
+            fallbackNames,
             newOrder,
             cancellationToken);
 
@@ -228,6 +231,26 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                 throw new RefactoringException(
                     ErrorCodes.RequiredAfterOptional,
                     "Required parameters cannot follow optional parameters.");
+            }
+        }
+    }
+
+    private static async Task ValidateRelatedSignaturesAsync(
+        IReadOnlyList<IMethodSymbol> methods,
+        int[] newOrder,
+        CancellationToken cancellationToken)
+    {
+        foreach (var method in methods)
+        {
+            foreach (var syntaxRef in method.DeclaringSyntaxReferences)
+            {
+                if (await syntaxRef.GetSyntaxAsync(cancellationToken) is not MethodDeclarationSyntax declaration)
+                    continue;
+
+                if (declaration.ParameterList.Parameters.Count != newOrder.Length)
+                    continue;
+
+                ValidateResultingSignature(declaration.ParameterList, method, newOrder);
             }
         }
     }
@@ -386,6 +409,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
 
     private async Task<List<CallSite>> CollectCallSitesAsync(
         IReadOnlyList<IMethodSymbol> methods,
+        IReadOnlyList<string> fallbackParameterNames,
         CancellationToken cancellationToken)
     {
         var callSites = new List<CallSite>();
@@ -420,7 +444,11 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                         var invoked = model?.GetSymbolInfo(invocation, cancellationToken).Symbol as IMethodSymbol;
                         var isReduced = invoked?.MethodKind == MethodKind.ReducedExtension ||
                                         invoked?.ReducedFrom != null;
-                        callSites.Add(new CallSite(document, invocation.Span, isReduced));
+                        var sourceMethod = invoked?.ReducedFrom ?? invoked ?? method;
+                        var parameterNames = sourceMethod.Parameters.Length == fallbackParameterNames.Count
+                            ? sourceMethod.Parameters.Select(p => p.Name).ToArray()
+                            : fallbackParameterNames;
+                        callSites.Add(new CallSite(document, invocation.Span, isReduced, parameterNames));
                         continue;
                     }
 
@@ -441,7 +469,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         Document originatingDocument,
         IReadOnlyList<DeclarationTarget> declarations,
         IReadOnlyList<CallSite> callSites,
-        IReadOnlyList<IParameterSymbol> originalParams,
+        IReadOnlyList<string> fallbackParameterNames,
         int[] newOrder,
         CancellationToken cancellationToken)
     {
@@ -467,6 +495,9 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                 .Where(c => c.IsReducedExtension)
                 .Select(c => c.Span)
                 .ToHashSet();
+            var parameterNamesBySpan = documentCallSites
+                .GroupBy(c => c.Span)
+                .ToDictionary(g => g.Key, g => g.First().ParameterNames);
 
             var methods = root.DescendantNodes()
                 .OfType<MethodDeclarationSyntax>()
@@ -481,7 +512,8 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                 methods,
                 invocations,
                 reducedSpans,
-                originalParams,
+                parameterNamesBySpan,
+                fallbackParameterNames,
                 newOrder);
             root = rewriter.Visit(root)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to rewrite reorder_parameters targets.");
@@ -502,14 +534,14 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
 
     internal static InvocationExpressionSyntax UpdateInvocation(
         InvocationExpressionSyntax invocation,
-        IReadOnlyList<IParameterSymbol> originalParams,
+        IReadOnlyList<string> parameterNames,
         int[] newOrder,
         bool isReducedExtension = false)
     {
         var newArgs = ReorderArguments(
             invocation.ArgumentList,
             newOrder,
-            originalParams,
+            parameterNames,
             isReducedExtension);
         return invocation.WithArgumentList(newArgs);
     }
@@ -517,7 +549,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
     internal static ArgumentListSyntax ReorderArguments(
         ArgumentListSyntax args,
         int[] newOrder,
-        IReadOnlyList<IParameterSymbol> originalParams,
+        IReadOnlyList<string> parameterNames,
         bool isReducedExtension = false)
     {
         var originalArgs = args.Arguments.ToList();
@@ -537,9 +569,9 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         var firstExplicitOrdinal = isReducedExtension ? 1 : 0;
         var positionalByOldIndex = new Dictionary<int, ArgumentSyntax>();
         var positionalIndex = 0;
-        for (var i = 0; i < originalParams.Count; i++)
+        for (var i = 0; i < parameterNames.Count; i++)
         {
-            if (namedOriginal.ContainsKey(originalParams[i].Name))
+            if (namedOriginal.ContainsKey(parameterNames[i]))
                 continue;
             if (i < firstExplicitOrdinal)
                 continue;
@@ -549,42 +581,59 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         }
 
         var leftoverPositionals = positionalOriginal.Skip(positionalIndex).ToList();
-
         var newArgs = new List<ArgumentSyntax>();
-        if (namedOriginal.Count == 0)
+        var seenOmittedBefore = false;
+
+        foreach (var oldIndex in newOrder)
         {
-            foreach (var oldIndex in newOrder)
+            if (oldIndex < firstExplicitOrdinal)
+                continue;
+
+            var name = parameterNames[oldIndex];
+            if (namedOriginal.TryGetValue(name, out var named))
             {
-                if (positionalByOldIndex.TryGetValue(oldIndex, out var positional))
-                    newArgs.Add(positional);
+                newArgs.Add(named);
+                continue;
             }
+
+            if (positionalByOldIndex.TryGetValue(oldIndex, out var positional))
+            {
+                newArgs.Add(seenOmittedBefore ? EnsureNamed(positional, name) : positional);
+                continue;
+            }
+
+            seenOmittedBefore = true;
         }
-        else
+
+        foreach (var leftover in namedOriginal.Values)
         {
-            foreach (var oldIndex in newOrder)
-            {
-                var originalParam = originalParams[oldIndex];
-                if (namedOriginal.TryGetValue(originalParam.Name, out var named))
-                {
-                    newArgs.Add(named);
-                    continue;
-                }
-
-                if (positionalByOldIndex.TryGetValue(oldIndex, out var positional))
-                    newArgs.Add(positional);
-            }
-
-            foreach (var leftover in namedOriginal.Values)
-            {
-                if (!newArgs.Contains(leftover))
-                    newArgs.Add(leftover);
-            }
+            if (!newArgs.Contains(leftover))
+                newArgs.Add(leftover);
         }
 
         newArgs.AddRange(leftoverPositionals);
 
         return SyntaxFactory.ArgumentList(ReorderPreservingSeparators(args.Arguments, newArgs))
             .WithTriviaFrom(args);
+    }
+
+    private static ArgumentSyntax EnsureNamed(ArgumentSyntax argument, string name)
+    {
+        if (argument.NameColon != null)
+            return argument;
+
+        return argument.WithNameColon(CreateNameColon(name));
+    }
+
+    private static NameColonSyntax CreateNameColon(string name)
+    {
+        var keywordKind = SyntaxFacts.GetKeywordKind(name);
+        var identifier = keywordKind != SyntaxKind.None
+            ? SyntaxFactory.VerbatimIdentifier(default, name, name, default)
+            : SyntaxFactory.Identifier(name);
+        return SyntaxFactory.NameColon(
+            SyntaxFactory.IdentifierName(identifier),
+            SyntaxFactory.Token(SyntaxKind.ColonToken).WithTrailingTrivia(SyntaxFactory.Space));
     }
 
     private static async Task<RefactoringResult> CreatePreviewResultAsync(
@@ -753,27 +802,34 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
 
     private sealed record DeclarationTarget(Document Document, TextSpan Span);
 
-    private sealed record CallSite(Document Document, TextSpan Span, bool IsReducedExtension);
+    private sealed record CallSite(
+        Document Document,
+        TextSpan Span,
+        bool IsReducedExtension,
+        IReadOnlyList<string> ParameterNames);
 
     private sealed class ReorderParametersRewriter : CSharpSyntaxRewriter
     {
         private readonly HashSet<MethodDeclarationSyntax> _methods;
         private readonly HashSet<InvocationExpressionSyntax> _invocations;
         private readonly HashSet<TextSpan> _reducedSpans;
-        private readonly IReadOnlyList<IParameterSymbol> _originalParams;
+        private readonly IReadOnlyDictionary<TextSpan, IReadOnlyList<string>> _parameterNamesBySpan;
+        private readonly IReadOnlyList<string> _fallbackParameterNames;
         private readonly int[] _newOrder;
 
         public ReorderParametersRewriter(
             IReadOnlyList<MethodDeclarationSyntax> methods,
             IReadOnlyList<InvocationExpressionSyntax> invocations,
             HashSet<TextSpan> reducedSpans,
-            IReadOnlyList<IParameterSymbol> originalParams,
+            IReadOnlyDictionary<TextSpan, IReadOnlyList<string>> parameterNamesBySpan,
+            IReadOnlyList<string> fallbackParameterNames,
             int[] newOrder)
         {
             _methods = new HashSet<MethodDeclarationSyntax>(methods);
             _invocations = new HashSet<InvocationExpressionSyntax>(invocations);
             _reducedSpans = reducedSpans;
-            _originalParams = originalParams;
+            _parameterNamesBySpan = parameterNamesBySpan;
+            _fallbackParameterNames = fallbackParameterNames;
             _newOrder = newOrder;
         }
 
@@ -797,7 +853,10 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                 return visited;
 
             var isReduced = _reducedSpans.Contains(node.Span);
-            return UpdateInvocation(visited, _originalParams, _newOrder, isReduced);
+            var parameterNames = _parameterNamesBySpan.TryGetValue(node.Span, out var stored)
+                ? stored
+                : _fallbackParameterNames;
+            return UpdateInvocation(visited, parameterNames, _newOrder, isReduced);
         }
     }
 }
