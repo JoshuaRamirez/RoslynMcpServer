@@ -454,6 +454,15 @@ public static class ErrorCodes
     /// <summary>Folder path does not correspond to the namespace being renamed.</summary>
     public const string FolderDoesNotMatchNamespace = "3138";
 
+    /// <summary>Destination folder would be nested inside the source folder.</summary>
+    public const string DestinationNestedInSource = "3139";
+
+    /// <summary>Matching folder contains a project file and cannot be moved.</summary>
+    public const string FolderContainsProjectFile = "3140";
+
+    /// <summary>Explicit Compile item uses a wildcard or list that cannot be updated for the folder move.</summary>
+    public const string UnsupportedCompileItem = "3141";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

@@ -133,6 +133,93 @@ public class RenameNamespaceOperationTests
     }
 
     [Fact]
+    public void TryFindMatchingFolder_StopAtProjectDirectory_ExcludesProjectRoot()
+    {
+        var root = Path.DirectorySeparatorChar == '/' ? "/repo" : @"C:\repo";
+        var projectDir = Path.Combine(root, "Old", "Ns");
+        var file = Path.Combine(projectDir, "Foo.cs");
+
+        Assert.Equal(projectDir, RenameNamespaceOperation.TryFindMatchingFolder(file, "Old.Ns"));
+        Assert.Null(RenameNamespaceOperation.TryFindMatchingFolder(file, "Old.Ns", projectDir));
+    }
+
+    [Fact]
+    public void IsDestinationNestedInSource_WhenNewNameExtendsOldNamespace()
+    {
+        var root = Path.DirectorySeparatorChar == '/' ? "/repo" : @"C:\repo";
+        var source = Path.Combine(root, "src", "Old", "Ns");
+        var dest = RenameNamespaceOperation.GetDestinationFolder(source, "Old.Ns", "Old.Ns.Sub");
+
+        Assert.Equal(Path.Combine(source, "Sub"), dest);
+        Assert.True(RenameNamespaceOperation.IsDestinationNestedInSource(source, dest));
+        Assert.False(RenameNamespaceOperation.IsDestinationNestedInSource(
+            source,
+            Path.Combine(root, "src", "New", "Ns")));
+    }
+
+    [Fact]
+    public void GetGlobDirectoryPrefix_StopsBeforeWildcard()
+    {
+        Assert.Equal("Old/Ns", RenameNamespaceOperation.GetGlobDirectoryPrefix("Old/Ns/**/*.cs"));
+        Assert.Equal("Old/Ns", RenameNamespaceOperation.GetGlobDirectoryPrefix("Old/Ns/*.cs"));
+        Assert.Equal("", RenameNamespaceOperation.GetGlobDirectoryPrefix("**/*.cs"));
+        Assert.True(RenameNamespaceOperation.ContainsMsBuildGlob("Old/Ns/**/*.cs"));
+        Assert.False(RenameNamespaceOperation.ContainsMsBuildGlob("Old/Ns/Foo.cs"));
+    }
+
+    [Fact]
+    public void UpdateExplicitCompileItemsForMoves_RewritesWildcardAndSemicolonList()
+    {
+        const string xml = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <ItemGroup>
+                <Compile Include="Old/Ns/**/*.cs" />
+                <Compile Include="Old/Ns/*.cs;Consumer.cs" />
+                <Compile Include="**/*.cs" />
+              </ItemGroup>
+            </Project>
+            """;
+        var projectDir = Path.DirectorySeparatorChar == '/' ? "/tmp/proj" : @"C:\tmp\proj";
+        var sourceFolder = Path.Combine(projectDir, "Old", "Ns");
+        var destFolder = Path.Combine(projectDir, "New", "Ns");
+        var updated = RenameNamespaceOperation.UpdateExplicitCompileItemsForMoves(
+            xml,
+            projectDir,
+            [(Path.Combine(sourceFolder, "Foo.cs"), Path.Combine(destFolder, "Foo.cs"))],
+            [(sourceFolder, destFolder)]);
+
+        Assert.Contains("New/Ns/**/*.cs", updated);
+        Assert.DoesNotContain("Old/Ns/**/*.cs", updated);
+        Assert.Contains("New/Ns/*.cs;Consumer.cs", updated);
+        Assert.Contains("**/*.cs", updated);
+    }
+
+    [Fact]
+    public void UpdateExplicitCompileItemsForMoves_AncestorWildcard_ThrowsUnsupportedCompileItem()
+    {
+        const string xml = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <ItemGroup>
+                <Compile Include="Old/**/*.cs" />
+              </ItemGroup>
+            </Project>
+            """;
+        var projectDir = Path.DirectorySeparatorChar == '/' ? "/tmp/proj" : @"C:\tmp\proj";
+        var sourceFolder = Path.Combine(projectDir, "Old", "Ns");
+        var destFolder = Path.Combine(projectDir, "New", "Ns");
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameNamespaceOperation.UpdateExplicitCompileItemsForMoves(
+                xml,
+                projectDir,
+                [(Path.Combine(sourceFolder, "Foo.cs"), Path.Combine(destFolder, "Foo.cs"))],
+                [(sourceFolder, destFolder)]));
+
+        Assert.Equal(ErrorCodes.UnsupportedCompileItem, ex.ErrorCode);
+        Assert.Equal("3141", ex.ErrorCode);
+    }
+
+    [Fact]
     public void UpdateExplicitCompileItemsForMoves_RewritesDirectoryAndLeavesOthers()
     {
         const string xml = """
@@ -947,6 +1034,143 @@ public class RenameNamespaceOperationTests
         Assert.Null(reloaded.GetDocumentByPath(workspace.GetPath("Old/Ns/Foo.cs")));
     }
 
+    [SkippableFact]
+    public async Task RenameNamespace_UpdateFoldersTrue_NestedDestination_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace Old.Ns;
+
+            public class Foo
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Old/Ns/Foo.cs");
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                NamespaceName = "Old.Ns",
+                NewName = "Old.Ns.Sub",
+                UpdateFolders = true
+            }));
+
+        Assert.Equal(ErrorCodes.DestinationNestedInSource, ex.ErrorCode);
+        Assert.Equal("3139", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace Old.Ns;", await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.True(File.Exists(workspace.SourcePath));
+        Assert.True(Directory.Exists(workspace.GetPath("Old/Ns")));
+        Assert.False(Directory.Exists(workspace.GetPath("Old/Ns/Sub")));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_UpdateFoldersTrue_ProjectRoot_ThrowsAndLeavesProjectFile()
+    {
+        const string source = """
+            namespace Old.Ns;
+
+            public class Foo
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithProjectInFolderAsync("Old/Ns", ("Old/Ns/Foo.cs", source));
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var originalProject = await File.ReadAllTextAsync(workspace.ProjectPath);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                NamespaceName = "Old.Ns",
+                NewName = "New.Ns",
+                UpdateFolders = true
+            }));
+
+        Assert.Equal(ErrorCodes.FolderContainsProjectFile, ex.ErrorCode);
+        Assert.Equal("3140", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(originalProject, await File.ReadAllTextAsync(workspace.ProjectPath));
+        Assert.True(File.Exists(workspace.ProjectPath));
+        Assert.True(File.Exists(workspace.SourcePath));
+        Assert.False(Directory.Exists(workspace.GetPath("New/Ns")));
+        Assert.Contains("namespace Old.Ns;", await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_UpdateFoldersTrue_WildcardCompileItem_RewritesPattern()
+    {
+        const string source = """
+            namespace Old.Ns;
+
+            public class Foo
+            {
+            }
+            """;
+        const string consumer = """
+            using Old.Ns;
+
+            namespace Other;
+
+            public class Consumer
+            {
+                public Foo Create() => new Foo();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithCompileIncludesAsync(
+            ["Old/Ns/**/*.cs", "Consumer.cs"],
+            ("Old/Ns/Foo.cs", source),
+            ("Consumer.cs", consumer));
+        var newFile = workspace.GetPath("New/Ns/Foo.cs");
+        var originalProject = await File.ReadAllTextAsync(workspace.ProjectPath);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var preview = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceName = "Old.Ns",
+            NewName = "New.Ns",
+            UpdateFolders = true,
+            Preview = true
+        });
+
+        Assert.True(preview.Success);
+        Assert.True(preview.Preview);
+        Assert.Equal(originalProject, await File.ReadAllTextAsync(workspace.ProjectPath));
+        Assert.True(File.Exists(workspace.GetPath("Old/Ns/Foo.cs")));
+        Assert.False(File.Exists(newFile));
+        Assert.Contains("Old/Ns/**/*.cs", await File.ReadAllTextAsync(workspace.ProjectPath));
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceName = "Old.Ns",
+            NewName = "New.Ns",
+            UpdateFolders = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(newFile));
+        Assert.False(File.Exists(workspace.GetPath("Old/Ns/Foo.cs")));
+
+        var csproj = await File.ReadAllTextAsync(workspace.ProjectPath);
+        Assert.Contains("New/Ns/**/*.cs", csproj);
+        Assert.DoesNotContain("Old/Ns/**/*.cs", csproj);
+        Assert.Contains("Consumer.cs", csproj);
+
+        workspace.Context.Dispose();
+        var provider = new MSBuildWorkspaceProvider();
+        using var reloaded = await provider.CreateContextAsync(workspace.ProjectPath);
+        Assert.NotNull(reloaded.GetDocumentByPath(newFile));
+        Assert.Null(reloaded.GetDocumentByPath(workspace.GetPath("Old/Ns/Foo.cs")));
+    }
+
     #endregion
 
     #region Helpers
@@ -1002,11 +1226,16 @@ public class RenameNamespaceOperationTests
             CreateAsync((fileName, source));
 
         public static Task<TempWorkspace> CreateWithExplicitCompileItemsAsync(
+            params (string FileName, string Source)[] files) =>
+            CreateWithCompileIncludesAsync(files.Select(f => f.FileName).ToArray(), files);
+
+        public static Task<TempWorkspace> CreateWithCompileIncludesAsync(
+            IReadOnlyList<string> includes,
             params (string FileName, string Source)[] files)
         {
             var compileItems = string.Join(
                 Environment.NewLine,
-                files.Select(f => $"    <Compile Include=\"{f.FileName}\" />"));
+                includes.Select(include => $"    <Compile Include=\"{include}\" />"));
             var projectXml = $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
@@ -1020,7 +1249,27 @@ public class RenameNamespaceOperationTests
                   </ItemGroup>
                 </Project>
                 """;
-            return CreateAsync(projectXml, files);
+            return CreateAtProjectPathAsync("TestApp.csproj", projectXml, files);
+        }
+
+        public static Task<TempWorkspace> CreateWithProjectInFolderAsync(
+            string projectRelativeDirectory,
+            params (string FileName, string Source)[] files)
+        {
+            var relativeProject = Path.Combine(
+                projectRelativeDirectory.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar),
+                "TestApp.csproj");
+            return CreateAtProjectPathAsync(
+                relativeProject,
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """,
+                files);
         }
 
         public static Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files) =>
@@ -1033,7 +1282,13 @@ public class RenameNamespaceOperationTests
                 </Project>
                 """, files);
 
-        public static async Task<TempWorkspace> CreateAsync(
+        public static Task<TempWorkspace> CreateAsync(
+            string projectXml,
+            params (string FileName, string Source)[] files) =>
+            CreateAtProjectPathAsync("TestApp.csproj", projectXml, files);
+
+        public static async Task<TempWorkspace> CreateAtProjectPathAsync(
+            string projectRelativePath,
             string projectXml,
             params (string FileName, string Source)[] files)
         {
@@ -1042,7 +1297,13 @@ public class RenameNamespaceOperationTests
             var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameNs_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
 
-            var projectPath = Path.Combine(directory, "TestApp.csproj");
+            var relativeProject = projectRelativePath
+                .Replace('/', Path.DirectorySeparatorChar)
+                .Replace('\\', Path.DirectorySeparatorChar);
+            var projectPath = Path.Combine(directory, relativeProject);
+            var projectParent = Path.GetDirectoryName(projectPath);
+            if (!string.IsNullOrEmpty(projectParent))
+                Directory.CreateDirectory(projectParent);
             await File.WriteAllTextAsync(projectPath, projectXml);
 
             string? sourcePath = null;

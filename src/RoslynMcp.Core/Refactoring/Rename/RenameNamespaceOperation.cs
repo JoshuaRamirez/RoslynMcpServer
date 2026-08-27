@@ -784,18 +784,31 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     /// <summary>
     /// Finds a directory whose trailing segments equal the namespace parts
     /// by walking from <paramref name="filePath"/>'s directory toward the root.
+    /// When <paramref name="stopAtDirectory"/> is set, that directory and its
+    /// ancestors are not considered (so the project root is never a match).
     /// </summary>
-    internal static string? TryFindMatchingFolder(string filePath, string namespaceName)
+    internal static string? TryFindMatchingFolder(
+        string filePath,
+        string namespaceName,
+        string? stopAtDirectory = null)
     {
         var parts = SplitNamespace(namespaceName);
         if (parts.Length == 0)
             return null;
 
+        var stop = string.IsNullOrWhiteSpace(stopAtDirectory)
+            ? null
+            : PathResolver.NormalizePath(stopAtDirectory);
+
         var directory = Path.GetDirectoryName(PathResolver.NormalizePath(filePath));
         while (!string.IsNullOrEmpty(directory))
         {
+            var normalized = PathResolver.NormalizePath(directory);
+            if (stop != null && string.Equals(normalized, stop, StringComparison.OrdinalIgnoreCase))
+                break;
+
             if (DirectoryTrailingSegmentsMatch(directory, parts))
-                return PathResolver.NormalizePath(directory);
+                return normalized;
 
             directory = Path.GetDirectoryName(directory);
         }
@@ -907,6 +920,41 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     }
 
     /// <summary>
+    /// True when <paramref name="destFolder"/> is a strict descendant of
+    /// <paramref name="sourceFolder"/> (moving the folder into itself).
+    /// </summary>
+    internal static bool IsDestinationNestedInSource(string sourceFolder, string destFolder)
+    {
+        var sourceNorm = PathResolver.NormalizePath(sourceFolder);
+        var destNorm = PathResolver.NormalizePath(destFolder);
+        if (string.Equals(sourceNorm, destNorm, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return IsUnderOrEqual(destNorm, sourceNorm);
+    }
+
+    /// <summary>
+    /// True when <paramref name="spec"/> is an MSBuild glob (<c>*</c> or <c>?</c>).
+    /// </summary>
+    internal static bool ContainsMsBuildGlob(string spec) =>
+        spec.Contains('*') || spec.Contains('?');
+
+    /// <summary>
+    /// Directory prefix of a compile item before the first wildcard, or the
+    /// full spec when it is a literal path.
+    /// </summary>
+    internal static string GetGlobDirectoryPrefix(string spec)
+    {
+        var trimmed = spec.Trim();
+        var globIndex = trimmed.IndexOfAny(['*', '?']);
+        if (globIndex < 0)
+            return trimmed.TrimEnd('/', '\\');
+
+        var before = trimmed[..globIndex];
+        var lastSep = Math.Max(before.LastIndexOf('/'), before.LastIndexOf('\\'));
+        return lastSep < 0 ? string.Empty : before[..lastSep];
+    }
+
+    /// <summary>
     /// Moves <paramref name="sourceFolder"/> to <paramref name="destFolder"/>.
     /// Case-only renames go through a temporary name so case-insensitive
     /// volumes actually change the on-disk casing.
@@ -947,14 +995,17 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
 
     /// <summary>
     /// Rewrites explicit <c>Compile Include</c>/<c>Update</c> items that point at
-    /// moved files so they point at the destination paths.
+    /// moved files so they point at the destination paths. Wildcard and
+    /// semicolon lists are rewritten at the folder-pattern level, or rejected
+    /// when they would drop sources after the move.
     /// </summary>
     internal static string UpdateExplicitCompileItemsForMoves(
         string projectXml,
         string projectDirectory,
-        IReadOnlyList<(string SourceFile, string NewFilePath)> moves)
+        IReadOnlyList<(string SourceFile, string NewFilePath)> moves,
+        IReadOnlyList<(string SourceFolder, string DestinationFolder)>? folderMoves = null)
     {
-        if (moves.Count == 0)
+        if (moves.Count == 0 && (folderMoves == null || folderMoves.Count == 0))
             return projectXml;
 
         XDocument document;
@@ -969,17 +1020,39 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
 
         var ns = document.Root?.Name.Namespace ?? XNamespace.None;
         var changed = false;
+        var folders = folderMoves ?? [];
 
         foreach (var compile in document.Descendants(ns + "Compile").ToList())
         {
-            changed |= TryRewriteMovedProjectItemAttribute(compile, "Include", projectDirectory, moves);
-            changed |= TryRewriteMovedProjectItemAttribute(compile, "Update", projectDirectory, moves);
+            changed |= TryRewriteMovedProjectItemAttribute(compile, "Include", projectDirectory, moves, folders);
+            changed |= TryRewriteMovedProjectItemAttribute(compile, "Update", projectDirectory, moves, folders);
         }
 
         if (!changed)
             return projectXml;
 
         return SerializeProjectXml(document, projectXml);
+    }
+
+    /// <summary>
+    /// Rewrites a compile item spec (literal, glob, or semicolon list) for
+    /// folder moves. Throws <see cref="ErrorCodes.UnsupportedCompileItem"/>
+    /// when a pattern would cover moved files but cannot be remapped.
+    /// </summary>
+    internal static string RewriteCompileItemSpec(
+        string spec,
+        string projectDirectory,
+        IReadOnlyList<(string SourceFolder, string DestinationFolder)> folderMoves)
+    {
+        if (spec.Contains(';'))
+        {
+            var parts = spec.Split(';');
+            for (var i = 0; i < parts.Length; i++)
+                parts[i] = RewriteSingleCompileItemSpec(parts[i], projectDirectory, folderMoves);
+            return string.Join(';', parts);
+        }
+
+        return RewriteSingleCompileItemSpec(spec, projectDirectory, folderMoves);
     }
 
     /// <summary>
@@ -1024,9 +1097,18 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                 $"Source file not found: {sourceDocument.FilePath}");
         }
 
-        var sourceFolder = TryFindMatchingFolder(sourceDocument.FilePath, oldFullName);
+        var sourceProjectDirectory = Path.GetDirectoryName(sourceDocument.Project.FilePath);
+        var sourceFolder = TryFindMatchingFolder(sourceDocument.FilePath, oldFullName, sourceProjectDirectory);
         if (sourceFolder == null)
         {
+            var unconstrained = TryFindMatchingFolder(sourceDocument.FilePath, oldFullName);
+            if (unconstrained != null && ProjectFileIsUnderFolder(unconstrained, solution))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.FolderContainsProjectFile,
+                    $"Cannot move folder '{unconstrained}' because it contains a project file.");
+            }
+
             throw new RefactoringException(
                 ErrorCodes.FolderDoesNotMatchNamespace,
                 $"Folder path '{Path.GetDirectoryName(sourceDocument.FilePath)}' does not correspond to namespace '{oldFullName}'.");
@@ -1052,7 +1134,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                 if (string.IsNullOrWhiteSpace(document.FilePath))
                     continue;
 
-                var folder = TryFindMatchingFolder(document.FilePath, oldFullName);
+                var projectDirectory = Path.GetDirectoryName(document.Project.FilePath);
+                var folder = TryFindMatchingFolder(document.FilePath, oldFullName, projectDirectory);
                 if (folder != null)
                     matchingFolders.Add(PathResolver.NormalizePath(folder));
             }
@@ -1064,6 +1147,20 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
 
         foreach (var folder in folderMoves)
         {
+            if (ProjectFileIsUnderFolder(folder.SourceFolder, solution))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.FolderContainsProjectFile,
+                    $"Cannot move folder '{folder.SourceFolder}' because it contains a project file.");
+            }
+
+            if (IsDestinationNestedInSource(folder.SourceFolder, folder.DestinationFolder))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.DestinationNestedInSource,
+                    $"Destination folder '{folder.DestinationFolder}' is nested inside the source folder '{folder.SourceFolder}'.");
+            }
+
             if (IsDestinationOccupiedByDifferentDirectory(folder.SourceFolder, folder.DestinationFolder))
             {
                 throw new RefactoringException(
@@ -1142,7 +1239,10 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                 continue;
 
             var original = File.ReadAllText(project.FilePath);
-            var updated = UpdateExplicitCompileItemsForMoves(original, projectDirectory, compileMoves);
+            var folderPairs = folderMoves
+                .Select(folder => (folder.SourceFolder, folder.DestinationFolder))
+                .ToList();
+            var updated = UpdateExplicitCompileItemsForMoves(original, projectDirectory, compileMoves, folderPairs);
             if (string.Equals(original, updated, StringComparison.Ordinal))
                 continue;
 
@@ -1257,15 +1357,113 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         }
     }
 
+    private static bool ProjectFileIsUnderFolder(string folder, Solution solution)
+    {
+        foreach (var project in solution.Projects)
+        {
+            if (string.IsNullOrWhiteSpace(project.FilePath))
+                continue;
+            if (IsUnderOrEqual(project.FilePath, folder))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string RewriteSingleCompileItemSpec(
+        string spec,
+        string projectDirectory,
+        IReadOnlyList<(string SourceFolder, string DestinationFolder)> folderMoves)
+    {
+        if (!ContainsMsBuildGlob(spec))
+            return spec;
+
+        var prefix = GetGlobDirectoryPrefix(spec);
+        string resolvedPrefix;
+        try
+        {
+            resolvedPrefix = string.IsNullOrEmpty(prefix)
+                ? PathResolver.NormalizePath(projectDirectory)
+                : ResolveProjectItemPath(projectDirectory, prefix);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            throw new RefactoringException(
+                ErrorCodes.UnsupportedCompileItem,
+                $"Explicit Compile item '{spec}' cannot be updated for the folder move.");
+        }
+
+        foreach (var (sourceFolder, destinationFolder) in folderMoves)
+        {
+            if (IsUnderOrEqual(resolvedPrefix, sourceFolder))
+                return ReplaceGlobDirectoryPrefix(spec, prefix, projectDirectory, sourceFolder, destinationFolder);
+
+            if (IsUnderOrEqual(sourceFolder, resolvedPrefix) && !IsUnderOrEqual(destinationFolder, resolvedPrefix))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.UnsupportedCompileItem,
+                    $"Explicit Compile item '{spec}' cannot be updated for the folder move.");
+            }
+        }
+
+        return spec;
+    }
+
+    private static string ReplaceGlobDirectoryPrefix(
+        string spec,
+        string oldPrefix,
+        string projectDirectory,
+        string sourceFolder,
+        string destinationFolder)
+    {
+        var resolvedOld = string.IsNullOrEmpty(oldPrefix)
+            ? PathResolver.NormalizePath(projectDirectory)
+            : ResolveProjectItemPath(projectDirectory, oldPrefix);
+        var resolvedNew = RemapPathUnderFolder(resolvedOld, sourceFolder, destinationFolder);
+        var dummyName = "dummy.cs";
+        var dummyOld = string.IsNullOrEmpty(oldPrefix)
+            ? dummyName
+            : oldPrefix.TrimEnd('/', '\\') + (oldPrefix.Contains('\\') && !oldPrefix.Contains('/') ? '\\' : '/') + dummyName;
+        var rewrittenDummy = RewriteProjectItemToTarget(
+            dummyOld,
+            projectDirectory,
+            Path.Combine(resolvedNew, dummyName));
+        var newPrefix = rewrittenDummy.EndsWith(dummyName, StringComparison.Ordinal)
+            ? rewrittenDummy[..^dummyName.Length].TrimEnd('/', '\\')
+            : rewrittenDummy;
+        return newPrefix + spec[oldPrefix.Length..];
+    }
+
+    private static string ResolveProjectItemPath(string projectDirectory, string includeOrUpdate)
+    {
+        var withNativeSeps = includeOrUpdate.Trim()
+            .Replace('\\', Path.DirectorySeparatorChar)
+            .Replace('/', Path.DirectorySeparatorChar);
+        return Path.IsPathRooted(withNativeSeps)
+            ? PathResolver.NormalizePath(withNativeSeps)
+            : PathResolver.NormalizePath(Path.Combine(projectDirectory, withNativeSeps));
+    }
+
     private static bool TryRewriteMovedProjectItemAttribute(
         XElement compile,
         string attributeName,
         string projectDirectory,
-        IReadOnlyList<(string SourceFile, string NewFilePath)> moves)
+        IReadOnlyList<(string SourceFile, string NewFilePath)> moves,
+        IReadOnlyList<(string SourceFolder, string DestinationFolder)> folderMoves)
     {
         var attribute = compile.Attribute(attributeName);
         if (attribute == null)
             return false;
+
+        if (attribute.Value.Contains(';') || ContainsMsBuildGlob(attribute.Value))
+        {
+            var rewrittenGlob = RewriteCompileItemSpec(attribute.Value, projectDirectory, folderMoves);
+            if (string.Equals(attribute.Value, rewrittenGlob, StringComparison.Ordinal))
+                return false;
+
+            attribute.Value = rewrittenGlob;
+            return true;
+        }
 
         foreach (var (sourceFile, newFilePath) in moves)
         {
