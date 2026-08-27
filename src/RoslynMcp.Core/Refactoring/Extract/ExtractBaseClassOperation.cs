@@ -126,21 +126,26 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         // Get namespace
         var namespaceName = typeSymbol.ContainingNamespace?.ToDisplayString();
 
+        // Explicit targetFile always wins. separateFile=true with no targetFile
+        // writes {BaseClassName}.cs next to the source.
+        var targetFile = ResolveTargetFile(@params);
+        ThrowIfSiblingTargetExists(@params, targetFile);
+
         // If preview mode, return without applying
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params, membersToExtract, baseClass, namespaceName);
+            return CreatePreviewResult(operationId, @params, membersToExtract, baseClass, namespaceName, targetFile);
         }
 
         // Apply changes
         Solution newSolution;
-        if (@params.TargetFile != null && @params.TargetFile != @params.SourceFile)
+        if (targetFile != @params.SourceFile)
         {
             // Create new file with base class
             newSolution = await CreateBaseClassInNewFileAsync(
                 document.Project.Solution,
                 document.Project,
-                @params.TargetFile,
+                targetFile,
                 baseClass,
                 namespaceName,
                 root,
@@ -373,18 +378,55 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         return newDoc.Project.Solution;
     }
 
+    /// <summary>
+    /// Resolves the destination for the extracted base class.
+    /// Explicit <see cref="ExtractBaseClassParams.TargetFile"/> always wins.
+    /// </summary>
+    private static string ResolveTargetFile(ExtractBaseClassParams @params)
+    {
+        if (!string.IsNullOrWhiteSpace(@params.TargetFile))
+            return @params.TargetFile;
+
+        if (!@params.SeparateFile)
+            return @params.SourceFile;
+
+        var directory = Path.GetDirectoryName(@params.SourceFile);
+        if (string.IsNullOrEmpty(directory))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSourcePath,
+                "sourceFile must have a parent directory.");
+        }
+
+        return PathResolver.Combine(directory, @params.BaseClassName + ".cs");
+    }
+
+    private static void ThrowIfSiblingTargetExists(ExtractBaseClassParams @params, string targetFile)
+    {
+        // Explicit targetFile keeps today's path; only the computed sibling is rejected.
+        if (!string.IsNullOrWhiteSpace(@params.TargetFile) || !@params.SeparateFile)
+            return;
+
+        if (!File.Exists(targetFile))
+            return;
+
+        throw new RefactoringException(
+            ErrorCodes.TargetFileExists,
+            $"Destination file already exists: {targetFile}");
+    }
+
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,
         ExtractBaseClassParams @params,
         List<MemberDeclarationSyntax> members,
         ClassDeclarationSyntax baseClass,
-        string? namespaceName)
+        string? namespaceName,
+        string targetFile)
     {
         var memberNames = string.Join(", ", members.Select(m => GetMemberName(m)));
         var baseClassCode = baseClass.NormalizeWhitespace().ToFullString();
 
-        var targetFile = @params.TargetFile ?? @params.SourceFile;
-        var isNewFile = @params.TargetFile != null && @params.TargetFile != @params.SourceFile;
+        var isNewFile = targetFile != @params.SourceFile;
 
         var pendingChanges = new List<PendingChange>
         {

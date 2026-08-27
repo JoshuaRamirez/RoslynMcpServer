@@ -91,8 +91,23 @@ public class ExtractBaseClassToolTests
 
         // Assert - Optional properties
         Assert.True(properties.TryGetProperty("targetFile", out _));
+        Assert.True(properties.TryGetProperty("separateFile", out _));
         Assert.True(properties.TryGetProperty("makeAbstract", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_SeparateFileProperty_DefaultsToFalse()
+    {
+        // Act
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var separateFile = doc.RootElement.GetProperty("properties").GetProperty("separateFile");
+
+        // Assert
+        Assert.Equal("boolean", separateFile.GetProperty("type").GetString());
+        Assert.False(separateFile.GetProperty("default").GetBoolean());
     }
 
     [Fact]

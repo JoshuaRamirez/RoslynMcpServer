@@ -155,7 +155,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ExtractInterfaceOperation, ExtractInterfaceParams>(
             "extract-interface", "Extract an interface from a class; separateFile writes {InterfaceName}.cs next to the source");
         r.RegisterRefactoring<ExtractBaseClassOperation, ExtractBaseClassParams>(
-            "extract-base-class", "Extract a base class from common members");
+            "extract-base-class", "Extract a base class from common members; separateFile writes {BaseClassName}.cs next to the source");
         r.RegisterRefactoring<IntroduceParameterOperation, IntroduceParameterParams>(
             "introduce-parameter", "Introduce a method parameter from an expression");
         r.RegisterRefactoring<PullMembersUpOperation, PullMembersUpParams>(
