@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -108,8 +109,7 @@ public sealed class MoveTypeToNamespaceOperation
                 filesModified = filesModified
                     .Select(path => RemapCommittedPath(path, filePlan))
                     .ToList();
-                if (filePlan.ProjectText != null && filePlan.ProjectPath != null)
-                    filesModified.Add(filePlan.ProjectPath);
+                filesModified.AddRange(filePlan.ProjectTexts.Keys);
                 filesCreated.Add(filePlan.DestinationFile);
                 filesDeleted.Add(filePlan.SourceFile);
             }
@@ -422,11 +422,8 @@ public sealed class MoveTypeToNamespaceOperation
         var oldNamespace = resolution.Symbol.ContainingNamespace.ToDisplayString();
         var destFile = ComputeDestinationFile(sourceFile, oldNamespace, newNamespace, projectDirectory);
 
-        if (RenameFileToMatchTypeOperation.ReferToSameFile(sourceFile, destFile)
-            || string.Equals(sourceFile, destFile, StringComparison.OrdinalIgnoreCase))
-        {
+        if (IsUnchangedFileLocation(sourceFile, destFile))
             return null;
-        }
 
         if (RenameFileToMatchTypeOperation.IsDestinationOccupiedByDifferentFile(sourceFile, destFile))
         {
@@ -435,14 +432,20 @@ public sealed class MoveTypeToNamespaceOperation
                 $"Destination file already exists: {destFile}");
         }
 
+        var linkedDocuments = FindDocumentsAtPath(_context.Solution, sourceFile);
+        foreach (var linked in linkedDocuments)
+            RenameFileToMatchTypeOperation.ValidateDocumentIsEditable(linked, _context.Workspace);
+
         foreach (var other in _context.Solution.Projects.SelectMany(p => p.Documents))
         {
-            if (other.Id == document.Id || string.IsNullOrWhiteSpace(other.FilePath))
+            if (string.IsNullOrWhiteSpace(other.FilePath))
                 continue;
 
             var otherNorm = PathResolver.NormalizePath(other.FilePath);
-            if (string.Equals(otherNorm, destFile, StringComparison.OrdinalIgnoreCase)
-                || RenameFileToMatchTypeOperation.ReferToSameFile(otherNorm, destFile))
+            if (IsSameDocumentPath(otherNorm, sourceFile))
+                continue;
+
+            if (IsSameDocumentPath(otherNorm, destFile))
             {
                 throw new RefactoringException(
                     ErrorCodes.TargetFileExists,
@@ -450,26 +453,51 @@ public sealed class MoveTypeToNamespaceOperation
             }
         }
 
-        var updatedProjectText = TryGetUpdatedProjectText(
-            document.Project.FilePath,
-            projectDirectory,
-            sourceFile,
-            destFile);
-
-        if (updatedProjectText != null && new FileInfo(document.Project.FilePath).IsReadOnly)
+        var projectTexts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var linked in linkedDocuments)
         {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Project '{document.Project.Name}' is not editable.");
+            if (string.IsNullOrWhiteSpace(linked.Project.FilePath))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Project '{linked.Project.Name}' is not editable.");
+            }
+
+            if (projectTexts.ContainsKey(linked.Project.FilePath))
+                continue;
+
+            var linkedProjectDirectory = Path.GetDirectoryName(linked.Project.FilePath);
+            if (string.IsNullOrEmpty(linkedProjectDirectory))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Project '{linked.Project.Name}' is not editable.");
+            }
+
+            var updatedProjectText = TryGetUpdatedProjectText(
+                linked.Project.FilePath,
+                linkedProjectDirectory,
+                sourceFile,
+                destFile);
+            if (updatedProjectText == null)
+                continue;
+
+            if (new FileInfo(linked.Project.FilePath).IsReadOnly)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Project '{linked.Project.Name}' is not editable.");
+            }
+
+            projectTexts[linked.Project.FilePath] = updatedProjectText;
         }
 
         return new FileLocationPlan
         {
-            DocumentId = document.Id,
+            DocumentIds = linkedDocuments.Select(d => d.Id).ToList(),
             SourceFile = sourceFile,
             DestinationFile = destFile,
-            ProjectPath = updatedProjectText != null ? document.Project.FilePath : null,
-            ProjectText = updatedProjectText
+            ProjectTexts = projectTexts
         };
     }
 
@@ -496,11 +524,11 @@ public sealed class MoveTypeToNamespaceOperation
                 ex);
         }
 
-        if (plan.ProjectText != null && !string.IsNullOrWhiteSpace(plan.ProjectPath))
+        foreach (var (projectPath, projectText) in plan.ProjectTexts)
         {
             try
             {
-                File.WriteAllText(plan.ProjectPath, plan.ProjectText);
+                File.WriteAllText(projectPath, projectText);
             }
             catch (IOException ex)
             {
@@ -511,18 +539,68 @@ public sealed class MoveTypeToNamespaceOperation
             }
         }
 
-        var updated = _context.Solution.WithDocumentFilePath(plan.DocumentId, plan.DestinationFile);
+        var updated = _context.Solution;
+        foreach (var documentId in plan.DocumentIds)
+            updated = updated.WithDocumentFilePath(documentId, plan.DestinationFile);
         _context.UpdateSolution(updated);
+    }
+
+    /// <summary>
+    /// True when <paramref name="sourceFile"/> and <paramref name="destFile"/>
+    /// identify the same filesystem entry. Case-only path differences on a
+    /// case-sensitive volume are a real move and must not be skipped.
+    /// </summary>
+    internal static bool IsUnchangedFileLocation(string sourceFile, string destFile) =>
+        RenameFileToMatchTypeOperation.ReferToSameFile(sourceFile, destFile);
+
+    /// <summary>
+    /// True when an explicit Compile spec (literal, glob, or semicolon list)
+    /// includes <paramref name="filePath"/>.
+    /// </summary>
+    internal static bool CompileSpecCoversFile(string spec, string projectDirectory, string filePath)
+    {
+        foreach (var part in spec.Split(';'))
+        {
+            var trimmed = part.Trim();
+            if (trimmed.Length == 0)
+                continue;
+
+            if (RenameNamespaceOperation.ContainsMsBuildGlob(trimmed))
+            {
+                if (GlobSpecCoversFile(trimmed, projectDirectory, filePath))
+                    return true;
+                continue;
+            }
+
+            if (RenameFileToMatchTypeOperation.ProjectItemRefersToFile(projectDirectory, trimmed, filePath))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Rewrites literal Compile items and supplements globs / semicolon lists
+    /// so a file-only move stays in the project when default items are disabled.
+    /// </summary>
+    internal static string UpdateProjectTextForFileMove(
+        string projectXml,
+        string projectDirectory,
+        string sourceFile,
+        string destFile)
+    {
+        var afterLiterals = RenameNamespaceOperation.UpdateExplicitCompileItemsForMoves(
+            projectXml,
+            projectDirectory,
+            [(sourceFile, destFile)]);
+        return UpdateGlobAndListCompileItems(afterLiterals, projectDirectory, sourceFile, destFile);
     }
 
     private static string RemapCommittedPath(string path, FileLocationPlan plan)
     {
         var normalized = PathResolver.NormalizePath(path);
-        if (string.Equals(normalized, plan.SourceFile, StringComparison.OrdinalIgnoreCase)
-            || RenameFileToMatchTypeOperation.ReferToSameFile(normalized, plan.SourceFile))
-        {
+        if (IsSameDocumentPath(normalized, plan.SourceFile))
             return plan.DestinationFile;
-        }
 
         return path;
     }
@@ -537,11 +615,207 @@ public sealed class MoveTypeToNamespaceOperation
             return null;
 
         var original = File.ReadAllText(projectPath);
-        var updated = RenameNamespaceOperation.UpdateExplicitCompileItemsForMoves(
-            original,
-            projectDirectory,
-            [(sourceFile, destFile)]);
+        var updated = UpdateProjectTextForFileMove(original, projectDirectory, sourceFile, destFile);
         return string.Equals(original, updated, StringComparison.Ordinal) ? null : updated;
+    }
+
+    private static IReadOnlyList<Document> FindDocumentsAtPath(Solution solution, string filePath)
+    {
+        return solution.Projects
+            .SelectMany(project => project.Documents)
+            .Where(document =>
+                !string.IsNullOrWhiteSpace(document.FilePath)
+                && IsSameDocumentPath(PathResolver.NormalizePath(document.FilePath), filePath))
+            .ToList();
+    }
+
+    private static bool IsSameDocumentPath(string left, string right) =>
+        string.Equals(left, right, StringComparison.Ordinal)
+        || RenameFileToMatchTypeOperation.ReferToSameFile(left, right);
+
+    private static string UpdateGlobAndListCompileItems(
+        string projectXml,
+        string projectDirectory,
+        string sourceFile,
+        string destFile)
+    {
+        XDocument document;
+        try
+        {
+            document = XDocument.Parse(projectXml, LoadOptions.PreserveWhitespace | LoadOptions.SetLineInfo);
+        }
+        catch (System.Xml.XmlException)
+        {
+            return projectXml;
+        }
+
+        var ns = document.Root?.Name.Namespace ?? XNamespace.None;
+        var changed = false;
+
+        foreach (var compile in document.Descendants(ns + "Compile").ToList())
+        {
+            changed |= TryUpdateGlobOrListAttribute(compile, "Include", projectDirectory, sourceFile, destFile);
+            changed |= TryUpdateGlobOrListAttribute(compile, "Update", projectDirectory, sourceFile, destFile);
+        }
+
+        if (!changed)
+            return projectXml;
+
+        return SerializeProjectXml(document, projectXml);
+    }
+
+    private static bool TryUpdateGlobOrListAttribute(
+        XElement compile,
+        string attributeName,
+        string projectDirectory,
+        string sourceFile,
+        string destFile)
+    {
+        var attribute = compile.Attribute(attributeName);
+        if (attribute == null)
+            return false;
+
+        var spec = attribute.Value;
+        if (!spec.Contains(';') && !RenameNamespaceOperation.ContainsMsBuildGlob(spec))
+            return false;
+
+        var parts = spec.Split(';');
+        var rewritten = false;
+        for (var i = 0; i < parts.Length; i++)
+        {
+            var trimmed = parts[i].Trim();
+            if (trimmed.Length == 0 || RenameNamespaceOperation.ContainsMsBuildGlob(trimmed))
+                continue;
+            if (!RenameFileToMatchTypeOperation.ProjectItemRefersToFile(projectDirectory, trimmed, sourceFile))
+                continue;
+
+            var replacement = RenameNamespaceOperation.RewriteProjectItemToTarget(
+                trimmed,
+                projectDirectory,
+                destFile);
+            if (string.Equals(parts[i], replacement, StringComparison.Ordinal))
+                continue;
+
+            parts[i] = replacement;
+            rewritten = true;
+        }
+
+        var joined = string.Join(';', parts);
+        if (!CompileSpecCoversFile(joined, projectDirectory, destFile)
+            && CompileSpecCoversFile(joined, projectDirectory, sourceFile))
+        {
+            var destSpec = RenameNamespaceOperation.RewriteProjectItemToTarget(
+                parts[0],
+                projectDirectory,
+                destFile);
+            joined = joined + ";" + destSpec;
+            rewritten = true;
+        }
+
+        if (!rewritten || string.Equals(attribute.Value, joined, StringComparison.Ordinal))
+            return false;
+
+        attribute.Value = joined;
+        return true;
+    }
+
+    private static bool GlobSpecCoversFile(string spec, string projectDirectory, string filePath)
+    {
+        string candidate;
+        string pattern;
+        try
+        {
+            var specNative = spec.Trim()
+                .Replace('\\', Path.DirectorySeparatorChar)
+                .Replace('/', Path.DirectorySeparatorChar);
+            pattern = spec.Trim().Replace('\\', '/');
+            if (Path.IsPathRooted(specNative))
+            {
+                candidate = PathResolver.NormalizePath(filePath).Replace('\\', '/');
+                var specDir = RenameNamespaceOperation.GetGlobDirectoryPrefix(spec);
+                if (!string.IsNullOrEmpty(specDir))
+                {
+                    var specDirNative = specDir
+                        .Replace('\\', Path.DirectorySeparatorChar)
+                        .Replace('/', Path.DirectorySeparatorChar);
+                    var resolvedDir = PathResolver.NormalizePath(specDirNative).Replace('\\', '/');
+                    var specDirNormalized = specDir.Replace('\\', '/');
+                    if (pattern.StartsWith(specDirNormalized, StringComparison.OrdinalIgnoreCase))
+                        pattern = resolvedDir + pattern[specDirNormalized.Length..];
+                }
+            }
+            else
+            {
+                candidate = Path.GetRelativePath(
+                        projectDirectory,
+                        PathResolver.NormalizePath(filePath))
+                    .Replace('\\', '/');
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+
+        var options = OperatingSystem.IsWindows()
+            ? RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+            : RegexOptions.CultureInvariant;
+        return Regex.IsMatch(candidate, GlobToRegex(pattern), options);
+    }
+
+    private static string GlobToRegex(string glob)
+    {
+        var sb = new System.Text.StringBuilder("^");
+        for (var i = 0; i < glob.Length; i++)
+        {
+            if (glob[i] == '*' && i + 1 < glob.Length && glob[i + 1] == '*')
+            {
+                i++;
+                if (i + 1 < glob.Length && glob[i + 1] == '/')
+                {
+                    i++;
+                    sb.Append("(?:.*/)?");
+                }
+                else
+                {
+                    sb.Append(".*");
+                }
+
+                continue;
+            }
+
+            sb.Append(glob[i] switch
+            {
+                '*' => "[^/]*",
+                '?' => "[^/]",
+                _ => Regex.Escape(glob[i].ToString())
+            });
+        }
+
+        sb.Append('$');
+        return sb.ToString();
+    }
+
+    private static string SerializeProjectXml(XDocument document, string originalXml)
+    {
+        var writerSettings = new System.Xml.XmlWriterSettings
+        {
+            OmitXmlDeclaration = !originalXml.Contains("<?xml", StringComparison.OrdinalIgnoreCase),
+            NewLineHandling = System.Xml.NewLineHandling.Replace,
+            NewLineChars = originalXml.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n",
+            Indent = false
+        };
+
+        using var writer = new StringWriter();
+        using (var xmlWriter = System.Xml.XmlWriter.Create(writer, writerSettings))
+        {
+            document.Save(xmlWriter);
+        }
+
+        var serialized = writer.ToString();
+        if (originalXml.EndsWith('\n') && !serialized.EndsWith('\n'))
+            serialized += writerSettings.NewLineChars;
+        return serialized;
     }
 
     private Contracts.Models.SymbolInfo CreateSymbolInfo(
@@ -633,11 +907,11 @@ public sealed class MoveTypeToNamespaceOperation
                 Description = $"Move '{filePlan.SourceFile}' to '{filePlan.DestinationFile}'"
             });
 
-            if (filePlan.ProjectPath != null)
+            foreach (var projectPath in filePlan.ProjectTexts.Keys)
             {
                 pendingChanges.Add(new PendingChange
                 {
-                    File = filePlan.ProjectPath,
+                    File = projectPath,
                     ChangeType = ChangeKind.Modify,
                     Description = "Update explicit Compile item to the moved file"
                 });
@@ -655,10 +929,9 @@ public sealed class MoveTypeToNamespaceOperation
 
     private sealed class FileLocationPlan
     {
-        public required DocumentId DocumentId { get; init; }
+        public required IReadOnlyList<DocumentId> DocumentIds { get; init; }
         public required string SourceFile { get; init; }
         public required string DestinationFile { get; init; }
-        public string? ProjectPath { get; init; }
-        public string? ProjectText { get; init; }
+        public required IReadOnlyDictionary<string, string> ProjectTexts { get; init; }
     }
 }
