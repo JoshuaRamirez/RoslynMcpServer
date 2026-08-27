@@ -150,6 +150,142 @@ public class RenameFileToMatchTypeOperationTests
         Assert.Contains(types, t => t.Name == "Callback" && t.Node is DelegateDeclarationSyntax);
     }
 
+    [Fact]
+    public void PathsDifferOnlyByCase_DetectsCaseOnlyPairs()
+    {
+        var dir = Path.DirectorySeparatorChar == '/' ? "/tmp/src" : @"C:\tmp\src";
+        Assert.True(RenameFileToMatchTypeOperation.PathsDifferOnlyByCase(
+            Path.Combine(dir, "foo.cs"),
+            Path.Combine(dir, "Foo.cs")));
+        Assert.False(RenameFileToMatchTypeOperation.PathsDifferOnlyByCase(
+            Path.Combine(dir, "foo.cs"),
+            Path.Combine(dir, "Bar.cs")));
+        Assert.False(RenameFileToMatchTypeOperation.PathsDifferOnlyByCase(
+            Path.Combine(dir, "foo.cs"),
+            Path.Combine(dir, "foo.cs")));
+    }
+
+    [Fact]
+    public void IsDestinationOccupiedByDifferentFile_CaseOnlySingleFile_IsNotOccupied()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameCaseOcc_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var source = Path.Combine(directory, "foo.cs");
+            File.WriteAllText(source, "class Foo {}");
+            var dest = Path.Combine(directory, "Foo.cs");
+
+            // Old Windows-only ignore-case + ordinal-on-macOS check treated this as a
+            // conflict whenever File.Exists(dest) was true. Must not reject.
+            Assert.False(RenameFileToMatchTypeOperation.IsDestinationOccupiedByDifferentFile(source, dest));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void MoveSourceFile_CaseOnlyRename_ResultsInExactCasing()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameCaseMove_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var source = Path.Combine(directory, "foo.cs");
+            File.WriteAllText(source, "class Foo {}");
+            var dest = Path.Combine(directory, "Foo.cs");
+
+            RenameFileToMatchTypeOperation.MoveSourceFile(source, dest);
+
+            var names = Directory.GetFiles(directory).Select(Path.GetFileName).ToList();
+            Assert.Single(names);
+            Assert.Equal("Foo.cs", names[0]);
+            Assert.Equal("class Foo {}", File.ReadAllText(dest));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void UpdateExplicitCompileItems_RewritesIncludeAndLeavesOthers()
+    {
+        const string xml = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <ItemGroup>
+                <Compile Include="Foo.cs" />
+                <Compile Include="Other.cs" />
+              </ItemGroup>
+            </Project>
+            """;
+        var projectDir = Path.DirectorySeparatorChar == '/' ? "/tmp/proj" : @"C:\tmp\proj";
+        var updated = RenameFileToMatchTypeOperation.UpdateExplicitCompileItems(
+            xml,
+            projectDir,
+            Path.Combine(projectDir, "Foo.cs"),
+            Path.Combine(projectDir, "Bar.cs"));
+
+        Assert.Contains("Include=\"Bar.cs\"", updated);
+        Assert.DoesNotContain("Include=\"Foo.cs\"", updated);
+        Assert.Contains("Include=\"Other.cs\"", updated);
+    }
+
+    [Fact]
+    public void UpdateExplicitCompileItems_RewritesUpdateAndNamespacedInclude()
+    {
+        const string xml = """
+            <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+              <ItemGroup>
+                <Compile Include="src\Foo.cs" />
+                <Compile Update="src\Foo.cs">
+                  <DependentUpon>Foo.tt</DependentUpon>
+                </Compile>
+              </ItemGroup>
+            </Project>
+            """;
+        var projectDir = Path.DirectorySeparatorChar == '/' ? "/tmp/proj" : @"C:\tmp\proj";
+        var updated = RenameFileToMatchTypeOperation.UpdateExplicitCompileItems(
+            xml,
+            projectDir,
+            Path.Combine(projectDir, "src", "Foo.cs"),
+            Path.Combine(projectDir, "src", "Bar.cs"));
+
+        Assert.Contains("Bar.cs", updated);
+        Assert.DoesNotContain("Foo.cs", updated);
+        Assert.Contains("Foo.tt", updated);
+    }
+
+    [Fact]
+    public void UpdateExplicitCompileItems_SdkGlobProject_Unchanged()
+    {
+        const string xml = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net9.0</TargetFramework>
+              </PropertyGroup>
+            </Project>
+            """;
+        var projectDir = Path.DirectorySeparatorChar == '/' ? "/tmp/proj" : @"C:\tmp\proj";
+        var updated = RenameFileToMatchTypeOperation.UpdateExplicitCompileItems(
+            xml,
+            projectDir,
+            Path.Combine(projectDir, "Foo.cs"),
+            Path.Combine(projectDir, "Bar.cs"));
+
+        Assert.Equal(xml.ReplaceLineEndings(), updated.ReplaceLineEndings());
+    }
+
+    [Fact]
+    public void RewriteProjectItemPath_PreservesDirectoryAndSeparator()
+    {
+        Assert.Equal("Bar.cs", RenameFileToMatchTypeOperation.RewriteProjectItemPath("Foo.cs", "Bar.cs"));
+        Assert.Equal("src\\Bar.cs", RenameFileToMatchTypeOperation.RewriteProjectItemPath("src\\Foo.cs", "Bar.cs"));
+        Assert.Equal("./Bar.cs", RenameFileToMatchTypeOperation.RewriteProjectItemPath("./Foo.cs", "Bar.cs"));
+    }
+
     #endregion
 
     #region Happy Path
@@ -241,6 +377,117 @@ public class RenameFileToMatchTypeOperationTests
         Assert.False(File.Exists(newPath));
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.NotNull(workspace.Context.GetDocumentByPath(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_CaseOnly_RenamesOnDiskCasing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Foo
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "foo.cs");
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(result.Success);
+
+        var newPath = Path.Combine(workspace.DirectoryPath, "Foo.cs");
+        var names = Directory.GetFiles(workspace.DirectoryPath, "*.cs").Select(Path.GetFileName).ToList();
+        Assert.Contains("Foo.cs", names);
+        Assert.DoesNotContain("foo.cs", names);
+        Assert.True(File.Exists(newPath));
+        Assert.Contains("public class Foo", await File.ReadAllTextAsync(newPath));
+        Assert.NotNull(workspace.Context.GetDocumentByPath(newPath));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_ExplicitCompileItem_UpdatesProjectFile()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Bar
+            {
+            }
+            """;
+        const string other = """
+            namespace TestApp;
+
+            public class Other
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithExplicitCompileItemsAsync(
+            ("Foo.cs", source),
+            ("Other.cs", other));
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(result.Success);
+
+        var newPath = Path.Combine(workspace.DirectoryPath, "Bar.cs");
+        Assert.True(File.Exists(newPath));
+        Assert.False(File.Exists(workspace.SourcePath));
+
+        var csproj = await File.ReadAllTextAsync(workspace.ProjectPath);
+        Assert.Contains("Include=\"Bar.cs\"", csproj);
+        Assert.DoesNotContain("Include=\"Foo.cs\"", csproj);
+        Assert.Contains("Include=\"Other.cs\"", csproj);
+        Assert.Contains(workspace.ProjectPath, result.Changes!.FilesModified);
+
+        workspace.Context.Dispose();
+        var provider = new MSBuildWorkspaceProvider();
+        using var reloaded = await provider.CreateContextAsync(workspace.ProjectPath);
+        Assert.NotNull(reloaded.GetDocumentByPath(newPath));
+        Assert.Null(reloaded.GetDocumentByPath(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_ExplicitCompileItem_Preview_WritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Bar
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithExplicitCompileItemsAsync(
+            ("Foo.cs", source));
+        var originalProject = await File.ReadAllTextAsync(workspace.ProjectPath);
+        var originalSource = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains(result.PendingChanges!, c => c.File == workspace.ProjectPath);
+
+        Assert.Equal(originalProject, await File.ReadAllTextAsync(workspace.ProjectPath));
+        Assert.Equal(originalSource, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.True(File.Exists(workspace.SourcePath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Bar.cs")));
+        Assert.Contains("Include=\"Foo.cs\"", originalProject);
     }
 
     [SkippableFact]
@@ -415,7 +662,41 @@ public class RenameFileToMatchTypeOperationTests
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Foo.cs") =>
             CreateAsync((fileName, source));
 
-        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
+        public static Task<TempWorkspace> CreateWithExplicitCompileItemsAsync(
+            params (string FileName, string Source)[] files)
+        {
+            var compileItems = string.Join(
+                Environment.NewLine,
+                files.Select(f => $"    <Compile Include=\"{f.FileName}\" />"));
+            var projectXml = $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <EnableDefaultItems>false</EnableDefaultItems>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                {compileItems}
+                  </ItemGroup>
+                </Project>
+                """;
+            return CreateAsync(projectXml, files);
+        }
+
+        public static Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files) =>
+            CreateAsync("""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """, files);
+
+        public static async Task<TempWorkspace> CreateAsync(
+            string projectXml,
+            params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -423,14 +704,7 @@ public class RenameFileToMatchTypeOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            await File.WriteAllTextAsync(projectPath, """
-                <Project Sdk="Microsoft.NET.Sdk">
-                  <PropertyGroup>
-                    <TargetFramework>net9.0</TargetFramework>
-                    <Nullable>enable</Nullable>
-                  </PropertyGroup>
-                </Project>
-                """);
+            await File.WriteAllTextAsync(projectPath, projectXml);
 
             string? sourcePath = null;
             string? secondary = null;
