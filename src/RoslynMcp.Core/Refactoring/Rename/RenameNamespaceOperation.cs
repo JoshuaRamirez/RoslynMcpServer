@@ -548,11 +548,12 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         CancellationToken cancellationToken)
     {
         var documentIds = await CollectDocumentsToRewriteAsync(namespaceSymbol, cancellationToken);
-        var solution = Context.Solution;
+        var originalSolution = Context.Solution;
+        var updates = new List<(DocumentId Id, SyntaxNode Root)>();
 
         foreach (var documentId in documentIds)
         {
-            var document = solution.GetDocument(documentId);
+            var document = originalSolution.GetDocument(documentId);
             if (document == null)
                 continue;
 
@@ -566,8 +567,12 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             var rewriter = new NamespaceNameRewriter(semanticModel, namespaceSymbol, oldFullName, newFullName);
             var newRoot = rewriter.Visit(root);
             if (newRoot != null && newRoot != root)
-                solution = solution.WithDocumentSyntaxRoot(documentId, newRoot);
+                updates.Add((documentId, newRoot));
         }
+
+        var solution = originalSolution;
+        foreach (var (documentId, newRoot) in updates)
+            solution = solution.WithDocumentSyntaxRoot(documentId, newRoot);
 
         return solution;
     }
@@ -901,6 +906,13 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         {
             if (symbol == null || symbol.IsGlobalNamespace)
                 return false;
+
+            var full = GetFullName(symbol);
+            if (string.Equals(full, _oldFullName, StringComparison.Ordinal)
+                || IsPrefixOfNamespace(_oldFullName, full))
+            {
+                return true;
+            }
 
             for (var current = symbol; current is { IsGlobalNamespace: false }; current = current.ContainingNamespace)
             {
