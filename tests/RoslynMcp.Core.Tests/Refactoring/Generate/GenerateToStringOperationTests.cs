@@ -11,7 +11,7 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
 /// Operation-level tests for <see cref="GenerateToStringOperation"/>, including <c>format</c>,
-/// <c>includeInheritedMembers</c>, and <c>replaceExisting</c>.
+/// <c>includeProperties</c>, <c>includeInheritedMembers</c>, and <c>replaceExisting</c>.
 /// </summary>
 public class GenerateToStringOperationTests
 {
@@ -691,6 +691,309 @@ public class GenerateToStringOperationTests
         Assert.DoesNotContain("ToString = ", toString);
         Assert.DoesNotContain("{ToString}", toString);
         Assert.Contains("sb.ToString()", toString);
+    }
+
+    #endregion
+
+    #region includeProperties
+
+    private const string WidgetWithFieldAndPropertySource = """
+        namespace TestApp;
+
+        public class Widget
+        {
+            public string _id;
+
+            public string Name { get; set; }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludePropertiesOmitted_IncludesFieldAndProperty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget"
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{_id}", toString);
+        Assert.Contains("{Name}", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludePropertiesTrue_IncludesFieldAndProperty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = true
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{_id}", toString);
+        Assert.Contains("{Name}", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludePropertiesFalse_IncludesFieldOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{_id}", toString);
+        Assert.DoesNotContain("{Name}", toString);
+        Assert.DoesNotContain("Name = ", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludePropertiesFalse_EmptyFieldsList_IncludesFieldOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Fields = Array.Empty<string>(),
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{_id}", toString);
+        Assert.DoesNotContain("{Name}", toString);
+        Assert.DoesNotContain("Name = ", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludePropertiesFalse_PropertiesOnly_FailsWithNoMembersToGenerate()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateToStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                IncludeProperties = false
+            }));
+
+        Assert.Equal(ErrorCodes.NoMembersToGenerate, ex.ErrorCode);
+        Assert.Equal("3055", ex.ErrorCode);
+        Assert.Contains("No fields or properties", ex.Message);
+        Assert.Equal(PersonSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludePropertiesFalse_FieldsNamesProperty_IncludesThatProperty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Fields = new[] { "Name" },
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{Name}", toString);
+        Assert.DoesNotContain("{_id}", toString);
+        Assert.DoesNotContain("_id = ", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludePropertiesFalse_IncludeInheritedMembersTrue_SkipsInheritedProperties()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DogOnAnimalSource, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeProperties = false,
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{Name}", toString);
+        Assert.Contains("{Species}", toString);
+        Assert.Contains("{Legs}", toString);
+        Assert.DoesNotContain("Nickname", toString);
+        Assert.DoesNotContain("Secret", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludePropertiesFalse_FieldsNamesInheritedProperty_IncludesIt()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DogOnAnimalSource, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeProperties = false,
+            IncludeInheritedMembers = true,
+            Fields = new[] { "Nickname" }
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{Nickname}", toString);
+        Assert.DoesNotContain("{Name}", toString);
+        Assert.DoesNotContain("Species", toString);
+        Assert.DoesNotContain("Legs", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludePropertiesTrue_StringBuilderAndInheritedMembers_StillWorks()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DogOnAnimalSource, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeProperties = true,
+            IncludeInheritedMembers = true,
+            Format = "stringbuilder"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.Contains("global::System.Text.StringBuilder", toString);
+        Assert.Contains("Append(this.Name)", toString);
+        Assert.Contains("Append(this.Species)", toString);
+        Assert.Contains("Append(this.Legs)", toString);
+        Assert.Contains("Append(this.Nickname)", toString);
+        Assert.DoesNotContain("Secret", toString);
+        Assert.DoesNotContain("$\"Dog", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludePropertiesFalse_Preview_DoesNotWriteFiles_AndDescribesFieldOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = false,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("_id", result.PendingChanges[0].Description);
+        Assert.DoesNotContain("Name", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        Assert.Contains("{_id}", snippet);
+        Assert.DoesNotContain("{Name}", snippet);
+        Assert.DoesNotContain("Name = ", snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludePropertiesFalse_ReplaceExisting_StillWorks()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string _id;
+
+                public string Name { get; set; }
+
+                public override string ToString() => "old";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = false,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.DoesNotContain("=> \"old\"", updated);
+        Assert.Contains("{_id}", toString);
+        Assert.DoesNotContain("{Name}", toString);
+        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludePropertiesFalse_MemberNamedToString_IsOmitted()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string ToString;
+
+                public string Name;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.Contains("{Name}", toString);
+        Assert.DoesNotContain("{ToString}", toString);
+        Assert.DoesNotContain("ToString = ", toString);
     }
 
     #endregion

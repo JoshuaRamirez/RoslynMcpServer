@@ -89,6 +89,18 @@ public class GenerateToStringToolTests
     }
 
     [Fact]
+    public void GetDefinition_IncludePropertiesProperty_DefaultsToTrue()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var includeProperties = doc.RootElement.GetProperty("properties").GetProperty("includeProperties");
+
+        Assert.Equal("boolean", includeProperties.GetProperty("type").GetString());
+        Assert.True(includeProperties.GetProperty("default").GetBoolean());
+    }
+
+    [Fact]
     public void GetDefinition_IncludeInheritedMembersProperty_DefaultsToFalse()
     {
         var schema = _tool.InputSchema;

@@ -155,6 +155,7 @@ public class HelpGeneratorTests
         var help = HelpGenerator.GenerateToolHelp(tool);
 
         Assert.Contains("--include-inherited-members", help);
+        Assert.Contains("--include-properties", help);
         Assert.Contains("--format", help);
         Assert.Contains("--replace-existing", help);
     }

@@ -60,7 +60,13 @@ public sealed class GenerateToStringTool : IToolHandler
             {
                 type = "array",
                 items = new { type = "string" },
-                description = "Specific field/property names to include. If not specified, uses all fields and properties."
+                description = "Specific field/property names to include. If not specified, uses instance fields and (when includeProperties is true) readable properties."
+            },
+            includeProperties = new
+            {
+                type = "boolean",
+                description = "Include readable instance properties as ToString members. When false, only instance fields are used unless fields names a property",
+                @default = true
             },
             format = new
             {
@@ -71,7 +77,7 @@ public sealed class GenerateToStringTool : IToolHandler
             includeInheritedMembers = new
             {
                 type = "boolean",
-                description = "Also collect accessible instance fields and readable properties declared on base types",
+                description = "Also collect accessible instance fields (and readable properties when includeProperties is true) declared on base types",
                 @default = false
             },
             replaceExisting = new
@@ -118,6 +124,7 @@ public sealed class GenerateToStringTool : IToolHandler
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
                 Fields = args.Fields,
+                IncludeProperties = args.IncludeProperties ?? true,
                 Format = args.Format,
                 IncludeInheritedMembers = args.IncludeInheritedMembers ?? false,
                 ReplaceExisting = args.ReplaceExisting ?? false,
@@ -152,6 +159,7 @@ public sealed class GenerateToStringTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
         public List<string>? Fields { get; init; }
+        public bool? IncludeProperties { get; init; }
         public string? Format { get; init; }
         public bool? IncludeInheritedMembers { get; init; }
         public bool? ReplaceExisting { get; init; }

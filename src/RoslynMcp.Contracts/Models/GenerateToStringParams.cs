@@ -16,11 +16,21 @@ public sealed class GenerateToStringParams
     public required string TypeName { get; init; }
 
     /// <summary>
-    /// Specific field/property names to include. If null, uses all fields and properties.
+    /// Specific field/property names to include. If null or empty, uses instance fields
+    /// and, when <see cref="IncludeProperties"/> is true, readable properties.
     /// When <see cref="IncludeInheritedMembers"/> is true, auto-collection and name
     /// resolution also consider accessible inherited members.
+    /// When non-empty, listed names are resolved against fields and properties even if
+    /// <see cref="IncludeProperties"/> is false.
     /// </summary>
     public IReadOnlyList<string>? Fields { get; init; }
+
+    /// <summary>
+    /// When true, include readable instance properties as ToString members.
+    /// When false, collect instance fields only unless <see cref="Fields"/> names a property.
+    /// Default: true (today's field+property collection).
+    /// </summary>
+    public bool IncludeProperties { get; init; } = true;
 
     /// <summary>
     /// Format: "interpolated" (default) or "stringbuilder". Case-insensitive.
@@ -29,7 +39,8 @@ public sealed class GenerateToStringParams
     public string? Format { get; init; }
 
     /// <summary>
-    /// When true, also collect accessible instance fields and readable properties
+    /// When true, also collect accessible instance fields (and, when
+    /// <see cref="IncludeProperties"/> is true, readable properties)
     /// declared on base types until <c>System.Object</c> / <c>System.ValueType</c>.
     /// Only members visible from this type are included (public / protected /
     /// protected-internal; internal when same assembly).
