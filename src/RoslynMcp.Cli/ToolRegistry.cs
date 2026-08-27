@@ -47,7 +47,7 @@ public sealed class ToolEntry
 }
 
 /// <summary>
-/// Maps tool names to execution delegates for all 60 Roslyn tools.
+/// Maps tool names to execution delegates for all 61 Roslyn tools.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -139,7 +139,7 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 60 tools registered.
+    /// Build the default registry with all 61 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
@@ -173,9 +173,11 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<MakeNonStaticOperation, MakeNonStaticParams>(
             "make-non-static", "Make a selected static method an instance method when a valid instance receiver exists");
 
-        // ── Refactoring: Rename (1) ───────────────────────────────────
+        // ── Refactoring: Rename (2) ───────────────────────────────────
         r.RegisterRefactoring<RenameSymbolOperation, RenameSymbolParams>(
             "rename-symbol", "Rename any C# symbol with automatic reference updates");
+        r.RegisterRefactoring<RenameFileToMatchTypeOperation, RenameFileToMatchTypeParams>(
+            "rename-file-to-match-type", "Rename a file so its name matches the primary type declared in it");
 
         // ── Refactoring: Inline (3) ───────────────────────────────────
         r.RegisterRefactoring<InlineVariableOperation, InlineVariableParams>(
