@@ -108,7 +108,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         var creation = FindAnonymousCreation(root, @params);
         var anonymousType = GetAnonymousType(semanticModel, creation);
         var members = GetAnonymousMembers(anonymousType);
-        var targetNamespace = GetContainingNamespaceName(creation);
+        var targetNamespace = GetContainingNamespaceName(semanticModel, creation);
 
         await ValidateNoNameConflictAsync(document, @params.NewTypeName, targetNamespace, cancellationToken);
 
@@ -124,6 +124,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             ValidateDocumentIsEditable(target.Document, Context.Workspace);
 
         var insertPosition = GetTypeInsertionPosition(root, creation);
+        ValidateMembersForGeneratedType(members, semanticModel, insertPosition);
         var typeDeclaration = CreateNamedType(
             @params.NewTypeName,
             @params.AsRecord,
@@ -295,7 +296,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
                     .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
             };
 
-            return SyntaxFactory.PropertyDeclaration(SyntaxFactory.ParseTypeName(typeText), member.Name)
+            return SyntaxFactory.PropertyDeclaration(SyntaxFactory.ParseTypeName(typeText), CreateIdentifier(member.Name))
                 .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
                 .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
         });
@@ -343,7 +344,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             assignments.Add(
                 SyntaxFactory.AssignmentExpression(
                     SyntaxKind.SimpleAssignmentExpression,
-                    SyntaxFactory.IdentifierName(name).WithTrailingTrivia(SyntaxFactory.Space),
+                    SyntaxFactory.IdentifierName(CreateIdentifier(name)).WithTrailingTrivia(SyntaxFactory.Space),
                     value.WithLeadingTrivia(SyntaxFactory.Space)));
         }
 
@@ -398,6 +399,120 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         }
 
         return display;
+    }
+
+    internal static void ValidateMembersForGeneratedType(
+        IReadOnlyList<AnonymousMember> members,
+        SemanticModel semanticModel,
+        int insertPosition)
+    {
+        foreach (var member in members)
+        {
+            if (IsLessAccessibleThanPublic(member.Type))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.BreaksAccessibility,
+                    $"Anonymous member type '{member.Type.ToDisplayString()}' is less accessible than the generated public type.");
+            }
+
+            if (!MemberTypeBindsAtInsertion(member.Type, semanticModel, insertPosition))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CannotConvert,
+                    $"Anonymous member type '{member.Type.ToDisplayString()}' is not available at the generated type location.");
+            }
+        }
+    }
+
+    internal static bool MemberTypeBindsAtInsertion(ITypeSymbol type, SemanticModel model, int position)
+    {
+        if (ContainsTypeParameter(type))
+            return false;
+
+        var display = ToContextValidTypeName(type, model, position);
+        return !TypeNameBindsToDifferentType(display, type, model, position);
+    }
+
+    internal static bool ContainsTypeParameter(ITypeSymbol type)
+    {
+        if (type is ITypeParameterSymbol)
+            return true;
+
+        if (type is IArrayTypeSymbol array)
+            return ContainsTypeParameter(array.ElementType);
+
+        if (type is IPointerTypeSymbol pointer)
+            return ContainsTypeParameter(pointer.PointedAtType);
+
+        if (type is INamedTypeSymbol named)
+        {
+            foreach (var argument in named.TypeArguments)
+            {
+                if (ContainsTypeParameter(argument))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal static bool IsLessAccessibleThanPublic(ITypeSymbol type)
+    {
+        if (type is IArrayTypeSymbol array)
+            return IsLessAccessibleThanPublic(array.ElementType);
+
+        if (type is IPointerTypeSymbol pointer)
+            return IsLessAccessibleThanPublic(pointer.PointedAtType);
+
+        if (type is INamedTypeSymbol named)
+        {
+            if (GetEffectiveAccessibility(named) is not (Accessibility.Public or Accessibility.NotApplicable))
+                return true;
+
+            foreach (var argument in named.TypeArguments)
+            {
+                if (IsLessAccessibleThanPublic(argument))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal static Accessibility GetEffectiveAccessibility(ISymbol symbol)
+    {
+        var current = symbol.DeclaredAccessibility;
+        for (var container = symbol.ContainingType; container != null; container = container.ContainingType)
+            current = MinAccessibility(current, container.DeclaredAccessibility);
+
+        return current;
+    }
+
+    internal static SyntaxToken CreateIdentifier(string name)
+    {
+        var bare = name.StartsWith('@') ? name[1..] : name;
+        var keywordKind = SyntaxFacts.GetKeywordKind(bare);
+        if (keywordKind != SyntaxKind.None)
+            return SyntaxFactory.VerbatimIdentifier(default, bare, bare, default);
+
+        return SyntaxFactory.Identifier(bare);
+    }
+
+    internal static string? GetContainingNamespaceName(SemanticModel semanticModel, SyntaxNode node)
+    {
+        var enclosing = semanticModel.GetEnclosingSymbol(node.SpanStart);
+        var fromSymbol = ToNamespaceName(enclosing?.ContainingNamespace);
+        if (!string.IsNullOrEmpty(fromSymbol))
+            return fromSymbol;
+
+        return GetContainingNamespaceName(node);
+    }
+
+    internal static string? GetContainingNamespaceName(SyntaxNode node)
+    {
+        var name = GetFullNamespaceName(
+            node.Ancestors().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault());
+        return string.IsNullOrEmpty(name) ? null : name;
     }
 
     internal readonly record struct AnonymousMember(string Name, ITypeSymbol Type);
@@ -544,9 +659,8 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             if (nodes.Count == 0)
                 continue;
 
-            var typeNameForDocument = TypeNameForDocument(root, newTypeName, targetNamespace);
             root = root.ReplaceNodes(nodes, (original, _) =>
-                ToNamedCreation(original, typeNameForDocument, members));
+                ToNamedCreation(original, TypeNameForCreation(original, newTypeName, targetNamespace), members));
 
             if (documentId == originatingDocument.Id)
             {
@@ -589,7 +703,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
 
         return root.DescendantNodes()
             .OfType<BaseNamespaceDeclarationSyntax>()
-            .FirstOrDefault(ns => string.Equals(ns.Name.ToString(), targetNamespace, StringComparison.Ordinal));
+            .LastOrDefault(ns => string.Equals(GetFullNamespaceName(ns), targetNamespace, StringComparison.Ordinal));
     }
 
     private static int GetTypeInsertionPosition(SyntaxNode root, SyntaxNode creation)
@@ -602,20 +716,41 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         return root.Span.End;
     }
 
-    private static string TypeNameForDocument(SyntaxNode root, string newTypeName, string? targetNamespace)
+    private static string TypeNameForCreation(SyntaxNode creation, string newTypeName, string? targetNamespace)
     {
-        if (string.IsNullOrEmpty(targetNamespace) || IsInNamespace(root, targetNamespace) || HasUsing(root, targetNamespace))
+        var creationNamespace = GetContainingNamespaceName(creation);
+        if (NamespacesEqual(creationNamespace, targetNamespace))
             return newTypeName;
 
-        return $"{targetNamespace}.{newTypeName}";
+        var root = creation.SyntaxTree.GetRoot();
+        if (!string.IsNullOrEmpty(targetNamespace) && HasUsing(root, targetNamespace))
+            return newTypeName;
+
+        return string.IsNullOrEmpty(targetNamespace)
+            ? newTypeName
+            : $"{targetNamespace}.{newTypeName}";
     }
 
-    private static bool IsInNamespace(SyntaxNode root, string? targetNamespace)
+    private static bool NamespacesEqual(string? left, string? right)
     {
-        var ns = root.DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault();
+        if (string.IsNullOrEmpty(left) && string.IsNullOrEmpty(right))
+            return true;
+        return string.Equals(left, right, StringComparison.Ordinal);
+    }
+
+    internal static string? GetFullNamespaceName(BaseNamespaceDeclarationSyntax? ns)
+    {
         if (ns == null)
-            return string.IsNullOrEmpty(targetNamespace);
-        return string.Equals(ns.Name.ToString(), targetNamespace, StringComparison.Ordinal);
+            return null;
+
+        var parts = ns.AncestorsAndSelf()
+            .OfType<BaseNamespaceDeclarationSyntax>()
+            .Reverse()
+            .Select(n => n.Name.ToString())
+            .Where(part => !string.IsNullOrEmpty(part));
+
+        var joined = string.Join(".", parts);
+        return string.IsNullOrEmpty(joined) ? null : joined;
     }
 
     private static bool HasUsing(SyntaxNode root, string namespaceName)
@@ -625,13 +760,12 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             .Any(u => u.Name != null && u.Name.ToString() == namespaceName);
     }
 
-    private static string? GetContainingNamespaceName(SyntaxNode node)
+    private static string? ToNamespaceName(INamespaceSymbol? symbol)
     {
-        var ns = node.Ancestors().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault();
-        if (ns == null)
+        if (symbol == null || symbol.IsGlobalNamespace)
             return null;
 
-        var name = ns.Name.ToString();
+        var name = symbol.ToDisplayString();
         return string.IsNullOrEmpty(name) ? null : name;
     }
 
@@ -700,6 +834,22 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
 
         return !SymbolEqualityComparer.Default.Equals(spec.Type, expected);
     }
+
+    private static Accessibility MinAccessibility(Accessibility left, Accessibility right)
+    {
+        return AccessibilityRank(left) <= AccessibilityRank(right) ? left : right;
+    }
+
+    private static int AccessibilityRank(Accessibility accessibility) => accessibility switch
+    {
+        Accessibility.Private => 0,
+        Accessibility.ProtectedAndInternal => 1,
+        Accessibility.Protected => 2,
+        Accessibility.Internal => 3,
+        Accessibility.ProtectedOrInternal => 4,
+        Accessibility.Public => 5,
+        _ => 5
+    };
 
     private static async Task<RefactoringResult> CreatePreviewResultAsync(
         Guid operationId,

@@ -252,6 +252,95 @@ public class ConvertAnonymousToClassOperationTests
         Assert.Contains("var other = new { Age = 1 };", text);
     }
 
+    [SkippableFact]
+    public async Task ConvertAnonymousToClass_NestedNamespaces_UsesFullNamespace()
+    {
+        const string worker = """
+            namespace Outer
+            {
+                namespace Inner
+                {
+                    public class Worker
+                    {
+                        public object Create()
+                        {
+                            return new { Name = "Ada" };
+                        }
+                    }
+                }
+            }
+            """;
+        const string client = """
+            namespace Other
+            {
+                public class Client
+                {
+                    public object Create()
+                    {
+                        return new { Name = "Bob" };
+                    }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Worker.cs", worker),
+            ("Client.cs", client));
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertAnonymousToClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 9,
+            NewTypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal("Outer.Inner.Person", result.Symbol?.FullyQualifiedName);
+
+        var workerText = await File.ReadAllTextAsync(workspace.SourcePath);
+        var clientText = await File.ReadAllTextAsync(Path.Combine(workspace.DirectoryPath, "Client.cs"));
+        Assert.Contains("namespace Inner", workerText);
+        Assert.Contains("public class Person", workerText);
+        Assert.Contains("return new Person { Name = \"Ada\" };", workerText);
+        Assert.Contains("return new Outer.Inner.Person { Name = \"Bob\" };", clientText);
+        Assert.DoesNotContain("new Inner.Person", clientText);
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymousToClass_KeywordMember_EscapesIdentifier()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    return new { @class = 1 };
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertAnonymousToClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 7,
+            NewTypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public int @class { get; set; }", text);
+        Assert.Contains("return new Person { @class = 1 };", text);
+        Assert.DoesNotContain("public int class {", text);
+        Assert.DoesNotContain("{ class = 1 }", text);
+    }
+
     #endregion
 
     #region Rejects
@@ -335,6 +424,129 @@ public class ConvertAnonymousToClassOperationTests
             ConvertAnonymousToClassOperation.ValidateDocumentIsEditable(document, workspace));
 
         Assert.Equal(ErrorCodes.DocumentNotEditable, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymousToClass_MethodTypeParameter_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create<T>(T value)
+                {
+                    return new { Value = value };
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertAnonymousToClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Wrapper"
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal("3020", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymousToClass_LessAccessibleMemberType_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            internal class InternalItem
+            {
+            }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    return new { Item = new InternalItem() };
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertAnonymousToClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Wrapper"
+            }));
+
+        Assert.Equal(ErrorCodes.BreaksAccessibility, ex.ErrorCode);
+        Assert.Equal("3006", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymousToClass_PrivateNestedMemberType_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                private class Hidden
+                {
+                }
+
+                public object Create()
+                {
+                    return new { Item = new Hidden() };
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertAnonymousToClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 11,
+                NewTypeName = "Wrapper"
+            }));
+
+        Assert.Equal(ErrorCodes.BreaksAccessibility, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void GetFullNamespaceName_NestedDeclarations_JoinsEnclosingNames()
+    {
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText("""
+            namespace Outer
+            {
+                namespace Inner
+                {
+                    class Worker { }
+                }
+            }
+            """);
+        var inner = tree.GetRoot().DescendantNodes()
+            .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.NamespaceDeclarationSyntax>()
+            .Last();
+
+        Assert.Equal("Inner", inner.Name.ToString());
+        Assert.Equal("Outer.Inner", ConvertAnonymousToClassOperation.GetFullNamespaceName(inner));
     }
 
     #endregion
