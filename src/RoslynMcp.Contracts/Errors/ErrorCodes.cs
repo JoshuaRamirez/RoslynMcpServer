@@ -463,6 +463,9 @@ public static class ErrorCodes
     /// <summary>Explicit Compile item uses a wildcard or list that cannot be updated for the folder move.</summary>
     public const string UnsupportedCompileItem = "3141";
 
+    /// <summary>Cannot extract a nested type's base class to a separate file.</summary>
+    public const string CannotExtractNestedToSeparateFile = "3142";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

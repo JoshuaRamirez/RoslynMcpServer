@@ -220,6 +220,212 @@ public class ExtractBaseClassOperationTests
         Assert.Equal(siblingBefore, await File.ReadAllTextAsync(sibling));
     }
 
+    [SkippableFact]
+    public async Task ExtractBaseClass_SeparateFileTrue_ExplicitCompileItems_AddsCompileInclude()
+    {
+        await using var workspace = await TempWorkspace.CreateWithExplicitCompileItemsAsync(EmployeeSource);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var sibling = Path.GetFullPath(Path.Combine(workspace.DirectoryPath, "Person.cs"));
+        var projectBefore = await File.ReadAllTextAsync(workspace.ProjectPath);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Name", "Age" },
+            SeparateFile = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(sibling));
+        Assert.Contains(sibling, result.Changes!.FilesCreated);
+        Assert.Contains(workspace.ProjectPath, result.Changes.FilesModified);
+
+        var projectAfter = await File.ReadAllTextAsync(workspace.ProjectPath);
+        Assert.NotEqual(projectBefore, projectAfter);
+        Assert.Contains("Include=\"Person.cs\"", projectAfter);
+        Assert.Contains("Include=\"Employee.cs\"", projectAfter);
+
+        var source = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("class Person", source);
+        AssertInheritsFrom(source, "Employee", "Person");
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_SeparateFileTrue_SdkDefaults_LeavesProjectFileUnchanged()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EmployeeSource);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var projectBefore = await File.ReadAllTextAsync(workspace.ProjectPath);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Name", "Age" },
+            SeparateFile = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(projectBefore, await File.ReadAllTextAsync(workspace.ProjectPath));
+        Assert.DoesNotContain(workspace.ProjectPath, result.Changes!.FilesModified);
+        Assert.DoesNotContain("Include=\"Person.cs\"", projectBefore);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_SeparateFileTrue_ExplicitCompileItems_Preview_WritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithExplicitCompileItemsAsync(EmployeeSource);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var sourceBefore = await File.ReadAllTextAsync(workspace.SourcePath);
+        var projectBefore = await File.ReadAllTextAsync(workspace.ProjectPath);
+        var sibling = Path.GetFullPath(Path.Combine(workspace.DirectoryPath, "Person.cs"));
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Name", "Age" },
+            SeparateFile = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Equal(sourceBefore, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(projectBefore, await File.ReadAllTextAsync(workspace.ProjectPath));
+        Assert.False(File.Exists(sibling));
+        Assert.Contains(result.PendingChanges!, c => c.File == workspace.ProjectPath);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_SeparateFileTrue_NestedClass_ThrowsCannotExtractNestedToSeparateFile()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedEmployeeSource);
+        var sibling = Path.GetFullPath(Path.Combine(workspace.DirectoryPath, "Person.cs"));
+        var sourceBefore = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractBaseClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Employee",
+                BaseClassName = "Person",
+                Members = new[] { "Value" },
+                SeparateFile = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotExtractNestedToSeparateFile, ex.ErrorCode);
+        Assert.Equal("3142", ex.ErrorCode);
+        Assert.Equal(sourceBefore, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.False(File.Exists(sibling));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_Default_NestedClass_WritesBaseClassInsideContainingType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedEmployeeSource);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Value" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("class Person", updated);
+        AssertInheritsFrom(updated, "Employee", "Person");
+        Assert.Contains("class Outer<T>", updated);
+        Assert.False(File.Exists(Path.GetFullPath(Path.Combine(workspace.DirectoryPath, "Person.cs"))));
+    }
+
+    [Fact]
+    public void AddExplicitCompileItemIfNeeded_SdkDefaults_Unchanged()
+    {
+        const string xml = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net9.0</TargetFramework>
+              </PropertyGroup>
+            </Project>
+            """;
+        var projectDir = Path.DirectorySeparatorChar == '/' ? "/tmp/proj" : @"C:\tmp\proj";
+        var updated = ExtractBaseClassOperation.AddExplicitCompileItemIfNeeded(
+            xml,
+            projectDir,
+            Path.Combine(projectDir, "Person.cs"));
+
+        Assert.Equal(xml.ReplaceLineEndings(), updated.ReplaceLineEndings());
+    }
+
+    [Fact]
+    public void AddExplicitCompileItemIfNeeded_ExplicitItems_AddsInclude()
+    {
+        const string xml = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+              </PropertyGroup>
+              <ItemGroup>
+                <Compile Include="Employee.cs" />
+              </ItemGroup>
+            </Project>
+            """;
+        var projectDir = Path.DirectorySeparatorChar == '/' ? "/tmp/proj" : @"C:\tmp\proj";
+        var updated = ExtractBaseClassOperation.AddExplicitCompileItemIfNeeded(
+            xml,
+            projectDir,
+            Path.Combine(projectDir, "Person.cs"));
+
+        Assert.Contains("Include=\"Employee.cs\"", updated);
+        Assert.Contains("Include=\"Person.cs\"", updated);
+    }
+
+    [Fact]
+    public void AddExplicitCompileItemIfNeeded_AlreadyIncluded_Unchanged()
+    {
+        const string xml = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <EnableDefaultItems>false</EnableDefaultItems>
+              </PropertyGroup>
+              <ItemGroup>
+                <Compile Include="Employee.cs" />
+                <Compile Include="Person.cs" />
+              </ItemGroup>
+            </Project>
+            """;
+        var projectDir = Path.DirectorySeparatorChar == '/' ? "/tmp/proj" : @"C:\tmp\proj";
+        var updated = ExtractBaseClassOperation.AddExplicitCompileItemIfNeeded(
+            xml,
+            projectDir,
+            Path.Combine(projectDir, "Person.cs"));
+
+        Assert.Equal(xml.ReplaceLineEndings(), updated.ReplaceLineEndings());
+    }
+
+    private const string NestedEmployeeSource = """
+        namespace TestApp;
+
+        public class Outer<T>
+        {
+            public class Employee
+            {
+                public T Value { get; set; }
+
+                public void Work() { }
+            }
+        }
+        """;
+
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
 
@@ -239,7 +445,34 @@ public class ExtractBaseClassOperationTests
         public required string SourcePath { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Employee.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Employee.cs") =>
+            CreateAsync("""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """, source, fileName);
+
+        public static Task<TempWorkspace> CreateWithExplicitCompileItemsAsync(
+            string source,
+            string fileName = "Employee.cs") =>
+            CreateAsync($"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <EnableDefaultItems>false</EnableDefaultItems>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="{fileName}" />
+                  </ItemGroup>
+                </Project>
+                """, source, fileName);
+
+        public static async Task<TempWorkspace> CreateAsync(string projectXml, string source, string fileName)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -249,14 +482,7 @@ public class ExtractBaseClassOperationTests
             var projectPath = Path.Combine(directory, "TestApp.csproj");
             var sourcePath = Path.Combine(directory, fileName);
 
-            await File.WriteAllTextAsync(projectPath, """
-                <Project Sdk="Microsoft.NET.Sdk">
-                  <PropertyGroup>
-                    <TargetFramework>net9.0</TargetFramework>
-                    <Nullable>enable</Nullable>
-                  </PropertyGroup>
-                </Project>
-                """);
+            await File.WriteAllTextAsync(projectPath, projectXml);
             await File.WriteAllTextAsync(sourcePath, source);
 
             try
