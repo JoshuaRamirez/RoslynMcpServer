@@ -76,6 +76,9 @@ public enum RefactoringKind
     /// <summary>Reorder a method's parameters and update call sites.</summary>
     ReorderParameters,
 
+    /// <summary>Change a method's return type and update return statements.</summary>
+    ChangeReturnType,
+
     // Generate Operations
     /// <summary>Generate constructor from fields/properties.</summary>
     GenerateConstructor,
