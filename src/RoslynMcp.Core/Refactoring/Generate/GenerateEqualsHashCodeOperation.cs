@@ -13,7 +13,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// <summary>
 /// Generates Equals() and GetHashCode() overrides for a type.
 /// Optionally implements <c>IEquatable&lt;T&gt;</c> with a typed Equals when requested,
-/// and optionally generates <c>operator ==</c> / <c>operator !=</c>.
+/// optionally generates <c>operator ==</c> / <c>operator !=</c>,
+/// and optionally replaces existing equality members when <c>replaceExisting</c> is true.
 /// </summary>
 public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<GenerateEqualsHashCodeParams>
 {
@@ -64,24 +65,27 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         if (typeSymbol == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve type symbol.");
 
-        if (@params.ImplementIEquatable &&
-            (ImplementsIEquatable(typeSymbol) || HasCompatibleTypedEquals(typeSymbol)))
+        if (!@params.ReplaceExisting)
         {
-            throw new RefactoringException(
-                ErrorCodes.AlreadyImplementsIEquatable,
-                $"Type '{@params.TypeName}' already implements IEquatable<T> or already has a compatible typed Equals.");
-        }
+            if (@params.ImplementIEquatable &&
+                (ImplementsIEquatable(typeSymbol) || HasCompatibleTypedEquals(typeSymbol)))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.AlreadyImplementsIEquatable,
+                    $"Type '{@params.TypeName}' already implements IEquatable<T> or already has a compatible typed Equals.");
+            }
 
-        if (@params.GenerateOperators && HasExistingEqualityOperators(typeSymbol))
-        {
-            throw new RefactoringException(
-                ErrorCodes.AlreadyHasEqualityOperators,
-                $"Type '{@params.TypeName}' already declares operator == or operator !=.");
-        }
+            if (@params.GenerateOperators && HasExistingEqualityOperators(typeSymbol))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.AlreadyHasEqualityOperators,
+                    $"Type '{@params.TypeName}' already declares operator == or operator !=.");
+            }
 
-        // Check for existing overrides (Equals(object) or any 1-arg Equals when not adding IEquatable)
-        if (HasExistingEqualsOverride(typeSymbol))
-            throw new RefactoringException(ErrorCodes.AlreadyHasOverride, "Type already has an Equals override.");
+            // Check for existing overrides (Equals(object) or any 1-arg Equals when not adding IEquatable)
+            if (HasExistingEqualsOverride(typeSymbol))
+                throw new RefactoringException(ErrorCodes.AlreadyHasOverride, "Type already has an Equals override.");
+        }
 
         var members = EqualityMemberCollector.CollectMembers(typeSymbol, @params.Fields);
         if (members.Count == 0)
@@ -120,7 +124,12 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 hashCodeMethod,
                 equalityOperator,
                 inequalityOperator);
-            var description = BuildDescription(@params.TypeName, selfTypeName, @params.ImplementIEquatable, @params.GenerateOperators);
+            var description = BuildDescription(
+                @params.TypeName,
+                selfTypeName,
+                @params.ImplementIEquatable,
+                @params.GenerateOperators,
+                @params.ReplaceExisting);
             var pendingChanges = new List<PendingChange>
             {
                 new()
@@ -128,11 +137,32 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                     File = @params.SourceFile,
                     ChangeType = Contracts.Enums.ChangeKind.Modify,
                     Description = description,
-                    BeforeSnippet = $"// Type '{@params.TypeName}' (no Equals/GetHashCode)",
+                    BeforeSnippet = @params.ReplaceExisting
+                        ? $"// Type '{@params.TypeName}' (replacing existing equality members)"
+                        : $"// Type '{@params.TypeName}' (no Equals/GetHashCode)",
                     AfterSnippet = code
                 }
             };
             return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        }
+
+        var solution = document.Project.Solution;
+        if (@params.ReplaceExisting)
+        {
+            solution = await RemoveExistingEqualityMembersAcrossPartialsAsync(
+                solution,
+                typeSymbol,
+                @params.ImplementIEquatable,
+                @params.GenerateOperators,
+                cancellationToken);
+            document = solution.GetDocument(document.Id)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate the document for type '{@params.TypeName}'.");
+            root = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+            typeDecl = FindTypeDeclaration(root, @params.TypeName, typeDecl.SpanStart)
+                ?? throw new RefactoringException(ErrorCodes.TypeNotFound, $"Type '{@params.TypeName}' not found.");
         }
 
         var newTypeDecl = typeDecl;
@@ -211,6 +241,192 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             (m.Name == "op_Equality" || m.Name == "op_Inequality"));
     }
 
+    private static async Task<Solution> RemoveExistingEqualityMembersAcrossPartialsAsync(
+        Solution solution,
+        INamedTypeSymbol typeSymbol,
+        bool implementIEquatable,
+        bool generateOperators,
+        CancellationToken cancellationToken)
+    {
+        // Match by span/kind, not SyntaxNode reference. WithBaseList rebuilds child
+        // red nodes, so a HashSet<SyntaxNode> would miss after an IEquatable strip.
+        var membersByTreeAndPart = new Dictionary<SyntaxTree, Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>>();
+
+        foreach (var method in CollectEqualityMembersToReplace(typeSymbol, implementIEquatable, generateOperators))
+        {
+            foreach (var reference in method.DeclaringSyntaxReferences)
+            {
+                var syntax = await reference.GetSyntaxAsync(cancellationToken);
+                if (syntax.Parent is not TypeDeclarationSyntax part)
+                    continue;
+
+                if (!membersByTreeAndPart.TryGetValue(syntax.SyntaxTree, out var byPart))
+                {
+                    byPart = new Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>();
+                    membersByTreeAndPart[syntax.SyntaxTree] = byPart;
+                }
+
+                if (!byPart.TryGetValue(part.SpanStart, out var keys))
+                {
+                    keys = new HashSet<(int Start, int End, SyntaxKind Kind)>();
+                    byPart[part.SpanStart] = keys;
+                }
+
+                keys.Add((syntax.SpanStart, syntax.Span.End, syntax.Kind()));
+            }
+        }
+
+        var treesToEdit = new HashSet<SyntaxTree>(membersByTreeAndPart.Keys);
+        if (implementIEquatable)
+        {
+            foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
+                treesToEdit.Add(reference.SyntaxTree);
+        }
+
+        foreach (var tree in treesToEdit)
+        {
+            var document = solution.GetDocument(tree)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
+            var root = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+            var semanticModel = implementIEquatable
+                ? await document.GetSemanticModelAsync(cancellationToken)
+                : null;
+
+            var replacements = new Dictionary<TypeDeclarationSyntax, TypeDeclarationSyntax>();
+            foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
+            {
+                if (reference.SyntaxTree != tree)
+                    continue;
+                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax part)
+                    continue;
+
+                var updated = part;
+                if (membersByTreeAndPart.TryGetValue(tree, out var byPart) &&
+                    byPart.TryGetValue(part.SpanStart, out var keys) &&
+                    keys.Count > 0)
+                {
+                    var remainingMembers = updated.Members
+                        .Where(m => !keys.Contains((m.SpanStart, m.Span.End, m.Kind())))
+                        .ToArray();
+                    updated = updated.WithMembers(SyntaxFactory.List(remainingMembers));
+                }
+
+                if (implementIEquatable && semanticModel != null)
+                    updated = StripIEquatableInterface(part, updated, typeSymbol, semanticModel, cancellationToken);
+
+                if (!ReferenceEquals(updated, part))
+                    replacements[part] = updated;
+            }
+
+            if (replacements.Count == 0)
+                continue;
+
+            var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+            solution = solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+        }
+
+        return solution;
+    }
+
+    private static IEnumerable<IMethodSymbol> CollectEqualityMembersToReplace(
+        INamedTypeSymbol typeSymbol,
+        bool implementIEquatable,
+        bool generateOperators)
+    {
+        foreach (var method in typeSymbol.GetMembers("Equals").OfType<IMethodSymbol>())
+        {
+            if (method.IsImplicitlyDeclared || method.Parameters.Length != 1)
+                continue;
+
+            var paramType = UnwrapNullable(method.Parameters[0].Type);
+            var isObjectEquals = paramType.SpecialType == SpecialType.System_Object;
+            var isTypedEquals = implementIEquatable &&
+                SymbolEqualityComparer.Default.Equals(paramType, typeSymbol);
+            if (isObjectEquals || isTypedEquals)
+                yield return method;
+        }
+
+        foreach (var method in typeSymbol.GetMembers("GetHashCode").OfType<IMethodSymbol>())
+        {
+            if (method.IsImplicitlyDeclared || method.IsStatic || method.Parameters.Length != 0)
+                continue;
+
+            yield return method;
+        }
+
+        if (!generateOperators)
+            yield break;
+
+        foreach (var method in typeSymbol.GetMembers().OfType<IMethodSymbol>())
+        {
+            if (method.MethodKind != MethodKind.UserDefinedOperator)
+                continue;
+            if (method.Name is not ("op_Equality" or "op_Inequality"))
+                continue;
+
+            yield return method;
+        }
+    }
+
+    private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName, int preferredSpanStart)
+    {
+        var matches = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == typeName)
+            .ToList();
+        return matches.FirstOrDefault(t => t.SpanStart == preferredSpanStart) ?? matches.FirstOrDefault();
+    }
+
+    private static TypeDeclarationSyntax StripIEquatableInterface(
+        TypeDeclarationSyntax original,
+        TypeDeclarationSyntax current,
+        INamedTypeSymbol typeSymbol,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (original.BaseList == null || current.BaseList == null)
+            return current;
+
+        var removeIndexes = new HashSet<int>();
+        for (var i = 0; i < original.BaseList.Types.Count; i++)
+        {
+            if (IsSystemIEquatableOfSelf(original.BaseList.Types[i].Type, typeSymbol, semanticModel, cancellationToken))
+                removeIndexes.Add(i);
+        }
+
+        if (removeIndexes.Count == 0)
+            return current;
+
+        var remaining = current.BaseList.Types
+            .Where((_, i) => !removeIndexes.Contains(i))
+            .ToArray();
+
+        if (remaining.Length == 0)
+            return current.WithBaseList(null);
+
+        return current.WithBaseList(
+            current.BaseList.WithTypes(SyntaxFactory.SeparatedList(remaining)));
+    }
+
+    private static bool IsSystemIEquatableOfSelf(
+        TypeSyntax typeSyntax,
+        INamedTypeSymbol selfType,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var symbol = semanticModel.GetTypeInfo(typeSyntax, cancellationToken).Type as INamedTypeSymbol
+            ?? semanticModel.GetSymbolInfo(typeSyntax, cancellationToken).Symbol as INamedTypeSymbol;
+        if (symbol == null)
+            return false;
+
+        return symbol.Name == "IEquatable"
+            && symbol.ContainingNamespace?.ToDisplayString() == "System"
+            && symbol.TypeArguments.Length == 1
+            && SymbolEqualityComparer.Default.Equals(symbol.TypeArguments[0], selfType);
+    }
+
     private static ITypeSymbol UnwrapNullable(ITypeSymbol type)
     {
         if (type is INamedTypeSymbol named &&
@@ -258,15 +474,17 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         string typeName,
         string selfTypeName,
         bool implementIEquatable,
-        bool generateOperators)
+        bool generateOperators,
+        bool replaceExisting)
     {
+        var verb = replaceExisting ? "Replace" : "Generate";
         if (implementIEquatable && generateOperators)
-            return $"Generate Equals, GetHashCode, IEquatable<{selfTypeName}>, and equality operators for {typeName}";
+            return $"{verb} Equals, GetHashCode, IEquatable<{selfTypeName}>, and equality operators for {typeName}";
         if (implementIEquatable)
-            return $"Generate Equals, GetHashCode, and IEquatable<{selfTypeName}> for {typeName}";
+            return $"{verb} Equals, GetHashCode, and IEquatable<{selfTypeName}> for {typeName}";
         if (generateOperators)
-            return $"Generate Equals, GetHashCode, and equality operators for {typeName}";
-        return $"Generate Equals and GetHashCode for {typeName}";
+            return $"{verb} Equals, GetHashCode, and equality operators for {typeName}";
+        return $"{verb} Equals and GetHashCode for {typeName}";
     }
 
     private static string BuildPreviewSnippet(

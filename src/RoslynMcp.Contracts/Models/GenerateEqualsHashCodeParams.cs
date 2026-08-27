@@ -33,6 +33,12 @@ public sealed class GenerateEqualsHashCodeParams
     public bool GenerateOperators { get; init; }
 
     /// <summary>
+    /// When true, remove existing Equals/GetHashCode (and IEquatable / operators when those
+    /// flags are also set) before generating fresh members. Default: false (fail if they exist).
+    /// </summary>
+    public bool ReplaceExisting { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }
