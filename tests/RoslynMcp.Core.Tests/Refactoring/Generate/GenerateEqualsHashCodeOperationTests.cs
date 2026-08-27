@@ -232,7 +232,8 @@ public class GenerateEqualsHashCodeOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains(": IEquatable, global::System.IEquatable<Widget>", updated);
+        Assert.Contains("class Widget : IEquatable", updated);
+        Assert.Contains("global::System.IEquatable<Widget>", updated);
         Assert.Contains("public bool Equals(Widget? other)", updated);
         AssertObjectEqualsDelegates(updated, "Widget");
     }
