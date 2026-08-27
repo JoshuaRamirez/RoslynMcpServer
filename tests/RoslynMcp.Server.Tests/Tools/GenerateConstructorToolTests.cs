@@ -86,8 +86,21 @@ public class GenerateConstructorToolTests
 
         // Assert - Optional properties
         Assert.True(properties.TryGetProperty("members", out _));
+        Assert.True(properties.TryGetProperty("includeProperties", out _));
         Assert.True(properties.TryGetProperty("addNullChecks", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_IncludePropertiesProperty_DefaultsToTrue()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var includeProperties = doc.RootElement.GetProperty("properties").GetProperty("includeProperties");
+
+        Assert.Equal("boolean", includeProperties.GetProperty("type").GetString());
+        Assert.True(includeProperties.GetProperty("default").GetBoolean());
     }
 
     [Fact]
