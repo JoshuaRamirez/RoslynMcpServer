@@ -1554,7 +1554,7 @@ public class GenerateEqualsHashCodeOperationTests
 
     #region callSuper
 
-    private const string EntityPersonSource = """
+    private const string EntitySource = """
         namespace TestApp;
 
         public class Entity
@@ -1565,6 +1565,10 @@ public class GenerateEqualsHashCodeOperationTests
 
             public override int GetHashCode() => Id.GetHashCode();
         }
+        """;
+
+    private const string PersonOnEntitySource = """
+        namespace TestApp;
 
         public class Person : Entity
         {
@@ -1574,22 +1578,16 @@ public class GenerateEqualsHashCodeOperationTests
         }
         """;
 
-    private const string EntityEmployeeEmptySource = """
+    private const string EmployeeOnEntitySource = """
         namespace TestApp;
-
-        public class Entity
-        {
-            public int Id { get; set; }
-
-            public override bool Equals(object? obj) => obj is Entity other && Id == other.Id;
-
-            public override int GetHashCode() => Id.GetHashCode();
-        }
 
         public class Employee : Entity
         {
         }
         """;
+
+    private static Task<TempWorkspace> CreateDerivedOnEntityAsync(string derivedSource, string fileName = "Person.cs") =>
+        TempWorkspace.CreateAsync((fileName, derivedSource), ("Entity.cs", EntitySource));
 
     [SkippableFact]
     public async Task GenerateEquals_CallSuperOmitted_DoesNotCallBase()
@@ -1612,7 +1610,7 @@ public class GenerateEqualsHashCodeOperationTests
     [SkippableFact]
     public async Task GenerateEquals_CallSuperFalse_DoesNotCallBase()
     {
-        await using var workspace = await TempWorkspace.CreateAsync(EntityPersonSource);
+        await using var workspace = await CreateDerivedOnEntityAsync(PersonOnEntitySource);
         var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
 
         var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
@@ -1632,7 +1630,7 @@ public class GenerateEqualsHashCodeOperationTests
     [SkippableFact]
     public async Task GenerateEquals_CallSuperTrue_FoldsBaseEqualsAndGetHashCode()
     {
-        await using var workspace = await TempWorkspace.CreateAsync(EntityPersonSource);
+        await using var workspace = await CreateDerivedOnEntityAsync(PersonOnEntitySource);
         var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
 
         var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
@@ -1659,7 +1657,7 @@ public class GenerateEqualsHashCodeOperationTests
     [SkippableFact]
     public async Task GenerateEquals_CallSuperTrue_UseHashCodeCombine_IncludesBaseHashFirst()
     {
-        await using var workspace = await TempWorkspace.CreateAsync(EntityPersonSource);
+        await using var workspace = await CreateDerivedOnEntityAsync(PersonOnEntitySource);
         var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
 
         var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
@@ -1684,15 +1682,6 @@ public class GenerateEqualsHashCodeOperationTests
         const string source = """
             namespace TestApp;
 
-            public class Entity
-            {
-                public int Id { get; set; }
-
-                public override bool Equals(object? obj) => obj is Entity other && Id == other.Id;
-
-                public override int GetHashCode() => Id.GetHashCode();
-            }
-
             public class Wide : Entity
             {
                 public int A { get; set; }
@@ -1707,7 +1696,7 @@ public class GenerateEqualsHashCodeOperationTests
             }
             """;
 
-        await using var workspace = await TempWorkspace.CreateAsync(source, "Wide.cs");
+        await using var workspace = await CreateDerivedOnEntityAsync(source, "Wide.cs");
         var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
 
         var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
@@ -1736,7 +1725,7 @@ public class GenerateEqualsHashCodeOperationTests
     [SkippableFact]
     public async Task GenerateEquals_CallSuperTrue_UseHashCodeCombineFalse_SeedsFromBaseGetHashCode()
     {
-        await using var workspace = await TempWorkspace.CreateAsync(EntityPersonSource);
+        await using var workspace = await CreateDerivedOnEntityAsync(PersonOnEntitySource);
         var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
 
         var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
@@ -1764,7 +1753,7 @@ public class GenerateEqualsHashCodeOperationTests
     [SkippableFact]
     public async Task GenerateEquals_CallSuperTrue_ImplementIEquatable_FoldsBaseIntoTypedEquals()
     {
-        await using var workspace = await TempWorkspace.CreateAsync(EntityPersonSource);
+        await using var workspace = await CreateDerivedOnEntityAsync(PersonOnEntitySource);
         var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
 
         var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
@@ -1837,7 +1826,7 @@ public class GenerateEqualsHashCodeOperationTests
     [SkippableFact]
     public async Task GenerateEquals_CallSuperTrue_NoMembers_GeneratesBaseOnly()
     {
-        await using var workspace = await TempWorkspace.CreateAsync(EntityEmployeeEmptySource, "Employee.cs");
+        await using var workspace = await CreateDerivedOnEntityAsync(EmployeeOnEntitySource, "Employee.cs");
         var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
 
         var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
@@ -1861,7 +1850,7 @@ public class GenerateEqualsHashCodeOperationTests
     [SkippableFact]
     public async Task GenerateEquals_CallSuperTrue_Preview_DoesNotWriteFiles_AndDescribesBase()
     {
-        await using var workspace = await TempWorkspace.CreateAsync(EntityPersonSource);
+        await using var workspace = await CreateDerivedOnEntityAsync(PersonOnEntitySource);
         var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
         var before = await File.ReadAllTextAsync(workspace.SourcePath);
 
