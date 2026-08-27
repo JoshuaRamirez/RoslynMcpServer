@@ -147,7 +147,9 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
     private static bool ImplementsIEquatable(INamedTypeSymbol typeSymbol)
     {
         return typeSymbol.AllInterfaces.Any(i =>
-            i.OriginalDefinition.SpecialType == SpecialType.System_IEquatable_T &&
+            i.Name == "IEquatable" &&
+            i.ContainingNamespace?.ToDisplayString() == "System" &&
+            i.TypeArguments.Length == 1 &&
             SymbolEqualityComparer.Default.Equals(i.TypeArguments[0], typeSymbol));
     }
 
