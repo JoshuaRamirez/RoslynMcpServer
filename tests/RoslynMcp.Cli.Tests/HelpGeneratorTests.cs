@@ -142,6 +142,7 @@ public class HelpGeneratorTests
         Assert.Contains("--generate-operators", help);
         Assert.Contains("--replace-existing", help);
         Assert.Contains("--use-hash-code-combine", help);
+        Assert.Contains("--include-properties", help);
     }
 
     [Fact]

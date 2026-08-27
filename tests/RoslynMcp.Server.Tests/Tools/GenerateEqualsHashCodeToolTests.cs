@@ -85,11 +85,24 @@ public class GenerateEqualsHashCodeToolTests
         Assert.True(properties.TryGetProperty("sourceFile", out _));
         Assert.True(properties.TryGetProperty("typeName", out _));
         Assert.True(properties.TryGetProperty("fields", out _));
+        Assert.True(properties.TryGetProperty("includeProperties", out _));
         Assert.True(properties.TryGetProperty("implementIEquatable", out _));
         Assert.True(properties.TryGetProperty("generateOperators", out _));
         Assert.True(properties.TryGetProperty("replaceExisting", out _));
         Assert.True(properties.TryGetProperty("useHashCodeCombine", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_IncludePropertiesProperty_DefaultsToTrue()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var includeProperties = doc.RootElement.GetProperty("properties").GetProperty("includeProperties");
+
+        Assert.Equal("boolean", includeProperties.GetProperty("type").GetString());
+        Assert.True(includeProperties.GetProperty("default").GetBoolean());
     }
 
     [Fact]
