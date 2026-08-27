@@ -123,14 +123,28 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                 $"New return type '{@params.NewReturnType}' is the same as the current return type.");
         }
 
-        var relatedMethods = await GetRelatedMethodsAsync(
+        ValidateNotAsyncOrTaskLike(methodSymbol, newReturnType);
+
+        var contractMethods = await GetRelatedMethodsAsync(
             methodSymbol,
-            @params.UpdateOverrides,
-            @params.UpdateImplementations,
+            updateOverrides: true,
+            updateImplementations: true,
             cancellationToken);
+        ValidateUneditableContracts(contractMethods, newReturnType, semanticModel.Compilation);
+
+        var relatedMethods = (await GetRelatedMethodsAsync(
+                methodSymbol,
+                @params.UpdateOverrides,
+                @params.UpdateImplementations,
+                cancellationToken))
+            .Where(HasSourceDeclaration)
+            .ToList();
 
         foreach (var related in relatedMethods)
+        {
+            ValidateNotAsyncOrTaskLike(related, newReturnType);
             ValidateNoOverloadCollision(related, newReturnType);
+        }
 
         var declarationTargets = await CollectDeclarationTargetsAsync(
             relatedMethods,
@@ -146,7 +160,6 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         var newSolution = await ApplyChangesAsync(
             document,
             declarationTargets,
-            @params.NewReturnType,
             cancellationToken);
 
         if (@params.Preview)
@@ -432,7 +445,63 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             }
         }
 
-        return results.Where(HasSourceDeclaration).ToList();
+        return results.ToList();
+    }
+
+    internal static void ValidateNotAsyncOrTaskLike(IMethodSymbol method, ITypeSymbol newReturnType)
+    {
+        if (!method.IsAsync && !IsTaskLike(method.ReturnType) && !IsTaskLike(newReturnType))
+            return;
+
+        throw new RefactoringException(
+            ErrorCodes.AsyncReturnTypeUnsupported,
+            "change_return_type does not support async methods or Task/ValueTask return types.");
+    }
+
+    internal static bool IsTaskLike(ITypeSymbol type)
+    {
+        if (type is not INamedTypeSymbol named)
+            return false;
+
+        var definition = named.OriginalDefinition;
+        if (definition.ContainingNamespace?.ToDisplayString() != "System.Threading.Tasks")
+            return false;
+
+        return definition.Name is "Task" or "ValueTask";
+    }
+
+    internal static void ValidateUneditableContracts(
+        IEnumerable<IMethodSymbol> methods,
+        ITypeSymbol newReturnType,
+        Compilation compilation)
+    {
+        foreach (var method in methods)
+        {
+            if (HasSourceDeclaration(method))
+                continue;
+
+            if (IsCompatibleWithUneditableContract(method.ReturnType, newReturnType, compilation))
+                continue;
+
+            throw new RefactoringException(
+                ErrorCodes.ReturnTypeIncompatible,
+                $"Changing the return type of '{method.Name}' would break an uneditable override or interface contract.");
+        }
+    }
+
+    internal static bool IsCompatibleWithUneditableContract(
+        ITypeSymbol contractReturn,
+        ITypeSymbol newReturn,
+        Compilation compilation)
+    {
+        if (TypesEquivalent(contractReturn, newReturn))
+            return true;
+
+        if (!newReturn.IsReferenceType || !contractReturn.IsReferenceType)
+            return false;
+
+        var conversion = compilation.ClassifyConversion(newReturn, contractReturn);
+        return conversion.Exists && conversion.IsImplicit && (conversion.IsIdentity || conversion.IsReference);
     }
 
     private async Task<List<DeclarationTarget>> CollectDeclarationTargetsAsync(
@@ -462,6 +531,13 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                 var model = await document.GetSemanticModelAsync(cancellationToken)
                     ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
+                if (IsIterator(declaration))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.ContainsYield,
+                        $"Method '{method.Name}' is an iterator; yield return types cannot be converted by change_return_type.");
+                }
+
                 var plan = AnalyzeReturnConversion(
                     declaration,
                     model,
@@ -475,7 +551,8 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                     plan.ReturnSpans,
                     plan.Kind,
                     plan.AddTerminalDefault,
-                    plan.ConvertExpressionBodyToBlock));
+                    plan.ConvertExpressionBodyToBlock,
+                    ToContextValidTypeName(newReturnType, model, declaration.ReturnType.SpanStart)));
             }
         }
 
@@ -705,15 +782,20 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                     if (IsDeclarationName(node, location.Location.SourceSpan))
                         continue;
 
+                    var model = await document.GetSemanticModelAsync(cancellationToken)
+                        ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+
                     var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
                     if (invocation != null && IsInvokedMethodName(invocation, location.Location.SourceSpan))
+                    {
+                        ValidateInvocationResultContext(invocation, newReturnType, model);
                         continue;
+                    }
 
                     if (IsNameOfArgument(node))
                         continue;
 
-                    var model = await document.GetSemanticModelAsync(cancellationToken);
-                    if (model != null && MethodGroupStillCompatible(node, newReturnType, model))
+                    if (MethodGroupStillCompatible(node, newReturnType, model))
                         continue;
 
                     throw new RefactoringException(
@@ -722,6 +804,85 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                 }
             }
         }
+    }
+
+    internal static void ValidateInvocationResultContext(
+        InvocationExpressionSyntax invocation,
+        ITypeSymbol newReturnType,
+        SemanticModel model)
+    {
+        if (IsUnusedInvocation(invocation) || IsVarInferredAssignment(invocation))
+            return;
+
+        var converted = model.GetTypeInfo(invocation).ConvertedType;
+        if (converted == null || converted.TypeKind == TypeKind.Error)
+            return;
+
+        var conversion = model.Compilation.ClassifyConversion(newReturnType, converted);
+        if (conversion.Exists && conversion.IsImplicit)
+            return;
+
+        throw new RefactoringException(
+            ErrorCodes.ReturnTypeIncompatible,
+            "New return type is not compatible with an invocation result context.");
+    }
+
+    internal static bool IsUnusedInvocation(InvocationExpressionSyntax invocation)
+    {
+        if (invocation.Parent is ExpressionStatementSyntax)
+            return true;
+
+        return invocation.Parent is AssignmentExpressionSyntax assignment &&
+               assignment.Left is IdentifierNameSyntax identifier &&
+               identifier.Identifier.ValueText == "_";
+    }
+
+    internal static bool IsVarInferredAssignment(InvocationExpressionSyntax invocation)
+    {
+        return invocation.Parent is EqualsValueClauseSyntax equals &&
+               equals.Parent is VariableDeclaratorSyntax declarator &&
+               declarator.Parent is VariableDeclarationSyntax declaration &&
+               declaration.Type.IsVar;
+    }
+
+    internal static bool IsIterator(MethodDeclarationSyntax declaration)
+    {
+        SyntaxNode? body = declaration.Body ?? (SyntaxNode?)declaration.ExpressionBody;
+        if (body == null)
+            return false;
+
+        return body.DescendantNodesAndSelf()
+            .OfType<YieldStatementSyntax>()
+            .Any(yield => !IsInNestedFunction(yield, declaration));
+    }
+
+    internal static string ToContextValidTypeName(ITypeSymbol type, SemanticModel model, int position)
+    {
+        if (type.SpecialType == SpecialType.System_Void)
+            return "void";
+
+        var display = type.ToMinimalDisplayString(model, position);
+        if (string.IsNullOrWhiteSpace(display) || TypeNameBindsToDifferentType(display, type, model, position))
+        {
+            display = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat
+                .WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.Omitted));
+        }
+
+        return display;
+    }
+
+    private static bool TypeNameBindsToDifferentType(
+        string display,
+        ITypeSymbol expected,
+        SemanticModel model,
+        int position)
+    {
+        var parsed = SyntaxFactory.ParseTypeName(display);
+        var spec = model.GetSpeculativeTypeInfo(position, parsed, SpeculativeBindingOption.BindAsTypeOrNamespace);
+        if (spec.Type == null || spec.Type.TypeKind == TypeKind.Error)
+            return true;
+
+        return !TypesEquivalent(spec.Type, expected);
     }
 
     internal static bool MethodGroupStillCompatible(
@@ -748,7 +909,6 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
     private static async Task<Solution> ApplyChangesAsync(
         Document originatingDocument,
         IReadOnlyList<DeclarationTarget> declarations,
-        string newReturnTypeText,
         CancellationToken cancellationToken)
     {
         var solution = originatingDocument.Project.Solution;
@@ -775,7 +935,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                     "Could not relocate symbol-resolved change_return_type declaration spans.");
             }
 
-            var rewriter = new ChangeReturnTypeRewriter(documentTargets, methods, newReturnTypeText);
+            var rewriter = new ChangeReturnTypeRewriter(documentTargets, methods);
             root = rewriter.Visit(root)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to rewrite change_return_type targets.");
 
@@ -1001,22 +1161,20 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         IReadOnlyList<TextSpan> ReturnSpans,
         ReturnRewriteKind Kind,
         bool AddTerminalDefault,
-        bool ConvertExpressionBodyToBlock);
+        bool ConvertExpressionBodyToBlock,
+        string ReturnTypeText);
 
     private sealed class ChangeReturnTypeRewriter : CSharpSyntaxRewriter
     {
         private readonly IReadOnlyList<DeclarationTarget> _targets;
         private readonly HashSet<MethodDeclarationSyntax> _methods;
-        private readonly string _newReturnType;
 
         public ChangeReturnTypeRewriter(
             IReadOnlyList<DeclarationTarget> targets,
-            IReadOnlyList<MethodDeclarationSyntax> methods,
-            string newReturnType)
+            IReadOnlyList<MethodDeclarationSyntax> methods)
         {
             _targets = targets;
             _methods = new HashSet<MethodDeclarationSyntax>(methods);
-            _newReturnType = newReturnType;
         }
 
         public override SyntaxNode? VisitMethodDeclaration(MethodDeclarationSyntax node)
@@ -1030,10 +1188,10 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                 return base.VisitMethodDeclaration(node);
 
             var visited = (MethodDeclarationSyntax)base.VisitMethodDeclaration(node)!;
-            visited = visited.WithReturnType(CreateReturnTypeSyntax(_newReturnType, visited.ReturnType));
+            visited = visited.WithReturnType(CreateReturnTypeSyntax(target.ReturnTypeText, visited.ReturnType));
 
             var originalIsVoid = IsVoidSyntax(original.ReturnType);
-            var newIsVoid = string.Equals(_newReturnType.Trim(), "void", StringComparison.Ordinal);
+            var newIsVoid = string.Equals(target.ReturnTypeText.Trim(), "void", StringComparison.Ordinal);
             var kind = target.Kind;
             if (kind == ReturnRewriteKind.DeclarationOnly && originalIsVoid && !newIsVoid)
                 kind = ReturnRewriteKind.AddDefaultReturns;
@@ -1043,9 +1201,9 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             if (kind == ReturnRewriteKind.AddDefaultReturns)
             {
                 if (visited.ExpressionBody != null)
-                    visited = ConvertExpressionBodyFromVoidToValue(visited, _newReturnType);
+                    visited = ConvertExpressionBodyFromVoidToValue(visited, target.ReturnTypeText);
                 else if (target.AddTerminalDefault || NeedsTerminalDefault(visited))
-                    visited = AddTerminalDefaultReturn(visited, _newReturnType);
+                    visited = AddTerminalDefaultReturn(visited, target.ReturnTypeText);
             }
             else if (kind == ReturnRewriteKind.StripReturnExpressions &&
                      visited.ExpressionBody != null)
@@ -1066,7 +1224,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             return target.Kind switch
             {
                 ReturnRewriteKind.StripReturnExpressions => StripReturnExpression(visited),
-                ReturnRewriteKind.AddDefaultReturns => AddDefaultReturnExpression(visited, _newReturnType),
+                ReturnRewriteKind.AddDefaultReturns => AddDefaultReturnExpression(visited, target.ReturnTypeText),
                 _ => visited
             };
         }

@@ -411,7 +411,7 @@ public static class ErrorCodes
     public const string NoUnimplementedAbstractMembers = "3126";
 
     // --------------------------------------------
-    // Signature Errors (3127-3134)
+    // Signature Errors (3127-3135)
     // 3060-3066 and 3080-3089 are already shipped for generate/async.
     // --------------------------------------------
 
@@ -438,6 +438,9 @@ public static class ErrorCodes
 
     /// <summary>Return statements cannot be converted to the new type.</summary>
     public const string CannotConvertReturn = "3134";
+
+    /// <summary>Async methods and Task/ValueTask return types are out of leftover scope.</summary>
+    public const string AsyncReturnTypeUnsupported = "3135";
 
 
 

@@ -592,6 +592,257 @@ public class ChangeReturnTypeOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    [SkippableFact]
+    public async Task ChangeReturnType_InvocationResultContext_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public int Process()
+                {
+                    return 1;
+                }
+
+                public void Run()
+                {
+                    int value = Process();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeReturnTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                NewReturnType = "long"
+            }));
+
+        Assert.Equal(ErrorCodes.ReturnTypeIncompatible, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_DiscardedInvocation_AllowsWidening()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public int Process()
+                {
+                    return 1;
+                }
+
+                public void Run()
+                {
+                    Process();
+                    var inferred = Process();
+                    object boxed = Process();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewReturnType = "long"
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public long Process()", text);
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_UneditableOverrideContract_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public override int GetHashCode()
+                {
+                    return 1;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeReturnTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "GetHashCode",
+                NewReturnType = "long"
+            }));
+
+        Assert.Equal(ErrorCodes.ReturnTypeIncompatible, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_UneditableInterfaceContract_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker : System.IDisposable
+            {
+                public void Dispose()
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeReturnTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Dispose",
+                NewReturnType = "int"
+            }));
+
+        Assert.Equal(ErrorCodes.ReturnTypeIncompatible, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_AsyncTask_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public async System.Threading.Tasks.Task Process()
+                {
+                    return;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeReturnTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                NewReturnType = "System.Threading.Tasks.Task<int>"
+            }));
+
+        Assert.Equal(ErrorCodes.AsyncReturnTypeUnsupported, ex.ErrorCode);
+        Assert.Equal("3135", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_Iterator_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public System.Collections.Generic.IEnumerable<int> Process()
+                {
+                    yield return 1;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeReturnTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                NewReturnType = "System.Collections.Generic.IEnumerable<string>"
+            }));
+
+        Assert.Equal(ErrorCodes.ContainsYield, ex.ErrorCode);
+        Assert.Equal("3031", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_QualifiesTypeInOtherDocument()
+    {
+        const string worker = """
+            using Text = System.String;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                public virtual object Process()
+                {
+                    return "";
+                }
+            }
+            """;
+        const string derived = """
+            namespace TestApp;
+
+            public class Derived : Worker
+            {
+                public override object Process()
+                {
+                    return "";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Worker.cs", worker),
+            ("Derived.cs", derived));
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewReturnType = "Text",
+            Line = 7
+        });
+
+        Assert.True(result.Success);
+
+        var workerText = await File.ReadAllTextAsync(workspace.SourcePath);
+        var derivedText = await File.ReadAllTextAsync(Path.Combine(workspace.DirectoryPath, "Derived.cs"));
+        Assert.Contains("virtual Text Process()", workerText);
+        Assert.DoesNotContain("Text Process()", derivedText);
+        Assert.True(
+            derivedText.Contains("override string Process()") ||
+            derivedText.Contains("override System.String Process()"),
+            "Derived file should use a context-valid string type, not the originating alias.\n" + derivedText);
+    }
+
     #endregion
 
     #region Helpers
@@ -613,7 +864,10 @@ public class ChangeReturnTypeOperationTests
         public required string SourcePath { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Worker.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Worker.cs") =>
+            CreateAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -630,8 +884,15 @@ public class ChangeReturnTypeOperationTests
                 </Project>
                 """);
 
-            var sourcePath = Path.Combine(directory, fileName);
-            await File.WriteAllTextAsync(sourcePath, source);
+            string? sourcePath = null;
+            foreach (var (fileName, source) in files)
+            {
+                var path = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(path, source);
+                sourcePath ??= path;
+            }
+
+            sourcePath ??= Path.Combine(directory, "Worker.cs");
 
             try
             {
