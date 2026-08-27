@@ -79,6 +79,22 @@ public class EqualityMemberCollectorTests
         {
             public string Extra;
         }
+
+        public class MethodHider : NamedBase
+        {
+            public string Extra;
+
+            public string Name() => Extra;
+        }
+
+        public class NestedTypeHider : NamedBase
+        {
+            public class Name
+            {
+            }
+
+            public string Extra;
+        }
         """;
 
     [Fact]
@@ -260,6 +276,28 @@ public class EqualityMemberCollectorTests
         var members = EqualityMemberCollector.CollectMembers(type, null, includeProperties: false, includeInheritedMembers: true);
 
         Assert.Equal(new[] { "Extra" }, Names(members));
+        Assert.DoesNotContain("Name", Names(members));
+    }
+
+    [Fact]
+    public void CollectMembers_IncludeInheritedMembersTrue_CloserMethod_SkipsInheritedField()
+    {
+        var type = GetType("MethodHider");
+
+        var members = EqualityMemberCollector.CollectMembers(type, null, includeProperties: true, includeInheritedMembers: true);
+
+        Assert.Equal(new[] { "Extra", "Title" }, Names(members));
+        Assert.DoesNotContain("Name", Names(members));
+    }
+
+    [Fact]
+    public void CollectMembers_IncludeInheritedMembersTrue_CloserNestedType_SkipsInheritedField()
+    {
+        var type = GetType("NestedTypeHider");
+
+        var members = EqualityMemberCollector.CollectMembers(type, null, includeProperties: true, includeInheritedMembers: true);
+
+        Assert.Equal(new[] { "Extra", "Title" }, Names(members));
         Assert.DoesNotContain("Name", Names(members));
     }
 

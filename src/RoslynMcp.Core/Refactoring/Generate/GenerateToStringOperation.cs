@@ -79,10 +79,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         if (typeSymbol.GetMembers("ToString").Any(m => m is IMethodSymbol method && !method.IsImplicitlyDeclared && method.Parameters.Length == 0))
             throw new RefactoringException(ErrorCodes.AlreadyHasOverride, "Type already has a ToString override.");
 
-        var members = @params.IncludeInheritedMembers
-            ? EqualityMemberCollector.CollectMembers(
-                typeSymbol, @params.Fields, includeProperties: true, includeInheritedMembers: true)
-            : EqualityMemberCollector.CollectMembers(typeSymbol, @params.Fields);
+        var members = CollectToStringMembers(typeSymbol, @params);
         if (members.Count == 0)
             throw new RefactoringException(ErrorCodes.NoMembersToGenerate, "No fields or properties available for ToString generation.");
 
@@ -138,6 +135,20 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
     internal static bool IsStringBuilderFormat(string? format) =>
         !string.IsNullOrWhiteSpace(format)
         && format.Trim().Equals(StringBuilderFormat, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Collects ToString members, then drops any named <c>ToString</c> so the
+    /// generated override cannot hide <c>this.ToString</c> (recursive / CS0119).
+    /// </summary>
+    internal static List<ISymbol> CollectToStringMembers(INamedTypeSymbol typeSymbol, GenerateToStringParams @params)
+    {
+        var members = @params.IncludeInheritedMembers
+            ? EqualityMemberCollector.CollectMembers(
+                typeSymbol, @params.Fields, includeProperties: true, includeInheritedMembers: true)
+            : EqualityMemberCollector.CollectMembers(typeSymbol, @params.Fields);
+
+        return members.Where(m => !string.Equals(m.Name, "ToString", StringComparison.Ordinal)).ToList();
+    }
 
     internal static string BuildDescription(
         string typeName,

@@ -1,3 +1,5 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
@@ -607,6 +609,90 @@ public class GenerateToStringOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    [SkippableFact]
+    public async Task GenerateToString_IncludeInheritedMembersTrue_CloserMethodHidesInheritedField()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Name;
+
+                public string Species;
+            }
+
+            public class Dog : Animal
+            {
+                public string Extra;
+
+                public string Name() => Extra;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true,
+            Format = "stringbuilder"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.Contains("Append(this.Extra)", toString);
+        Assert.Contains("Append(this.Species)", toString);
+        Assert.DoesNotContain("Append(this.Name)", toString);
+        Assert.DoesNotContain("Name = ", toString);
+        Assert.DoesNotContain("{Name}", toString);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_IncludeInheritedMembersTrue_InheritedMemberNamedToString_IsOmitted()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string ToString;
+
+                public string Species;
+            }
+
+            public class Dog : Animal
+            {
+                public string Name;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true,
+            Format = "stringbuilder"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.Contains("Append(this.Name)", toString);
+        Assert.Contains("Append(this.Species)", toString);
+        Assert.DoesNotContain("Append(this.ToString)", toString);
+        Assert.DoesNotContain("ToString = ", toString);
+        Assert.DoesNotContain("{ToString}", toString);
+        Assert.Contains("sb.ToString()", toString);
+    }
+
     #endregion
 
     #region Helpers
@@ -628,6 +714,24 @@ public class GenerateToStringOperationTests
         var start = text.IndexOf("public override string ToString()", StringComparison.Ordinal);
         Assert.True(start >= 0, $"Generated source did not contain ToString:\n{text}");
         return text[start..];
+    }
+
+    private static void AssertCompiles(string source)
+    {
+        var compilation = CSharpCompilation.Create(
+                "ToStringCompileTest",
+                new[] { CSharpSyntaxTree.ParseText(source) },
+                new[]
+                {
+                    MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                    MetadataReference.CreateFromFile(typeof(System.Text.StringBuilder).Assembly.Location)
+                },
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, "Generated ToString did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
     }
 
     private static void AssertStringBuilderToString(string text, params string[] members)
