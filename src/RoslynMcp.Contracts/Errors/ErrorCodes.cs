@@ -469,6 +469,9 @@ public static class ErrorCodes
     /// <summary>generate_tostring format is not "interpolated" or "stringbuilder".</summary>
     public const string InvalidToStringFormat = "3143";
 
+    /// <summary>Type already implements IEquatable&lt;T&gt; or already has a compatible typed Equals.</summary>
+    public const string AlreadyImplementsIEquatable = "3144";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

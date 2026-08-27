@@ -132,6 +132,16 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_GenerateEqualsHashCode_ShowsImplementIEquatable()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("generate-equals-hashcode")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("--implement-i-equatable", help);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ShowsParamsAsKebabCase()
     {
         var registry = ToolRegistry.BuildDefault();

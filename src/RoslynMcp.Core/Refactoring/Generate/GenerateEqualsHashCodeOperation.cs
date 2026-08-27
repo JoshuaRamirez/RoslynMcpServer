@@ -12,6 +12,7 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
 /// Generates Equals() and GetHashCode() overrides for a type.
+/// Optionally implements <c>IEquatable&lt;T&gt;</c> with a typed Equals when requested.
 /// </summary>
 public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<GenerateEqualsHashCodeParams>
 {
@@ -62,29 +63,52 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         if (typeSymbol == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve type symbol.");
 
-        // Check for existing overrides
-        if (typeSymbol.GetMembers("Equals").Any(m => m is IMethodSymbol method && !method.IsImplicitlyDeclared && method.Parameters.Length == 1))
+        if (@params.ImplementIEquatable &&
+            (ImplementsIEquatable(typeSymbol) ||
+             ListsIEquatable(typeDecl) ||
+             HasCompatibleTypedEquals(typeSymbol)))
+        {
+            throw new RefactoringException(
+                ErrorCodes.AlreadyImplementsIEquatable,
+                $"Type '{@params.TypeName}' already implements IEquatable<T> or already has a compatible typed Equals.");
+        }
+
+        // Check for existing overrides (Equals(object) or any 1-arg Equals when not adding IEquatable)
+        if (HasExistingEqualsOverride(typeSymbol))
             throw new RefactoringException(ErrorCodes.AlreadyHasOverride, "Type already has an Equals override.");
 
         var members = EqualityMemberCollector.CollectMembers(typeSymbol, @params.Fields);
         if (members.Count == 0)
             throw new RefactoringException(ErrorCodes.NoMembersToGenerate, "No fields or properties available for equality generation.");
 
-        // Generate Equals method
-        var equalsMethod = GenerateEquals(@params.TypeName, members);
+        var isValueType = typeSymbol.IsValueType;
+        MethodDeclarationSyntax? typedEquals = null;
+        MethodDeclarationSyntax objectEquals;
+        if (@params.ImplementIEquatable)
+        {
+            typedEquals = GenerateTypedEquals(@params.TypeName, isValueType, members);
+            objectEquals = GenerateDelegatingObjectEquals(@params.TypeName);
+        }
+        else
+        {
+            objectEquals = GenerateEquals(@params.TypeName, members);
+        }
+
         var hashCodeMethod = GenerateGetHashCode(members);
 
         if (@params.Preview)
         {
-            var code = equalsMethod.NormalizeWhitespace().ToFullString() + "\n\n" +
-                       hashCodeMethod.NormalizeWhitespace().ToFullString();
+            var code = BuildPreviewSnippet(@params.TypeName, @params.ImplementIEquatable, typedEquals, objectEquals, hashCodeMethod);
+            var description = @params.ImplementIEquatable
+                ? $"Generate Equals, GetHashCode, and IEquatable<{@params.TypeName}> for {@params.TypeName}"
+                : $"Generate Equals and GetHashCode for {@params.TypeName}";
             var pendingChanges = new List<PendingChange>
             {
                 new()
                 {
                     File = @params.SourceFile,
                     ChangeType = Contracts.Enums.ChangeKind.Modify,
-                    Description = $"Generate Equals and GetHashCode for {@params.TypeName}",
+                    Description = description,
                     BeforeSnippet = $"// Type '{@params.TypeName}' (no Equals/GetHashCode)",
                     AfterSnippet = code
                 }
@@ -92,9 +116,23 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             return RefactoringResult.PreviewResult(operationId, pendingChanges);
         }
 
-        var newTypeDecl = typeDecl.AddMembers(
-            equalsMethod.WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed),
-            hashCodeMethod.WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed));
+        var newTypeDecl = typeDecl;
+        if (@params.ImplementIEquatable)
+            newTypeDecl = AddIEquatableInterface(newTypeDecl, @params.TypeName);
+
+        var membersToAdd = new List<MemberDeclarationSyntax>();
+        if (typedEquals != null)
+        {
+            membersToAdd.Add(typedEquals.WithLeadingTrivia(
+                SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed));
+        }
+
+        membersToAdd.Add(objectEquals.WithLeadingTrivia(
+            SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed));
+        membersToAdd.Add(hashCodeMethod.WithLeadingTrivia(
+            SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed));
+
+        newTypeDecl = newTypeDecl.AddMembers(membersToAdd.ToArray());
 
         var newRoot = root.ReplaceNode(typeDecl, newTypeDecl);
         var newDocument = document.WithSyntaxRoot(newRoot);
@@ -106,9 +144,96 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             0, 0);
     }
 
-    private static MethodDeclarationSyntax GenerateEquals(string typeName, List<ISymbol> members)
+    private static bool ImplementsIEquatable(INamedTypeSymbol typeSymbol)
     {
-        // Build equality comparisons: field1 == other.field1 && field2 == other.field2
+        return typeSymbol.AllInterfaces.Any(i =>
+            i.OriginalDefinition.SpecialType == SpecialType.System_IEquatable_T &&
+            SymbolEqualityComparer.Default.Equals(i.TypeArguments[0], typeSymbol));
+    }
+
+    private static bool ListsIEquatable(TypeDeclarationSyntax typeDecl)
+    {
+        if (typeDecl.BaseList == null)
+            return false;
+
+        return typeDecl.BaseList.Types.Any(t => IsIEquatableTypeName(t.Type));
+    }
+
+    private static bool IsIEquatableTypeName(TypeSyntax type) => type switch
+    {
+        GenericNameSyntax generic => generic.Identifier.Text == "IEquatable",
+        QualifiedNameSyntax qualified => IsIEquatableTypeName(qualified.Right),
+        AliasQualifiedNameSyntax alias => IsIEquatableTypeName(alias.Name),
+        IdentifierNameSyntax identifier => identifier.Identifier.Text == "IEquatable",
+        _ => false
+    };
+
+    private static bool HasCompatibleTypedEquals(INamedTypeSymbol typeSymbol)
+    {
+        foreach (var member in typeSymbol.GetMembers("Equals").OfType<IMethodSymbol>())
+        {
+            if (member.IsImplicitlyDeclared || member.Parameters.Length != 1)
+                continue;
+
+            var paramType = UnwrapNullable(member.Parameters[0].Type);
+            if (SymbolEqualityComparer.Default.Equals(paramType, typeSymbol))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool HasExistingEqualsOverride(INamedTypeSymbol typeSymbol)
+    {
+        return typeSymbol.GetMembers("Equals").Any(m =>
+            m is IMethodSymbol method && !method.IsImplicitlyDeclared && method.Parameters.Length == 1);
+    }
+
+    private static ITypeSymbol UnwrapNullable(ITypeSymbol type)
+    {
+        if (type is INamedTypeSymbol named &&
+            named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T &&
+            named.TypeArguments.Length == 1)
+        {
+            return named.TypeArguments[0];
+        }
+
+        return type;
+    }
+
+    private static TypeDeclarationSyntax AddIEquatableInterface(TypeDeclarationSyntax typeDecl, string typeName)
+    {
+        var interfaceType = SyntaxFactory.SimpleBaseType(
+            SyntaxFactory.ParseTypeName($"global::System.IEquatable<{typeName}>"));
+
+        if (typeDecl.BaseList == null)
+        {
+            return typeDecl.WithBaseList(
+                SyntaxFactory.BaseList(SyntaxFactory.SingletonSeparatedList<BaseTypeSyntax>(interfaceType)));
+        }
+
+        return typeDecl.WithBaseList(typeDecl.BaseList.AddTypes(interfaceType));
+    }
+
+    private static string BuildPreviewSnippet(
+        string typeName,
+        bool implementIEquatable,
+        MethodDeclarationSyntax? typedEquals,
+        MethodDeclarationSyntax objectEquals,
+        MethodDeclarationSyntax hashCodeMethod)
+    {
+        var parts = new List<string>();
+        if (implementIEquatable)
+            parts.Add($": global::System.IEquatable<{typeName}>");
+        if (typedEquals != null)
+            parts.Add(typedEquals.NormalizeWhitespace().ToFullString());
+        parts.Add(objectEquals.NormalizeWhitespace().ToFullString());
+        parts.Add(hashCodeMethod.NormalizeWhitespace().ToFullString());
+        return string.Join("\n\n", parts);
+    }
+
+    private static ExpressionSyntax BuildMemberComparisons(List<ISymbol> members)
+    {
         ExpressionSyntax? comparison = null;
         foreach (var member in members)
         {
@@ -152,6 +277,77 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 : SyntaxFactory.BinaryExpression(SyntaxKind.LogicalAndExpression, comparison, eq);
         }
 
+        return comparison!;
+    }
+
+    private static MethodDeclarationSyntax GenerateTypedEquals(string typeName, bool isValueType, List<ISymbol> members)
+    {
+        var comparison = BuildMemberComparisons(members);
+        ExpressionSyntax returnExpr;
+        TypeSyntax parameterType;
+
+        if (isValueType)
+        {
+            parameterType = SyntaxFactory.IdentifierName(typeName);
+            returnExpr = comparison;
+        }
+        else
+        {
+            // Person? other — IEquatable<T> for a class uses a nullable parameter.
+            parameterType = SyntaxFactory.NullableType(SyntaxFactory.IdentifierName(typeName));
+            returnExpr = SyntaxFactory.BinaryExpression(
+                SyntaxKind.LogicalAndExpression,
+                SyntaxFactory.IsPatternExpression(
+                    SyntaxFactory.IdentifierName("other"),
+                    SyntaxFactory.UnaryPattern(
+                        SyntaxFactory.Token(SyntaxKind.NotKeyword),
+                        SyntaxFactory.ConstantPattern(
+                            SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression)))),
+                comparison);
+        }
+
+        return SyntaxFactory.MethodDeclaration(
+                SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.BoolKeyword)),
+                "Equals")
+            .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
+            .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SingletonSeparatedList(
+                SyntaxFactory.Parameter(SyntaxFactory.Identifier("other"))
+                    .WithType(parameterType))))
+            .WithBody(SyntaxFactory.Block(SyntaxFactory.ReturnStatement(returnExpr)))
+            .NormalizeWhitespace();
+    }
+
+    private static MethodDeclarationSyntax GenerateDelegatingObjectEquals(string typeName)
+    {
+        // return obj is TypeName other && Equals(other);
+        var returnExpr = SyntaxFactory.BinaryExpression(
+            SyntaxKind.LogicalAndExpression,
+            SyntaxFactory.IsPatternExpression(
+                SyntaxFactory.IdentifierName("obj"),
+                SyntaxFactory.DeclarationPattern(
+                    SyntaxFactory.IdentifierName(typeName),
+                    SyntaxFactory.SingleVariableDesignation(SyntaxFactory.Identifier("other")))),
+            SyntaxFactory.InvocationExpression(SyntaxFactory.IdentifierName("Equals"))
+                .WithArgumentList(SyntaxFactory.ArgumentList(SyntaxFactory.SingletonSeparatedList(
+                    SyntaxFactory.Argument(SyntaxFactory.IdentifierName("other"))))));
+
+        return SyntaxFactory.MethodDeclaration(
+                SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.BoolKeyword)),
+                "Equals")
+            .WithModifiers(SyntaxFactory.TokenList(
+                SyntaxFactory.Token(SyntaxKind.PublicKeyword),
+                SyntaxFactory.Token(SyntaxKind.OverrideKeyword)))
+            .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SingletonSeparatedList(
+                SyntaxFactory.Parameter(SyntaxFactory.Identifier("obj"))
+                    .WithType(SyntaxFactory.NullableType(SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.ObjectKeyword)))))))
+            .WithBody(SyntaxFactory.Block(SyntaxFactory.ReturnStatement(returnExpr)))
+            .NormalizeWhitespace();
+    }
+
+    private static MethodDeclarationSyntax GenerateEquals(string typeName, List<ISymbol> members)
+    {
+        var comparison = BuildMemberComparisons(members);
+
         // public override bool Equals(object? obj)
         // {
         //     return obj is TypeName other && field1 == other.field1 && ...;
@@ -163,7 +359,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 SyntaxFactory.DeclarationPattern(
                     SyntaxFactory.IdentifierName(typeName),
                     SyntaxFactory.SingleVariableDesignation(SyntaxFactory.Identifier("other")))),
-            comparison!);
+            comparison);
 
         return SyntaxFactory.MethodDeclaration(
                 SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.BoolKeyword)),

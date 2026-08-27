@@ -21,6 +21,12 @@ public sealed class GenerateEqualsHashCodeParams
     public IReadOnlyList<string>? Fields { get; init; }
 
     /// <summary>
+    /// When true, also implement <c>IEquatable&lt;T&gt;</c> with a typed <c>Equals(T)</c>
+    /// and have <c>Equals(object)</c> delegate to it. Default: false (Equals(object) + GetHashCode only).
+    /// </summary>
+    public bool ImplementIEquatable { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }

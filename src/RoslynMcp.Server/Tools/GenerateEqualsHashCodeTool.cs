@@ -62,6 +62,12 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 items = new { type = "string" },
                 description = "Specific field/property names to include. If not specified, uses all fields and properties."
             },
+            implementIEquatable = new
+            {
+                type = "boolean",
+                description = "Also implement IEquatable<T> with a typed Equals(T) and have Equals(object) delegate to it",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -100,6 +106,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
                 Fields = args.Fields,
+                ImplementIEquatable = args.ImplementIEquatable ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -131,6 +138,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
         public List<string>? Fields { get; init; }
+        public bool? ImplementIEquatable { get; init; }
         public bool? Preview { get; init; }
     }
 }
