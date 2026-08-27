@@ -32,7 +32,7 @@ public sealed class ExtractInterfaceTool : IToolHandler
     public string Name => "extract_interface";
 
     /// <inheritdoc />
-    public string Description => "Extract an interface from a class's public members.";
+    public string Description => "Extract an interface from a class's public members. When separateFile is true and targetFile is omitted, the interface is written to {InterfaceName}.cs next to the source file.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -70,7 +70,13 @@ public sealed class ExtractInterfaceTool : IToolHandler
             targetFile = new
             {
                 type = "string",
-                description = "Absolute path for the interface file. If not specified, creates in same file."
+                description = "Absolute path for the interface file. If set, wins over separateFile. If neither is set, creates in the same file."
+            },
+            separateFile = new
+            {
+                type = "boolean",
+                description = "When true and targetFile is omitted, write the interface to {InterfaceName}.cs next to the source file.",
+                @default = false
             },
             addInterfaceToType = new
             {
@@ -116,6 +122,7 @@ public sealed class ExtractInterfaceTool : IToolHandler
                 InterfaceName = args.InterfaceName,
                 Members = args.Members,
                 TargetFile = args.TargetFile,
+                SeparateFile = args.SeparateFile ?? false,
                 AddInterfaceToType = args.AddInterfaceToType ?? true,
                 Preview = args.Preview ?? false
             };
@@ -150,6 +157,7 @@ public sealed class ExtractInterfaceTool : IToolHandler
         public string InterfaceName { get; init; } = "";
         public List<string>? Members { get; init; }
         public string? TargetFile { get; init; }
+        public bool? SeparateFile { get; init; }
         public bool? AddInterfaceToType { get; init; }
         public bool? Preview { get; init; }
     }
