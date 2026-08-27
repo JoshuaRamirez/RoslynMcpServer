@@ -286,15 +286,19 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             }
         }
 
+        // Filter members on the original declaration first so node identity still matches.
+        // WithBaseList rewrites the type and would otherwise drop those identities.
         var result = typeDecl;
+        if (remove.Count > 0)
+        {
+            var remainingMembers = result.Members.Where(m => !remove.Contains(m)).ToArray();
+            result = result.WithMembers(SyntaxFactory.List(remainingMembers));
+        }
+
         if (implementIEquatable)
-            result = StripIEquatableInterface(result, typeSymbol, semanticModel, cancellationToken);
+            result = StripIEquatableInterface(typeDecl, result, typeSymbol, semanticModel, cancellationToken);
 
-        if (remove.Count == 0)
-            return result;
-
-        var remaining = result.Members.Where(m => !remove.Contains(m)).ToArray();
-        return result.WithMembers(SyntaxFactory.List(remaining));
+        return result;
     }
 
     private static SyntaxNode? GetDeclaredMemberInType(
@@ -313,35 +317,34 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
     }
 
     private static TypeDeclarationSyntax StripIEquatableInterface(
-        TypeDeclarationSyntax typeDecl,
+        TypeDeclarationSyntax original,
+        TypeDeclarationSyntax current,
         INamedTypeSymbol typeSymbol,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        if (typeDecl.BaseList == null)
-            return typeDecl;
+        if (original.BaseList == null || current.BaseList == null)
+            return current;
 
-        var remaining = new List<BaseTypeSyntax>();
-        var removed = false;
-        foreach (var baseType in typeDecl.BaseList.Types)
+        var removeIndexes = new HashSet<int>();
+        for (var i = 0; i < original.BaseList.Types.Count; i++)
         {
-            if (IsSystemIEquatableOfSelf(baseType.Type, typeSymbol, semanticModel, cancellationToken))
-            {
-                removed = true;
-                continue;
-            }
-
-            remaining.Add(baseType);
+            if (IsSystemIEquatableOfSelf(original.BaseList.Types[i].Type, typeSymbol, semanticModel, cancellationToken))
+                removeIndexes.Add(i);
         }
 
-        if (!removed)
-            return typeDecl;
+        if (removeIndexes.Count == 0)
+            return current;
 
-        if (remaining.Count == 0)
-            return typeDecl.WithBaseList(null);
+        var remaining = current.BaseList.Types
+            .Where((_, i) => !removeIndexes.Contains(i))
+            .ToArray();
 
-        return typeDecl.WithBaseList(
-            typeDecl.BaseList.WithTypes(SyntaxFactory.SeparatedList(remaining)));
+        if (remaining.Length == 0)
+            return current.WithBaseList(null);
+
+        return current.WithBaseList(
+            current.BaseList.WithTypes(SyntaxFactory.SeparatedList(remaining)));
     }
 
     private static bool IsSystemIEquatableOfSelf(
