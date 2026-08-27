@@ -216,4 +216,26 @@ public class HelpGeneratorTests
 
         Assert.Contains("--include-properties", optionalSection);
     }
+
+    [Fact]
+    public void GenerateToolHelp_GenerateConstructor_IncludePropertiesIsOptional_RequiredStringsStayRequired()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("generate-constructor")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.Contains("--type-name", requiredSection);
+        Assert.DoesNotContain("--include-properties", requiredSection);
+
+        Assert.Contains("--include-properties", optionalSection);
+    }
 }

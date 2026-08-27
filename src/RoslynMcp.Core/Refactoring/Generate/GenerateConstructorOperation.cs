@@ -11,6 +11,10 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
 /// Generates a constructor that initializes fields and/or properties.
+/// Honors <c>includeProperties</c> when auto-collecting members: omitted / true
+/// keeps today's field + settable-property set; false uses instance fields only
+/// unless <c>members</c> names a property (named resolution still considers
+/// fields and settable properties).
 /// </summary>
 public sealed class GenerateConstructorOperation : RefactoringOperationBase<GenerateConstructorParams>
 {
@@ -84,7 +88,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         }
 
         // Get fields and properties to initialize
-        var members = GetMembersToInitialize(typeSymbol, @params.Members);
+        var members = GetMembersToInitialize(typeSymbol, @params.Members, @params.IncludeProperties);
 
         if (members.Count == 0)
         {
@@ -174,9 +178,11 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
     private static List<ISymbol> GetMembersToInitialize(
         INamedTypeSymbol typeSymbol,
-        IReadOnlyList<string>? requestedMembers)
+        IReadOnlyList<string>? requestedMembers,
+        bool includeProperties)
     {
         var allMembers = new List<ISymbol>();
+        var hasRequestedMembers = requestedMembers != null && requestedMembers.Count > 0;
 
         // Get fields
         var fields = typeSymbol.GetMembers()
@@ -184,24 +190,30 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             .Where(f => !f.IsStatic && !f.IsConst && !f.IsImplicitlyDeclared)
             .Cast<ISymbol>();
 
-        // Get properties with setters
-        var properties = typeSymbol.GetMembers()
-            .OfType<IPropertySymbol>()
-            .Where(p => !p.IsStatic && !p.IsReadOnly && p.SetMethod != null && !p.IsImplicitlyDeclared)
-            .Cast<ISymbol>();
-
         allMembers.AddRange(fields);
-        allMembers.AddRange(properties);
 
-        if (requestedMembers != null && requestedMembers.Count > 0)
+        // Auto-collection includes settable properties only when includeProperties is true.
+        // A non-empty members list is authoritative and still resolves against settable
+        // properties even if includeProperties is false (same rule as equals/tostring).
+        if (includeProperties || hasRequestedMembers)
+        {
+            var properties = typeSymbol.GetMembers()
+                .OfType<IPropertySymbol>()
+                .Where(p => !p.IsStatic && !p.IsReadOnly && p.SetMethod != null && !p.IsImplicitlyDeclared)
+                .Cast<ISymbol>();
+
+            allMembers.AddRange(properties);
+        }
+
+        if (hasRequestedMembers)
         {
             // Filter to only requested members
-            var requestedSet = new HashSet<string>(requestedMembers);
+            var requestedSet = new HashSet<string>(requestedMembers!);
             allMembers = allMembers.Where(m => requestedSet.Contains(m.Name)).ToList();
 
             // Validate all requested members were found
             var foundNames = allMembers.Select(m => m.Name).ToHashSet();
-            var notFound = requestedMembers.Where(n => !foundNames.Contains(n)).ToList();
+            var notFound = requestedMembers!.Where(n => !foundNames.Contains(n)).ToList();
             if (notFound.Count > 0)
             {
                 throw new RefactoringException(

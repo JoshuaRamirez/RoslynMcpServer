@@ -4,16 +4,41 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Generate;
+using RoslynMcp.Core.Workspace;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
-/// Unit tests for GenerateConstructorOperation semantic validation.
+/// Unit tests for GenerateConstructorOperation semantic validation,
+/// plus operation-level tests for <c>includeProperties</c>.
 /// Tests validate type-level constraints for constructor generation.
 /// </summary>
 public class GenerateConstructorOperationTests
 {
+    private const string WidgetWithFieldAndPropertySource = """
+        namespace TestApp;
+
+        public class Widget
+        {
+            public string _id;
+
+            public string Name { get; set; }
+        }
+        """;
+
+    private const string PersonPropertiesOnlySource = """
+        namespace TestApp;
+
+        public class Person
+        {
+            public string Name { get; set; }
+
+            public int Age { get; set; }
+        }
+        """;
+
     #region Static Class Tests
 
     [Fact]
@@ -312,6 +337,213 @@ public class GenerateConstructorOperationTests
 
     #endregion
 
+    #region includeProperties
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludePropertiesOmitted_IncludesFieldAndProperty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget"
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget");
+        Assert.Contains("_id = id", ctor);
+        Assert.Contains("this.Name = name", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludePropertiesTrue_IncludesFieldAndProperty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget");
+        Assert.Contains("_id = id", ctor);
+        Assert.Contains("this.Name = name", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludePropertiesFalse_IncludesFieldOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget");
+        Assert.Contains("_id = id", ctor);
+        Assert.DoesNotContain("Name", ctor);
+        Assert.DoesNotContain("name", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludePropertiesFalse_EmptyMembersList_IncludesFieldOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Members = Array.Empty<string>(),
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget");
+        Assert.Contains("_id = id", ctor);
+        Assert.DoesNotContain("Name", ctor);
+        Assert.DoesNotContain("name", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludePropertiesFalse_PropertiesOnly_FailsWithMemberNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonPropertiesOnlySource);
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                IncludeProperties = false
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotFound, ex.ErrorCode);
+        Assert.Contains("No members", ex.Message);
+        Assert.Equal(PersonPropertiesOnlySource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludePropertiesFalse_MembersNamesProperty_IncludesThatProperty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Members = new[] { "Name" },
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget");
+        Assert.Contains("this.Name = name", ctor);
+        Assert.DoesNotContain("_id", ctor);
+        Assert.DoesNotContain("string id", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludePropertiesFalse_AddNullChecks_StillAppliesToFields()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = false,
+            AddNullChecks = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget");
+        Assert.Contains("ArgumentNullException", ctor);
+        Assert.Contains("nameof(id)", ctor);
+        Assert.Contains("_id = id", ctor);
+        Assert.DoesNotContain("Name", ctor);
+        Assert.DoesNotContain("nameof(name)", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludePropertiesFalse_Preview_DoesNotWriteFiles_AndDescribesFieldOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeProperties = false,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("_id", result.PendingChanges[0].Description);
+        Assert.DoesNotContain("Name", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        Assert.Contains("_id = id", snippet);
+        Assert.DoesNotContain("Name", snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludePropertiesFalse_DuplicateFieldCtor_StillRejected()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string _id;
+
+                public string Name { get; set; }
+
+                public Widget(string id)
+                {
+                    _id = id;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                IncludeProperties = false
+            }));
+
+        Assert.Equal(ErrorCodes.ConstructorExists, ex.ErrorCode);
+        Assert.Contains("already exists", ex.Message);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Helper Methods
 
     private static void ValidateTypeForConstructor(INamedTypeSymbol typeSymbol)
@@ -429,6 +661,122 @@ public class GenerateConstructorOperationTests
 
         return semanticModel.GetDeclaredSymbol(classDeclaration)
             ?? throw new InvalidOperationException("Could not create non-static class symbol");
+    }
+
+    private static string NormalizeNewlines(string text) =>
+        text.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+    private static string ExtractConstructor(string source, string typeName)
+    {
+        var marker = $"public {typeName}(";
+        var start = source.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Constructor for {typeName} not found in:\n{source}");
+
+        var brace = source.IndexOf('{', start);
+        Assert.True(brace >= 0, $"Constructor body for {typeName} not found in:\n{source}");
+
+        var depth = 0;
+        for (var i = brace; i < source.Length; i++)
+        {
+            if (source[i] == '{')
+                depth++;
+            else if (source[i] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                    return source[start..(i + 1)];
+            }
+        }
+
+        throw new InvalidOperationException($"Unbalanced constructor braces for {typeName}.");
+    }
+
+    private sealed class TempWorkspace : IAsyncDisposable
+    {
+        public required string DirectoryPath { get; init; }
+        public required string ProjectPath { get; init; }
+        public required string SourcePath { get; init; }
+        public required WorkspaceContext Context { get; init; }
+
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Person.cs") =>
+            CreateAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateConstructor_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var projectPath = Path.Combine(directory, "TestApp.csproj");
+            await File.WriteAllTextAsync(projectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            string? sourcePath = null;
+            foreach (var (fileName, source) in files)
+            {
+                var path = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(path, source);
+                sourcePath ??= path;
+            }
+
+            sourcePath ??= Path.Combine(directory, "Person.cs");
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(projectPath);
+                if (context.GetDocumentByPath(sourcePath) == null)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = projectPath,
+                    SourcePath = sourcePath,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            Context.Dispose();
+            await Task.Run(() =>
+            {
+                try
+                {
+                    Directory.Delete(DirectoryPath, recursive: true);
+                }
+                catch
+                {
+                    // ignore locked temp files
+                }
+            });
+        }
     }
 
     #endregion

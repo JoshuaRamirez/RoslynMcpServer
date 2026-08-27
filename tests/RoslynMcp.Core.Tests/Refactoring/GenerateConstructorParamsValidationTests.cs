@@ -82,6 +82,18 @@ public class GenerateConstructorParamsValidationTests
     }
 
     [Fact]
+    public void IncludeProperties_DefaultsToTrue()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass"
+        };
+
+        Assert.True(@params.IncludeProperties);
+    }
+
+    [Fact]
     public void ValidateParams_NullMembers_AcceptsNull()
     {
         var @params = new GenerateConstructorParams
