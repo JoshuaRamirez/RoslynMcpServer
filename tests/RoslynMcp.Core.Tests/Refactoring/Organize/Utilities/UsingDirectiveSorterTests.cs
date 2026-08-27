@@ -55,6 +55,40 @@ public class UsingDirectiveSorterTests
     }
 
     [Fact]
+    public void Sort_SystemFirstTrue_KeepsSystemFirst()
+    {
+        var usings = ParseUsings(
+            "using MyApp.Services;",
+            "using System.Collections.Generic;",
+            "using ThirdParty;",
+            "using System;");
+
+        var sorted = UsingDirectiveSorter.Sort(usings, systemFirst: true);
+
+        Assert.Equal("System", GetNamespaceName(sorted[0]));
+        Assert.Equal("System.Collections.Generic", GetNamespaceName(sorted[1]));
+        Assert.Equal("MyApp.Services", GetNamespaceName(sorted[2]));
+        Assert.Equal("ThirdParty", GetNamespaceName(sorted[3]));
+    }
+
+    [Fact]
+    public void Sort_SystemFirstFalse_SortsAlphabeticallyWithoutSystemPriority()
+    {
+        var usings = ParseUsings(
+            "using MyApp.Services;",
+            "using System.Collections.Generic;",
+            "using ThirdParty;",
+            "using System;");
+
+        var sorted = UsingDirectiveSorter.Sort(usings, systemFirst: false);
+
+        Assert.Equal("MyApp.Services", GetNamespaceName(sorted[0]));
+        Assert.Equal("System", GetNamespaceName(sorted[1]));
+        Assert.Equal("System.Collections.Generic", GetNamespaceName(sorted[2]));
+        Assert.Equal("ThirdParty", GetNamespaceName(sorted[3]));
+    }
+
+    [Fact]
     public void Sort_SystemPrefixedNonSystem_NotGroupedWithSystem()
     {
         // Arrange - "SystemX" should NOT be grouped with "System"
@@ -145,6 +179,24 @@ public class UsingDirectiveSorterTests
         Assert.Equal("ThirdParty.Utils", GetNamespaceName(sorted[3]));
     }
 
+    [Fact]
+    public void Sort_SystemFirstFalse_StaticUsingsAlphabeticalWithoutSystemPriority()
+    {
+        var usings = ParseUsings(
+            "using static MyApp.Helpers;",
+            "using static System.Math;",
+            "using static ThirdParty.Utils;",
+            "using static System.Console;");
+
+        var sorted = UsingDirectiveSorter.Sort(usings, systemFirst: false);
+
+        Assert.Equal("MyApp.Helpers", GetNamespaceName(sorted[0]));
+        Assert.Equal("System.Console", GetNamespaceName(sorted[1]));
+        Assert.Equal("System.Math", GetNamespaceName(sorted[2]));
+        Assert.Equal("ThirdParty.Utils", GetNamespaceName(sorted[3]));
+        Assert.All(sorted, u => Assert.True(IsStaticUsing(u)));
+    }
+
     #endregion
 
     #region Alias Using Tests
@@ -191,6 +243,80 @@ public class UsingDirectiveSorterTests
         Assert.Equal("Alpha", GetAliasName(sorted[0]));
         Assert.Equal("Middle", GetAliasName(sorted[1]));
         Assert.Equal("Zebra", GetAliasName(sorted[2]));
+    }
+
+    #endregion
+
+    #region Global Using Tests
+
+    [Fact]
+    public void Sort_SystemFirstFalse_GlobalSystemThenRegularMyApp_StaysGlobalFirst()
+    {
+        var usings = ParseUsings(
+            "global using System;",
+            "using MyApp;");
+
+        var sorted = UsingDirectiveSorter.Sort(usings, systemFirst: false);
+
+        Assert.Equal(2, sorted.Count);
+        Assert.True(IsGlobalUsing(sorted[0]));
+        Assert.Equal("System", GetNamespaceName(sorted[0]));
+        Assert.False(IsGlobalUsing(sorted[1]));
+        Assert.Equal("MyApp", GetNamespaceName(sorted[1]));
+    }
+
+    [Fact]
+    public void Sort_SystemFirstTrue_GlobalNonSystemThenRegularSystem_StaysGlobalFirst()
+    {
+        var usings = ParseUsings(
+            "global using MyApp;",
+            "using System;");
+
+        var sorted = UsingDirectiveSorter.Sort(usings, systemFirst: true);
+
+        Assert.Equal(2, sorted.Count);
+        Assert.True(IsGlobalUsing(sorted[0]));
+        Assert.Equal("MyApp", GetNamespaceName(sorted[0]));
+        Assert.False(IsGlobalUsing(sorted[1]));
+        Assert.Equal("System", GetNamespaceName(sorted[1]));
+    }
+
+    [Fact]
+    public void Sort_MixedGlobalStaticAndRegular_GlobalsStayAheadOfNonGlobals()
+    {
+        var usings = ParseUsings(
+            "using MyApp;",
+            "global using static System.Math;",
+            "using static ThirdParty.Utils;",
+            "global using System;");
+
+        var sortedTrue = UsingDirectiveSorter.Sort(usings, systemFirst: true);
+        Assert.Equal(4, sortedTrue.Count);
+        Assert.True(IsGlobalUsing(sortedTrue[0]));
+        Assert.False(IsStaticUsing(sortedTrue[0]));
+        Assert.Equal("System", GetNamespaceName(sortedTrue[0]));
+        Assert.True(IsGlobalUsing(sortedTrue[1]));
+        Assert.True(IsStaticUsing(sortedTrue[1]));
+        Assert.Equal("System.Math", GetNamespaceName(sortedTrue[1]));
+        Assert.False(IsGlobalUsing(sortedTrue[2]));
+        Assert.False(IsStaticUsing(sortedTrue[2]));
+        Assert.Equal("MyApp", GetNamespaceName(sortedTrue[2]));
+        Assert.False(IsGlobalUsing(sortedTrue[3]));
+        Assert.True(IsStaticUsing(sortedTrue[3]));
+        Assert.Equal("ThirdParty.Utils", GetNamespaceName(sortedTrue[3]));
+
+        var sortedFalse = UsingDirectiveSorter.Sort(usings, systemFirst: false);
+        Assert.True(IsGlobalUsing(sortedFalse[0]));
+        Assert.False(IsStaticUsing(sortedFalse[0]));
+        Assert.Equal("System", GetNamespaceName(sortedFalse[0]));
+        Assert.True(IsGlobalUsing(sortedFalse[1]));
+        Assert.True(IsStaticUsing(sortedFalse[1]));
+        Assert.Equal("System.Math", GetNamespaceName(sortedFalse[1]));
+        Assert.False(IsGlobalUsing(sortedFalse[2]));
+        Assert.Equal("MyApp", GetNamespaceName(sortedFalse[2]));
+        Assert.False(IsGlobalUsing(sortedFalse[3]));
+        Assert.True(IsStaticUsing(sortedFalse[3]));
+        Assert.Equal("ThirdParty.Utils", GetNamespaceName(sortedFalse[3]));
     }
 
     #endregion
@@ -242,6 +368,52 @@ public class UsingDirectiveSorterTests
         Assert.True(IsStaticUsing(sorted[5]));
 
         // Group 3: Alias usings (alphabetical by alias name)
+        Assert.Equal("A", GetAliasName(sorted[6]));
+        Assert.True(IsAliasUsing(sorted[6]));
+
+        Assert.Equal("Z", GetAliasName(sorted[7]));
+        Assert.True(IsAliasUsing(sorted[7]));
+    }
+
+    [Fact]
+    public void Sort_SystemFirstFalse_KeepsGroupOrderAndSortsNamespacesAlphabetically()
+    {
+        var usings = ParseUsings(
+            "using Z = MyApp.Zeta;",
+            "using static ThirdParty.Extensions;",
+            "using ThirdParty;",
+            "using static System.Math;",
+            "using System.Linq;",
+            "using A = MyApp.Alpha;",
+            "using System;",
+            "using MyApp.Services;");
+
+        var sorted = UsingDirectiveSorter.Sort(usings, systemFirst: false);
+
+        Assert.Equal(8, sorted.Count);
+
+        Assert.Equal("MyApp.Services", GetNamespaceName(sorted[0]));
+        Assert.False(IsStaticUsing(sorted[0]));
+        Assert.False(IsAliasUsing(sorted[0]));
+
+        Assert.Equal("System", GetNamespaceName(sorted[1]));
+        Assert.False(IsStaticUsing(sorted[1]));
+        Assert.False(IsAliasUsing(sorted[1]));
+
+        Assert.Equal("System.Linq", GetNamespaceName(sorted[2]));
+        Assert.False(IsStaticUsing(sorted[2]));
+        Assert.False(IsAliasUsing(sorted[2]));
+
+        Assert.Equal("ThirdParty", GetNamespaceName(sorted[3]));
+        Assert.False(IsStaticUsing(sorted[3]));
+        Assert.False(IsAliasUsing(sorted[3]));
+
+        Assert.Equal("System.Math", GetNamespaceName(sorted[4]));
+        Assert.True(IsStaticUsing(sorted[4]));
+
+        Assert.Equal("ThirdParty.Extensions", GetNamespaceName(sorted[5]));
+        Assert.True(IsStaticUsing(sorted[5]));
+
         Assert.Equal("A", GetAliasName(sorted[6]));
         Assert.True(IsAliasUsing(sorted[6]));
 
@@ -331,6 +503,11 @@ using System;";
     private static bool IsAliasUsing(UsingDirectiveSyntax usingDirective)
     {
         return usingDirective.Alias != null;
+    }
+
+    private static bool IsGlobalUsing(UsingDirectiveSyntax usingDirective)
+    {
+        return usingDirective.GlobalKeyword.IsKind(SyntaxKind.GlobalKeyword);
     }
 
     #endregion

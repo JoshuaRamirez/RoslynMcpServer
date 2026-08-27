@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- `sort_usings` now honors `systemFirst`: default `true` keeps today's System / System.* first grouping within regular and static usings; `false` keeps group order (regular, static, alias) but sorts namespaces alphabetically with no System priority. Alias usings stay alphabetical by alias. Global usings stay ahead of non-global usings in both modes (CS8915). Preview writes nothing.
 - `move_type_to_namespace` now honors `updateFileLocation`: when true, moves the source file to a folder matching the target namespace (e.g. `MyApp.Services` → `MyApp/Services/`), creating missing directories and updating project document paths / explicit compile items; preview writes nothing (including folders); rejects destination-exists, file-name collision, uneditable project, and missing file. Default `false` keeps today's namespace-only rewrite.
 
 ### Added
