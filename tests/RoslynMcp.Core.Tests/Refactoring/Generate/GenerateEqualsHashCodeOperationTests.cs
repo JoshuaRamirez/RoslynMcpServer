@@ -351,6 +351,41 @@ public class GenerateEqualsHashCodeOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateEquals_GenerateOperatorsTrue_ExistingTwoArgEquals_UsesObjectEquals()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+
+                public static bool Equals(Person? a, Person? b) => false;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            GenerateOperators = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public static bool Equals(Person? a, Person? b)", updated);
+        AssertEqualityOperators(updated, "Person?", nullableParameters: true);
+        var equality = ExtractMethod(updated, "public static bool operator ==");
+        Assert.Contains("global::System.Object.Equals(left, right)", equality);
+        Assert.DoesNotContain("return Equals(left, right)", equality);
+    }
+
+    [SkippableFact]
     public async Task GenerateEquals_ImplementIEquatableAndGenerateOperators_EmitsBoth()
     {
         await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
@@ -404,7 +439,7 @@ public class GenerateEqualsHashCodeOperationTests
         Assert.Equal(1, CountOccurrences(updated, "operator !="));
         Assert.Contains("=> false", updated);
         Assert.Contains("=> true", updated);
-        Assert.DoesNotContain("Equals(left, right)", updated);
+        Assert.DoesNotContain("Object.Equals(left, right)", updated);
     }
 
     #endregion
@@ -488,7 +523,7 @@ public class GenerateEqualsHashCodeOperationTests
         var snippet = result.PendingChanges[0].AfterSnippet!;
         Assert.Contains("operator ==", snippet);
         Assert.Contains("operator !=", snippet);
-        Assert.Contains("Equals(left, right)", snippet);
+        Assert.Contains("global::System.Object.Equals(left, right)", snippet);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
@@ -671,7 +706,7 @@ public class GenerateEqualsHashCodeOperationTests
         }
 
         var equality = ExtractMethod(text, "public static bool operator ==");
-        Assert.Contains("Equals(left, right)", equality);
+        Assert.Contains("global::System.Object.Equals(left, right)", equality);
 
         var inequality = ExtractMethod(text, "public static bool operator !=");
         Assert.Contains("!(left == right)", inequality);

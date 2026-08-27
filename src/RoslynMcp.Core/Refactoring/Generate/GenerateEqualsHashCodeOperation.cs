@@ -301,8 +301,13 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
 
     private static OperatorDeclarationSyntax GenerateEqualityOperator(string selfTypeName, bool isValueType)
     {
-        // return Equals(left, right);
-        var returnExpr = SyntaxFactory.InvocationExpression(SyntaxFactory.IdentifierName("Equals"))
+        // return global::System.Object.Equals(left, right);
+        // Qualify so an existing two-arg Equals on the type cannot steal the call.
+        var returnExpr = SyntaxFactory.InvocationExpression(
+                SyntaxFactory.MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    SyntaxFactory.ParseTypeName("global::System.Object"),
+                    SyntaxFactory.IdentifierName("Equals")))
             .WithArgumentList(SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList(new[]
             {
                 SyntaxFactory.Argument(SyntaxFactory.IdentifierName("left")),
