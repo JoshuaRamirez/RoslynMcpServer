@@ -73,6 +73,34 @@ public class GenerateEqualsHashCodeToolTests
         Assert.Contains("typeName", requiredFields);
     }
 
+    [Fact]
+    public void GetDefinition_HasProperties_ForAllParameters()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("solutionPath", out _));
+        Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("typeName", out _));
+        Assert.True(properties.TryGetProperty("fields", out _));
+        Assert.True(properties.TryGetProperty("implementIEquatable", out _));
+        Assert.True(properties.TryGetProperty("preview", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_ImplementIEquatableProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var implementIEquatable = doc.RootElement.GetProperty("properties").GetProperty("implementIEquatable");
+
+        Assert.Equal("boolean", implementIEquatable.GetProperty("type").GetString());
+        Assert.False(implementIEquatable.GetProperty("default").GetBoolean());
+    }
+
     #endregion
 
     #region ExecuteAsync Argument Validation Tests
