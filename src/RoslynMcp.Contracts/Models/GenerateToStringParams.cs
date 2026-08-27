@@ -21,7 +21,8 @@ public sealed class GenerateToStringParams
     public IReadOnlyList<string>? Fields { get; init; }
 
     /// <summary>
-    /// Format: "interpolated" (default) or "stringbuilder".
+    /// Format: "interpolated" (default) or "stringbuilder". Case-insensitive.
+    /// Omitted, null, or empty uses interpolated. Unknown values are rejected.
     /// </summary>
     public string? Format { get; init; }
 

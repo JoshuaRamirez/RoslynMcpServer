@@ -15,13 +15,22 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// </summary>
 public sealed class GenerateToStringOperation : RefactoringOperationBase<GenerateToStringParams>
 {
+    private const string InterpolatedFormat = "interpolated";
+    private const string StringBuilderFormat = "stringbuilder";
+
     /// <inheritdoc />
     public GenerateToStringOperation(WorkspaceContext context) : base(context)
     {
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(GenerateToStringParams @params)
+    protected override void ValidateParams(GenerateToStringParams @params) => Validate(@params);
+
+    /// <summary>
+    /// Validates generate-tostring parameters. Internal so tests can exercise
+    /// input rules without loading a workspace.
+    /// </summary>
+    internal static void Validate(GenerateToStringParams @params)
     {
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
@@ -34,6 +43,8 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
 
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+
+        ValidateFormat(@params.Format);
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -70,7 +81,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         if (members.Count == 0)
             throw new RefactoringException(ErrorCodes.NoMembersToGenerate, "No fields or properties available for ToString generation.");
 
-        var toStringMethod = GenerateToString(@params.TypeName, members);
+        var toStringMethod = GenerateToString(@params.TypeName, members, @params.Format);
 
         if (@params.Preview)
         {
@@ -102,7 +113,35 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
             0, 0);
     }
 
-    private static MethodDeclarationSyntax GenerateToString(string typeName, List<ISymbol> members)
+    internal static void ValidateFormat(string? format)
+    {
+        if (string.IsNullOrWhiteSpace(format))
+            return;
+
+        var normalized = format.Trim();
+        if (normalized.Equals(InterpolatedFormat, StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals(StringBuilderFormat, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        throw new RefactoringException(
+            ErrorCodes.InvalidToStringFormat,
+            $"Invalid format: '{format}'. Expected \"interpolated\" or \"stringbuilder\".");
+    }
+
+    internal static bool IsStringBuilderFormat(string? format) =>
+        !string.IsNullOrWhiteSpace(format)
+        && format.Trim().Equals(StringBuilderFormat, StringComparison.OrdinalIgnoreCase);
+
+    private static MethodDeclarationSyntax GenerateToString(string typeName, List<ISymbol> members, string? format)
+    {
+        return IsStringBuilderFormat(format)
+            ? GenerateStringBuilderToString(typeName, members)
+            : GenerateInterpolatedToString(typeName, members);
+    }
+
+    private static MethodDeclarationSyntax GenerateInterpolatedToString(string typeName, List<ISymbol> members)
     {
         // $"TypeName {{ Field1 = {Field1}, Field2 = {Field2} }}"
         var parts = new List<InterpolatedStringContentSyntax>();
@@ -143,13 +182,74 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
             SyntaxFactory.Token(SyntaxKind.InterpolatedStringStartToken),
             SyntaxFactory.List(parts));
 
-        return SyntaxFactory.MethodDeclaration(
+        return CreateToStringMethod(SyntaxFactory.Block(SyntaxFactory.ReturnStatement(interpolatedString)));
+    }
+
+    private static MethodDeclarationSyntax GenerateStringBuilderToString(string typeName, List<ISymbol> members)
+    {
+        // Same display shape as interpolated: TypeName { Field1 = {Field1}, Field2 = {Field2} }
+        var statements = new List<StatementSyntax>
+        {
+            SyntaxFactory.LocalDeclarationStatement(
+                SyntaxFactory.VariableDeclaration(SyntaxFactory.IdentifierName("var"))
+                    .WithVariables(SyntaxFactory.SingletonSeparatedList(
+                        SyntaxFactory.VariableDeclarator(SyntaxFactory.Identifier("sb"))
+                            .WithInitializer(SyntaxFactory.EqualsValueClause(
+                                SyntaxFactory.ObjectCreationExpression(
+                                        SyntaxFactory.ParseTypeName("global::System.Text.StringBuilder"))
+                                    .WithArgumentList(SyntaxFactory.ArgumentList()))))))
+        };
+
+        statements.Add(AppendLiteral($"{typeName} {{ "));
+
+        for (int i = 0; i < members.Count; i++)
+        {
+            var member = members[i];
+            var prefix = i == 0 ? "" : ", ";
+            statements.Add(AppendLiteral($"{prefix}{member.Name} = "));
+            statements.Add(AppendExpression(MemberAccess(member.Name)));
+        }
+
+        statements.Add(AppendLiteral(" }"));
+        statements.Add(SyntaxFactory.ReturnStatement(
+            SyntaxFactory.InvocationExpression(
+                    SyntaxFactory.MemberAccessExpression(
+                        SyntaxKind.SimpleMemberAccessExpression,
+                        SyntaxFactory.IdentifierName("sb"),
+                        SyntaxFactory.IdentifierName("ToString")))
+                .WithArgumentList(SyntaxFactory.ArgumentList())));
+
+        return CreateToStringMethod(SyntaxFactory.Block(statements));
+    }
+
+    private static MethodDeclarationSyntax CreateToStringMethod(BlockSyntax body) =>
+        SyntaxFactory.MethodDeclaration(
                 SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.StringKeyword)),
                 "ToString")
             .WithModifiers(SyntaxFactory.TokenList(
                 SyntaxFactory.Token(SyntaxKind.PublicKeyword),
                 SyntaxFactory.Token(SyntaxKind.OverrideKeyword)))
-            .WithBody(SyntaxFactory.Block(SyntaxFactory.ReturnStatement(interpolatedString)))
+            .WithBody(body)
             .NormalizeWhitespace();
-    }
+
+    private static MemberAccessExpressionSyntax MemberAccess(string memberName) =>
+        SyntaxFactory.MemberAccessExpression(
+            SyntaxKind.SimpleMemberAccessExpression,
+            SyntaxFactory.ThisExpression(),
+            SyntaxFactory.IdentifierName(memberName));
+
+    private static ExpressionStatementSyntax AppendLiteral(string text) =>
+        AppendExpression(SyntaxFactory.LiteralExpression(
+            SyntaxKind.StringLiteralExpression,
+            SyntaxFactory.Literal(text)));
+
+    private static ExpressionStatementSyntax AppendExpression(ExpressionSyntax argument) =>
+        SyntaxFactory.ExpressionStatement(
+            SyntaxFactory.InvocationExpression(
+                    SyntaxFactory.MemberAccessExpression(
+                        SyntaxKind.SimpleMemberAccessExpression,
+                        SyntaxFactory.IdentifierName("sb"),
+                        SyntaxFactory.IdentifierName("Append")))
+                .WithArgumentList(SyntaxFactory.ArgumentList(
+                    SyntaxFactory.SingletonSeparatedList(SyntaxFactory.Argument(argument)))));
 }

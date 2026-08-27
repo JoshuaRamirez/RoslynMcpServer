@@ -466,6 +466,9 @@ public static class ErrorCodes
     /// <summary>Cannot extract a nested type's base class to a separate file.</summary>
     public const string CannotExtractNestedToSeparateFile = "3142";
 
+    /// <summary>generate_tostring format is not "interpolated" or "stringbuilder".</summary>
+    public const string InvalidToStringFormat = "3143";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================
