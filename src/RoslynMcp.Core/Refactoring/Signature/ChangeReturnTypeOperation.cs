@@ -184,11 +184,20 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         if (string.IsNullOrWhiteSpace(type))
             return false;
 
+        var remainder = type.Trim();
+        if (remainder == "void")
+            return true;
+
         var parsed = SyntaxFactory.ParseTypeName(type);
         if (parsed.ContainsDiagnostics || parsed.IsMissing)
             return false;
 
-        var remainder = type.Trim();
+        if (parsed is PredefinedTypeSyntax predefined &&
+            predefined.Keyword.IsKind(SyntaxKind.VoidKeyword))
+        {
+            return true;
+        }
+
         var written = parsed.ToString();
         if (!string.Equals(written.Trim(), remainder, StringComparison.Ordinal))
         {
@@ -205,9 +214,19 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         MethodDeclarationSyntax method,
         string newReturnType)
     {
+        var trimmed = newReturnType.Trim();
+        if (trimmed == "void")
+            return semanticModel.Compilation.GetSpecialType(SpecialType.System_Void);
+
         var parsed = SyntaxFactory.ParseTypeName(newReturnType);
         if (parsed.ContainsDiagnostics || parsed.IsMissing)
             return null;
+
+        if (parsed is PredefinedTypeSyntax predefined &&
+            predefined.Keyword.IsKind(SyntaxKind.VoidKeyword))
+        {
+            return semanticModel.Compilation.GetSpecialType(SpecialType.System_Void);
+        }
 
         var speculative = semanticModel.GetSpeculativeTypeInfo(
             method.ReturnType.SpanStart,
@@ -217,8 +236,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         if (speculative.Type != null && speculative.Type.TypeKind != TypeKind.Error)
             return speculative.Type;
 
-        var metadataName = newReturnType.Trim();
-        return semanticModel.Compilation.GetTypeByMetadataName(metadataName);
+        return semanticModel.Compilation.GetTypeByMetadataName(trimmed);
     }
 
     internal static void ValidateNoOverloadCollision(IMethodSymbol method, ITypeSymbol newReturnType)
@@ -478,8 +496,8 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         ITypeSymbol newReturnType,
         bool convertReturnStatements)
     {
-        var currentIsVoid = currentReturnType.SpecialType == SpecialType.System_Void;
-        var newIsVoid = newReturnType.SpecialType == SpecialType.System_Void;
+        var currentIsVoid = IsVoid(currentReturnType, declaration.ReturnType);
+        var newIsVoid = IsVoid(newReturnType);
         var returns = CollectReturnStatements(declaration);
 
         if (declaration.Body == null && declaration.ExpressionBody == null)
@@ -531,7 +549,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         if (declaration.Body != null)
         {
             var flow = model.AnalyzeControlFlow(declaration.Body);
-            addTerminal = !flow.Succeeded || flow.EndPointIsReachable;
+            addTerminal = flow is not { Succeeded: true, EndPointIsReachable: false };
         }
 
         return new ReturnRewritePlan(
@@ -636,6 +654,20 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             .OfType<ReturnStatementSyntax>()
             .Where(r => !IsInNestedFunction(r, declaration))
             .ToList();
+    }
+
+    internal static bool IsVoid(ITypeSymbol type, TypeSyntax? syntax = null)
+    {
+        if (type.SpecialType == SpecialType.System_Void)
+            return true;
+
+        if (syntax is PredefinedTypeSyntax predefined &&
+            predefined.Keyword.IsKind(SyntaxKind.VoidKeyword))
+        {
+            return true;
+        }
+
+        return type.ToDisplayString() == "void";
     }
 
     private static bool IsInNestedFunction(SyntaxNode node, MethodDeclarationSyntax method)
@@ -788,13 +820,22 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         return SyntaxFactory.DefaultExpression(SyntaxFactory.ParseTypeName(newReturnType));
     }
 
+    internal static ReturnStatementSyntax CreateDefaultReturnStatement(string newReturnType)
+    {
+        return SyntaxFactory.ReturnStatement(
+            SyntaxFactory.Token(SyntaxKind.ReturnKeyword).WithTrailingTrivia(SyntaxFactory.Space),
+            CreateDefaultExpression(newReturnType),
+            SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+    }
+
     internal static MethodDeclarationSyntax ConvertExpressionBodyFromValueToVoid(MethodDeclarationSyntax method)
     {
         var returnStatement = SyntaxFactory.ReturnStatement();
         return method
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(returnStatement));
+            .WithBody(SyntaxFactory.Block(returnStatement))
+            .NormalizeWhitespace();
     }
 
     internal static MethodDeclarationSyntax ConvertExpressionBodyFromVoidToValue(
@@ -805,13 +846,14 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         var statements = new List<StatementSyntax>
         {
             SyntaxFactory.ExpressionStatement(expression.WithoutTrivia()),
-            SyntaxFactory.ReturnStatement(CreateDefaultExpression(newReturnType))
+            CreateDefaultReturnStatement(newReturnType)
         };
 
         return method
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(statements));
+            .WithBody(SyntaxFactory.Block(statements))
+            .NormalizeWhitespace();
     }
 
     internal static MethodDeclarationSyntax AddTerminalDefaultReturn(
@@ -821,9 +863,21 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         if (method.Body == null)
             return method;
 
-        var returnStatement = SyntaxFactory.ReturnStatement(CreateDefaultExpression(newReturnType));
+        var returnStatement = CreateDefaultReturnStatement(newReturnType)
+            .WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed);
         return method.WithBody(method.Body.AddStatements(returnStatement));
     }
+
+    private static bool NeedsTerminalDefault(MethodDeclarationSyntax method)
+    {
+        if (method.Body == null)
+            return false;
+
+        return !method.Body.Statements.OfType<ReturnStatementSyntax>().Any();
+    }
+
+    private static bool IsVoidSyntax(TypeSyntax type) =>
+        type is PredefinedTypeSyntax predefined && predefined.Keyword.IsKind(SyntaxKind.VoidKeyword);
 
     private static async Task<RefactoringResult> CreatePreviewResultAsync(
         Guid operationId,
@@ -978,15 +1032,26 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             var visited = (MethodDeclarationSyntax)base.VisitMethodDeclaration(node)!;
             visited = visited.WithReturnType(CreateReturnTypeSyntax(_newReturnType, visited.ReturnType));
 
-            if (target.ConvertExpressionBodyToBlock && visited.ExpressionBody != null)
-            {
-                visited = target.Kind == ReturnRewriteKind.AddDefaultReturns
-                    ? ConvertExpressionBodyFromVoidToValue(visited, _newReturnType)
-                    : ConvertExpressionBodyFromValueToVoid(visited);
-            }
+            var originalIsVoid = IsVoidSyntax(original.ReturnType);
+            var newIsVoid = string.Equals(_newReturnType.Trim(), "void", StringComparison.Ordinal);
+            var kind = target.Kind;
+            if (kind == ReturnRewriteKind.DeclarationOnly && originalIsVoid && !newIsVoid)
+                kind = ReturnRewriteKind.AddDefaultReturns;
+            if (kind == ReturnRewriteKind.DeclarationOnly && !originalIsVoid && newIsVoid)
+                kind = ReturnRewriteKind.StripReturnExpressions;
 
-            if (target.AddTerminalDefault)
-                visited = AddTerminalDefaultReturn(visited, _newReturnType);
+            if (kind == ReturnRewriteKind.AddDefaultReturns)
+            {
+                if (visited.ExpressionBody != null)
+                    visited = ConvertExpressionBodyFromVoidToValue(visited, _newReturnType);
+                else if (target.AddTerminalDefault || NeedsTerminalDefault(visited))
+                    visited = AddTerminalDefaultReturn(visited, _newReturnType);
+            }
+            else if (kind == ReturnRewriteKind.StripReturnExpressions &&
+                     visited.ExpressionBody != null)
+            {
+                visited = ConvertExpressionBodyFromValueToVoid(visited);
+            }
 
             return visited;
         }

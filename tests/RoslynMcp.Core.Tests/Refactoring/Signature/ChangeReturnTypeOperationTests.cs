@@ -514,7 +514,7 @@ public class ChangeReturnTypeOperationTests
             {
                 SourceFile = workspace.SourcePath,
                 MethodName = "Process",
-                NewReturnType = "string"
+                NewReturnType = "object"
             }));
 
         Assert.Equal(ErrorCodes.UnsupportedCallSite, ex.ErrorCode);
