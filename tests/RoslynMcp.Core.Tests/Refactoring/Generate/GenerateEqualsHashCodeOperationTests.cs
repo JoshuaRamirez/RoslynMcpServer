@@ -946,6 +946,105 @@ public class GenerateEqualsHashCodeOperationTests
         Assert.Equal(1, CountOccurrences(updated, "public bool Equals(Box<T>? other)"));
     }
 
+    [SkippableFact]
+    public async Task GenerateEquals_ReplaceExistingTrue_PartialOtherFile_RemovesOtherPartMembers()
+    {
+        const string fieldsPart = """
+            namespace TestApp;
+
+            public partial class Person
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+            }
+            """;
+
+        const string equalsPart = """
+            namespace TestApp;
+
+            public partial class Person
+            {
+                public override bool Equals(object? obj) => false;
+
+                public override int GetHashCode() => 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Person.cs", fieldsPart),
+            ("Person.Equals.cs", equalsPart));
+        var otherPath = workspace.PathFor("Person.Equals.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var selected = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var other = NormalizeNewlines(await File.ReadAllTextAsync(otherPath));
+        AssertDefaultEqualsShape(selected);
+        Assert.DoesNotContain("=> false", selected);
+        Assert.DoesNotContain("=> 42", selected);
+        Assert.Equal(1, CountOccurrences(selected, "public override bool Equals(object?"));
+        Assert.Equal(1, CountOccurrences(selected, "public override int GetHashCode()"));
+        Assert.DoesNotContain("public override bool Equals", other);
+        Assert.DoesNotContain("public override int GetHashCode", other);
+        Assert.DoesNotContain("=> false", other);
+        Assert.DoesNotContain("=> 42", other);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ReplaceExistingTrue_PartialOtherFile_Preview_DoesNotWriteFiles()
+    {
+        const string fieldsPart = """
+            namespace TestApp;
+
+            public partial class Person
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+            }
+            """;
+
+        const string equalsPart = """
+            namespace TestApp;
+
+            public partial class Person
+            {
+                public override bool Equals(object? obj) => false;
+
+                public override int GetHashCode() => 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Person.cs", fieldsPart),
+            ("Person.Equals.cs", equalsPart));
+        var otherPath = workspace.PathFor("Person.Equals.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var beforeSelected = await File.ReadAllTextAsync(workspace.SourcePath);
+        var beforeOther = await File.ReadAllTextAsync(otherPath);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Equal(beforeSelected, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(beforeOther, await File.ReadAllTextAsync(otherPath));
+    }
+
     #endregion
 
     #region Helpers
@@ -1054,7 +1153,12 @@ public class GenerateEqualsHashCodeOperationTests
         public required string SourcePath { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Person.cs")
+        public string PathFor(string fileName) => Path.Combine(DirectoryPath, fileName);
+
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Person.cs") =>
+            CreateAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1062,8 +1166,6 @@ public class GenerateEqualsHashCodeOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
-
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
@@ -1072,7 +1174,16 @@ public class GenerateEqualsHashCodeOperationTests
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            string? sourcePath = null;
+            foreach (var (fileName, source) in files)
+            {
+                var path = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(path, source);
+                sourcePath ??= path;
+            }
+
+            sourcePath ??= Path.Combine(directory, "Person.cs");
 
             try
             {

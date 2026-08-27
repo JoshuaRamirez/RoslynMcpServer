@@ -146,18 +146,26 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             return RefactoringResult.PreviewResult(operationId, pendingChanges);
         }
 
-        var newTypeDecl = typeDecl;
+        var solution = document.Project.Solution;
         if (@params.ReplaceExisting)
         {
-            newTypeDecl = RemoveExistingEqualityMembers(
-                newTypeDecl,
+            solution = await RemoveExistingEqualityMembersAcrossPartialsAsync(
+                solution,
                 typeSymbol,
-                semanticModel,
                 @params.ImplementIEquatable,
                 @params.GenerateOperators,
                 cancellationToken);
+            document = solution.GetDocument(document.Id)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate the document for type '{@params.TypeName}'.");
+            root = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+            typeDecl = FindTypeDeclaration(root, @params.TypeName, typeDecl.SpanStart)
+                ?? throw new RefactoringException(ErrorCodes.TypeNotFound, $"Type '{@params.TypeName}' not found.");
         }
 
+        var newTypeDecl = typeDecl;
         if (@params.ImplementIEquatable)
             newTypeDecl = AddIEquatableInterface(newTypeDecl, selfTypeName);
 
@@ -233,19 +241,101 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             (m.Name == "op_Equality" || m.Name == "op_Inequality"));
     }
 
-    private static TypeDeclarationSyntax RemoveExistingEqualityMembers(
-        TypeDeclarationSyntax typeDecl,
+    private static async Task<Solution> RemoveExistingEqualityMembersAcrossPartialsAsync(
+        Solution solution,
         INamedTypeSymbol typeSymbol,
-        SemanticModel semanticModel,
         bool implementIEquatable,
         bool generateOperators,
         CancellationToken cancellationToken)
     {
         // Match by span/kind, not SyntaxNode reference. WithBaseList rebuilds child
-        // red nodes, so a HashSet<SyntaxNode> collected from the original typeDecl
-        // would miss after an IEquatable strip and leave duplicate members.
-        var remove = new HashSet<(int Start, int End, SyntaxKind Kind)>();
+        // red nodes, so a HashSet<SyntaxNode> would miss after an IEquatable strip.
+        var membersByTreeAndPart = new Dictionary<SyntaxTree, Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>>();
 
+        foreach (var method in CollectEqualityMembersToReplace(typeSymbol, implementIEquatable, generateOperators))
+        {
+            foreach (var reference in method.DeclaringSyntaxReferences)
+            {
+                var syntax = await reference.GetSyntaxAsync(cancellationToken);
+                if (syntax.Parent is not TypeDeclarationSyntax part)
+                    continue;
+
+                if (!membersByTreeAndPart.TryGetValue(syntax.SyntaxTree, out var byPart))
+                {
+                    byPart = new Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>();
+                    membersByTreeAndPart[syntax.SyntaxTree] = byPart;
+                }
+
+                if (!byPart.TryGetValue(part.SpanStart, out var keys))
+                {
+                    keys = new HashSet<(int Start, int End, SyntaxKind Kind)>();
+                    byPart[part.SpanStart] = keys;
+                }
+
+                keys.Add((syntax.SpanStart, syntax.Span.End, syntax.Kind()));
+            }
+        }
+
+        var treesToEdit = new HashSet<SyntaxTree>(membersByTreeAndPart.Keys);
+        if (implementIEquatable)
+        {
+            foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
+                treesToEdit.Add(reference.SyntaxTree);
+        }
+
+        foreach (var tree in treesToEdit)
+        {
+            var document = solution.GetDocument(tree)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
+            var root = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+            var semanticModel = implementIEquatable
+                ? await document.GetSemanticModelAsync(cancellationToken)
+                : null;
+
+            var replacements = new Dictionary<TypeDeclarationSyntax, TypeDeclarationSyntax>();
+            foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
+            {
+                if (reference.SyntaxTree != tree)
+                    continue;
+                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax part)
+                    continue;
+
+                var updated = part;
+                if (membersByTreeAndPart.TryGetValue(tree, out var byPart) &&
+                    byPart.TryGetValue(part.SpanStart, out var keys) &&
+                    keys.Count > 0)
+                {
+                    var remainingMembers = updated.Members
+                        .Where(m => !keys.Contains((m.SpanStart, m.Span.End, m.Kind())))
+                        .ToArray();
+                    updated = updated.WithMembers(SyntaxFactory.List(remainingMembers));
+                }
+
+                if (implementIEquatable && semanticModel != null)
+                    updated = StripIEquatableInterface(part, updated, typeSymbol, semanticModel, cancellationToken);
+
+                if (!ReferenceEquals(updated, part))
+                    replacements[part] = updated;
+            }
+
+            if (replacements.Count == 0)
+                continue;
+
+            var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+            solution = solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+        }
+
+        return solution;
+    }
+
+    private static IEnumerable<IMethodSymbol> CollectEqualityMembersToReplace(
+        INamedTypeSymbol typeSymbol,
+        bool implementIEquatable,
+        bool generateOperators)
+    {
         foreach (var method in typeSymbol.GetMembers("Equals").OfType<IMethodSymbol>())
         {
             if (method.IsImplicitlyDeclared || method.Parameters.Length != 1)
@@ -255,11 +345,8 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             var isObjectEquals = paramType.SpecialType == SpecialType.System_Object;
             var isTypedEquals = implementIEquatable &&
                 SymbolEqualityComparer.Default.Equals(paramType, typeSymbol);
-
-            if (!isObjectEquals && !isTypedEquals)
-                continue;
-
-            MarkMemberForRemoval(remove, GetDeclaredMemberInType(method, typeDecl, cancellationToken));
+            if (isObjectEquals || isTypedEquals)
+                yield return method;
         }
 
         foreach (var method in typeSymbol.GetMembers("GetHashCode").OfType<IMethodSymbol>())
@@ -267,59 +354,29 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             if (method.IsImplicitlyDeclared || method.IsStatic || method.Parameters.Length != 0)
                 continue;
 
-            MarkMemberForRemoval(remove, GetDeclaredMemberInType(method, typeDecl, cancellationToken));
+            yield return method;
         }
 
-        if (generateOperators)
+        if (!generateOperators)
+            yield break;
+
+        foreach (var method in typeSymbol.GetMembers().OfType<IMethodSymbol>())
         {
-            foreach (var method in typeSymbol.GetMembers().OfType<IMethodSymbol>())
-            {
-                if (method.MethodKind != MethodKind.UserDefinedOperator)
-                    continue;
-                if (method.Name is not ("op_Equality" or "op_Inequality"))
-                    continue;
+            if (method.MethodKind != MethodKind.UserDefinedOperator)
+                continue;
+            if (method.Name is not ("op_Equality" or "op_Inequality"))
+                continue;
 
-                MarkMemberForRemoval(remove, GetDeclaredMemberInType(method, typeDecl, cancellationToken));
-            }
+            yield return method;
         }
-
-        // Drop members on the original declaration first, then strip IEquatable.
-        var result = typeDecl;
-        if (remove.Count > 0)
-        {
-            var remainingMembers = result.Members
-                .Where(m => !remove.Contains((m.SpanStart, m.Span.End, m.Kind())))
-                .ToArray();
-            result = result.WithMembers(SyntaxFactory.List(remainingMembers));
-        }
-
-        if (implementIEquatable)
-            result = StripIEquatableInterface(typeDecl, result, typeSymbol, semanticModel, cancellationToken);
-
-        return result;
     }
 
-    private static void MarkMemberForRemoval(
-        HashSet<(int Start, int End, SyntaxKind Kind)> remove,
-        SyntaxNode? syntax)
+    private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName, int preferredSpanStart)
     {
-        if (syntax != null)
-            remove.Add((syntax.SpanStart, syntax.Span.End, syntax.Kind()));
-    }
-
-    private static SyntaxNode? GetDeclaredMemberInType(
-        ISymbol symbol,
-        TypeDeclarationSyntax typeDecl,
-        CancellationToken cancellationToken)
-    {
-        foreach (var reference in symbol.DeclaringSyntaxReferences)
-        {
-            var syntax = reference.GetSyntax(cancellationToken);
-            if (syntax.Parent == typeDecl)
-                return syntax;
-        }
-
-        return null;
+        var matches = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == typeName)
+            .ToList();
+        return matches.FirstOrDefault(t => t.SpanStart == preferredSpanStart) ?? matches.FirstOrDefault();
     }
 
     private static TypeDeclarationSyntax StripIEquatableInterface(
