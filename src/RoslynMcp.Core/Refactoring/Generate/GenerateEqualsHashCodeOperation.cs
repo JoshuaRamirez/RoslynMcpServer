@@ -64,9 +64,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve type symbol.");
 
         if (@params.ImplementIEquatable &&
-            (ImplementsIEquatable(typeSymbol) ||
-             ListsIEquatable(typeDecl) ||
-             HasCompatibleTypedEquals(typeSymbol)))
+            (ImplementsIEquatable(typeSymbol) || HasCompatibleTypedEquals(typeSymbol)))
         {
             throw new RefactoringException(
                 ErrorCodes.AlreadyImplementsIEquatable,
@@ -81,26 +79,27 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         if (members.Count == 0)
             throw new RefactoringException(ErrorCodes.NoMembersToGenerate, "No fields or properties available for equality generation.");
 
+        var selfTypeName = GetSelfTypeName(typeDecl);
         var isValueType = typeSymbol.IsValueType;
         MethodDeclarationSyntax? typedEquals = null;
         MethodDeclarationSyntax objectEquals;
         if (@params.ImplementIEquatable)
         {
-            typedEquals = GenerateTypedEquals(@params.TypeName, isValueType, members);
-            objectEquals = GenerateDelegatingObjectEquals(@params.TypeName);
+            typedEquals = GenerateTypedEquals(selfTypeName, isValueType, members);
+            objectEquals = GenerateDelegatingObjectEquals(selfTypeName);
         }
         else
         {
-            objectEquals = GenerateEquals(@params.TypeName, members);
+            objectEquals = GenerateEquals(selfTypeName, members);
         }
 
         var hashCodeMethod = GenerateGetHashCode(members);
 
         if (@params.Preview)
         {
-            var code = BuildPreviewSnippet(@params.TypeName, @params.ImplementIEquatable, typedEquals, objectEquals, hashCodeMethod);
+            var code = BuildPreviewSnippet(selfTypeName, @params.ImplementIEquatable, typedEquals, objectEquals, hashCodeMethod);
             var description = @params.ImplementIEquatable
-                ? $"Generate Equals, GetHashCode, and IEquatable<{@params.TypeName}> for {@params.TypeName}"
+                ? $"Generate Equals, GetHashCode, and IEquatable<{selfTypeName}> for {@params.TypeName}"
                 : $"Generate Equals and GetHashCode for {@params.TypeName}";
             var pendingChanges = new List<PendingChange>
             {
@@ -118,7 +117,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
 
         var newTypeDecl = typeDecl;
         if (@params.ImplementIEquatable)
-            newTypeDecl = AddIEquatableInterface(newTypeDecl, @params.TypeName);
+            newTypeDecl = AddIEquatableInterface(newTypeDecl, selfTypeName);
 
         var membersToAdd = new List<MemberDeclarationSyntax>();
         if (typedEquals != null)
@@ -153,23 +152,6 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             SymbolEqualityComparer.Default.Equals(i.TypeArguments[0], typeSymbol));
     }
 
-    private static bool ListsIEquatable(TypeDeclarationSyntax typeDecl)
-    {
-        if (typeDecl.BaseList == null)
-            return false;
-
-        return typeDecl.BaseList.Types.Any(t => IsIEquatableTypeName(t.Type));
-    }
-
-    private static bool IsIEquatableTypeName(TypeSyntax type) => type switch
-    {
-        GenericNameSyntax generic => generic.Identifier.Text == "IEquatable",
-        QualifiedNameSyntax qualified => IsIEquatableTypeName(qualified.Right),
-        AliasQualifiedNameSyntax alias => IsIEquatableTypeName(alias.Name),
-        IdentifierNameSyntax identifier => identifier.Identifier.Text == "IEquatable",
-        _ => false
-    };
-
     private static bool HasCompatibleTypedEquals(INamedTypeSymbol typeSymbol)
     {
         foreach (var member in typeSymbol.GetMembers("Equals").OfType<IMethodSymbol>())
@@ -203,10 +185,27 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         return type;
     }
 
-    private static TypeDeclarationSyntax AddIEquatableInterface(TypeDeclarationSyntax typeDecl, string typeName)
+    /// <summary>
+    /// Identifier plus type parameters from the declaration (e.g. <c>Person</c>, <c>Box&lt;T&gt;</c>, <c>Pair&lt;T, U&gt;</c>).
+    /// Lookup uses the bare identifier; generated IEquatable/Equals must keep the type arguments.
+    /// </summary>
+    private static string GetSelfTypeName(TypeDeclarationSyntax typeDecl)
+    {
+        var identifier = typeDecl.Identifier.Text;
+        if (typeDecl.TypeParameterList == null || typeDecl.TypeParameterList.Parameters.Count == 0)
+            return identifier;
+
+        var arguments = string.Join(", ", typeDecl.TypeParameterList.Parameters.Select(p => p.Identifier.Text));
+        return $"{identifier}<{arguments}>";
+    }
+
+    private static TypeSyntax SelfTypeSyntax(string selfTypeName) =>
+        SyntaxFactory.ParseTypeName(selfTypeName);
+
+    private static TypeDeclarationSyntax AddIEquatableInterface(TypeDeclarationSyntax typeDecl, string selfTypeName)
     {
         var interfaceType = SyntaxFactory.SimpleBaseType(
-            SyntaxFactory.ParseTypeName($"global::System.IEquatable<{typeName}>"));
+            SyntaxFactory.ParseTypeName($"global::System.IEquatable<{selfTypeName}>"));
 
         if (typeDecl.BaseList == null)
         {
@@ -282,7 +281,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         return comparison!;
     }
 
-    private static MethodDeclarationSyntax GenerateTypedEquals(string typeName, bool isValueType, List<ISymbol> members)
+    private static MethodDeclarationSyntax GenerateTypedEquals(string selfTypeName, bool isValueType, List<ISymbol> members)
     {
         var comparison = BuildMemberComparisons(members);
         ExpressionSyntax returnExpr;
@@ -290,13 +289,13 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
 
         if (isValueType)
         {
-            parameterType = SyntaxFactory.IdentifierName(typeName);
+            parameterType = SelfTypeSyntax(selfTypeName);
             returnExpr = comparison;
         }
         else
         {
             // Person? other — IEquatable<T> for a class uses a nullable parameter.
-            parameterType = SyntaxFactory.NullableType(SyntaxFactory.IdentifierName(typeName));
+            parameterType = SyntaxFactory.NullableType(SelfTypeSyntax(selfTypeName));
             returnExpr = SyntaxFactory.BinaryExpression(
                 SyntaxKind.LogicalAndExpression,
                 SyntaxFactory.IsPatternExpression(
@@ -319,7 +318,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             .NormalizeWhitespace();
     }
 
-    private static MethodDeclarationSyntax GenerateDelegatingObjectEquals(string typeName)
+    private static MethodDeclarationSyntax GenerateDelegatingObjectEquals(string selfTypeName)
     {
         // return obj is TypeName other && Equals(other);
         var returnExpr = SyntaxFactory.BinaryExpression(
@@ -327,7 +326,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             SyntaxFactory.IsPatternExpression(
                 SyntaxFactory.IdentifierName("obj"),
                 SyntaxFactory.DeclarationPattern(
-                    SyntaxFactory.IdentifierName(typeName),
+                    SelfTypeSyntax(selfTypeName),
                     SyntaxFactory.SingleVariableDesignation(SyntaxFactory.Identifier("other")))),
             SyntaxFactory.InvocationExpression(SyntaxFactory.IdentifierName("Equals"))
                 .WithArgumentList(SyntaxFactory.ArgumentList(SyntaxFactory.SingletonSeparatedList(
@@ -346,7 +345,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             .NormalizeWhitespace();
     }
 
-    private static MethodDeclarationSyntax GenerateEquals(string typeName, List<ISymbol> members)
+    private static MethodDeclarationSyntax GenerateEquals(string selfTypeName, List<ISymbol> members)
     {
         var comparison = BuildMemberComparisons(members);
 
@@ -359,7 +358,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             SyntaxFactory.IsPatternExpression(
                 SyntaxFactory.IdentifierName("obj"),
                 SyntaxFactory.DeclarationPattern(
-                    SyntaxFactory.IdentifierName(typeName),
+                    SelfTypeSyntax(selfTypeName),
                     SyntaxFactory.SingleVariableDesignation(SyntaxFactory.Identifier("other")))),
             comparison);
 

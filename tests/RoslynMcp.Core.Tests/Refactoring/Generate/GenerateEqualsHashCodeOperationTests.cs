@@ -143,6 +143,100 @@ public class GenerateEqualsHashCodeOperationTests
         Assert.Contains("public bool Equals(Widget? other)", updated);
     }
 
+    [SkippableFact]
+    public async Task GenerateEquals_ImplementIEquatableTrue_GenericClass_PreservesTypeArguments()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Box<T>
+            {
+                public T Value { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Box.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            ImplementIEquatable = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("global::System.IEquatable<Box<T>>", updated);
+        Assert.Contains("public bool Equals(Box<T>? other)", updated);
+        Assert.DoesNotContain("IEquatable<Box>", updated.Replace("IEquatable<Box<T>>", "", StringComparison.Ordinal));
+        Assert.DoesNotContain("Equals(Box other)", updated);
+        AssertObjectEqualsDelegates(updated, "Box<T>");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ImplementIEquatableTrue_GenericStruct_PreservesTypeArguments()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Pair<T, U>
+            {
+                public T Left { get; set; }
+
+                public U Right { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Pair.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Pair",
+            ImplementIEquatable = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("global::System.IEquatable<Pair<T, U>>", updated);
+        Assert.Contains("public bool Equals(Pair<T, U> other)", updated);
+        Assert.DoesNotContain("Equals(Pair<T, U>?", updated);
+        AssertObjectEqualsDelegates(updated, "Pair<T, U>");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ImplementIEquatableTrue_AlreadyListsUserMarkerIEquatable_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IEquatable { }
+
+            public class Widget : IEquatable
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            ImplementIEquatable = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains(": IEquatable, global::System.IEquatable<Widget>", updated);
+        Assert.Contains("public bool Equals(Widget? other)", updated);
+        AssertObjectEqualsDelegates(updated, "Widget");
+    }
+
     #endregion
 
     #region Preview
