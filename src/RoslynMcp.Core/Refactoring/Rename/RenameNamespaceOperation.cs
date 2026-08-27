@@ -209,8 +209,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
 
         foreach (var declaration in declarations)
         {
-            var declared = semanticModel.GetDeclaredSymbol(declaration, cancellationToken);
-            if (declared == null)
+            if (semanticModel.GetDeclaredSymbol(declaration, cancellationToken) is not INamespaceSymbol declared)
                 continue;
 
             foreach (var candidate in EnumerateNamespaceChain(declared))
@@ -400,9 +399,10 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
 
         foreach (var segment in SplitNamespace(fullName))
         {
-            current = current.GetNamespaceMembers().FirstOrDefault(n => n.Name == segment);
-            if (current == null)
+            var next = current.GetNamespaceMembers().FirstOrDefault(n => n.Name == segment);
+            if (next == null)
                 return null;
+            current = next;
         }
 
         return current;
