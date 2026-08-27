@@ -1,0 +1,389 @@
+using RoslynMcp.Contracts.Errors;
+using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Generate;
+using RoslynMcp.Core.Workspace;
+using Xunit;
+
+namespace RoslynMcp.Core.Tests.Refactoring.Generate;
+
+/// <summary>
+/// Operation-level tests for <see cref="GenerateToStringOperation"/>, including <c>format</c>.
+/// </summary>
+public class GenerateToStringOperationTests
+{
+    private const string PersonSource = """
+        namespace TestApp;
+
+        public class Person
+        {
+            public string Name { get; set; }
+
+            public int Age { get; set; }
+        }
+        """;
+
+    #region Input Validation
+
+    [Fact]
+    public void Validate_MissingSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateToStringOperation.Validate(new GenerateToStringParams
+            {
+                SourceFile = "",
+                TypeName = "Person"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_MissingTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateToStringOperation.Validate(new GenerateToStringParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = ""
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_RelativePath_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateToStringOperation.Validate(new GenerateToStringParams
+            {
+                SourceFile = "Types.cs",
+                TypeName = "Person"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_MissingFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateToStringOperation.Validate(new GenerateToStringParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Person"
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("json")]
+    [InlineData("xml")]
+    [InlineData("foo")]
+    [InlineData("string_builder")]
+    public void Validate_UnknownFormat_Throws(string format)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateToStringOperation.Validate(new GenerateToStringParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Person",
+                Format = format
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidToStringFormat, ex.ErrorCode);
+        Assert.Equal("3143", ex.ErrorCode);
+        Assert.Contains(format, ex.Message);
+        Assert.Contains("interpolated", ex.Message);
+        Assert.Contains("stringbuilder", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("interpolated")]
+    [InlineData("INTERPOLATED")]
+    [InlineData("Interpolated")]
+    [InlineData("stringbuilder")]
+    [InlineData("STRINGBUILDER")]
+    [InlineData("StringBuilder")]
+    public void Validate_KnownOrOmittedFormat_DoesNotRejectFormat(string? format)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateToStringOperation.Validate(new GenerateToStringParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Person",
+                Format = format
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    #endregion
+
+    #region Interpolated (default)
+
+    [SkippableFact]
+    public async Task GenerateToString_FormatOmitted_WritesInterpolatedBody()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+        AssertInterpolatedToString(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_FormatEmpty_WritesInterpolatedBody()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Format = ""
+        });
+
+        Assert.True(result.Success);
+        AssertInterpolatedToString(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
+    [SkippableTheory]
+    [InlineData("interpolated")]
+    [InlineData("INTERPOLATED")]
+    [InlineData("Interpolated")]
+    public async Task GenerateToString_FormatInterpolated_WritesInterpolatedBody(string format)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Format = format
+        });
+
+        Assert.True(result.Success);
+        AssertInterpolatedToString(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
+    #endregion
+
+    #region StringBuilder
+
+    [SkippableTheory]
+    [InlineData("stringbuilder")]
+    [InlineData("STRINGBUILDER")]
+    [InlineData("StringBuilder")]
+    public async Task GenerateToString_FormatStringBuilder_WritesStringBuilderBody(string format)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Format = format
+        });
+
+        Assert.True(result.Success);
+        AssertStringBuilderToString(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Name", "Age");
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_FormatStringBuilder_HonorsFields()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Fields = new[] { "Name" },
+            Format = "stringbuilder"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertStringBuilderToString(updated, "Name");
+        Assert.DoesNotContain("Age = ", updated);
+    }
+
+    #endregion
+
+    #region Preview
+
+    [SkippableFact]
+    public async Task GenerateToString_PreviewInterpolated_DoesNotWriteFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Format = "interpolated",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        AssertInterpolatedToString(result.PendingChanges[0].AfterSnippet!);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_PreviewStringBuilder_DoesNotWriteFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Format = "stringbuilder",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        AssertStringBuilderToString(result.PendingChanges[0].AfterSnippet!, "Name", "Age");
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
+    #region Helpers
+
+    private static void AssertInterpolatedToString(string text)
+    {
+        Assert.Contains("public override string ToString()", text);
+        Assert.Contains("$\"Person {{ ", text);
+        Assert.Contains("{Name}", text);
+        Assert.Contains("{Age}", text);
+        Assert.DoesNotContain("StringBuilder", text);
+    }
+
+    private static void AssertStringBuilderToString(string text, params string[] members)
+    {
+        Assert.Contains("public override string ToString()", text);
+        Assert.Contains("System.Text.StringBuilder", text);
+        Assert.Contains("sb.ToString()", text);
+        Assert.Contains("Person { ", text);
+        foreach (var member in members)
+        {
+            Assert.Contains($"{member} = ", text);
+            Assert.Contains($"Append({member})", text);
+        }
+
+        Assert.DoesNotContain("$\"Person", text);
+    }
+
+    private static string AbsoluteTestPath() =>
+        Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateToStringMissing.cs");
+
+    private static string NormalizeNewlines(string text) =>
+        text.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+    private sealed class TempWorkspace : IAsyncDisposable
+    {
+        public required string DirectoryPath { get; init; }
+        public required string ProjectPath { get; init; }
+        public required string SourcePath { get; init; }
+        public required WorkspaceContext Context { get; init; }
+
+        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Person.cs")
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateToString_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var projectPath = Path.Combine(directory, "TestApp.csproj");
+            var sourcePath = Path.Combine(directory, fileName);
+
+            await File.WriteAllTextAsync(projectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(sourcePath, source);
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(projectPath);
+                if (context.GetDocumentByPath(sourcePath) == null)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = projectPath,
+                    SourcePath = sourcePath,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            Context.Dispose();
+            await Task.Run(() =>
+            {
+                try
+                {
+                    Directory.Delete(DirectoryPath, recursive: true);
+                }
+                catch
+                {
+                    // ignore locked temp files
+                }
+            });
+        }
+    }
+
+    #endregion
+}

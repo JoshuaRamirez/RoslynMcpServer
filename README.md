@@ -303,7 +303,7 @@ These tools generate new code members for existing types.
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `generate_equals_hashcode` | Generate Equals() and GetHashCode() overrides for a type based on its fields/properties. | `sourceFile`, `typeName`, `fields` |
-| `generate_tostring` | Generate a ToString() override for a type. | `sourceFile`, `typeName`, `fields`, `format` |
+| `generate_tostring` | Generate a ToString() override for a type (`format`: interpolated or stringbuilder). | `sourceFile`, `typeName`, `fields`, `format` |
 | `format_document` | Format a C# file using Roslyn's built-in formatter. | `sourceFile` |
 | `add_null_checks` | Add null-check statements (ArgumentNullException.ThrowIfNull or guard clauses) for method parameters. | `sourceFile`, `methodName`, `line`, `style` |
 

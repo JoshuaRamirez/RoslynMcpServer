@@ -73,6 +73,21 @@ public class GenerateToStringToolTests
         Assert.Contains("typeName", requiredFields);
     }
 
+    [Fact]
+    public void GetDefinition_FormatEnum_IsInterpolatedOrStringBuilder()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var format = doc.RootElement.GetProperty("properties").GetProperty("format");
+
+        Assert.Equal("string", format.GetProperty("type").GetString());
+        var values = format.GetProperty("enum").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.Contains("interpolated", values);
+        Assert.Contains("stringbuilder", values);
+        Assert.Equal(2, values.Count);
+    }
+
     #endregion
 
     #region ExecuteAsync Argument Validation Tests
