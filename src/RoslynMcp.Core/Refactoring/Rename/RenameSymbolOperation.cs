@@ -96,11 +96,14 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         MemberIdentity? selectedImplementation = null;
         if (!@params.RenameImplementations)
         {
-            interfaceMembersToPreserve = CollectInterfaceMembers(symbol, @params.RenameOverloads);
+            interfaceMembersToPreserve = CollectInterfaceMembers(
+                symbol,
+                @params.RenameOverloads,
+                Context.Solution);
             if (interfaceMembersToPreserve.Count > 0
                 && symbol.ContainingType?.TypeKind != TypeKind.Interface)
             {
-                selectedImplementation = MemberIdentity.From(symbol);
+                selectedImplementation = MemberIdentity.From(symbol, Context.Solution);
             }
         }
 
@@ -118,7 +121,7 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
                 newSolution,
                 interfaceMembersToPreserve,
                 selectedImplementation,
-                symbol.Name,
+                GetRestoreName(symbol),
                 @params.NewName,
                 cancellationToken);
         }
@@ -494,18 +497,21 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
     /// Collects interface members whose implementations should keep the original
     /// name when <c>renameImplementations</c> is false.
     /// </summary>
-    private static List<MemberIdentity> CollectInterfaceMembers(ISymbol symbol, bool renameOverloads)
+    private static List<MemberIdentity> CollectInterfaceMembers(
+        ISymbol symbol,
+        bool renameOverloads,
+        Solution solution)
     {
         var result = new List<MemberIdentity>();
 
         if (symbol.ContainingType?.TypeKind == TypeKind.Interface)
         {
-            AddInterfaceMember(result, symbol, renameOverloads);
+            AddInterfaceMember(result, symbol, renameOverloads, solution);
             return result;
         }
 
         foreach (var implemented in GetImplementedInterfaceMembers(symbol))
-            AddInterfaceMember(result, implemented, renameOverloads);
+            AddInterfaceMember(result, implemented, renameOverloads, solution);
 
         return result;
     }
@@ -513,14 +519,15 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
     private static void AddInterfaceMember(
         List<MemberIdentity> result,
         ISymbol interfaceMember,
-        bool renameOverloads)
+        bool renameOverloads,
+        Solution solution)
     {
-        result.Add(MemberIdentity.From(interfaceMember));
+        result.Add(MemberIdentity.From(interfaceMember, solution));
         if (!renameOverloads || interfaceMember is not IMethodSymbol method)
             return;
 
         foreach (var overload in method.ContainingType.GetMembers(method.Name).OfType<IMethodSymbol>())
-            result.Add(MemberIdentity.From(overload));
+            result.Add(MemberIdentity.From(overload, solution));
     }
 
     private static IEnumerable<ISymbol> GetImplementedInterfaceMembers(ISymbol symbol)
@@ -607,21 +614,57 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         string name,
         CancellationToken cancellationToken)
     {
-        foreach (var project in solution.Projects)
+        if (identity.DefiningProjectId is { } projectId)
         {
-            var compilation = await project.GetCompilationAsync(cancellationToken);
-            if (compilation == null)
-                continue;
-
-            var type = compilation.GetTypeByMetadataName(identity.ContainingTypeMetadataName);
-            if (type == null)
-                continue;
-
-            foreach (var member in type.GetMembers(name))
+            var project = solution.GetProject(projectId);
+            if (project != null)
             {
-                if (identity.Matches(member))
+                var member = await TryResolveInProjectAsync(project, identity, name, cancellationToken);
+                if (member != null)
                     return member;
             }
+        }
+
+        foreach (var project in solution.Projects)
+        {
+            if (identity.DefiningProjectId != null && project.Id == identity.DefiningProjectId)
+                continue;
+
+            var member = await TryResolveInProjectAsync(project, identity, name, cancellationToken);
+            if (member != null)
+                return member;
+        }
+
+        return null;
+    }
+
+    private static async Task<ISymbol?> TryResolveInProjectAsync(
+        Project project,
+        MemberIdentity identity,
+        string name,
+        CancellationToken cancellationToken)
+    {
+        var compilation = await project.GetCompilationAsync(cancellationToken);
+        if (compilation == null)
+            return null;
+
+        if (!string.IsNullOrEmpty(identity.AssemblyName)
+            && !string.Equals(compilation.AssemblyName, identity.AssemblyName, StringComparison.Ordinal)
+            && !string.Equals(compilation.Assembly.Name, identity.AssemblyName, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        // Look up on this project's assembly only so a referenced type with the
+        // same metadata name cannot steal the restore.
+        var type = compilation.Assembly.GetTypeByMetadataName(identity.ContainingTypeMetadataName);
+        if (type == null)
+            return null;
+
+        foreach (var member in type.GetMembers(name))
+        {
+            if (identity.Matches(member))
+                return member;
         }
 
         return null;
@@ -667,18 +710,52 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         }
     }
 
-    private static TextSpan? TryGetDeclarationNameSpan(SyntaxNode node)
+    private static SyntaxToken? TryGetDeclarationIdentifier(SyntaxNode node)
     {
         return node switch
         {
-            MethodDeclarationSyntax method => method.Identifier.Span,
-            PropertyDeclarationSyntax property => property.Identifier.Span,
-            EventDeclarationSyntax @event => @event.Identifier.Span,
-            VariableDeclaratorSyntax variable => variable.Identifier.Span,
+            MethodDeclarationSyntax method => method.Identifier,
+            PropertyDeclarationSyntax property => property.Identifier,
+            EventDeclarationSyntax @event => @event.Identifier,
+            VariableDeclaratorSyntax variable => variable.Identifier,
             EventFieldDeclarationSyntax eventField =>
-                eventField.Declaration.Variables.FirstOrDefault()?.Identifier.Span,
+                eventField.Declaration.Variables.FirstOrDefault()?.Identifier,
             _ => null
         };
+    }
+
+    private static TextSpan? TryGetDeclarationNameSpan(SyntaxNode node) =>
+        TryGetDeclarationIdentifier(node)?.Span;
+
+    /// <summary>
+    /// Recovers the identifier text to write back when implementations are
+    /// preserved. <see cref="ISymbol.Name"/> drops the <c>@</c> on verbatim
+    /// keywords (<c>@class</c> becomes <c>class</c>), which would emit invalid C#.
+    /// </summary>
+    private static string GetRestoreName(ISymbol symbol)
+    {
+        foreach (var syntaxRef in symbol.DeclaringSyntaxReferences)
+        {
+            var identifier = TryGetDeclarationIdentifier(syntaxRef.GetSyntax());
+            if (identifier is { } token
+                && token.ValueText == symbol.Name
+                && !string.IsNullOrEmpty(token.Text))
+            {
+                return token.Text;
+            }
+        }
+
+        return EscapeIfReservedKeyword(symbol.Name);
+    }
+
+    private static string EscapeIfReservedKeyword(string name)
+    {
+        if (name.StartsWith('@'))
+            return name;
+
+        return SyntaxFacts.GetKeywordKind(name) != SyntaxKind.None
+            ? "@" + name
+            : name;
     }
 
     private static async Task<Solution> ApplyNameRestoresAsync(
@@ -757,6 +834,8 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
 
     private readonly record struct MemberIdentity(
         string ContainingTypeMetadataName,
+        string AssemblyName,
+        ProjectId? DefiningProjectId,
         Microsoft.CodeAnalysis.SymbolKind Kind,
         int Arity,
         string[] ParameterTypeKeys)
@@ -776,19 +855,38 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         {
             return symbol.ContainingType != null
                 && ContainingTypeMetadataName == GetFullMetadataName(symbol.ContainingType)
+                && (string.IsNullOrEmpty(AssemblyName)
+                    || string.Equals(AssemblyName, symbol.ContainingAssembly?.Name, StringComparison.Ordinal))
                 && Matches(symbol);
         }
 
-        public static MemberIdentity From(ISymbol symbol)
+        public static MemberIdentity From(ISymbol symbol, Solution solution)
         {
             var type = symbol.ContainingType
                 ?? throw new ArgumentException("Symbol must be a type member.", nameof(symbol));
 
             return new MemberIdentity(
                 GetFullMetadataName(type),
+                symbol.ContainingAssembly?.Name ?? string.Empty,
+                GetDefiningProjectId(symbol, solution),
                 symbol.Kind,
                 symbol is IMethodSymbol method ? method.Arity : 0,
                 GetParameterTypeKeys(symbol));
+        }
+
+        private static ProjectId? GetDefiningProjectId(ISymbol symbol, Solution solution)
+        {
+            foreach (var location in symbol.Locations)
+            {
+                if (!location.IsInSource || location.SourceTree == null)
+                    continue;
+
+                var document = solution.GetDocument(location.SourceTree);
+                if (document != null)
+                    return document.Project.Id;
+            }
+
+            return null;
         }
     }
 }
