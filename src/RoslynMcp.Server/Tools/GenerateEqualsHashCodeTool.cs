@@ -74,6 +74,12 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 description = "Also generate operator == and operator != that agree with the generated Equals",
                 @default = false
             },
+            replaceExisting = new
+            {
+                type = "boolean",
+                description = "Replace existing Equals/GetHashCode (and IEquatable / operators when those flags are set) instead of failing",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -114,6 +120,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 Fields = args.Fields,
                 ImplementIEquatable = args.ImplementIEquatable ?? false,
                 GenerateOperators = args.GenerateOperators ?? false,
+                ReplaceExisting = args.ReplaceExisting ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -147,6 +154,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
         public List<string>? Fields { get; init; }
         public bool? ImplementIEquatable { get; init; }
         public bool? GenerateOperators { get; init; }
+        public bool? ReplaceExisting { get; init; }
         public bool? Preview { get; init; }
     }
 }

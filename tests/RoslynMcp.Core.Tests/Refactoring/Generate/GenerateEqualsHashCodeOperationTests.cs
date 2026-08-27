@@ -8,7 +8,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
-/// Operation-level tests for <see cref="GenerateEqualsHashCodeOperation"/>, including <c>implementIEquatable</c> and <c>generateOperators</c>.
+/// Operation-level tests for <see cref="GenerateEqualsHashCodeOperation"/>, including <c>implementIEquatable</c>, <c>generateOperators</c>, and <c>replaceExisting</c>.
 /// </summary>
 public class GenerateEqualsHashCodeOperationTests
 {
@@ -657,6 +657,293 @@ public class GenerateEqualsHashCodeOperationTests
         Assert.Equal(ErrorCodes.AlreadyHasEqualityOperators, ex.ErrorCode);
         Assert.Equal("3145", ex.ErrorCode);
         Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
+    #region replaceExisting
+
+    private const string PersonWithEqualsSource = """
+        namespace TestApp;
+
+        public class Person
+        {
+            public string Name { get; set; }
+
+            public int Age { get; set; }
+
+            public override bool Equals(object? obj) => false;
+
+            public override int GetHashCode() => 42;
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateEquals_ReplaceExistingOmitted_ExistingEquals_FailsWith3056()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithEqualsSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person"
+            }));
+
+        Assert.Equal(ErrorCodes.AlreadyHasOverride, ex.ErrorCode);
+        Assert.Equal("3056", ex.ErrorCode);
+        Assert.Contains("Equals", ex.Message);
+        Assert.Equal(PersonWithEqualsSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ReplaceExistingFalse_ExistingEquals_FailsWith3056()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithEqualsSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                ReplaceExisting = false
+            }));
+
+        Assert.Equal(ErrorCodes.AlreadyHasOverride, ex.ErrorCode);
+        Assert.Equal("3056", ex.ErrorCode);
+        Assert.Equal(PersonWithEqualsSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ReplaceExistingTrue_ReplacesEqualsAndGetHashCode()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithEqualsSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertDefaultEqualsShape(updated);
+        Assert.DoesNotContain("=> false", updated);
+        Assert.DoesNotContain("=> 42", updated);
+        Assert.Contains("HashCode.Combine", updated);
+        Assert.Equal(1, CountOccurrences(updated, "public override bool Equals(object?"));
+        Assert.Equal(1, CountOccurrences(updated, "public override int GetHashCode()"));
+        AssertNoOperators(updated);
+        Assert.DoesNotContain("IEquatable", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ReplaceExistingTrue_ImplementIEquatable_ReplacesTypedEqualsAndInterface()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person : System.IEquatable<Person>
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+
+                public bool Equals(Person? other) => false;
+
+                public override bool Equals(object? obj) => false;
+
+                public override int GetHashCode() => 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ImplementIEquatable = true,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertIEquatableClassShape(updated);
+        Assert.DoesNotContain("=> false", updated);
+        Assert.DoesNotContain("=> 42", updated);
+        Assert.Equal(1, CountOccurrences(updated, "IEquatable<Person>"));
+        Assert.Equal(1, CountOccurrences(updated, "public bool Equals(Person? other)"));
+        Assert.DoesNotContain(": System.IEquatable<Person>", updated);
+        Assert.Contains("global::System.IEquatable<Person>", updated);
+        AssertNoOperators(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ReplaceExistingTrue_GenerateOperators_ReplacesOperators()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+
+                public override bool Equals(object? obj) => false;
+
+                public override int GetHashCode() => 42;
+
+                public static bool operator ==(Person? left, Person? right) => false;
+
+                public static bool operator !=(Person? left, Person? right) => true;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            GenerateOperators = true,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertDefaultEqualsShape(updated);
+        AssertEqualityOperators(updated, "Person?", nullableParameters: true);
+        Assert.Equal(1, CountOccurrences(updated, "operator =="));
+        Assert.Equal(1, CountOccurrences(updated, "operator !="));
+        Assert.DoesNotContain("=> false", updated);
+        Assert.DoesNotContain("=> true", updated);
+        Assert.DoesNotContain("=> 42", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ReplaceExistingTrue_ExistingOperators_GenerateOperatorsFalse_LeavesOperators()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+
+                public override bool Equals(object? obj) => false;
+
+                public override int GetHashCode() => 42;
+
+                public static bool operator ==(Person? left, Person? right) => false;
+
+                public static bool operator !=(Person? left, Person? right) => true;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            GenerateOperators = false,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertDefaultEqualsShape(updated);
+        Assert.Equal(1, CountOccurrences(updated, "operator =="));
+        Assert.Equal(1, CountOccurrences(updated, "operator !="));
+        Assert.Contains("=> false", updated);
+        Assert.Contains("=> true", updated);
+        Assert.DoesNotContain("Object.Equals(left, right)", updated);
+        Assert.DoesNotContain("=> 42", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ReplaceExistingTrue_Preview_DoesNotWriteFiles_AndDescribesReplacement()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithEqualsSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ImplementIEquatable = true,
+            GenerateOperators = true,
+            ReplaceExisting = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Replace", result.PendingChanges[0].Description);
+        Assert.Contains("IEquatable", result.PendingChanges[0].Description);
+        Assert.Contains("equality operators", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        Assert.Contains("global::System.IEquatable<Person>", snippet);
+        Assert.Contains("public bool Equals(Person? other)", snippet);
+        Assert.Contains("operator ==", snippet);
+        Assert.Contains("operator !=", snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ReplaceExistingTrue_GenericBox_PreservesTypeArguments()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Box<T> : System.IEquatable<Box<T>>
+            {
+                public T Value { get; set; }
+
+                public bool Equals(Box<T>? other) => false;
+
+                public override bool Equals(object? obj) => false;
+
+                public override int GetHashCode() => 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Box.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            ImplementIEquatable = true,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("global::System.IEquatable<Box<T>>", updated);
+        Assert.Contains("public bool Equals(Box<T>? other)", updated);
+        Assert.DoesNotContain("IEquatable<Box>", updated.Replace("IEquatable<Box<T>>", "", StringComparison.Ordinal));
+        Assert.DoesNotContain("Equals(Box other)", updated);
+        AssertObjectEqualsDelegates(updated, "Box<T>");
+        Assert.DoesNotContain("=> false", updated);
+        Assert.DoesNotContain("=> 42", updated);
+        Assert.Equal(1, CountOccurrences(updated, "IEquatable<Box<T>>"));
+        Assert.Equal(1, CountOccurrences(updated, "public bool Equals(Box<T>? other)"));
     }
 
     #endregion

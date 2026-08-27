@@ -140,6 +140,7 @@ public class HelpGeneratorTests
 
         Assert.Contains("--implement-i-equatable", help);
         Assert.Contains("--generate-operators", help);
+        Assert.Contains("--replace-existing", help);
     }
 
     [Fact]

@@ -87,6 +87,7 @@ public class GenerateEqualsHashCodeToolTests
         Assert.True(properties.TryGetProperty("fields", out _));
         Assert.True(properties.TryGetProperty("implementIEquatable", out _));
         Assert.True(properties.TryGetProperty("generateOperators", out _));
+        Assert.True(properties.TryGetProperty("replaceExisting", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
     }
 
@@ -112,6 +113,18 @@ public class GenerateEqualsHashCodeToolTests
 
         Assert.Equal("boolean", generateOperators.GetProperty("type").GetString());
         Assert.False(generateOperators.GetProperty("default").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_ReplaceExistingProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var replaceExisting = doc.RootElement.GetProperty("properties").GetProperty("replaceExisting");
+
+        Assert.Equal("boolean", replaceExisting.GetProperty("type").GetString());
+        Assert.False(replaceExisting.GetProperty("default").GetBoolean());
     }
 
     #endregion
