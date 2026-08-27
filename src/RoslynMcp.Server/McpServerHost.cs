@@ -97,6 +97,7 @@ public sealed class McpServerHost : IAsyncDisposable
 
         // Syntax Conversion Tools
         _toolRegistry.Register(new ConvertForeachLinqTool(workspaceProvider));
+        _toolRegistry.Register(new ConvertAnonymousToClassTool(workspaceProvider));
         _toolRegistry.Register(new ConvertToPatternMatchingTool(workspaceProvider));
         _toolRegistry.Register(new ConvertToInterpolatedStringTool(workspaceProvider));
 

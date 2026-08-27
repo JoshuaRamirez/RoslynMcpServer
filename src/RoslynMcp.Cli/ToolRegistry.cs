@@ -47,7 +47,7 @@ public sealed class ToolEntry
 }
 
 /// <summary>
-/// Maps tool names to execution delegates for all 58 Roslyn tools.
+/// Maps tool names to execution delegates for all 59 Roslyn tools.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -139,7 +139,7 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 58 tools registered.
+    /// Build the default registry with all 59 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
@@ -201,7 +201,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<EncapsulateFieldOperation, EncapsulateFieldParams>(
             "encapsulate-field", "Encapsulate a field into a property");
 
-        // ── Refactoring: Convert (7) ──────────────────────────────────
+        // ── Refactoring: Convert (8) ──────────────────────────────────
         r.RegisterRefactoring<ConvertToAsyncOperation, ConvertToAsyncParams>(
             "convert-to-async", "Convert a synchronous method to async");
         r.RegisterRefactoring<ConvertExpressionBodyOperation, ConvertExpressionBodyParams>(
@@ -212,6 +212,8 @@ public sealed class ToolRegistry
             "convert-property", "Convert between auto-property and full property");
         r.RegisterRefactoring<ConvertForeachLinqOperation, ConvertForeachLinqParams>(
             "convert-foreach-linq", "Convert between foreach loop and LINQ expression");
+        r.RegisterRefactoring<ConvertAnonymousToClassOperation, ConvertAnonymousToClassParams>(
+            "convert-anonymous-to-class", "Convert an anonymous type to a named class or record");
         r.RegisterRefactoring<ConvertToInterpolatedStringOperation, ConvertToInterpolatedStringParams>(
             "convert-to-interpolated-string", "Convert string concatenation to interpolated string");
         r.RegisterRefactoring<ConvertToPatternMatchingOperation, ConvertToPatternMatchingParams>(
