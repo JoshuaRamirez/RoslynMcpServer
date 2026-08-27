@@ -14,8 +14,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// Generates a ToString() override for a type.
 /// Honors <c>format</c> for interpolated vs StringBuilder bodies,
 /// <c>includeInheritedMembers</c> to append accessible base-type members,
-/// and <c>replaceExisting</c> to remove an existing parameterless ToString
-/// before generating a fresh override.
+/// and <c>replaceExisting</c> to remove an existing non-generic parameterless
+/// ToString (instance or static) before generating a fresh override.
 /// </summary>
 public sealed class GenerateToStringOperation : RefactoringOperationBase<GenerateToStringParams>
 {
@@ -174,8 +174,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
     }
 
     internal static bool HasExistingToStringOverride(INamedTypeSymbol typeSymbol) =>
-        typeSymbol.GetMembers("ToString").Any(m =>
-            m is IMethodSymbol method && !method.IsImplicitlyDeclared && method.Parameters.Length == 0);
+        typeSymbol.GetMembers("ToString").OfType<IMethodSymbol>().Any(IsParameterlessToString);
 
     internal static string BuildDescription(
         string typeName,
@@ -258,16 +257,16 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         return solution;
     }
 
-    private static IEnumerable<IMethodSymbol> CollectToStringOverridesToReplace(INamedTypeSymbol typeSymbol)
-    {
-        foreach (var method in typeSymbol.GetMembers("ToString").OfType<IMethodSymbol>())
-        {
-            if (method.IsImplicitlyDeclared || method.IsStatic || method.Parameters.Length != 0)
-                continue;
+    /// <summary>
+    /// Non-generic parameterless ToString (instance or static). Generic
+    /// <c>ToString&lt;T&gt;()</c> can coexist with the generated override and
+    /// is not treated as existing / not replaced.
+    /// </summary>
+    private static bool IsParameterlessToString(IMethodSymbol method) =>
+        !method.IsImplicitlyDeclared && method.Arity == 0 && method.Parameters.Length == 0;
 
-            yield return method;
-        }
-    }
+    private static IEnumerable<IMethodSymbol> CollectToStringOverridesToReplace(INamedTypeSymbol typeSymbol) =>
+        typeSymbol.GetMembers("ToString").OfType<IMethodSymbol>().Where(IsParameterlessToString);
 
     private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName, int preferredSpanStart)
     {

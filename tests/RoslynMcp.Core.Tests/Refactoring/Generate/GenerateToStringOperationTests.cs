@@ -986,6 +986,188 @@ public class GenerateToStringOperationTests
         Assert.Equal(beforeOther, await File.ReadAllTextAsync(otherPath));
     }
 
+    private const string PersonWithGenericToStringSource = """
+        namespace TestApp;
+
+        public class Person
+        {
+            public string Name { get; set; }
+
+            public string ToString<T>() => typeof(T).Name;
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingOmitted_GenericToString_LeavesGenericAndGeneratesInstance()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithGenericToStringSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public string ToString<T>() => typeof(T).Name;", updated);
+        Assert.Contains("public override string ToString()", updated);
+        Assert.Contains("{Name}", updated);
+        Assert.Equal(1, CountOccurrences(updated, "ToString<T>()"));
+        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingFalse_GenericToString_LeavesGenericAndGeneratesInstance()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithGenericToStringSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public string ToString<T>() => typeof(T).Name;", updated);
+        Assert.Contains("public override string ToString()", updated);
+        Assert.Equal(1, CountOccurrences(updated, "ToString<T>()"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingTrue_GenericToString_LeavesGenericAndGeneratesInstance()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithGenericToStringSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public string ToString<T>() => typeof(T).Name;", updated);
+        Assert.Contains("public override string ToString()", updated);
+        Assert.Contains("{Name}", updated);
+        Assert.Equal(1, CountOccurrences(updated, "ToString<T>()"));
+        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingTrue_GenericPlusInstanceToString_ReplacesOnlyNonGeneric()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public string Name { get; set; }
+
+                public string ToString<T>() => typeof(T).Name;
+
+                public override string ToString() => "old";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public string ToString<T>() => typeof(T).Name;", updated);
+        Assert.DoesNotContain("=> \"old\"", updated);
+        Assert.Contains("{Name}", updated);
+        Assert.Equal(1, CountOccurrences(updated, "ToString<T>()"));
+        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+    }
+
+    private const string PersonWithStaticToStringSource = """
+        namespace TestApp;
+
+        public class Person
+        {
+            public string Name { get; set; }
+
+            public static new string ToString() => "x";
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingOmitted_StaticToString_FailsWith3056()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithStaticToStringSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateToStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person"
+            }));
+
+        Assert.Equal(ErrorCodes.AlreadyHasOverride, ex.ErrorCode);
+        Assert.Equal("3056", ex.ErrorCode);
+        Assert.Equal("Type already has a ToString override.", ex.Message);
+        Assert.Equal(PersonWithStaticToStringSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingFalse_StaticToString_FailsWith3056()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithStaticToStringSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateToStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                ReplaceExisting = false
+            }));
+
+        Assert.Equal(ErrorCodes.AlreadyHasOverride, ex.ErrorCode);
+        Assert.Equal(PersonWithStaticToStringSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_ReplaceExistingTrue_StaticToString_RemovesStaticAndGeneratesInstance()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonWithStaticToStringSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("static new string ToString()", updated);
+        Assert.DoesNotContain("=> \"x\"", updated);
+        Assert.Contains("public override string ToString()", updated);
+        Assert.Contains("{Name}", updated);
+        Assert.Equal(1, CountOccurrences(updated, "ToString()"));
+        AssertCompiles(updated);
+    }
+
     #endregion
 
     #region Helpers
