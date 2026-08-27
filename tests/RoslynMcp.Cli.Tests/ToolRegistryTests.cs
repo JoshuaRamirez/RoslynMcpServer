@@ -85,7 +85,7 @@ public class ToolRegistryTests
     [InlineData("extract-method", "Refactoring")]
     [InlineData("inline-method", "Refactoring")]
     [InlineData("inline-constant", "Refactoring")]
-            [InlineData("add-parameter", "Refactoring")]
+    [InlineData("add-parameter", "Refactoring")]
     [InlineData("remove-parameter", "Refactoring")]
     [InlineData("reorder-parameters", "Refactoring")]
     [InlineData("pull-members-up", "Refactoring")]
