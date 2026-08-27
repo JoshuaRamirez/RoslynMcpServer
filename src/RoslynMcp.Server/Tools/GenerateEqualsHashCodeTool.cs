@@ -68,6 +68,12 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 description = "Also implement IEquatable<T> with a typed Equals(T) and have Equals(object) delegate to it",
                 @default = false
             },
+            generateOperators = new
+            {
+                type = "boolean",
+                description = "Also generate operator == and operator != that agree with the generated Equals",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -107,6 +113,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 TypeName = args.TypeName,
                 Fields = args.Fields,
                 ImplementIEquatable = args.ImplementIEquatable ?? false,
+                GenerateOperators = args.GenerateOperators ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -139,6 +146,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
         public string TypeName { get; init; } = "";
         public List<string>? Fields { get; init; }
         public bool? ImplementIEquatable { get; init; }
+        public bool? GenerateOperators { get; init; }
         public bool? Preview { get; init; }
     }
 }

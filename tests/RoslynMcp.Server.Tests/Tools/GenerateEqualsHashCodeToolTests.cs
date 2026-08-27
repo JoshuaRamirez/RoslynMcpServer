@@ -86,6 +86,7 @@ public class GenerateEqualsHashCodeToolTests
         Assert.True(properties.TryGetProperty("typeName", out _));
         Assert.True(properties.TryGetProperty("fields", out _));
         Assert.True(properties.TryGetProperty("implementIEquatable", out _));
+        Assert.True(properties.TryGetProperty("generateOperators", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
     }
 
@@ -99,6 +100,18 @@ public class GenerateEqualsHashCodeToolTests
 
         Assert.Equal("boolean", implementIEquatable.GetProperty("type").GetString());
         Assert.False(implementIEquatable.GetProperty("default").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_GenerateOperatorsProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var generateOperators = doc.RootElement.GetProperty("properties").GetProperty("generateOperators");
+
+        Assert.Equal("boolean", generateOperators.GetProperty("type").GetString());
+        Assert.False(generateOperators.GetProperty("default").GetBoolean());
     }
 
     #endregion

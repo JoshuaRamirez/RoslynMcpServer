@@ -12,7 +12,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
 /// Generates Equals() and GetHashCode() overrides for a type.
-/// Optionally implements <c>IEquatable&lt;T&gt;</c> with a typed Equals when requested.
+/// Optionally implements <c>IEquatable&lt;T&gt;</c> with a typed Equals when requested,
+/// and optionally generates <c>operator ==</c> / <c>operator !=</c>.
 /// </summary>
 public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<GenerateEqualsHashCodeParams>
 {
@@ -71,6 +72,13 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 $"Type '{@params.TypeName}' already implements IEquatable<T> or already has a compatible typed Equals.");
         }
 
+        if (@params.GenerateOperators && HasExistingEqualityOperators(typeSymbol))
+        {
+            throw new RefactoringException(
+                ErrorCodes.AlreadyHasEqualityOperators,
+                $"Type '{@params.TypeName}' already declares operator == or operator !=.");
+        }
+
         // Check for existing overrides (Equals(object) or any 1-arg Equals when not adding IEquatable)
         if (HasExistingEqualsOverride(typeSymbol))
             throw new RefactoringException(ErrorCodes.AlreadyHasOverride, "Type already has an Equals override.");
@@ -94,13 +102,25 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         }
 
         var hashCodeMethod = GenerateGetHashCode(members);
+        OperatorDeclarationSyntax? equalityOperator = null;
+        OperatorDeclarationSyntax? inequalityOperator = null;
+        if (@params.GenerateOperators)
+        {
+            equalityOperator = GenerateEqualityOperator(selfTypeName, isValueType);
+            inequalityOperator = GenerateInequalityOperator(selfTypeName, isValueType);
+        }
 
         if (@params.Preview)
         {
-            var code = BuildPreviewSnippet(selfTypeName, @params.ImplementIEquatable, typedEquals, objectEquals, hashCodeMethod);
-            var description = @params.ImplementIEquatable
-                ? $"Generate Equals, GetHashCode, and IEquatable<{selfTypeName}> for {@params.TypeName}"
-                : $"Generate Equals and GetHashCode for {@params.TypeName}";
+            var code = BuildPreviewSnippet(
+                selfTypeName,
+                @params.ImplementIEquatable,
+                typedEquals,
+                objectEquals,
+                hashCodeMethod,
+                equalityOperator,
+                inequalityOperator);
+            var description = BuildDescription(@params.TypeName, selfTypeName, @params.ImplementIEquatable, @params.GenerateOperators);
             var pendingChanges = new List<PendingChange>
             {
                 new()
@@ -130,6 +150,17 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed));
         membersToAdd.Add(hashCodeMethod.WithLeadingTrivia(
             SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed));
+        if (equalityOperator != null)
+        {
+            membersToAdd.Add(equalityOperator.WithLeadingTrivia(
+                SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed));
+        }
+
+        if (inequalityOperator != null)
+        {
+            membersToAdd.Add(inequalityOperator.WithLeadingTrivia(
+                SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed));
+        }
 
         newTypeDecl = newTypeDecl.AddMembers(membersToAdd.ToArray());
 
@@ -171,6 +202,13 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
     {
         return typeSymbol.GetMembers("Equals").Any(m =>
             m is IMethodSymbol method && !method.IsImplicitlyDeclared && method.Parameters.Length == 1);
+    }
+
+    private static bool HasExistingEqualityOperators(INamedTypeSymbol typeSymbol)
+    {
+        return typeSymbol.GetMembers().OfType<IMethodSymbol>().Any(m =>
+            m.MethodKind == MethodKind.UserDefinedOperator &&
+            (m.Name == "op_Equality" || m.Name == "op_Inequality"));
     }
 
     private static ITypeSymbol UnwrapNullable(ITypeSymbol type)
@@ -216,12 +254,29 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         return typeDecl.WithBaseList(typeDecl.BaseList.AddTypes(interfaceType));
     }
 
+    private static string BuildDescription(
+        string typeName,
+        string selfTypeName,
+        bool implementIEquatable,
+        bool generateOperators)
+    {
+        if (implementIEquatable && generateOperators)
+            return $"Generate Equals, GetHashCode, IEquatable<{selfTypeName}>, and equality operators for {typeName}";
+        if (implementIEquatable)
+            return $"Generate Equals, GetHashCode, and IEquatable<{selfTypeName}> for {typeName}";
+        if (generateOperators)
+            return $"Generate Equals, GetHashCode, and equality operators for {typeName}";
+        return $"Generate Equals and GetHashCode for {typeName}";
+    }
+
     private static string BuildPreviewSnippet(
         string typeName,
         bool implementIEquatable,
         MethodDeclarationSyntax? typedEquals,
         MethodDeclarationSyntax objectEquals,
-        MethodDeclarationSyntax hashCodeMethod)
+        MethodDeclarationSyntax hashCodeMethod,
+        OperatorDeclarationSyntax? equalityOperator,
+        OperatorDeclarationSyntax? inequalityOperator)
     {
         var parts = new List<string>();
         if (implementIEquatable)
@@ -230,7 +285,73 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             parts.Add(typedEquals.NormalizeWhitespace().ToFullString());
         parts.Add(objectEquals.NormalizeWhitespace().ToFullString());
         parts.Add(hashCodeMethod.NormalizeWhitespace().ToFullString());
+        if (equalityOperator != null)
+            parts.Add(equalityOperator.NormalizeWhitespace().ToFullString());
+        if (inequalityOperator != null)
+            parts.Add(inequalityOperator.NormalizeWhitespace().ToFullString());
         return string.Join("\n\n", parts);
+    }
+
+    private static TypeSyntax OperatorParameterType(string selfTypeName, bool isValueType)
+    {
+        return isValueType
+            ? SelfTypeSyntax(selfTypeName)
+            : SyntaxFactory.NullableType(SelfTypeSyntax(selfTypeName));
+    }
+
+    private static OperatorDeclarationSyntax GenerateEqualityOperator(string selfTypeName, bool isValueType)
+    {
+        // return Equals(left, right);
+        var returnExpr = SyntaxFactory.InvocationExpression(SyntaxFactory.IdentifierName("Equals"))
+            .WithArgumentList(SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList(new[]
+            {
+                SyntaxFactory.Argument(SyntaxFactory.IdentifierName("left")),
+                SyntaxFactory.Argument(SyntaxFactory.IdentifierName("right"))
+            })));
+
+        return SyntaxFactory.OperatorDeclaration(
+                SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.BoolKeyword)),
+                SyntaxFactory.Token(SyntaxKind.EqualsEqualsToken))
+            .WithModifiers(SyntaxFactory.TokenList(
+                SyntaxFactory.Token(SyntaxKind.PublicKeyword),
+                SyntaxFactory.Token(SyntaxKind.StaticKeyword)))
+            .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(new[]
+            {
+                SyntaxFactory.Parameter(SyntaxFactory.Identifier("left"))
+                    .WithType(OperatorParameterType(selfTypeName, isValueType)),
+                SyntaxFactory.Parameter(SyntaxFactory.Identifier("right"))
+                    .WithType(OperatorParameterType(selfTypeName, isValueType))
+            })))
+            .WithBody(SyntaxFactory.Block(SyntaxFactory.ReturnStatement(returnExpr)))
+            .NormalizeWhitespace();
+    }
+
+    private static OperatorDeclarationSyntax GenerateInequalityOperator(string selfTypeName, bool isValueType)
+    {
+        // return !(left == right);
+        var returnExpr = SyntaxFactory.PrefixUnaryExpression(
+            SyntaxKind.LogicalNotExpression,
+            SyntaxFactory.ParenthesizedExpression(
+                SyntaxFactory.BinaryExpression(
+                    SyntaxKind.EqualsExpression,
+                    SyntaxFactory.IdentifierName("left"),
+                    SyntaxFactory.IdentifierName("right"))));
+
+        return SyntaxFactory.OperatorDeclaration(
+                SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.BoolKeyword)),
+                SyntaxFactory.Token(SyntaxKind.ExclamationEqualsToken))
+            .WithModifiers(SyntaxFactory.TokenList(
+                SyntaxFactory.Token(SyntaxKind.PublicKeyword),
+                SyntaxFactory.Token(SyntaxKind.StaticKeyword)))
+            .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(new[]
+            {
+                SyntaxFactory.Parameter(SyntaxFactory.Identifier("left"))
+                    .WithType(OperatorParameterType(selfTypeName, isValueType)),
+                SyntaxFactory.Parameter(SyntaxFactory.Identifier("right"))
+                    .WithType(OperatorParameterType(selfTypeName, isValueType))
+            })))
+            .WithBody(SyntaxFactory.Block(SyntaxFactory.ReturnStatement(returnExpr)))
+            .NormalizeWhitespace();
     }
 
     private static ExpressionSyntax BuildMemberComparisons(List<ISymbol> members)
