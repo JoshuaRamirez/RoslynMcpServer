@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+- `move_type_to_namespace` now honors `updateFileLocation`: when true, moves the source file to a folder matching the target namespace (e.g. `MyApp.Services` → `MyApp/Services/`), creating missing directories and updating project document paths / explicit compile items; preview writes nothing (including folders); rejects destination-exists, file-name collision, uneditable project, and missing file. Default `false` keeps today's namespace-only rewrite.
+
 ### Added
 - `pull_members_up` — move selected members from a derived type onto an existing base class or interface, with preview mode and rejects for missing bases, interface-incompatible members, and name/signature conflicts
 - `push_members_down` — move selected members from a base type down onto derived types, with optional named targets, preview mode, and rejects for missing derived types, conflicts, interface-incompatible members, and uneditable targets
