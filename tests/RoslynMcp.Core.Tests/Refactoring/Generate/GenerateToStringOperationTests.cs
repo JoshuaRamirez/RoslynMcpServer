@@ -209,6 +209,42 @@ public class GenerateToStringOperationTests
         Assert.Contains("{Name}", toString);
     }
 
+    [SkippableFact]
+    public async Task GenerateToString_Default_DoesNotCollectInheritedMembers()
+    {
+        const string animal = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Species;
+            }
+            """;
+        const string dog = """
+            namespace TestApp;
+
+            public class Dog : Animal
+            {
+                public string Name;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Dog.cs", dog), ("Animal.cs", animal));
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.Contains("{Name}", toString);
+        Assert.DoesNotContain("Species", toString);
+    }
+
     #endregion
 
     #region StringBuilder
