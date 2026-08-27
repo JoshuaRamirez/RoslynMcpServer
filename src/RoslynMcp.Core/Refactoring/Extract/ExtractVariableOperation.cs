@@ -16,9 +16,6 @@ namespace RoslynMcp.Core.Refactoring.Extract;
 /// </summary>
 public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractVariableParams>
 {
-    private const string ReplaceAnnotation = "extract-variable-replace";
-    private const string InsertBeforeAnnotation = "extract-variable-insert-before";
-
     /// <summary>
     /// Creates a new extract variable operation.
     /// </summary>
@@ -247,6 +244,7 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             ?? throw new RefactoringException(
                 ErrorCodes.InvalidSelection,
                 "Cannot extract variable outside of a block statement.");
+        var insertIndex = commonBlock.Statements.IndexOf(insertBefore);
 
         var existingVar = commonBlock.DescendantNodes()
             .OfType<VariableDeclaratorSyntax>()
@@ -258,40 +256,33 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
                 $"Variable '{variableName}' already exists in scope.");
         }
 
-        var nodesToAnnotate = replacements
-            .Cast<SyntaxNode>()
-            .Append(insertBefore)
-            .Distinct()
-            .ToList();
+        // Annotate replacements and the insertion block in separate passes.
+        // ReplaceNodes skips descendants when an ancestor is in the same batch.
+        var replaceAnn = new SyntaxAnnotation("extract-variable-replace");
+        var blockAnn = new SyntaxAnnotation("extract-variable-block");
 
-        var annotated = root.ReplaceNodes(nodesToAnnotate, (original, _) =>
-        {
-            var node = original;
-            if (replacements.Contains(original))
-                node = node.WithAdditionalAnnotations(new SyntaxAnnotation(ReplaceAnnotation));
-            if (original == insertBefore)
-                node = node.WithAdditionalAnnotations(new SyntaxAnnotation(InsertBeforeAnnotation));
-            return node;
-        });
+        var withReplacements = root.ReplaceNodes(
+            replacements,
+            (original, _) => original.WithAdditionalAnnotations(replaceAnn));
+
+        var blockToAnnotate = FindCommonBlock(
+            withReplacements.GetAnnotatedNodes(replaceAnn).OfType<ExpressionSyntax>().ToList());
+        var withBlock = withReplacements.ReplaceNode(
+            blockToAnnotate,
+            blockToAnnotate.WithAdditionalAnnotations(blockAnn));
 
         var variableRef = SyntaxFactory.IdentifierName(variableName);
-        var replaced = annotated.ReplaceNodes(
-            annotated.GetAnnotatedNodes(ReplaceAnnotation),
+        var replaced = withBlock.ReplaceNodes(
+            withBlock.GetAnnotatedNodes(replaceAnn),
             (original, _) => variableRef.WithTriviaFrom(original));
 
-        var insertTarget = replaced.GetAnnotatedNodes(InsertBeforeAnnotation).OfType<StatementSyntax>().FirstOrDefault()
-            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to locate insertion point after rewrite.");
+        var updatedBlock = replaced.GetAnnotatedNodes(blockAnn).OfType<BlockSyntax>().FirstOrDefault()
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to locate insertion block after rewrite.");
 
-        var block = insertTarget.Parent as BlockSyntax
-            ?? throw new RefactoringException(
-                ErrorCodes.InvalidSelection,
-                "Cannot extract variable outside of a block statement.");
-
-        var statementIndex = block.Statements.IndexOf(insertTarget);
         var declaration = variableDeclaration.NormalizeWhitespace()
             .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
-        var newBlock = block.WithStatements(block.Statements.Insert(statementIndex, declaration));
-        return replaced.ReplaceNode(block, newBlock);
+        var newBlock = updatedBlock.WithStatements(updatedBlock.Statements.Insert(insertIndex, declaration));
+        return replaced.ReplaceNode(updatedBlock, newBlock);
     }
 
     private static List<ExpressionSyntax> FindEquivalentExpressions(

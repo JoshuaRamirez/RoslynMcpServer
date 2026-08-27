@@ -105,6 +105,34 @@ public class ExtractVariableOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractVariable_ReplaceAllTrue_SelectedLaterOccurrence_InsertsBeforeFirstUse()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DuplicateExpressionSource);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(DuplicateExpressionSource, "a + b", occurrence: 2);
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "extracted",
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var declarationIndex = updated.IndexOf("var extracted = a + b;", StringComparison.Ordinal);
+        var firstUseIndex = updated.IndexOf("var first = extracted;", StringComparison.Ordinal);
+        var secondUseIndex = updated.IndexOf("var second = extracted;", StringComparison.Ordinal);
+        Assert.True(declarationIndex >= 0 && firstUseIndex > declarationIndex && secondUseIndex > firstUseIndex);
+        Assert.DoesNotContain("var first = a + b;", updated);
+        Assert.DoesNotContain("var second = a + b;", updated);
+    }
+
+    [SkippableFact]
     public async Task ExtractVariable_ReplaceAllTrue_DoesNotReplaceDifferentBindings()
     {
         const string source = """
@@ -453,11 +481,18 @@ public class ExtractVariableOperationTests
         return count;
     }
 
-    private static (int StartLine, int StartColumn, int EndLine, int EndColumn) FindSpan(string source, string snippet)
+    private static (int StartLine, int StartColumn, int EndLine, int EndColumn) FindSpan(
+        string source,
+        string snippet,
+        int occurrence = 1)
     {
-        var index = source.IndexOf(snippet, StringComparison.Ordinal);
-        if (index < 0)
-            throw new InvalidOperationException($"Snippet not found: {snippet}");
+        var index = -1;
+        for (var i = 0; i < occurrence; i++)
+        {
+            index = source.IndexOf(snippet, index + 1, StringComparison.Ordinal);
+            if (index < 0)
+                throw new InvalidOperationException($"Snippet not found (occurrence {occurrence}): {snippet}");
+        }
 
         return (GetLineColumn(source, index).Line, GetLineColumn(source, index).Column,
             GetLineColumn(source, index + snippet.Length).Line, GetLineColumn(source, index + snippet.Length).Column);
