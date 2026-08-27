@@ -129,7 +129,7 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             }
         }
 
-        if (@params.ReplaceAll && HasSideEffects(expression))
+        if (@params.ReplaceAll && HasSideEffects(expression, semanticModel, cancellationToken))
         {
             throw new RefactoringException(
                 ErrorCodes.ExpressionHasSideEffects,
@@ -239,14 +239,17 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         LocalDeclarationStatementSyntax variableDeclaration)
     {
         var first = replacements.OrderBy(e => e.SpanStart).First();
-        var commonBlock = FindCommonBlock(replacements);
-        var insertBefore = commonBlock.Statements.FirstOrDefault(s => s.Span.Contains(first.Span))
+        var insertionBlock = GetInnermostBlock(first)
             ?? throw new RefactoringException(
                 ErrorCodes.InvalidSelection,
                 "Cannot extract variable outside of a block statement.");
-        var insertIndex = commonBlock.Statements.IndexOf(insertBefore);
+        var insertBefore = insertionBlock.Statements.FirstOrDefault(s => s.Span.Contains(first.Span))
+            ?? throw new RefactoringException(
+                ErrorCodes.InvalidSelection,
+                "Cannot extract variable outside of a block statement.");
+        var insertIndex = insertionBlock.Statements.IndexOf(insertBefore);
 
-        var existingVar = commonBlock.DescendantNodes()
+        var existingVar = insertionBlock.DescendantNodes()
             .OfType<VariableDeclaratorSyntax>()
             .FirstOrDefault(v => v.Identifier.Text == variableName);
         if (existingVar != null)
@@ -265,8 +268,14 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             replacements,
             (original, _) => original.WithAdditionalAnnotations(replaceAnn));
 
-        var blockToAnnotate = FindCommonBlock(
-            withReplacements.GetAnnotatedNodes(replaceAnn).OfType<ExpressionSyntax>().ToList());
+        var annotatedFirst = withReplacements.GetAnnotatedNodes(replaceAnn)
+            .OfType<ExpressionSyntax>()
+            .OrderBy(e => e.SpanStart)
+            .First();
+        var blockToAnnotate = GetInnermostBlock(annotatedFirst)
+            ?? throw new RefactoringException(
+                ErrorCodes.InvalidSelection,
+                "Cannot extract variable outside of a block statement.");
         var withBlock = withReplacements.ReplaceNode(
             blockToAnnotate,
             blockToAnnotate.WithAdditionalAnnotations(blockAnn));
@@ -290,14 +299,20 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        var scope = GetReplacementScope(original);
+        var block = GetInnermostBlock(original);
+        if (block == null)
+            return new List<ExpressionSyntax> { original };
+
         var originalCore = Unwrap(original);
         var originalBindings = CollectBindings(originalCore, semanticModel, cancellationToken);
 
-        return scope.DescendantNodesAndSelf()
+        var matches = block.DescendantNodes()
             .OfType<ExpressionSyntax>()
             .Where(expr =>
             {
+                if (GetInnermostBlock(expr) != block)
+                    return false;
+
                 var core = Unwrap(expr);
                 if (core != expr)
                     return false;
@@ -309,46 +324,123 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
                        BindingsEqual(originalBindings, CollectBindings(core, semanticModel, cancellationToken));
             })
             .ToList();
+
+        if (!matches.Contains(originalCore) && !matches.Contains(original))
+            matches.Add(original);
+
+        return FilterByInterveningWrites(matches, original, originalBindings, semanticModel, cancellationToken);
     }
 
-    private static SyntaxNode GetReplacementScope(ExpressionSyntax expression)
+    private static List<ExpressionSyntax> FilterByInterveningWrites(
+        List<ExpressionSyntax> matches,
+        ExpressionSyntax original,
+        IReadOnlyList<ISymbol?> bindings,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
-        foreach (var ancestor in expression.Ancestors())
+        var sorted = matches.Distinct().OrderBy(e => e.SpanStart).ToList();
+        var originalCore = Unwrap(original);
+        var originalIndex = sorted.FindIndex(e => e == original || e == originalCore);
+        if (originalIndex < 0)
         {
-            switch (ancestor)
-            {
-                case BaseMethodDeclarationSyntax method:
-                    return (SyntaxNode?)method.Body ?? method.ExpressionBody ?? ancestor;
-                case LocalFunctionStatementSyntax local:
-                    return (SyntaxNode?)local.Body ?? local.ExpressionBody ?? ancestor;
-                case AccessorDeclarationSyntax accessor:
-                    return (SyntaxNode?)accessor.Body ?? accessor.ExpressionBody ?? ancestor;
-                case AnonymousFunctionExpressionSyntax lambda:
-                    return lambda.Body;
-            }
+            sorted.Insert(0, original);
+            originalIndex = 0;
         }
 
-        return expression.Ancestors().OfType<BlockSyntax>().FirstOrDefault()
-            ?? expression.Parent
-            ?? expression;
-    }
+        var kept = new List<ExpressionSyntax> { sorted[originalIndex] };
 
-    private static BlockSyntax FindCommonBlock(IReadOnlyList<ExpressionSyntax> expressions)
-    {
-        var ancestorBlocks = expressions
-            .Select(e => e.Ancestors().OfType<BlockSyntax>().ToList())
-            .ToList();
-
-        foreach (var candidate in ancestorBlocks[0])
+        for (var i = originalIndex - 1; i >= 0; i--)
         {
-            if (ancestorBlocks.All(list => list.Contains(candidate)))
-                return candidate;
+            if (HasInterveningWrite(sorted[i], originalCore, bindings, semanticModel, cancellationToken))
+                break;
+
+            kept.Add(sorted[i]);
         }
 
-        throw new RefactoringException(
-            ErrorCodes.InvalidSelection,
-            "Cannot extract variable outside of a block statement.");
+        var leftmost = kept.OrderBy(e => e.SpanStart).First();
+        for (var i = originalIndex + 1; i < sorted.Count; i++)
+        {
+            if (HasInterveningWrite(leftmost, sorted[i], bindings, semanticModel, cancellationToken))
+                break;
+
+            kept.Add(sorted[i]);
+        }
+
+        return kept.OrderBy(e => e.SpanStart).ToList();
     }
+
+    private static bool HasInterveningWrite(
+        ExpressionSyntax earlier,
+        ExpressionSyntax later,
+        IReadOnlyList<ISymbol?> bindings,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var symbols = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        foreach (var symbol in bindings)
+        {
+            if (symbol != null)
+                symbols.Add(symbol);
+        }
+        if (symbols.Count == 0)
+            return false;
+
+        var start = earlier.Span.End;
+        var end = later.Span.Start;
+        if (end <= start)
+            return false;
+
+        var root = earlier.SyntaxTree.GetRoot(cancellationToken);
+        foreach (var node in root.DescendantNodes())
+        {
+            if (node.SpanStart < start || node.SpanStart >= end)
+                continue;
+
+            var written = GetWrittenSymbol(node, semanticModel, cancellationToken);
+            if (written != null && symbols.Contains(written))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static ISymbol? GetWrittenSymbol(
+        SyntaxNode node,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        switch (node)
+        {
+            case AssignmentExpressionSyntax assignment:
+                return GetAssignedSymbol(assignment.Left, semanticModel, cancellationToken);
+            case PrefixUnaryExpressionSyntax prefix
+                when prefix.IsKind(SyntaxKind.PreIncrementExpression) ||
+                     prefix.IsKind(SyntaxKind.PreDecrementExpression):
+                return GetAssignedSymbol(prefix.Operand, semanticModel, cancellationToken);
+            case PostfixUnaryExpressionSyntax postfix
+                when postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
+                     postfix.IsKind(SyntaxKind.PostDecrementExpression):
+                return GetAssignedSymbol(postfix.Operand, semanticModel, cancellationToken);
+            case ArgumentSyntax argument
+                when argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) ||
+                     argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword):
+                return GetAssignedSymbol(argument.Expression, semanticModel, cancellationToken);
+            default:
+                return null;
+        }
+    }
+
+    private static ISymbol? GetAssignedSymbol(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var core = Unwrap(expression);
+        return semanticModel.GetSymbolInfo(core, cancellationToken).Symbol;
+    }
+
+    private static BlockSyntax? GetInnermostBlock(SyntaxNode node) =>
+        node.Ancestors().OfType<BlockSyntax>().FirstOrDefault();
 
     private static ExpressionSyntax Unwrap(ExpressionSyntax expression)
     {
@@ -382,7 +474,10 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         return true;
     }
 
-    private static bool HasSideEffects(ExpressionSyntax expression)
+    private static bool HasSideEffects(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         foreach (var node in expression.DescendantNodesAndSelf())
         {
@@ -405,6 +500,23 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
                     when prefix.IsKind(SyntaxKind.PreIncrementExpression) ||
                          prefix.IsKind(SyntaxKind.PreDecrementExpression):
                     return true;
+            }
+
+            if (node is ExpressionSyntax expr)
+            {
+                var conversion = semanticModel.GetConversion(expr, cancellationToken);
+                if (conversion.IsUserDefined)
+                    return true;
+            }
+
+            var symbol = semanticModel.GetSymbolInfo(node, cancellationToken).Symbol;
+            if (symbol is IPropertySymbol)
+                return true;
+
+            if (symbol is IMethodSymbol method &&
+                method.MethodKind is MethodKind.UserDefinedOperator or MethodKind.Conversion)
+            {
+                return true;
             }
         }
 

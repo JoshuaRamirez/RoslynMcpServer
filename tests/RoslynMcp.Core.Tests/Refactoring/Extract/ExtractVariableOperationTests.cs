@@ -133,6 +133,144 @@ public class ExtractVariableOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractVariable_ReplaceAllTrue_SkipsOccurrenceAfterInterveningWrite()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Compute()
+                {
+                    int x = 0;
+                    var first = x + 1;
+                    x = 10;
+                    var second = x + 1;
+                    return first + second;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, "x + 1");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "extracted",
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("var extracted = x + 1;", updated);
+        Assert.Contains("var first = extracted;", updated);
+        Assert.Contains("x = 10;", updated);
+        Assert.Contains("var second = x + 1;", updated);
+        Assert.DoesNotContain("var second = extracted;", updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractVariable_ReplaceAllTrue_DoesNotHoistOutOfGuardedBlocks()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Compute(bool ok, int divisor)
+                {
+                    int result = 0;
+                    if (ok)
+                    {
+                        result += 10 / divisor;
+                    }
+                    if (ok)
+                    {
+                        result += 10 / divisor;
+                    }
+                    return result;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, "10 / divisor");
+
+        var result = await operation.ExecuteAsync(new ExtractVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            VariableName = "extracted",
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("var extracted = 10 / divisor;", updated);
+        Assert.Contains("result += extracted;", updated);
+        Assert.Equal(1, CountOccurrences(updated, "result += extracted;"));
+        Assert.Equal(1, CountOccurrences(updated, "result += 10 / divisor;"));
+
+        var firstIf = updated.IndexOf("if (ok)", StringComparison.Ordinal);
+        var secondIf = updated.IndexOf("if (ok)", firstIf + 1, StringComparison.Ordinal);
+        var declaration = updated.IndexOf("var extracted = 10 / divisor;", StringComparison.Ordinal);
+        Assert.True(firstIf >= 0 && secondIf > firstIf);
+        Assert.True(declaration > firstIf && declaration < secondIf);
+    }
+
+    [SkippableFact]
+    public async Task ExtractVariable_ReplaceAllTrue_PropertyGetter_Fails3038()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private int _n;
+
+                public int Value => _n++;
+
+                public int Compute()
+                {
+                    var first = Value;
+                    var second = Value;
+                    return first + second;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractVariableOperation(workspace.Context);
+        var span = FindSpan(source, "Value", occurrence: 2);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                VariableName = "extracted",
+                ReplaceAll = true
+            }));
+
+        Assert.Equal(ErrorCodes.ExpressionHasSideEffects, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
     public async Task ExtractVariable_ReplaceAllTrue_DoesNotReplaceDifferentBindings()
     {
         const string source = """
