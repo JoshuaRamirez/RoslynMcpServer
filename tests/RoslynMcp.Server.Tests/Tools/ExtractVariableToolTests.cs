@@ -95,7 +95,22 @@ public class ExtractVariableToolTests
 
         // Assert - Optional properties
         Assert.True(properties.TryGetProperty("useVar", out _));
+        Assert.True(properties.TryGetProperty("replaceAll", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_ReplaceAllProperty_DefaultsToFalse()
+    {
+        // Act
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var replaceAll = doc.RootElement.GetProperty("properties").GetProperty("replaceAll");
+
+        // Assert
+        Assert.Equal("boolean", replaceAll.GetProperty("type").GetString());
+        Assert.False(replaceAll.GetProperty("default").GetBoolean());
     }
 
     [Fact]

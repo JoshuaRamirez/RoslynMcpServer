@@ -102,6 +102,16 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_ExtractVariable_ShowsReplaceAll()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("extract-variable")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("--replace-all", help);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ShowsParamsAsKebabCase()
     {
         var registry = ToolRegistry.BuildDefault();

@@ -82,6 +82,12 @@ public sealed class ExtractVariableTool : IToolHandler
                 description = "Use var instead of explicit type",
                 @default = true
             },
+            replaceAll = new
+            {
+                type = "boolean",
+                description = "Replace all equivalent occurrences in the same containing method or block",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -122,6 +128,7 @@ public sealed class ExtractVariableTool : IToolHandler
                 EndColumn = args.EndColumn,
                 VariableName = args.VariableName,
                 UseVar = args.UseVar ?? true,
+                ReplaceAll = args.ReplaceAll ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -157,6 +164,7 @@ public sealed class ExtractVariableTool : IToolHandler
         public int EndColumn { get; init; }
         public string VariableName { get; init; } = "";
         public bool? UseVar { get; init; }
+        public bool? ReplaceAll { get; init; }
         public bool? Preview { get; init; }
     }
 }

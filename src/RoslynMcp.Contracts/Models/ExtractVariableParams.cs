@@ -41,6 +41,12 @@ public sealed class ExtractVariableParams
     public bool UseVar { get; init; } = true;
 
     /// <summary>
+    /// Replace all equivalent occurrences in the same containing method or block.
+    /// Default: false (replace only the selected expression).
+    /// </summary>
+    public bool ReplaceAll { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }
