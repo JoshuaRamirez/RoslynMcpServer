@@ -14,7 +14,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// Generates Equals() and GetHashCode() overrides for a type.
 /// Optionally implements <c>IEquatable&lt;T&gt;</c> with a typed Equals when requested,
 /// optionally generates <c>operator ==</c> / <c>operator !=</c>,
-/// and optionally replaces existing equality members when <c>replaceExisting</c> is true.
+/// optionally replaces existing equality members when <c>replaceExisting</c> is true,
+/// and honors <c>useHashCodeCombine</c> for the GetHashCode body shape.
 /// </summary>
 public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<GenerateEqualsHashCodeParams>
 {
@@ -105,7 +106,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             objectEquals = GenerateEquals(selfTypeName, members);
         }
 
-        var hashCodeMethod = GenerateGetHashCode(members);
+        var hashCodeMethod = GenerateGetHashCode(members, @params.UseHashCodeCombine);
         OperatorDeclarationSyntax? equalityOperator = null;
         OperatorDeclarationSyntax? inequalityOperator = null;
         if (@params.GenerateOperators)
@@ -129,7 +130,9 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 selfTypeName,
                 @params.ImplementIEquatable,
                 @params.GenerateOperators,
-                @params.ReplaceExisting);
+                @params.ReplaceExisting,
+                @params.UseHashCodeCombine,
+                members.Count);
             var pendingChanges = new List<PendingChange>
             {
                 new()
@@ -475,16 +478,21 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         string selfTypeName,
         bool implementIEquatable,
         bool generateOperators,
-        bool replaceExisting)
+        bool replaceExisting,
+        bool useHashCodeCombine,
+        int memberCount)
     {
         var verb = replaceExisting ? "Replace" : "Generate";
+        var hashStyle = useHashCodeCombine
+            ? (memberCount <= 8 ? "HashCode.Combine" : "HashCode builder")
+            : "unchecked prime-multiply";
         if (implementIEquatable && generateOperators)
-            return $"{verb} Equals, GetHashCode, IEquatable<{selfTypeName}>, and equality operators for {typeName}";
+            return $"{verb} Equals, GetHashCode ({hashStyle}), IEquatable<{selfTypeName}>, and equality operators for {typeName}";
         if (implementIEquatable)
-            return $"{verb} Equals, GetHashCode, and IEquatable<{selfTypeName}> for {typeName}";
+            return $"{verb} Equals, GetHashCode ({hashStyle}), and IEquatable<{selfTypeName}> for {typeName}";
         if (generateOperators)
-            return $"{verb} Equals, GetHashCode, and equality operators for {typeName}";
-        return $"{verb} Equals and GetHashCode for {typeName}";
+            return $"{verb} Equals, GetHashCode ({hashStyle}), and equality operators for {typeName}";
+        return $"{verb} Equals and GetHashCode ({hashStyle}) for {typeName}";
     }
 
     private static string BuildPreviewSnippet(
@@ -719,76 +727,173 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             .NormalizeWhitespace();
     }
 
-    private static MethodDeclarationSyntax GenerateGetHashCode(List<ISymbol> members)
+    private static MethodDeclarationSyntax GenerateGetHashCode(List<ISymbol> members, bool useHashCodeCombine)
     {
-        // Use HashCode.Combine(field1, field2, ...)
+        return useHashCodeCombine
+            ? GenerateHashCodeCombineGetHashCode(members)
+            : GeneratePrimeMultiplyGetHashCode(members);
+    }
+
+    private static TypeSyntax SystemHashCodeType() =>
+        SyntaxFactory.ParseTypeName("global::System.HashCode");
+
+    private static MethodDeclarationSyntax GenerateHashCodeCombineGetHashCode(List<ISymbol> members)
+    {
+        // Qualify System.HashCode so a type-local HashCode cannot steal the call.
         var arguments = members.Select(m =>
-            SyntaxFactory.Argument(SyntaxFactory.IdentifierName(m.Name)))
+            SyntaxFactory.Argument(InstanceMemberAccess(m.Name)))
             .ToArray();
 
-        ExpressionSyntax hashExpr;
         if (arguments.Length <= 8) // HashCode.Combine supports up to 8 args
         {
-            hashExpr = SyntaxFactory.InvocationExpression(
+            var hashExpr = SyntaxFactory.InvocationExpression(
                 SyntaxFactory.MemberAccessExpression(
                     SyntaxKind.SimpleMemberAccessExpression,
-                    SyntaxFactory.IdentifierName("HashCode"),
+                    SystemHashCodeType(),
                     SyntaxFactory.IdentifierName("Combine")))
                 .WithArgumentList(SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList(arguments)));
-        }
-        else
-        {
-            // For > 8 fields, use HashCode builder: var hash = new HashCode(); hash.Add(f); ... return hash.ToHashCode();
-            var statements = new List<StatementSyntax>();
 
-            // var hash = new HashCode();
-            statements.Add(SyntaxFactory.LocalDeclarationStatement(
+            return GetHashCodeMethod(SyntaxFactory.Block(SyntaxFactory.ReturnStatement(hashExpr)));
+        }
+
+        // For > 8 fields: var hash = new global::System.HashCode(); hash.Add(f); ... return hash.ToHashCode();
+        var statements = new List<StatementSyntax>
+        {
+            SyntaxFactory.LocalDeclarationStatement(
                 SyntaxFactory.VariableDeclaration(SyntaxFactory.IdentifierName("var"))
                     .WithVariables(SyntaxFactory.SingletonSeparatedList(
                         SyntaxFactory.VariableDeclarator("hash")
                             .WithInitializer(SyntaxFactory.EqualsValueClause(
-                                SyntaxFactory.ObjectCreationExpression(SyntaxFactory.IdentifierName("HashCode"))
-                                    .WithArgumentList(SyntaxFactory.ArgumentList())))))));
+                                SyntaxFactory.ObjectCreationExpression(SystemHashCodeType())
+                                    .WithArgumentList(SyntaxFactory.ArgumentList()))))))
+        };
 
-            // hash.Add(fieldN); for each member
-            foreach (var member in members)
-            {
-                statements.Add(SyntaxFactory.ExpressionStatement(
-                    SyntaxFactory.InvocationExpression(
-                        SyntaxFactory.MemberAccessExpression(
-                            SyntaxKind.SimpleMemberAccessExpression,
-                            SyntaxFactory.IdentifierName("hash"),
-                            SyntaxFactory.IdentifierName("Add")))
-                        .WithArgumentList(SyntaxFactory.ArgumentList(
-                            SyntaxFactory.SingletonSeparatedList(
-                                SyntaxFactory.Argument(SyntaxFactory.IdentifierName(member.Name)))))));
-            }
-
-            // return hash.ToHashCode();
-            statements.Add(SyntaxFactory.ReturnStatement(
+        foreach (var member in members)
+        {
+            statements.Add(SyntaxFactory.ExpressionStatement(
                 SyntaxFactory.InvocationExpression(
                     SyntaxFactory.MemberAccessExpression(
                         SyntaxKind.SimpleMemberAccessExpression,
                         SyntaxFactory.IdentifierName("hash"),
-                        SyntaxFactory.IdentifierName("ToHashCode")))));
-
-            return SyntaxFactory.MethodDeclaration(
-                    SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.IntKeyword)),
-                    "GetHashCode")
-                .WithModifiers(SyntaxFactory.TokenList(
-                    SyntaxFactory.Token(SyntaxKind.PublicKeyword),
-                    SyntaxFactory.Token(SyntaxKind.OverrideKeyword)))
-                .WithBody(SyntaxFactory.Block(statements))
-                .NormalizeWhitespace();
+                        SyntaxFactory.IdentifierName("Add")))
+                    .WithArgumentList(SyntaxFactory.ArgumentList(
+                        SyntaxFactory.SingletonSeparatedList(
+                            SyntaxFactory.Argument(InstanceMemberAccess(member.Name)))))));
         }
 
+        statements.Add(SyntaxFactory.ReturnStatement(
+            SyntaxFactory.InvocationExpression(
+                SyntaxFactory.MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    SyntaxFactory.IdentifierName("hash"),
+                    SyntaxFactory.IdentifierName("ToHashCode")))));
+
+        return GetHashCodeMethod(SyntaxFactory.Block(statements));
+    }
+
+    private static MethodDeclarationSyntax GeneratePrimeMultiplyGetHashCode(List<ISymbol> members)
+    {
+        var statements = new List<StatementSyntax>
+        {
+            SyntaxFactory.LocalDeclarationStatement(
+                SyntaxFactory.VariableDeclaration(SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.IntKeyword)))
+                    .WithVariables(SyntaxFactory.SingletonSeparatedList(
+                        SyntaxFactory.VariableDeclarator("hash")
+                            .WithInitializer(SyntaxFactory.EqualsValueClause(
+                                SyntaxFactory.LiteralExpression(
+                                    SyntaxKind.NumericLiteralExpression,
+                                    SyntaxFactory.Literal(17)))))))
+        };
+
+        foreach (var member in members)
+        {
+            var multiply = SyntaxFactory.ParenthesizedExpression(
+                SyntaxFactory.BinaryExpression(
+                    SyntaxKind.MultiplyExpression,
+                    SyntaxFactory.IdentifierName("hash"),
+                    SyntaxFactory.LiteralExpression(
+                        SyntaxKind.NumericLiteralExpression,
+                        SyntaxFactory.Literal(31))));
+
+            statements.Add(SyntaxFactory.ExpressionStatement(
+                SyntaxFactory.AssignmentExpression(
+                    SyntaxKind.SimpleAssignmentExpression,
+                    SyntaxFactory.IdentifierName("hash"),
+                    SyntaxFactory.BinaryExpression(
+                        SyntaxKind.AddExpression,
+                        multiply,
+                        BuildMemberHashExpression(member)))));
+        }
+
+        statements.Add(SyntaxFactory.ReturnStatement(SyntaxFactory.IdentifierName("hash")));
+
+        var uncheckedBlock = SyntaxFactory.CheckedStatement(
+            SyntaxKind.UncheckedStatement,
+            SyntaxFactory.Block(statements));
+
+        return GetHashCodeMethod(SyntaxFactory.Block(uncheckedBlock));
+    }
+
+    private static ExpressionSyntax InstanceMemberAccess(string memberName) =>
+        SyntaxFactory.MemberAccessExpression(
+            SyntaxKind.SimpleMemberAccessExpression,
+            SyntaxFactory.ThisExpression(),
+            SyntaxFactory.IdentifierName(memberName));
+
+    private static ExpressionSyntax BuildMemberHashExpression(ISymbol member)
+    {
+        var memberType = EqualityMemberCollector.GetMemberType(member);
+        // Qualify with this. so a member named hash is not shadowed by the local.
+        var memberAccess = InstanceMemberAccess(member.Name);
+
+        if (!NeedsNullSafeHash(memberType))
+        {
+            return SyntaxFactory.InvocationExpression(
+                SyntaxFactory.MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    memberAccess,
+                    SyntaxFactory.IdentifierName("GetHashCode")));
+        }
+
+        // (this.Member?.GetHashCode() ?? 0) — parenthesized so ?? does not bind across +.
+        var conditionalAccess = SyntaxFactory.ConditionalAccessExpression(
+            memberAccess,
+            SyntaxFactory.InvocationExpression(
+                SyntaxFactory.MemberBindingExpression(SyntaxFactory.IdentifierName("GetHashCode"))));
+
+        return SyntaxFactory.ParenthesizedExpression(
+            SyntaxFactory.BinaryExpression(
+                SyntaxKind.CoalesceExpression,
+                conditionalAccess,
+                SyntaxFactory.LiteralExpression(
+                    SyntaxKind.NumericLiteralExpression,
+                    SyntaxFactory.Literal(0))));
+    }
+
+    private static bool NeedsNullSafeHash(ITypeSymbol type)
+    {
+        if (type is INamedTypeSymbol named &&
+            named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
+        {
+            return true;
+        }
+
+        if (type.IsValueType)
+            return type.NullableAnnotation == NullableAnnotation.Annotated;
+
+        // Nullable reference types and oblivious/unconstrained references under NRT.
+        return type.NullableAnnotation != NullableAnnotation.NotAnnotated;
+    }
+
+    private static MethodDeclarationSyntax GetHashCodeMethod(BlockSyntax body)
+    {
         return SyntaxFactory.MethodDeclaration(
                 SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.IntKeyword)),
                 "GetHashCode")
             .WithModifiers(SyntaxFactory.TokenList(
                 SyntaxFactory.Token(SyntaxKind.PublicKeyword),
                 SyntaxFactory.Token(SyntaxKind.OverrideKeyword)))
-            .WithBody(SyntaxFactory.Block(SyntaxFactory.ReturnStatement(hashExpr)))
+            .WithBody(body)
             .NormalizeWhitespace();
     }
 }

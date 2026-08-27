@@ -80,6 +80,12 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 description = "Replace existing Equals/GetHashCode (and IEquatable / operators when those flags are set) instead of failing",
                 @default = false
             },
+            useHashCodeCombine = new
+            {
+                type = "boolean",
+                description = "Use HashCode.Combine() (or a HashCode builder for more than 8 members) instead of a classic unchecked prime-multiply GetHashCode",
+                @default = true
+            },
             preview = new
             {
                 type = "boolean",
@@ -121,6 +127,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 ImplementIEquatable = args.ImplementIEquatable ?? false,
                 GenerateOperators = args.GenerateOperators ?? false,
                 ReplaceExisting = args.ReplaceExisting ?? false,
+                UseHashCodeCombine = args.UseHashCodeCombine ?? true,
                 Preview = args.Preview ?? false
             };
 
@@ -155,6 +162,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
         public bool? ImplementIEquatable { get; init; }
         public bool? GenerateOperators { get; init; }
         public bool? ReplaceExisting { get; init; }
+        public bool? UseHashCodeCombine { get; init; }
         public bool? Preview { get; init; }
     }
 }

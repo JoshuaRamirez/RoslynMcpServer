@@ -8,7 +8,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
-/// Operation-level tests for <see cref="GenerateEqualsHashCodeOperation"/>, including <c>implementIEquatable</c>, <c>generateOperators</c>, and <c>replaceExisting</c>.
+/// Operation-level tests for <see cref="GenerateEqualsHashCodeOperation"/>, including <c>implementIEquatable</c>, <c>generateOperators</c>, <c>replaceExisting</c>, and <c>useHashCodeCombine</c>.
 /// </summary>
 public class GenerateEqualsHashCodeOperationTests
 {
@@ -1047,7 +1047,363 @@ public class GenerateEqualsHashCodeOperationTests
 
     #endregion
 
+    #region useHashCodeCombine
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineOmitted_UsesCombineForFewMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertHashCodeCombine(updated, "Name", "Age");
+        AssertNoPrimeMultiply(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineTrue_UsesCombineForFewMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            UseHashCodeCombine = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertHashCodeCombine(updated, "Name", "Age");
+        AssertNoPrimeMultiply(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineTrue_MoreThanEightMembers_UsesHashCodeBuilder()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Wide
+            {
+                public int A { get; set; }
+                public int B { get; set; }
+                public int C { get; set; }
+                public int D { get; set; }
+                public int E { get; set; }
+                public int F { get; set; }
+                public int G { get; set; }
+                public int H { get; set; }
+                public int I { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Wide.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Wide",
+            UseHashCodeCombine = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        Assert.Contains("new global::System.HashCode()", getHashCode);
+        Assert.Contains("hash.Add(this.A)", getHashCode);
+        Assert.Contains("hash.Add(this.I)", getHashCode);
+        Assert.Contains("hash.ToHashCode()", getHashCode);
+        Assert.DoesNotContain("HashCode.Combine", getHashCode);
+        AssertNoPrimeMultiply(getHashCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineFalse_UsesUncheckedPrimeMultiply()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            UseHashCodeCombine = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        AssertPrimeMultiply(getHashCode);
+        Assert.Contains("this.Name.GetHashCode()", getHashCode);
+        Assert.DoesNotContain("this.Name?.GetHashCode()", getHashCode);
+        Assert.Contains("this.Age.GetHashCode()", getHashCode);
+        AssertNoHashCodeCombineOrBuilder(updated);
+        AssertDefaultEqualsShape(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineFalse_NullableReferenceMember_UsesNullSafeHash()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public string? Name { get; set; }
+
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            UseHashCodeCombine = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        AssertPrimeMultiply(getHashCode);
+        Assert.Contains("(this.Name?.GetHashCode() ?? 0)", getHashCode);
+        Assert.Contains("this.Age.GetHashCode()", getHashCode);
+        AssertNoHashCodeCombineOrBuilder(getHashCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineFalse_ImplementIEquatableAndGenerateOperators_OnlyChangesGetHashCodeShape()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            ImplementIEquatable = true,
+            GenerateOperators = true,
+            UseHashCodeCombine = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertIEquatableClassShape(updated);
+        AssertEqualityOperators(updated, "Person?", nullableParameters: true);
+        AssertPrimeMultiply(updated);
+        AssertNoHashCodeCombineOrBuilder(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineFalse_Preview_DoesNotWriteFiles_AndDescribesPrimeMultiply()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            UseHashCodeCombine = false,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("unchecked prime-multiply", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        AssertPrimeMultiply(snippet);
+        AssertNoHashCodeCombineOrBuilder(snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineTrue_Preview_DoesNotWriteFiles_AndDescribesCombine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            UseHashCodeCombine = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("HashCode.Combine", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        AssertHashCodeCombine(snippet, "Name", "Age");
+        AssertNoPrimeMultiply(snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineTrue_TypeLocalHashCode_QualifiesSystemHashCode()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class HashCode
+            {
+                public int Value { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "HashCode.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "HashCode",
+            UseHashCodeCombine = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        Assert.Contains("global::System.HashCode.Combine(this.Value)", getHashCode);
+        Assert.DoesNotContain("return HashCode.Combine", getHashCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineFalse_MemberNamedHash_QualifiesWithThis()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Bucket
+            {
+                public int hash;
+
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Bucket.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Bucket",
+            UseHashCodeCombine = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        AssertPrimeMultiply(getHashCode);
+        Assert.Contains("this.hash.GetHashCode()", getHashCode);
+        Assert.Contains("this.Age.GetHashCode()", getHashCode);
+        Assert.DoesNotContain("(hash * 31) + hash.GetHashCode()", getHashCode);
+        Assert.DoesNotContain("hash?.GetHashCode()", getHashCode);
+        AssertNoHashCodeCombineOrBuilder(getHashCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_UseHashCodeCombineTrue_MoreThanEightMembers_MemberNamedHash_QualifiesWithThis()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Wide
+            {
+                public int A { get; set; }
+                public int B { get; set; }
+                public int C { get; set; }
+                public int D { get; set; }
+                public int E { get; set; }
+                public int F { get; set; }
+                public int G { get; set; }
+                public int H { get; set; }
+                public int hash { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Wide.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Wide",
+            UseHashCodeCombine = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        Assert.Contains("new global::System.HashCode()", getHashCode);
+        Assert.Contains("hash.Add(this.hash)", getHashCode);
+        Assert.Contains("hash.Add(this.A)", getHashCode);
+        Assert.Contains("hash.ToHashCode()", getHashCode);
+        Assert.DoesNotContain("hash.Add(hash)", getHashCode);
+        Assert.DoesNotContain("HashCode.Combine", getHashCode);
+        AssertNoPrimeMultiply(getHashCode);
+    }
+
+    #endregion
+
     #region Helpers
+
+    private static void AssertHashCodeCombine(string text, params string[] members)
+    {
+        var getHashCode = ExtractMethod(text, "public override int GetHashCode()");
+        Assert.Contains("global::System.HashCode.Combine(", getHashCode);
+        foreach (var member in members)
+            Assert.Contains($"this.{member}", getHashCode);
+        Assert.DoesNotContain("new global::System.HashCode()", getHashCode);
+        Assert.DoesNotContain("ToHashCode()", getHashCode);
+    }
+
+    private static void AssertPrimeMultiply(string text)
+    {
+        var getHashCode = text.Contains("public override int GetHashCode()", StringComparison.Ordinal)
+            ? ExtractMethod(text, "public override int GetHashCode()")
+            : text;
+        Assert.Contains("unchecked", getHashCode);
+        Assert.Contains("int hash = 17", getHashCode);
+        Assert.Contains("(hash * 31)", getHashCode);
+    }
+
+    private static void AssertNoPrimeMultiply(string text)
+    {
+        Assert.DoesNotContain("unchecked", text);
+        Assert.DoesNotContain("int hash = 17", text);
+        Assert.DoesNotContain("(hash * 31)", text);
+    }
+
+    private static void AssertNoHashCodeCombineOrBuilder(string text)
+    {
+        Assert.DoesNotContain("HashCode.Combine", text);
+        Assert.DoesNotContain("new HashCode()", text);
+        Assert.DoesNotContain("new global::System.HashCode()", text);
+        Assert.DoesNotContain("ToHashCode()", text);
+        Assert.DoesNotContain("hash.Add(", text);
+    }
 
     private static void AssertDefaultEqualsShape(string text)
     {
