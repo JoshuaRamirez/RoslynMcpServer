@@ -212,16 +212,13 @@ public class GenerateToStringOperationTests
     [SkippableFact]
     public async Task GenerateToString_Default_DoesNotCollectInheritedMembers()
     {
-        const string animal = """
+        const string source = """
             namespace TestApp;
 
             public class Animal
             {
                 public string Species;
             }
-            """;
-        const string dog = """
-            namespace TestApp;
 
             public class Dog : Animal
             {
@@ -229,7 +226,7 @@ public class GenerateToStringOperationTests
             }
             """;
 
-        await using var workspace = await TempWorkspace.CreateAsync(("Dog.cs", dog), ("Animal.cs", animal));
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
         var operation = new GenerateToStringOperation(workspace.Context);
 
         var result = await operation.ExecuteAsync(new GenerateToStringParams
