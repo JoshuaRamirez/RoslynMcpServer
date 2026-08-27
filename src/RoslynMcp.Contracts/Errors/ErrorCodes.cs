@@ -445,7 +445,8 @@ public static class ErrorCodes
     /// <summary>Async methods and Task/ValueTask return types are out of leftover scope.</summary>
     public const string AsyncReturnTypeUnsupported = "3135";
 
-
+    /// <summary>Folder layout updates are not implemented for this operation.</summary>
+    public const string FolderUpdateNotSupported = "3136";
 
     // ============================================
     // System Errors (4xxx)
