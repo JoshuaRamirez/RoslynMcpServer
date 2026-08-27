@@ -102,7 +102,7 @@ public class ToolRegistryTests
     [InlineData("move-type-to-file", "Refactoring")]
     [InlineData("convert-to-async", "Refactoring")]
     [InlineData("convert-anonymous-to-class", "Refactoring")]
-            [InlineData("convert-tuple-to-struct", "Refactoring")]
+    [InlineData("convert-tuple-to-struct", "Refactoring")]
     [InlineData("rename-file-to-match-type", "Refactoring")]
     [InlineData("convert-to-block-body", "Refactoring")]
     [InlineData("generate-constructor", "Refactoring")]
