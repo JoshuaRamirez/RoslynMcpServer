@@ -241,7 +241,10 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         bool generateOperators,
         CancellationToken cancellationToken)
     {
-        var remove = new HashSet<SyntaxNode>();
+        // Match by span/kind, not SyntaxNode reference. WithBaseList rebuilds child
+        // red nodes, so a HashSet<SyntaxNode> collected from the original typeDecl
+        // would miss after an IEquatable strip and leave duplicate members.
+        var remove = new HashSet<(int Start, int End, SyntaxKind Kind)>();
 
         foreach (var method in typeSymbol.GetMembers("Equals").OfType<IMethodSymbol>())
         {
@@ -256,9 +259,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             if (!isObjectEquals && !isTypedEquals)
                 continue;
 
-            var syntax = GetDeclaredMemberInType(method, typeDecl, cancellationToken);
-            if (syntax != null)
-                remove.Add(syntax);
+            MarkMemberForRemoval(remove, GetDeclaredMemberInType(method, typeDecl, cancellationToken));
         }
 
         foreach (var method in typeSymbol.GetMembers("GetHashCode").OfType<IMethodSymbol>())
@@ -266,9 +267,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             if (method.IsImplicitlyDeclared || method.IsStatic || method.Parameters.Length != 0)
                 continue;
 
-            var syntax = GetDeclaredMemberInType(method, typeDecl, cancellationToken);
-            if (syntax != null)
-                remove.Add(syntax);
+            MarkMemberForRemoval(remove, GetDeclaredMemberInType(method, typeDecl, cancellationToken));
         }
 
         if (generateOperators)
@@ -280,18 +279,17 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 if (method.Name is not ("op_Equality" or "op_Inequality"))
                     continue;
 
-                var syntax = GetDeclaredMemberInType(method, typeDecl, cancellationToken);
-                if (syntax != null)
-                    remove.Add(syntax);
+                MarkMemberForRemoval(remove, GetDeclaredMemberInType(method, typeDecl, cancellationToken));
             }
         }
 
-        // Filter members on the original declaration first so node identity still matches.
-        // WithBaseList rewrites the type and would otherwise drop those identities.
+        // Drop members on the original declaration first, then strip IEquatable.
         var result = typeDecl;
         if (remove.Count > 0)
         {
-            var remainingMembers = result.Members.Where(m => !remove.Contains(m)).ToArray();
+            var remainingMembers = result.Members
+                .Where(m => !remove.Contains((m.SpanStart, m.Span.End, m.Kind())))
+                .ToArray();
             result = result.WithMembers(SyntaxFactory.List(remainingMembers));
         }
 
@@ -299,6 +297,14 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             result = StripIEquatableInterface(typeDecl, result, typeSymbol, semanticModel, cancellationToken);
 
         return result;
+    }
+
+    private static void MarkMemberForRemoval(
+        HashSet<(int Start, int End, SyntaxKind Kind)> remove,
+        SyntaxNode? syntax)
+    {
+        if (syntax != null)
+            remove.Add((syntax.SpanStart, syntax.Span.End, syntax.Kind()));
     }
 
     private static SyntaxNode? GetDeclaredMemberInType(
