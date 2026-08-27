@@ -102,6 +102,19 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_ExtractVariable_ShowsReplaceAll()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("extract-variable")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("--replace-all", help);
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        Assert.Contains("--replace-all", help[optionalIdx..]);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ShowsParamsAsKebabCase()
     {
         var registry = ToolRegistry.BuildDefault();

@@ -16,6 +16,9 @@ namespace RoslynMcp.Core.Refactoring.Extract;
 /// </summary>
 public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractVariableParams>
 {
+    private const string ReplaceAnnotation = "extract-variable-replace";
+    private const string InsertBeforeAnnotation = "extract-variable-insert-before";
+
     /// <summary>
     /// Creates a new extract variable operation.
     /// </summary>
@@ -129,6 +132,17 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             }
         }
 
+        if (@params.ReplaceAll && HasSideEffects(expression))
+        {
+            throw new RefactoringException(
+                ErrorCodes.ExpressionHasSideEffects,
+                "Cannot replace all occurrences of an expression with side effects.");
+        }
+
+        var replacements = @params.ReplaceAll
+            ? FindEquivalentExpressions(expression, semanticModel, cancellationToken)
+            : new List<ExpressionSyntax> { expression };
+
         // Determine type syntax
         TypeSyntax typeSyntax;
         if (@params.UseVar || typeInfo.Type.IsAnonymousType)
@@ -147,46 +161,20 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
                     SyntaxFactory.VariableDeclarator(@params.VariableName)
                         .WithInitializer(SyntaxFactory.EqualsValueClause(expression)))));
 
-        // Create variable reference
-        var variableRef = SyntaxFactory.IdentifierName(@params.VariableName);
-
         // If preview mode, return without applying
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params, expression, typeInfo.Type, variableDeclaration);
+            return CreatePreviewResult(operationId, @params, expression, typeInfo.Type, variableDeclaration, replacements.Count);
         }
 
-        // Apply changes: insert declaration before statement, replace expression with variable
-        var newStatements = new List<StatementSyntax>();
-
-        // Add declaration
-        newStatements.Add(variableDeclaration.NormalizeWhitespace()
-            .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed));
-
-        // Modify original statement to use variable
-        var newStatement = containingStatement.ReplaceNode(expression, variableRef);
-        newStatements.Add(newStatement);
-
-        // Replace the containing statement with new statements
         SyntaxNode newRoot;
-        if (containingBlock != null)
+        if (replacements.Count <= 1)
         {
-            var statementIndex = containingBlock.Statements.IndexOf(containingStatement);
-            var newBlockStatements = containingBlock.Statements
-                .Take(statementIndex)
-                .Concat(newStatements)
-                .Concat(containingBlock.Statements.Skip(statementIndex + 1))
-                .ToList();
-
-            var newBlock = containingBlock.WithStatements(SyntaxFactory.List(newBlockStatements));
-            newRoot = root.ReplaceNode(containingBlock, newBlock);
+            newRoot = ApplySingleReplacement(root, expression, containingStatement, containingBlock, @params.VariableName, variableDeclaration);
         }
         else
         {
-            // Single statement context (like expression-bodied member)
-            throw new RefactoringException(
-                ErrorCodes.InvalidSelection,
-                "Cannot extract variable outside of a block statement.");
+            newRoot = ApplyReplaceAll(root, replacements, @params.VariableName, variableDeclaration);
         }
 
         var newDocument = document.WithSyntaxRoot(newRoot);
@@ -211,6 +199,225 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             },
             0,
             0);
+    }
+
+    private static SyntaxNode ApplySingleReplacement(
+        SyntaxNode root,
+        ExpressionSyntax expression,
+        StatementSyntax containingStatement,
+        BlockSyntax? containingBlock,
+        string variableName,
+        LocalDeclarationStatementSyntax variableDeclaration)
+    {
+        var variableRef = SyntaxFactory.IdentifierName(variableName);
+        var newStatements = new List<StatementSyntax>
+        {
+            variableDeclaration.NormalizeWhitespace()
+                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed),
+            containingStatement.ReplaceNode(expression, variableRef)
+        };
+
+        if (containingBlock != null)
+        {
+            var statementIndex = containingBlock.Statements.IndexOf(containingStatement);
+            var newBlockStatements = containingBlock.Statements
+                .Take(statementIndex)
+                .Concat(newStatements)
+                .Concat(containingBlock.Statements.Skip(statementIndex + 1))
+                .ToList();
+
+            var newBlock = containingBlock.WithStatements(SyntaxFactory.List(newBlockStatements));
+            return root.ReplaceNode(containingBlock, newBlock);
+        }
+
+        throw new RefactoringException(
+            ErrorCodes.InvalidSelection,
+            "Cannot extract variable outside of a block statement.");
+    }
+
+    private static SyntaxNode ApplyReplaceAll(
+        SyntaxNode root,
+        IReadOnlyList<ExpressionSyntax> replacements,
+        string variableName,
+        LocalDeclarationStatementSyntax variableDeclaration)
+    {
+        var first = replacements.OrderBy(e => e.SpanStart).First();
+        var commonBlock = FindCommonBlock(replacements);
+        var insertBefore = commonBlock.Statements.FirstOrDefault(s => s.Span.Contains(first.Span))
+            ?? throw new RefactoringException(
+                ErrorCodes.InvalidSelection,
+                "Cannot extract variable outside of a block statement.");
+
+        var existingVar = commonBlock.DescendantNodes()
+            .OfType<VariableDeclaratorSyntax>()
+            .FirstOrDefault(v => v.Identifier.Text == variableName);
+        if (existingVar != null)
+        {
+            throw new RefactoringException(
+                ErrorCodes.NameCollision,
+                $"Variable '{variableName}' already exists in scope.");
+        }
+
+        var nodesToAnnotate = replacements
+            .Cast<SyntaxNode>()
+            .Append(insertBefore)
+            .Distinct()
+            .ToList();
+
+        var annotated = root.ReplaceNodes(nodesToAnnotate, (original, _) =>
+        {
+            var node = original;
+            if (replacements.Contains(original))
+                node = node.WithAdditionalAnnotations(new SyntaxAnnotation(ReplaceAnnotation));
+            if (original == insertBefore)
+                node = node.WithAdditionalAnnotations(new SyntaxAnnotation(InsertBeforeAnnotation));
+            return node;
+        });
+
+        var variableRef = SyntaxFactory.IdentifierName(variableName);
+        var replaced = annotated.ReplaceNodes(
+            annotated.GetAnnotatedNodes(ReplaceAnnotation),
+            (original, _) => variableRef.WithTriviaFrom(original));
+
+        var insertTarget = replaced.GetAnnotatedNodes(InsertBeforeAnnotation).OfType<StatementSyntax>().FirstOrDefault()
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to locate insertion point after rewrite.");
+
+        var block = insertTarget.Parent as BlockSyntax
+            ?? throw new RefactoringException(
+                ErrorCodes.InvalidSelection,
+                "Cannot extract variable outside of a block statement.");
+
+        var statementIndex = block.Statements.IndexOf(insertTarget);
+        var declaration = variableDeclaration.NormalizeWhitespace()
+            .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
+        var newBlock = block.WithStatements(block.Statements.Insert(statementIndex, declaration));
+        return replaced.ReplaceNode(block, newBlock);
+    }
+
+    private static List<ExpressionSyntax> FindEquivalentExpressions(
+        ExpressionSyntax original,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetReplacementScope(original);
+        var originalCore = Unwrap(original);
+        var originalBindings = CollectBindings(originalCore, semanticModel, cancellationToken);
+
+        return scope.DescendantNodesAndSelf()
+            .OfType<ExpressionSyntax>()
+            .Where(expr =>
+            {
+                var core = Unwrap(expr);
+                if (core != expr)
+                    return false;
+
+                if (core == originalCore)
+                    return true;
+
+                return SyntaxFactory.AreEquivalent(core, originalCore) &&
+                       BindingsEqual(originalBindings, CollectBindings(core, semanticModel, cancellationToken));
+            })
+            .ToList();
+    }
+
+    private static SyntaxNode GetReplacementScope(ExpressionSyntax expression)
+    {
+        foreach (var ancestor in expression.Ancestors())
+        {
+            switch (ancestor)
+            {
+                case BaseMethodDeclarationSyntax method:
+                    return (SyntaxNode?)method.Body ?? method.ExpressionBody ?? ancestor;
+                case LocalFunctionStatementSyntax local:
+                    return (SyntaxNode?)local.Body ?? local.ExpressionBody ?? ancestor;
+                case AccessorDeclarationSyntax accessor:
+                    return (SyntaxNode?)accessor.Body ?? accessor.ExpressionBody ?? ancestor;
+                case AnonymousFunctionExpressionSyntax lambda:
+                    return lambda.Body;
+            }
+        }
+
+        return expression.Ancestors().OfType<BlockSyntax>().FirstOrDefault()
+            ?? expression.Parent
+            ?? expression;
+    }
+
+    private static BlockSyntax FindCommonBlock(IReadOnlyList<ExpressionSyntax> expressions)
+    {
+        var ancestorBlocks = expressions
+            .Select(e => e.Ancestors().OfType<BlockSyntax>().ToList())
+            .ToList();
+
+        foreach (var candidate in ancestorBlocks[0])
+        {
+            if (ancestorBlocks.All(list => list.Contains(candidate)))
+                return candidate;
+        }
+
+        throw new RefactoringException(
+            ErrorCodes.InvalidSelection,
+            "Cannot extract variable outside of a block statement.");
+    }
+
+    private static ExpressionSyntax Unwrap(ExpressionSyntax expression)
+    {
+        while (expression is ParenthesizedExpressionSyntax parenthesized)
+            expression = parenthesized.Expression;
+        return expression;
+    }
+
+    private static IReadOnlyList<ISymbol?> CollectBindings(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        return expression.DescendantNodesAndSelf()
+            .OfType<SimpleNameSyntax>()
+            .Select(name => semanticModel.GetSymbolInfo(name, cancellationToken).Symbol)
+            .ToList();
+    }
+
+    private static bool BindingsEqual(IReadOnlyList<ISymbol?> left, IReadOnlyList<ISymbol?> right)
+    {
+        if (left.Count != right.Count)
+            return false;
+
+        for (var i = 0; i < left.Count; i++)
+        {
+            if (!SymbolEqualityComparer.Default.Equals(left[i], right[i]))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool HasSideEffects(ExpressionSyntax expression)
+    {
+        foreach (var node in expression.DescendantNodesAndSelf())
+        {
+            switch (node)
+            {
+                case InvocationExpressionSyntax:
+                case AssignmentExpressionSyntax:
+                case AwaitExpressionSyntax:
+                case ObjectCreationExpressionSyntax:
+                case ImplicitObjectCreationExpressionSyntax:
+                case ArrayCreationExpressionSyntax:
+                case ImplicitArrayCreationExpressionSyntax:
+                case StackAllocArrayCreationExpressionSyntax:
+                    return true;
+                case PostfixUnaryExpressionSyntax postfix
+                    when postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
+                         postfix.IsKind(SyntaxKind.PostDecrementExpression):
+                    return true;
+                case PrefixUnaryExpressionSyntax prefix
+                    when prefix.IsKind(SyntaxKind.PreIncrementExpression) ||
+                         prefix.IsKind(SyntaxKind.PreDecrementExpression):
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     private static ExpressionSyntax? FindEnclosingExpression(SyntaxNode node, TextSpan span)
@@ -246,15 +453,20 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         ExtractVariableParams @params,
         ExpressionSyntax expression,
         ITypeSymbol type,
-        LocalDeclarationStatementSyntax declaration)
+        LocalDeclarationStatementSyntax declaration,
+        int replacementCount)
     {
+        var replacementSuffix = replacementCount > 1
+            ? $" ({replacementCount} replacements)"
+            : string.Empty;
+
         var pendingChanges = new List<PendingChange>
         {
             new()
             {
                 File = @params.SourceFile,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Extract expression to variable '{@params.VariableName}' of type {type.ToDisplayString()}",
+                Description = $"Extract expression to variable '{@params.VariableName}' of type {type.ToDisplayString()}{replacementSuffix}",
                 BeforeSnippet = expression.ToFullString(),
                 AfterSnippet = $"{declaration.NormalizeWhitespace()}\n// ... {@params.VariableName} used in place of expression"
             }
