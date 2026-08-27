@@ -252,7 +252,87 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
 
                 ValidateResultingSignature(declaration.ParameterList, method, newOrder);
             }
+
+            ValidateNoOverloadCollision(method, newOrder);
         }
+    }
+
+    internal static void ValidateNoOverloadCollision(IMethodSymbol method, int[] newOrder)
+    {
+        if (method.ContainingType == null || newOrder.Length != method.Parameters.Length)
+            return;
+
+        foreach (var candidate in method.ContainingType.GetMembers(method.Name).OfType<IMethodSymbol>())
+        {
+            if (SymbolEqualityComparer.Default.Equals(candidate, method))
+                continue;
+            if (candidate.Parameters.Length != method.Parameters.Length)
+                continue;
+            if (candidate.TypeParameters.Length != method.TypeParameters.Length)
+                continue;
+            if (!ParameterTypesMatch(method, newOrder, candidate))
+                continue;
+
+            throw new RefactoringException(
+                ErrorCodes.SignatureMatchesOverload,
+                $"Reordering parameters of '{method.Name}' would match an existing overload.");
+        }
+    }
+
+    private static bool ParameterTypesMatch(IMethodSymbol method, int[] newOrder, IMethodSymbol other)
+    {
+        for (var i = 0; i < newOrder.Length; i++)
+        {
+            var reordered = method.Parameters[newOrder[i]];
+            var existing = other.Parameters[i];
+            if (reordered.RefKind != existing.RefKind)
+                return false;
+            if (!TypesEquivalent(reordered.Type, existing.Type))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool TypesEquivalent(ITypeSymbol left, ITypeSymbol right)
+    {
+        if (SymbolEqualityComparer.Default.Equals(left, right))
+            return true;
+
+        if (left is ITypeParameterSymbol leftTypeParameter &&
+            right is ITypeParameterSymbol rightTypeParameter)
+        {
+            return leftTypeParameter.TypeParameterKind == rightTypeParameter.TypeParameterKind &&
+                   leftTypeParameter.Ordinal == rightTypeParameter.Ordinal &&
+                   (leftTypeParameter.TypeParameterKind != TypeParameterKind.Type ||
+                    SymbolEqualityComparer.Default.Equals(
+                        leftTypeParameter.ContainingType,
+                        rightTypeParameter.ContainingType));
+        }
+
+        if (left is IArrayTypeSymbol leftArray && right is IArrayTypeSymbol rightArray)
+        {
+            return leftArray.Rank == rightArray.Rank &&
+                   TypesEquivalent(leftArray.ElementType, rightArray.ElementType);
+        }
+
+        if (left is INamedTypeSymbol leftNamed && right is INamedTypeSymbol rightNamed)
+        {
+            if (!SymbolEqualityComparer.Default.Equals(leftNamed.OriginalDefinition, rightNamed.OriginalDefinition))
+                return false;
+            if (leftNamed.TypeArguments.Length != rightNamed.TypeArguments.Length)
+                return false;
+
+            for (var i = 0; i < leftNamed.TypeArguments.Length; i++)
+            {
+                if (!TypesEquivalent(leftNamed.TypeArguments[i], rightNamed.TypeArguments[i]))
+                    return false;
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     internal static MethodDeclarationSyntax FindMethodDeclaration(SyntaxNode root, ReorderParametersParams @params)

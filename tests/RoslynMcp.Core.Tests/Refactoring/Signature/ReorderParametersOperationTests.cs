@@ -544,6 +544,42 @@ public class ReorderParametersOperationTests
     }
 
     [SkippableFact]
+    public async Task ReorderParameters_OverloadCollision_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Process(int count, string name)
+                {
+                }
+
+                public void Process(string name, int count)
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ReorderParametersParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                NewOrder = new[] { 1, 0 },
+                Line = 5
+            }));
+
+        Assert.Equal(ErrorCodes.SignatureMatchesOverload, ex.ErrorCode);
+        Assert.Equal("3132", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
     public async Task ReorderParameters_ParamsNotLast_Throws()
     {
         const string source = """

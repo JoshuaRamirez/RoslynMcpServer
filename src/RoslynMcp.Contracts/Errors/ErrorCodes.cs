@@ -411,7 +411,7 @@ public static class ErrorCodes
     public const string NoUnimplementedAbstractMembers = "3126";
 
     // --------------------------------------------
-    // Signature Errors (3127-3131)
+    // Signature Errors (3127-3132)
     // 3060-3066 and 3080-3089 are already shipped for generate/async.
     // --------------------------------------------
 
@@ -429,6 +429,9 @@ public static class ErrorCodes
 
     /// <summary>Parameter is referenced in the method body and force is false.</summary>
     public const string ParameterUsedInBody = "3131";
+
+    /// <summary>Reordered signature matches an existing overload on the containing type.</summary>
+    public const string SignatureMatchesOverload = "3132";
 
 
     // ============================================
