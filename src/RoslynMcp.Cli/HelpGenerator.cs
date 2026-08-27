@@ -122,45 +122,19 @@ public static class HelpGenerator
             return true;
 
         // C# 11 'required' keyword: the compiler emits RequiredMemberAttribute on the
-        // declaring type and marks each required property in metadata. We detect it by
-        // checking CustomAttributeData (which captures the compiler-emitted attribute
-        // that GetCustomAttributes() may not surface as an instantiated object).
+        // declaring type and on each required property. CustomAttributeData captures
+        // the compiler-emitted attribute that GetCustomAttributes() may not surface.
+        // Once the type has required members, only properties that themselves carry
+        // RequiredMemberAttribute are required — do not treat every init-only
+        // non-nullable property (e.g. bool IncludeProperties { get; init; } = true)
+        // as required.
         var declaringType = prop.DeclaringType;
         if (declaringType is not null &&
             declaringType.CustomAttributes.Any(a =>
                 a.AttributeType.FullName == "System.Runtime.CompilerServices.RequiredMemberAttribute"))
         {
-            // Type uses required members. Check if this specific property is required
-            // via its CustomAttributeData or by detecting init-only + non-nullable.
-            if (prop.CustomAttributes.Any(a =>
-                    a.AttributeType.FullName == "System.Runtime.CompilerServices.RequiredMemberAttribute"))
-                return true;
-
-            // Fallback: init-only setter + non-nullable type implies required
-            var setter = prop.GetSetMethod(nonPublic: true);
-            if (setter is not null)
-            {
-                var returnParam = setter.ReturnParameter;
-                var isInitOnly = returnParam.GetRequiredCustomModifiers()
-                    .Any(m => m.FullName == "System.Runtime.CompilerServices.IsExternalInit");
-
-                if (isInitOnly)
-                {
-                    if (prop.PropertyType.IsValueType)
-                    {
-                        // Non-nullable value type (T, not T?) implies required
-                        if (Nullable.GetUnderlyingType(prop.PropertyType) is null)
-                            return true;
-                    }
-                    else
-                    {
-                        // Non-nullable reference type implies required
-                        var nullCtx = new NullabilityInfoContext().Create(prop);
-                        if (nullCtx.WriteState == NullabilityState.NotNull)
-                            return true;
-                    }
-                }
-            }
+            return prop.CustomAttributes.Any(a =>
+                a.AttributeType.FullName == "System.Runtime.CompilerServices.RequiredMemberAttribute");
         }
 
         return false;

@@ -155,6 +155,7 @@ public class HelpGeneratorTests
         var help = HelpGenerator.GenerateToolHelp(tool);
 
         Assert.Contains("--include-inherited-members", help);
+        Assert.Contains("--include-properties", help);
         Assert.Contains("--format", help);
         Assert.Contains("--replace-existing", help);
     }
@@ -192,5 +193,27 @@ public class HelpGeneratorTests
         Assert.Contains("--source-file", requiredSection);
         Assert.Contains("--symbol-name", requiredSection);
         Assert.Contains("--new-name", requiredSection);
+    }
+
+    [Fact]
+    public void GenerateToolHelp_GenerateToString_IncludePropertiesIsOptional_RequiredStringsStayRequired()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("generate-tostring")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.Contains("--type-name", requiredSection);
+        Assert.DoesNotContain("--include-properties", requiredSection);
+
+        Assert.Contains("--include-properties", optionalSection);
     }
 }

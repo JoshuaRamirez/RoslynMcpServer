@@ -13,6 +13,7 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// <summary>
 /// Generates a ToString() override for a type.
 /// Honors <c>format</c> for interpolated vs StringBuilder bodies,
+/// <c>includeProperties</c> when collecting ToString members,
 /// <c>includeInheritedMembers</c> to append accessible base-type members,
 /// and <c>replaceExisting</c> to remove an existing non-generic parameterless
 /// ToString (instance or static) before generating a fresh override.
@@ -165,10 +166,8 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
     /// </summary>
     internal static List<ISymbol> CollectToStringMembers(INamedTypeSymbol typeSymbol, GenerateToStringParams @params)
     {
-        var members = @params.IncludeInheritedMembers
-            ? EqualityMemberCollector.CollectMembers(
-                typeSymbol, @params.Fields, includeProperties: true, includeInheritedMembers: true)
-            : EqualityMemberCollector.CollectMembers(typeSymbol, @params.Fields);
+        var members = EqualityMemberCollector.CollectMembers(
+            typeSymbol, @params.Fields, @params.IncludeProperties, @params.IncludeInheritedMembers);
 
         return members.Where(m => !string.Equals(m.Name, "ToString", StringComparison.Ordinal)).ToList();
     }
