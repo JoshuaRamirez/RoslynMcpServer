@@ -339,28 +339,36 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             var name = i < members.Count
                 ? members[i].Name
                 : InferAnonymousMemberName(initializer);
+            var value = initializer.Expression.WithoutTrivia();
             assignments.Add(
                 SyntaxFactory.AssignmentExpression(
                     SyntaxKind.SimpleAssignmentExpression,
-                    SyntaxFactory.IdentifierName(name),
-                    initializer.Expression));
+                    SyntaxFactory.IdentifierName(name).WithTrailingTrivia(SyntaxFactory.Space),
+                    value.WithLeadingTrivia(SyntaxFactory.Space)));
         }
 
-        var initializerExpr = SyntaxFactory.InitializerExpression(
-            SyntaxKind.ObjectInitializerExpression,
-            SyntaxFactory.SeparatedList(assignments));
+        var separators = assignments.Count <= 1
+            ? Array.Empty<SyntaxToken>()
+            : Enumerable.Repeat(
+                SyntaxFactory.Token(SyntaxKind.CommaToken).WithTrailingTrivia(SyntaxFactory.Space),
+                assignments.Count - 1).ToArray();
 
-        if (!creation.OpenBraceToken.IsMissing)
-            initializerExpr = initializerExpr.WithOpenBraceToken(creation.OpenBraceToken);
-        if (!creation.CloseBraceToken.IsMissing)
-            initializerExpr = initializerExpr.WithCloseBraceToken(creation.CloseBraceToken);
+        var initializerExpr = SyntaxFactory.InitializerExpression(
+                SyntaxKind.ObjectInitializerExpression,
+                SyntaxFactory.SeparatedList(assignments, separators))
+            .WithOpenBraceToken(SyntaxFactory.Token(SyntaxKind.OpenBraceToken)
+                .WithLeadingTrivia(SyntaxFactory.Space)
+                .WithTrailingTrivia(SyntaxFactory.Space))
+            .WithCloseBraceToken(SyntaxFactory.Token(SyntaxKind.CloseBraceToken)
+                .WithLeadingTrivia(SyntaxFactory.Space));
 
         return SyntaxFactory.ObjectCreationExpression(
-                creation.NewKeyword,
+                SyntaxFactory.Token(SyntaxKind.NewKeyword),
                 SyntaxFactory.ParseTypeName(typeName).WithLeadingTrivia(SyntaxFactory.Space),
                 argumentList: null,
                 initializerExpr)
-            .WithTriviaFrom(creation);
+            .WithLeadingTrivia(creation.GetLeadingTrivia())
+            .WithTrailingTrivia(creation.GetTrailingTrivia());
     }
 
     internal static string InferAnonymousMemberName(AnonymousObjectMemberDeclaratorSyntax initializer)
