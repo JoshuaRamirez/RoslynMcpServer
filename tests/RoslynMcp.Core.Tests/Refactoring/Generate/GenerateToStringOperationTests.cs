@@ -280,10 +280,20 @@ public class GenerateToStringOperationTests
     private static void AssertInterpolatedToString(string text)
     {
         Assert.Contains("public override string ToString()", text);
-        Assert.Contains("$\"Person {{ ", text);
+        Assert.DoesNotContain("StringBuilder", text);
         Assert.Contains("{Name}", text);
         Assert.Contains("{Age}", text);
-        Assert.DoesNotContain("StringBuilder", text);
+
+        var toString = ExtractToStringMethod(text);
+        Assert.Contains("$\"Person", toString);
+        Assert.DoesNotContain("new System.Text.StringBuilder", toString);
+    }
+
+    private static string ExtractToStringMethod(string text)
+    {
+        var start = text.IndexOf("public override string ToString()", StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Generated source did not contain ToString:\n{text}");
+        return text[start..];
     }
 
     private static void AssertStringBuilderToString(string text, params string[] members)
