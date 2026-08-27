@@ -26,9 +26,17 @@ public sealed class ExtractInterfaceParams
     public IReadOnlyList<string>? Members { get; init; }
 
     /// <summary>
-    /// Absolute path for the interface file. If null, creates in same file.
+    /// Absolute path for the interface file. If set, always wins over <see cref="SeparateFile"/>.
+    /// If null and <see cref="SeparateFile"/> is false, creates the interface in the source file.
     /// </summary>
     public string? TargetFile { get; init; }
+
+    /// <summary>
+    /// When true and <see cref="TargetFile"/> is omitted, write the interface to
+    /// <c>{InterfaceName}.cs</c> in the same directory as <see cref="SourceFile"/>.
+    /// Default: false (same-file extract unless <see cref="TargetFile"/> is set).
+    /// </summary>
+    public bool SeparateFile { get; init; }
 
     /// <summary>
     /// Add the interface to the type's base list. Default: true.

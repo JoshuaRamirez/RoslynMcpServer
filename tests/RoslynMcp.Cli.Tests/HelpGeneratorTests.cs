@@ -112,6 +112,16 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_ExtractInterface_ShowsSeparateFile()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("extract-interface")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("--separate-file", help);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ShowsParamsAsKebabCase()
     {
         var registry = ToolRegistry.BuildDefault();
