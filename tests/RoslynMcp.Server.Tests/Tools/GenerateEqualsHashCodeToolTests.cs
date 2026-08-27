@@ -88,6 +88,7 @@ public class GenerateEqualsHashCodeToolTests
         Assert.True(properties.TryGetProperty("implementIEquatable", out _));
         Assert.True(properties.TryGetProperty("generateOperators", out _));
         Assert.True(properties.TryGetProperty("replaceExisting", out _));
+        Assert.True(properties.TryGetProperty("useHashCodeCombine", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
     }
 
@@ -125,6 +126,18 @@ public class GenerateEqualsHashCodeToolTests
 
         Assert.Equal("boolean", replaceExisting.GetProperty("type").GetString());
         Assert.False(replaceExisting.GetProperty("default").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_UseHashCodeCombineProperty_DefaultsToTrue()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var useHashCodeCombine = doc.RootElement.GetProperty("properties").GetProperty("useHashCodeCombine");
+
+        Assert.Equal("boolean", useHashCodeCombine.GetProperty("type").GetString());
+        Assert.True(useHashCodeCombine.GetProperty("default").GetBoolean());
     }
 
     #endregion

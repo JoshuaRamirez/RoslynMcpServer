@@ -39,6 +39,13 @@ public sealed class GenerateEqualsHashCodeParams
     public bool ReplaceExisting { get; init; }
 
     /// <summary>
+    /// When true, emit <c>HashCode.Combine</c> (≤8 members) or a <c>HashCode</c> builder
+    /// (&gt;8 members). When false, emit a classic unchecked prime-multiply GetHashCode.
+    /// Default: true (today's Combine / builder shape).
+    /// </summary>
+    public bool UseHashCodeCombine { get; init; } = true;
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }

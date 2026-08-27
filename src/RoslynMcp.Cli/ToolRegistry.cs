@@ -233,7 +233,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<GenerateMethodStubOperation, GenerateMethodStubParams>(
             "generate-method-stub", "Generate a method from an undefined call site, inferring the signature from usage");
         r.RegisterRefactoring<GenerateEqualsHashCodeOperation, GenerateEqualsHashCodeParams>(
-            "generate-equals-hashcode", "Generate Equals and GetHashCode overrides; implementIEquatable (default false) also adds IEquatable<T>; generateOperators (default false) also adds == and !=; replaceExisting (default false) replaces existing equality members instead of failing");
+            "generate-equals-hashcode", "Generate Equals and GetHashCode overrides; implementIEquatable (default false) also adds IEquatable<T>; generateOperators (default false) also adds == and !=; replaceExisting (default false) replaces existing equality members instead of failing; useHashCodeCombine (default true) uses HashCode.Combine / builder instead of an unchecked prime-multiply GetHashCode");
         r.RegisterRefactoring<GenerateOverridesOperation, GenerateOverridesParams>(
             "generate-overrides", "Generate method overrides from a base class");
         r.RegisterRefactoring<GenerateToStringOperation, GenerateToStringParams>(
