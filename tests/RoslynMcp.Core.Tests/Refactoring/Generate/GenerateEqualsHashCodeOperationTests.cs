@@ -2164,6 +2164,42 @@ public class GenerateEqualsHashCodeOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateEquals_IncludeInheritedMembersTrue_Override_ComparesDerivedPropertyOnce()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class NamedBase
+            {
+                public virtual string Title { get; set; }
+            }
+
+            public class NamedOverride : NamedBase
+            {
+                public override string Title { get; set; }
+
+                public string Extra;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "NamedOverride.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "NamedOverride",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "Extra", "Title");
+        Assert.Equal(1, CountOccurrences(ExtractMethod(updated, "public override bool Equals(object?"), "other.Title"));
+        Assert.Equal(1, CountOccurrences(ExtractMethod(updated, "public override int GetHashCode()"), "this.Title"));
+    }
+
+    [SkippableFact]
     public async Task GenerateEquals_IncludeInheritedMembersTrue_CallSuperTrue_CombinesBoth()
     {
         const string entity = """

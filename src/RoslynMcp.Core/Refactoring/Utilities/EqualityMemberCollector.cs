@@ -98,6 +98,8 @@ public static class EqualityMemberCollector
                 continue;
             if (requireAccessible && !IsAccessibleFrom(field, fromType))
                 continue;
+            if (requireAccessible && IsHiddenFrom(field, fromType))
+                continue;
             members.Add(field);
         }
 
@@ -109,6 +111,8 @@ public static class EqualityMemberCollector
                     continue;
                 if (requireAccessible && !IsAccessibleFrom(prop, fromType))
                     continue;
+                if (requireAccessible && IsHiddenFrom(prop, fromType))
+                    continue;
                 members.Add(prop);
             }
         }
@@ -116,6 +120,30 @@ public static class EqualityMemberCollector
 
     private static bool IsObjectOrValueType(INamedTypeSymbol type) =>
         type.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
+
+    /// <summary>
+    /// True when a closer type hides or overrides <paramref name="member"/> so
+    /// <c>this.Name</c> would bind to that closer member (or fail to compile)
+    /// instead of the inherited one.
+    /// </summary>
+    private static bool IsHiddenFrom(ISymbol member, INamedTypeSymbol fromType)
+    {
+        var declaring = member.ContainingType;
+        for (var current = fromType;
+             current != null && !SymbolEqualityComparer.Default.Equals(current, declaring);
+             current = current.BaseType)
+        {
+            foreach (var candidate in current.GetMembers(member.Name))
+            {
+                if (candidate.IsImplicitlyDeclared)
+                    continue;
+                if (candidate is IFieldSymbol or IPropertySymbol or IEventSymbol)
+                    return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// True when <paramref name="member"/> can be read as <c>this.Name</c> from

@@ -43,6 +43,42 @@ public class EqualityMemberCollectorTests
         {
             public string Name;
         }
+
+        public class NamedBase
+        {
+            public string Name;
+            public virtual string Title { get; set; }
+        }
+
+        public class NamedOverride : NamedBase
+        {
+            public override string Title { get; set; }
+        }
+
+        public class NamedHider : NamedBase
+        {
+            public new string Name;
+        }
+
+        public class IntermediatePrivateHider : NamedBase
+        {
+            private new string Name;
+        }
+
+        public class DerivedPastPrivateHider : IntermediatePrivateHider
+        {
+            public string Extra;
+        }
+
+        public class IntermediateStaticHider : NamedBase
+        {
+            public new static string Name;
+        }
+
+        public class DerivedPastStaticHider : IntermediateStaticHider
+        {
+            public string Extra;
+        }
         """;
 
     [Fact]
@@ -179,6 +215,52 @@ public class EqualityMemberCollectorTests
         var members = EqualityMemberCollector.CollectMembers(type, null, includeProperties: true, includeInheritedMembers: true);
 
         Assert.Equal(new[] { "Name" }, Names(members));
+    }
+
+    [Fact]
+    public void CollectMembers_IncludeInheritedMembersTrue_Override_SkipsBaseProperty()
+    {
+        var type = GetType("NamedOverride");
+
+        var members = EqualityMemberCollector.CollectMembers(type, null, includeProperties: true, includeInheritedMembers: true);
+
+        Assert.Equal(new[] { "Title", "Name" }, Names(members));
+        Assert.Equal(1, members.Count(m => m.Name == "Title"));
+        Assert.Equal("NamedOverride", members.Single(m => m.Name == "Title").ContainingType.Name);
+    }
+
+    [Fact]
+    public void CollectMembers_IncludeInheritedMembersTrue_NewField_SkipsHiddenBaseField()
+    {
+        var type = GetType("NamedHider");
+
+        var members = EqualityMemberCollector.CollectMembers(type, null, includeProperties: true, includeInheritedMembers: true);
+
+        Assert.Equal(new[] { "Name", "Title" }, Names(members));
+        Assert.Equal(1, members.Count(m => m.Name == "Name"));
+        Assert.Equal("NamedHider", members.Single(m => m.Name == "Name").ContainingType.Name);
+    }
+
+    [Fact]
+    public void CollectMembers_IncludeInheritedMembersTrue_PrivateIntermediateHider_SkipsBaseField()
+    {
+        var type = GetType("DerivedPastPrivateHider");
+
+        var members = EqualityMemberCollector.CollectMembers(type, null, includeProperties: false, includeInheritedMembers: true);
+
+        Assert.Equal(new[] { "Extra" }, Names(members));
+        Assert.DoesNotContain("Name", Names(members));
+    }
+
+    [Fact]
+    public void CollectMembers_IncludeInheritedMembersTrue_StaticIntermediateHider_SkipsBaseField()
+    {
+        var type = GetType("DerivedPastStaticHider");
+
+        var members = EqualityMemberCollector.CollectMembers(type, null, includeProperties: false, includeInheritedMembers: true);
+
+        Assert.Equal(new[] { "Extra" }, Names(members));
+        Assert.DoesNotContain("Name", Names(members));
     }
 
     [Fact]
