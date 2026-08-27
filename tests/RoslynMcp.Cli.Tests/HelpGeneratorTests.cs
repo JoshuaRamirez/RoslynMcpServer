@@ -144,6 +144,7 @@ public class HelpGeneratorTests
         Assert.Contains("--use-hash-code-combine", help);
         Assert.Contains("--include-properties", help);
         Assert.Contains("--call-super", help);
+        Assert.Contains("--include-inherited-members", help);
     }
 
     [Fact]

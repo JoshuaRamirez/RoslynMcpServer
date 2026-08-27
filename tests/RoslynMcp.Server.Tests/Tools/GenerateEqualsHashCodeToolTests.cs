@@ -91,6 +91,7 @@ public class GenerateEqualsHashCodeToolTests
         Assert.True(properties.TryGetProperty("replaceExisting", out _));
         Assert.True(properties.TryGetProperty("useHashCodeCombine", out _));
         Assert.True(properties.TryGetProperty("callSuper", out _));
+        Assert.True(properties.TryGetProperty("includeInheritedMembers", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
     }
 
@@ -164,6 +165,18 @@ public class GenerateEqualsHashCodeToolTests
 
         Assert.Equal("boolean", callSuper.GetProperty("type").GetString());
         Assert.False(callSuper.GetProperty("default").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_IncludeInheritedMembersProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var includeInheritedMembers = doc.RootElement.GetProperty("properties").GetProperty("includeInheritedMembers");
+
+        Assert.Equal("boolean", includeInheritedMembers.GetProperty("type").GetString());
+        Assert.False(includeInheritedMembers.GetProperty("default").GetBoolean());
     }
 
     #endregion

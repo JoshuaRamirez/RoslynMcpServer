@@ -17,6 +17,7 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// optionally replaces existing equality members when <c>replaceExisting</c> is true,
 /// honors <c>useHashCodeCombine</c> for the GetHashCode body shape,
 /// honors <c>includeProperties</c> when collecting equality members,
+/// honors <c>includeInheritedMembers</c> to append accessible base-type members,
 /// and honors <c>callSuper</c> to fold the immediate base type's equality into Equals/GetHashCode.
 /// </summary>
 public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<GenerateEqualsHashCodeParams>
@@ -104,7 +105,8 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 throw new RefactoringException(ErrorCodes.AlreadyHasOverride, "Type already has an Equals override.");
         }
 
-        var members = EqualityMemberCollector.CollectMembers(typeSymbol, @params.Fields, @params.IncludeProperties);
+        var members = EqualityMemberCollector.CollectMembers(
+            typeSymbol, @params.Fields, @params.IncludeProperties, @params.IncludeInheritedMembers);
         if (members.Count == 0 && !@params.CallSuper)
             throw new RefactoringException(ErrorCodes.NoMembersToGenerate, "No fields or properties available for equality generation.");
 
@@ -149,6 +151,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 @params.ReplaceExisting,
                 @params.UseHashCodeCombine,
                 @params.CallSuper,
+                @params.IncludeInheritedMembers,
                 members.Count);
             var pendingChanges = new List<PendingChange>
             {
@@ -550,6 +553,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         bool replaceExisting,
         bool useHashCodeCombine,
         bool callSuper,
+        bool includeInheritedMembers,
         int memberCount)
     {
         var verb = replaceExisting ? "Replace" : "Generate";
@@ -557,14 +561,19 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         var hashStyle = useHashCodeCombine
             ? (hashArgCount <= 8 ? "HashCode.Combine" : "HashCode builder")
             : "unchecked prime-multiply";
-        var baseNote = callSuper ? " including base equality" : "";
+        var notes = new List<string>();
+        if (callSuper)
+            notes.Add("base equality");
+        if (includeInheritedMembers)
+            notes.Add("inherited members");
+        var extraNote = notes.Count > 0 ? " including " + string.Join(" and ", notes) : "";
         if (implementIEquatable && generateOperators)
-            return $"{verb} Equals, GetHashCode ({hashStyle}), IEquatable<{selfTypeName}>, and equality operators{baseNote} for {typeName}";
+            return $"{verb} Equals, GetHashCode ({hashStyle}), IEquatable<{selfTypeName}>, and equality operators{extraNote} for {typeName}";
         if (implementIEquatable)
-            return $"{verb} Equals, GetHashCode ({hashStyle}), and IEquatable<{selfTypeName}>{baseNote} for {typeName}";
+            return $"{verb} Equals, GetHashCode ({hashStyle}), and IEquatable<{selfTypeName}>{extraNote} for {typeName}";
         if (generateOperators)
-            return $"{verb} Equals, GetHashCode ({hashStyle}), and equality operators{baseNote} for {typeName}";
-        return $"{verb} Equals and GetHashCode ({hashStyle}){baseNote} for {typeName}";
+            return $"{verb} Equals, GetHashCode ({hashStyle}), and equality operators{extraNote} for {typeName}";
+        return $"{verb} Equals and GetHashCode ({hashStyle}){extraNote} for {typeName}";
     }
 
     private static string BuildPreviewSnippet(

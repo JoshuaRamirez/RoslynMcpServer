@@ -18,6 +18,8 @@ public sealed class GenerateEqualsHashCodeParams
     /// <summary>
     /// Specific field/property names to include. If null or empty, uses instance fields
     /// and, when <see cref="IncludeProperties"/> is true, readable properties.
+    /// When <see cref="IncludeInheritedMembers"/> is true, auto-collection and name
+    /// resolution also consider accessible inherited members.
     /// When non-empty, listed names are resolved against fields and properties even if
     /// <see cref="IncludeProperties"/> is false.
     /// </summary>
@@ -64,6 +66,18 @@ public sealed class GenerateEqualsHashCodeParams
     /// Default: false (member-only Equals/GetHashCode).
     /// </summary>
     public bool CallSuper { get; init; }
+
+    /// <summary>
+    /// When true, also collect accessible instance fields (and, when
+    /// <see cref="IncludeProperties"/> is true, readable properties) declared on
+    /// base types until <c>System.Object</c> / <c>System.ValueType</c>.
+    /// Only members visible from this type are included (public / protected /
+    /// protected-internal; internal when same assembly). Distinct from
+    /// <see cref="CallSuper"/>, which folds <c>base.Equals</c> / <c>base.GetHashCode</c>
+    /// and does not change the collected member list.
+    /// Default: false (this-type-only collection).
+    /// </summary>
+    public bool IncludeInheritedMembers { get; init; }
 
     /// <summary>
     /// Return computed changes without applying. Default: false.

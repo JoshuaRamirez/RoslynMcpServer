@@ -8,7 +8,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
-/// Operation-level tests for <see cref="GenerateEqualsHashCodeOperation"/>, including <c>implementIEquatable</c>, <c>generateOperators</c>, <c>replaceExisting</c>, <c>useHashCodeCombine</c>, <c>includeProperties</c>, and <c>callSuper</c>.
+/// Operation-level tests for <see cref="GenerateEqualsHashCodeOperation"/>, including <c>implementIEquatable</c>, <c>generateOperators</c>, <c>replaceExisting</c>, <c>useHashCodeCombine</c>, <c>includeProperties</c>, <c>callSuper</c>, and <c>includeInheritedMembers</c>.
 /// </summary>
 public class GenerateEqualsHashCodeOperationTests
 {
@@ -1939,6 +1939,311 @@ public class GenerateEqualsHashCodeOperationTests
         Assert.Contains("base.Equals(other)", snippet);
         Assert.Contains("base.GetHashCode()", snippet);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
+    #region includeInheritedMembers
+
+    private const string AnimalSource = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public string Species;
+
+            protected int Legs;
+
+            private string Secret;
+
+            public string Nickname { get; set; }
+        }
+        """;
+
+    private const string DogSource = """
+        namespace TestApp;
+
+        public class Dog : Animal
+        {
+            public string Name;
+        }
+        """;
+
+    private static Task<TempWorkspace> CreateDogOnAnimalAsync() =>
+        TempWorkspace.CreateAsync(("Dog.cs", DogSource), ("Animal.cs", AnimalSource));
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludeInheritedMembersOmitted_DoesNotCompareBaseField()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "Name");
+        AssertMemberNotCompared(updated, "Species");
+        AssertMemberNotCompared(updated, "Legs");
+        AssertMemberNotCompared(updated, "Secret");
+        AssertMemberNotCompared(updated, "Nickname");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludeInheritedMembersFalse_DoesNotCompareBaseField()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "Name");
+        AssertMemberNotCompared(updated, "Species");
+        AssertMemberNotCompared(updated, "Legs");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludeInheritedMembersTrue_IncludesPublicAndProtectedBaseFields()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "Name", "Species", "Legs", "Nickname");
+        AssertMemberNotCompared(updated, "Secret");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludeInheritedMembersTrue_SkipsPrivateBaseField()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertMemberNotCompared(updated, "Secret");
+        Assert.DoesNotContain("other.Secret", updated);
+        Assert.DoesNotContain("this.Secret", ExtractMethod(updated, "public override int GetHashCode()"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludeInheritedMembersTrue_IncludePropertiesFalse_SkipsInheritedProperties()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true,
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "Name", "Species", "Legs");
+        AssertMemberNotCompared(updated, "Nickname");
+        AssertMemberNotCompared(updated, "Secret");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludeInheritedMembersTrue_FieldsNamesInheritedMember_IncludesIt()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true,
+            IncludeProperties = false,
+            Fields = new[] { "Nickname" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "Nickname");
+        AssertMemberNotCompared(updated, "Name");
+        AssertMemberNotCompared(updated, "Species");
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludeInheritedMembersFalse_FieldsNamesInheritedMember_NotFound()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                IncludeInheritedMembers = false,
+                Fields = new[] { "Species" }
+            }));
+
+        Assert.Equal(ErrorCodes.NoMembersToGenerate, ex.ErrorCode);
+        Assert.Equal("3055", ex.ErrorCode);
+        Assert.Equal(DogSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludeInheritedMembersTrue_ObjectOnlyBase_NoExtraMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "Name", "Age");
+        AssertNoBaseEqualityCalls(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludeInheritedMembersTrue_Preview_DoesNotWriteFiles_AndDescribesInherited()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("inherited members", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        Assert.Contains("other.Name", snippet);
+        Assert.Contains("other.Species", snippet);
+        Assert.Contains("other.Legs", snippet);
+        Assert.Contains("other.Nickname", snippet);
+        Assert.DoesNotContain("other.Secret", snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludeInheritedMembersTrue_Override_ComparesDerivedPropertyOnce()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class NamedBase
+            {
+                public virtual string Title { get; set; }
+            }
+
+            public class NamedOverride : NamedBase
+            {
+                public override string Title { get; set; }
+
+                public string Extra;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "NamedOverride.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "NamedOverride",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEqualityMembers(updated, "Extra", "Title");
+        Assert.Equal(1, CountOccurrences(ExtractMethod(updated, "public override bool Equals(object?"), "other.Title"));
+        Assert.Equal(1, CountOccurrences(ExtractMethod(updated, "public override int GetHashCode()"), "this.Title"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_IncludeInheritedMembersTrue_CallSuperTrue_CombinesBoth()
+    {
+        const string entity = """
+            namespace TestApp;
+
+            public class Entity
+            {
+                public int Id;
+
+                public override bool Equals(object? obj) => obj is Entity other && Id == other.Id;
+
+                public override int GetHashCode() => Id.GetHashCode();
+            }
+            """;
+        const string derived = """
+            namespace TestApp;
+
+            public class Person : Entity
+            {
+                public string Name;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(("Person.cs", derived), ("Entity.cs", entity));
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            IncludeInheritedMembers = true,
+            CallSuper = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var objectEquals = ExtractMethod(updated, "public override bool Equals(object?");
+        Assert.Contains("base.Equals(other)", objectEquals);
+        Assert.Contains("other.Name", objectEquals);
+        Assert.Contains("other.Id", objectEquals);
+        var getHashCode = ExtractMethod(updated, "public override int GetHashCode()");
+        Assert.Contains("base.GetHashCode()", getHashCode);
+        Assert.Contains("this.Name", getHashCode);
+        Assert.Contains("this.Id", getHashCode);
     }
 
     #endregion

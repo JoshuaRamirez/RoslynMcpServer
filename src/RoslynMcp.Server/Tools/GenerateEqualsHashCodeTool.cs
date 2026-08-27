@@ -98,6 +98,12 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 description = "Fold the immediate base type's Equals/GetHashCode into the generated methods. Rejected when the immediate base is System.Object or System.ValueType, or when the base Equals(object) or GetHashCode is abstract",
                 @default = false
             },
+            includeInheritedMembers = new
+            {
+                type = "boolean",
+                description = "Also collect accessible instance fields (and readable properties when includeProperties is true) declared on base types. Distinct from callSuper, which only folds base.Equals / base.GetHashCode",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -142,6 +148,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
                 ReplaceExisting = args.ReplaceExisting ?? false,
                 UseHashCodeCombine = args.UseHashCodeCombine ?? true,
                 CallSuper = args.CallSuper ?? false,
+                IncludeInheritedMembers = args.IncludeInheritedMembers ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -179,6 +186,7 @@ public sealed class GenerateEqualsHashCodeTool : IToolHandler
         public bool? ReplaceExisting { get; init; }
         public bool? UseHashCodeCombine { get; init; }
         public bool? CallSuper { get; init; }
+        public bool? IncludeInheritedMembers { get; init; }
         public bool? Preview { get; init; }
     }
 }
