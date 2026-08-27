@@ -286,6 +286,37 @@ public class RenameSymbolOperationTests
 
     #endregion
 
+    #region Rename Implementations Flag Tests
+
+    [Fact]
+    public void RenameSymbol_RenameImplementations_DefaultsTrue()
+    {
+        var @params = new RenameSymbolParams
+        {
+            SourceFile = "C:\\test\\file.cs",
+            SymbolName = "Process",
+            NewName = "Execute"
+        };
+
+        Assert.True(@params.RenameImplementations);
+    }
+
+    [Fact]
+    public void RenameSymbol_RenameImplementations_CanBeDisabled()
+    {
+        var @params = new RenameSymbolParams
+        {
+            SourceFile = "C:\\test\\file.cs",
+            SymbolName = "Process",
+            NewName = "Execute",
+            RenameImplementations = false
+        };
+
+        Assert.False(@params.RenameImplementations);
+    }
+
+    #endregion
+
     #region Helper Methods
 
     /// <summary>

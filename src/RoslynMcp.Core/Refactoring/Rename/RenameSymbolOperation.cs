@@ -2,7 +2,9 @@ using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.FindSymbols;
 using Microsoft.CodeAnalysis.Rename;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -81,13 +83,26 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         // Find all references before rename
         var references = await ReferenceTracker.FindAllReferencesAsync(symbol, cancellationToken);
 
-        // Compute rename options
+        // Compute rename options. Roslyn's Renamer always updates interface
+        // implementations; renameImplementations: false is honored after the rename.
         var options = new SymbolRenameOptions(
             RenameOverloads: @params.RenameOverloads,
             RenameInStrings: false,
             RenameInComments: false,
             RenameFile: false // We handle file rename separately
         );
+
+        IReadOnlyList<MemberIdentity> interfaceMembersToPreserve = [];
+        MemberIdentity? selectedImplementation = null;
+        if (!@params.RenameImplementations)
+        {
+            interfaceMembersToPreserve = CollectInterfaceMembers(symbol, @params.RenameOverloads);
+            if (interfaceMembersToPreserve.Count > 0
+                && symbol.ContainingType?.TypeKind != TypeKind.Interface)
+            {
+                selectedImplementation = MemberIdentity.From(symbol);
+            }
+        }
 
         // Perform the rename
         var newSolution = await Renamer.RenameSymbolAsync(
@@ -96,6 +111,17 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
             options,
             @params.NewName,
             cancellationToken);
+
+        if (!@params.RenameImplementations && interfaceMembersToPreserve.Count > 0)
+        {
+            newSolution = await RestoreImplementationNamesAsync(
+                newSolution,
+                interfaceMembersToPreserve,
+                selectedImplementation,
+                symbol.Name,
+                @params.NewName,
+                cancellationToken);
+        }
 
         // Handle file rename for types
         string? renamedFile = null;
@@ -462,5 +488,307 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         }
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
+    }
+
+    /// <summary>
+    /// Collects interface members whose implementations should keep the original
+    /// name when <c>renameImplementations</c> is false.
+    /// </summary>
+    private static List<MemberIdentity> CollectInterfaceMembers(ISymbol symbol, bool renameOverloads)
+    {
+        var result = new List<MemberIdentity>();
+
+        if (symbol.ContainingType?.TypeKind == TypeKind.Interface)
+        {
+            AddInterfaceMember(result, symbol, renameOverloads);
+            return result;
+        }
+
+        foreach (var implemented in GetImplementedInterfaceMembers(symbol))
+            AddInterfaceMember(result, implemented, renameOverloads);
+
+        return result;
+    }
+
+    private static void AddInterfaceMember(
+        List<MemberIdentity> result,
+        ISymbol interfaceMember,
+        bool renameOverloads)
+    {
+        result.Add(MemberIdentity.From(interfaceMember));
+        if (!renameOverloads || interfaceMember is not IMethodSymbol method)
+            return;
+
+        foreach (var overload in method.ContainingType.GetMembers(method.Name).OfType<IMethodSymbol>())
+            result.Add(MemberIdentity.From(overload));
+    }
+
+    private static IEnumerable<ISymbol> GetImplementedInterfaceMembers(ISymbol symbol)
+    {
+        switch (symbol)
+        {
+            case IMethodSymbol method:
+                foreach (var implemented in method.ExplicitInterfaceImplementations)
+                    yield return implemented;
+                break;
+            case IPropertySymbol property:
+                foreach (var implemented in property.ExplicitInterfaceImplementations)
+                    yield return implemented;
+                break;
+            case IEventSymbol @event:
+                foreach (var implemented in @event.ExplicitInterfaceImplementations)
+                    yield return implemented;
+                break;
+        }
+
+        var containing = symbol.ContainingType;
+        if (containing == null)
+            yield break;
+
+        foreach (var iface in containing.AllInterfaces)
+        {
+            foreach (var member in iface.GetMembers(symbol.Name))
+            {
+                var implementation = containing.FindImplementationForInterfaceMember(member);
+                if (implementation != null && SymbolEqualityComparer.Default.Equals(implementation, symbol))
+                    yield return member;
+            }
+        }
+    }
+
+    private async Task<Solution> RestoreImplementationNamesAsync(
+        Solution solution,
+        IReadOnlyList<MemberIdentity> interfaceMembers,
+        MemberIdentity? selectedImplementation,
+        string originalName,
+        string newName,
+        CancellationToken cancellationToken)
+    {
+        var spansByDocument = new Dictionary<DocumentId, HashSet<TextSpan>>();
+
+        foreach (var identity in interfaceMembers)
+        {
+            var ifaceMember = await ResolveMemberAsync(solution, identity, newName, cancellationToken);
+            if (ifaceMember == null)
+                continue;
+
+            var implementations = await SymbolFinder.FindImplementationsAsync(
+                ifaceMember,
+                solution,
+                cancellationToken: cancellationToken);
+
+            foreach (var impl in implementations)
+            {
+                if (impl is INamedTypeSymbol)
+                    continue;
+
+                if (selectedImplementation is { } selected && selected.SameMemberIgnoringName(impl))
+                    continue;
+
+                await AddImplementationNameSpansAsync(
+                    solution,
+                    impl,
+                    spansByDocument,
+                    cancellationToken);
+            }
+        }
+
+        return await ApplyNameRestoresAsync(
+            solution,
+            spansByDocument,
+            newName,
+            originalName,
+            cancellationToken);
+    }
+
+    private static async Task<ISymbol?> ResolveMemberAsync(
+        Solution solution,
+        MemberIdentity identity,
+        string name,
+        CancellationToken cancellationToken)
+    {
+        foreach (var project in solution.Projects)
+        {
+            var compilation = await project.GetCompilationAsync(cancellationToken);
+            if (compilation == null)
+                continue;
+
+            var type = compilation.GetTypeByMetadataName(identity.ContainingTypeMetadataName);
+            if (type == null)
+                continue;
+
+            foreach (var member in type.GetMembers(name))
+            {
+                if (identity.Matches(member))
+                    return member;
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task AddImplementationNameSpansAsync(
+        Solution solution,
+        ISymbol implementation,
+        Dictionary<DocumentId, HashSet<TextSpan>> spansByDocument,
+        CancellationToken cancellationToken)
+    {
+        foreach (var syntaxRef in implementation.DeclaringSyntaxReferences)
+        {
+            var node = await syntaxRef.GetSyntaxAsync(cancellationToken);
+            var document = solution.GetDocument(syntaxRef.SyntaxTree);
+            if (document == null)
+                continue;
+
+            var span = TryGetDeclarationNameSpan(node);
+            if (span is { } nameSpan)
+                AddSpan(spansByDocument, document.Id, nameSpan);
+        }
+
+        var references = await SymbolFinder.FindReferencesAsync(
+            implementation,
+            solution,
+            cancellationToken);
+
+        foreach (var referenced in references)
+        {
+            // Renamer cascades to the interface member; only revert the
+            // implementing symbol and its own references.
+            if (referenced.Definition.ContainingType?.TypeKind == TypeKind.Interface)
+                continue;
+
+            foreach (var location in referenced.Locations)
+            {
+                if (location.IsImplicit || !location.Location.IsInSource)
+                    continue;
+
+                AddSpan(spansByDocument, location.Document.Id, location.Location.SourceSpan);
+            }
+        }
+    }
+
+    private static TextSpan? TryGetDeclarationNameSpan(SyntaxNode node)
+    {
+        return node switch
+        {
+            MethodDeclarationSyntax method => method.Identifier.Span,
+            PropertyDeclarationSyntax property => property.Identifier.Span,
+            EventDeclarationSyntax @event => @event.Identifier.Span,
+            VariableDeclaratorSyntax variable => variable.Identifier.Span,
+            EventFieldDeclarationSyntax eventField =>
+                eventField.Declaration.Variables.FirstOrDefault()?.Identifier.Span,
+            _ => null
+        };
+    }
+
+    private static async Task<Solution> ApplyNameRestoresAsync(
+        Solution solution,
+        Dictionary<DocumentId, HashSet<TextSpan>> spansByDocument,
+        string currentName,
+        string originalName,
+        CancellationToken cancellationToken)
+    {
+        foreach (var (documentId, spans) in spansByDocument)
+        {
+            var document = solution.GetDocument(documentId);
+            if (document == null)
+                continue;
+
+            var text = await document.GetTextAsync(cancellationToken);
+            var changes = spans
+                .Where(span => span.End <= text.Length
+                    && string.Equals(text.ToString(span), currentName, StringComparison.Ordinal))
+                .OrderBy(span => span.Start)
+                .Select(span => new TextChange(span, originalName))
+                .ToList();
+
+            if (changes.Count == 0)
+                continue;
+
+            solution = document.WithText(text.WithChanges(changes)).Project.Solution;
+        }
+
+        return solution;
+    }
+
+    private static void AddSpan(
+        Dictionary<DocumentId, HashSet<TextSpan>> spansByDocument,
+        DocumentId documentId,
+        TextSpan span)
+    {
+        if (!spansByDocument.TryGetValue(documentId, out var spans))
+        {
+            spans = [];
+            spansByDocument[documentId] = spans;
+        }
+
+        spans.Add(span);
+    }
+
+    private static string GetFullMetadataName(INamedTypeSymbol type)
+    {
+        var parts = new List<string>();
+        for (var current = type; current != null; current = current.ContainingType)
+            parts.Add(current.MetadataName);
+
+        parts.Reverse();
+        var typeName = string.Join("+", parts);
+        return type.ContainingNamespace.IsGlobalNamespace
+            ? typeName
+            : type.ContainingNamespace.ToDisplayString() + "." + typeName;
+    }
+
+    private static string[] GetParameterTypeKeys(ISymbol symbol)
+    {
+        var parameters = symbol switch
+        {
+            IMethodSymbol method => method.Parameters,
+            IPropertySymbol property => property.Parameters,
+            _ => default
+        };
+
+        if (parameters.IsDefaultOrEmpty)
+            return [];
+
+        return parameters
+            .Select(p => $"{p.RefKind}:{p.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}")
+            .ToArray();
+    }
+
+    private readonly record struct MemberIdentity(
+        string ContainingTypeMetadataName,
+        Microsoft.CodeAnalysis.SymbolKind Kind,
+        int Arity,
+        string[] ParameterTypeKeys)
+    {
+        public bool Matches(ISymbol symbol)
+        {
+            if (symbol.Kind != Kind)
+                return false;
+
+            if (symbol is IMethodSymbol method && method.Arity != Arity)
+                return false;
+
+            return GetParameterTypeKeys(symbol).SequenceEqual(ParameterTypeKeys, StringComparer.Ordinal);
+        }
+
+        public bool SameMemberIgnoringName(ISymbol symbol)
+        {
+            return symbol.ContainingType != null
+                && ContainingTypeMetadataName == GetFullMetadataName(symbol.ContainingType)
+                && Matches(symbol);
+        }
+
+        public static MemberIdentity From(ISymbol symbol)
+        {
+            var type = symbol.ContainingType
+                ?? throw new ArgumentException("Symbol must be a type member.", nameof(symbol));
+
+            return new MemberIdentity(
+                GetFullMetadataName(type),
+                symbol.Kind,
+                symbol is IMethodSymbol method ? method.Arity : 0,
+                GetParameterTypeKeys(symbol));
+        }
     }
 }
