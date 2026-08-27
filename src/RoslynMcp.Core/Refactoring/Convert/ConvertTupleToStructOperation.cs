@@ -108,10 +108,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         var tupleType = GetTupleType(semanticModel, creation);
         var members = GetTupleMembers(tupleType);
         var targetNamespace = GetContainingNamespaceName(semanticModel, creation);
+        var lookupName = StripVerbatimPrefix(@params.NewTypeName);
 
-        await ValidateNoNameConflictAsync(document, @params.NewTypeName, targetNamespace, cancellationToken);
+        if (!ContextAcceptsStructReplacement(creation, semanticModel))
+        {
+            throw new RefactoringException(
+                ErrorCodes.CannotConvert,
+                "The selected tuple is used in a tuple-typed context that cannot accept the generated struct.");
+        }
 
-        var creations = await CollectSameShapeCreationsAsync(tupleType, cancellationToken);
+        await ValidateNoNameConflictAsync(document, lookupName, targetNamespace, cancellationToken);
+
+        var creations = await CollectSameShapeCreationsAsync(document, tupleType, cancellationToken);
 
         if (creations.Count == 0)
             creations.Add(new CreationTarget(document, creation.Span));
@@ -122,7 +130,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         var insertPosition = GetTypeInsertionPosition(root, creation);
         ValidateMembersForGeneratedType(members, semanticModel, insertPosition);
         var typeDeclaration = CreateNamedStruct(
-            @params.NewTypeName,
+            lookupName,
             members,
             semanticModel,
             insertPosition);
@@ -132,7 +140,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             typeDeclaration,
             creations,
             members,
-            @params.NewTypeName,
+            lookupName,
             targetNamespace,
             cancellationToken);
 
@@ -147,9 +155,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
+        var emittedName = EmitTypeName(lookupName);
         var qualifiedName = string.IsNullOrEmpty(targetNamespace)
-            ? @params.NewTypeName
-            : $"{targetNamespace}.{@params.NewTypeName}";
+            ? emittedName
+            : $"{targetNamespace}.{emittedName}";
 
         return RefactoringResult.Succeeded(
             operationId,
@@ -161,7 +170,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.NewTypeName,
+                Name = lookupName,
                 FullyQualifiedName = qualifiedName,
                 Kind = SymbolKind.Struct
             },
@@ -226,8 +235,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SemanticModel semanticModel,
         ExpressionSyntax creation)
     {
-        var type = semanticModel.GetTypeInfo(creation).Type as INamedTypeSymbol;
-        if (type == null || !type.IsTupleType)
+        var type = GetTupleLikeType(semanticModel, creation);
+        if (type == null)
         {
             throw new RefactoringException(
                 ErrorCodes.CannotConvert,
@@ -239,14 +248,50 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     internal static IReadOnlyList<TupleMember> GetTupleMembers(INamedTypeSymbol tupleType)
     {
-        return tupleType.TupleElements
-            .Select(e => new TupleMember(e.Name, e.Type))
+        if (tupleType.IsTupleType && !tupleType.TupleElements.IsDefault)
+        {
+            return tupleType.TupleElements
+                .Select(e => new TupleMember(e.Name, e.Type))
+                .ToList();
+        }
+
+        return tupleType.TypeArguments
+            .Select((type, index) => new TupleMember($"Item{index + 1}", type))
             .ToList();
+    }
+
+    internal static bool IsTupleLike(ITypeSymbol? type)
+    {
+        if (type is not INamedTypeSymbol named || named.TypeKind == TypeKind.Error)
+            return false;
+        if (named.IsTupleType)
+            return true;
+
+        var definition = named.OriginalDefinition;
+        return definition.Name == "ValueTuple" &&
+               definition.ContainingNamespace?.ToDisplayString() == "System";
+    }
+
+    internal static INamedTypeSymbol? GetTupleLikeType(SemanticModel semanticModel, SyntaxNode node)
+    {
+        var info = semanticModel.GetTypeInfo(node);
+        if (IsTupleLike(info.Type))
+            return (INamedTypeSymbol)info.Type!;
+        if (IsTupleLike(info.ConvertedType))
+            return (INamedTypeSymbol)info.ConvertedType!;
+
+        if (semanticModel.GetSymbolInfo(node).Symbol is IMethodSymbol method &&
+            IsTupleLike(method.ContainingType))
+        {
+            return method.ContainingType;
+        }
+
+        return null;
     }
 
     internal static bool SharesTupleType(ITypeSymbol? candidate, INamedTypeSymbol original)
     {
-        if (candidate is not INamedTypeSymbol named || !named.IsTupleType)
+        if (!IsTupleLike(candidate) || candidate is not INamedTypeSymbol named)
             return false;
 
         if (SymbolEqualityComparer.Default.Equals(named, original))
@@ -278,6 +323,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         });
 
         return SyntaxFactory.StructDeclaration(typeName)
+            .WithIdentifier(CreateIdentifier(typeName))
             .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
             .WithMembers(SyntaxFactory.List<MemberDeclarationSyntax>(properties))
             .NormalizeWhitespace();
@@ -286,9 +332,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     internal static ExpressionSyntax ToNamedCreation(
         ExpressionSyntax creation,
         string typeName,
-        IReadOnlyList<TupleMember> members)
+        IReadOnlyList<TupleMember> members,
+        SemanticModel? semanticModel = null)
     {
-        var values = GetCreationValues(creation);
+        var values = GetCreationValues(creation, members, semanticModel);
         var assignments = new List<ExpressionSyntax>();
         for (var i = 0; i < values.Count; i++)
         {
@@ -425,12 +472,28 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     internal static SyntaxToken CreateIdentifier(string name)
     {
-        var bare = name.StartsWith('@') ? name[1..] : name;
+        var bare = StripVerbatimPrefix(name);
         var keywordKind = SyntaxFacts.GetKeywordKind(bare);
         if (keywordKind != SyntaxKind.None)
             return SyntaxFactory.VerbatimIdentifier(default, bare, bare, default);
 
         return SyntaxFactory.Identifier(bare);
+    }
+
+    /// <summary>
+    /// Strips a leading <c>@</c> so <c>@Point</c> and <c>Point</c> share the same lookup name.
+    /// </summary>
+    internal static string StripVerbatimPrefix(string name) =>
+        name.StartsWith('@') && name.Length > 1 ? name[1..] : name;
+
+    /// <summary>
+    /// Emits a type name, adding <c>@</c> only when the identifier is a keyword.
+    /// </summary>
+    internal static string EmitTypeName(string name)
+    {
+        var bare = StripVerbatimPrefix(name);
+        var keywordKind = SyntaxFacts.GetKeywordKind(bare);
+        return keywordKind != SyntaxKind.None ? "@" + bare : bare;
     }
 
     internal static string? GetContainingNamespaceName(SemanticModel semanticModel, SyntaxNode node)
@@ -477,9 +540,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         string? targetNamespace,
         CancellationToken cancellationToken)
     {
+        var lookupName = StripVerbatimPrefix(newTypeName);
         var qualified = string.IsNullOrEmpty(targetNamespace)
-            ? newTypeName
-            : $"{targetNamespace}.{newTypeName}";
+            ? lookupName
+            : $"{targetNamespace}.{lookupName}";
 
         var existing = await TypeResolver.FindTypeByNameAsync(qualified, cancellationToken);
         if (existing != null)
@@ -502,7 +566,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         var simpleMatches = compilation.GetSymbolsWithName(
-            name => name == newTypeName,
+            name => name == lookupName,
             SymbolFilter.Type,
             cancellationToken);
 
@@ -518,13 +582,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     private async Task<List<CreationTarget>> CollectSameShapeCreationsAsync(
+        Document originatingDocument,
         INamedTypeSymbol tupleType,
         CancellationToken cancellationToken)
     {
         var targets = new Dictionary<(DocumentId Id, TextSpan Span), CreationTarget>();
+        var originatingProject = originatingDocument.Project;
 
         foreach (var project in Context.Solution.Projects)
         {
+            if (!ProjectCanReference(project, originatingProject))
+                continue;
+
             foreach (var document in project.Documents)
             {
                 if (document.FilePath == null || !document.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
@@ -540,9 +609,15 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     if (!IsTupleCreationNode(node, model))
                         continue;
 
-                    var type = model.GetTypeInfo(node, cancellationToken).Type;
+                    var type = GetTupleLikeType(model, node);
                     if (!SharesTupleType(type, tupleType))
                         continue;
+
+                    if (node is not ExpressionSyntax expression ||
+                        !ContextAcceptsStructReplacement(expression, model))
+                    {
+                        continue;
+                    }
 
                     targets[(document.Id, node.Span)] = new CreationTarget(document, node.Span);
                 }
@@ -587,8 +662,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
             if (nodes.Count > 0)
             {
+                var model = await document.GetSemanticModelAsync(cancellationToken);
+                var emittedName = EmitTypeName(newTypeName);
                 root = root.ReplaceNodes(nodes, (original, _) =>
-                    ToNamedCreation(original, TypeNameForCreation(original, newTypeName, targetNamespace), members));
+                    ToNamedCreation(
+                        original,
+                        TypeNameForCreation(original, emittedName, targetNamespace),
+                        members,
+                        model));
             }
 
             if (documentId == originatingDocument.Id)
@@ -651,8 +732,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (NamespacesEqual(creationNamespace, targetNamespace))
             return newTypeName;
 
-        var root = creation.SyntaxTree.GetRoot();
-        if (!string.IsNullOrEmpty(targetNamespace) && HasUsing(root, targetNamespace))
+        if (!string.IsNullOrEmpty(targetNamespace) && HasUsingInScope(creation, targetNamespace))
             return newTypeName;
 
         return string.IsNullOrEmpty(targetNamespace)
@@ -667,11 +747,127 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         return string.Equals(left, right, StringComparison.Ordinal);
     }
 
-    private static bool HasUsing(SyntaxNode root, string namespaceName)
+    /// <summary>
+    /// True when an ordinary (non-alias, non-static) namespace import of
+    /// <paramref name="namespaceName"/> is in scope at <paramref name="creation"/>.
+    /// Usings inside unrelated namespace blocks do not count.
+    /// </summary>
+    internal static bool HasUsingInScope(SyntaxNode creation, string namespaceName)
     {
-        return root.DescendantNodes()
-            .OfType<UsingDirectiveSyntax>()
-            .Any(u => u.Name != null && u.Name.ToString() == namespaceName);
+        foreach (var container in creation.AncestorsAndSelf())
+        {
+            SyntaxList<UsingDirectiveSyntax> usings = default;
+            switch (container)
+            {
+                case CompilationUnitSyntax compilationUnit:
+                    usings = compilationUnit.Usings;
+                    break;
+                case BaseNamespaceDeclarationSyntax ns:
+                    usings = ns.Usings;
+                    break;
+                default:
+                    continue;
+            }
+
+            if (usings.Any(u => IsOrdinaryNamespaceImport(u, namespaceName)))
+                return true;
+        }
+
+        return false;
+    }
+
+    internal static bool IsOrdinaryNamespaceImport(UsingDirectiveSyntax directive, string namespaceName)
+    {
+        if (directive.Alias != null)
+            return false;
+        if (directive.StaticKeyword != default)
+            return false;
+        return directive.Name != null &&
+               string.Equals(directive.Name.ToString(), namespaceName, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// True when <paramref name="from"/> is the originating project or already
+    /// references it (so the generated struct is visible without adding a cycle).
+    /// </summary>
+    internal static bool ProjectCanReference(Project from, Project target)
+    {
+        if (from.Id == target.Id)
+            return true;
+
+        var seen = new HashSet<ProjectId>();
+        var queue = new Queue<ProjectId>();
+        queue.Enqueue(from.Id);
+
+        while (queue.Count > 0)
+        {
+            var id = queue.Dequeue();
+            if (!seen.Add(id))
+                continue;
+
+            var project = from.Solution.GetProject(id);
+            if (project == null)
+                continue;
+
+            foreach (var reference in project.ProjectReferences)
+            {
+                if (reference.ProjectId == target.Id)
+                    return true;
+                queue.Enqueue(reference.ProjectId);
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A generated public struct is accepted when the context re-infers (<c>var</c>/discard)
+    /// or already converts the tuple to a destination a plain struct can satisfy
+    /// (<c>object</c>, <c>dynamic</c>, <c>ValueType</c>). Explicit tuple-typed
+    /// returns, parameters, and locals are rejected.
+    /// </summary>
+    internal static bool ContextAcceptsStructReplacement(ExpressionSyntax creation, SemanticModel model)
+    {
+        if (IsImplicitlyTypedOrDiscardContext(creation))
+            return true;
+
+        var converted = model.GetTypeInfo(creation).ConvertedType;
+        if (converted == null || converted.TypeKind == TypeKind.Error)
+            return false;
+
+        if (converted.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType)
+            return true;
+
+        if (converted.TypeKind == TypeKind.Dynamic)
+            return true;
+
+        if (converted is INamedTypeSymbol named && named.IsTupleType)
+            return false;
+
+        return false;
+    }
+
+    internal static bool IsImplicitlyTypedOrDiscardContext(ExpressionSyntax creation)
+    {
+        SyntaxNode node = creation;
+        while (node.Parent is ParenthesizedExpressionSyntax parenthesized)
+            node = parenthesized;
+
+        if (node.Parent is EqualsValueClauseSyntax equals &&
+            equals.Parent is VariableDeclaratorSyntax declarator &&
+            declarator.Parent is VariableDeclarationSyntax declaration)
+        {
+            return declaration.Type.IsVar;
+        }
+
+        if (node.Parent is AssignmentExpressionSyntax assignment &&
+            assignment.Right == node &&
+            assignment.Left is IdentifierNameSyntax { Identifier.ValueText: "_" })
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static string? ToNamespaceName(INamespaceSymbol? symbol)
@@ -714,7 +910,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 return IsTupleCreation(tuple);
             case ObjectCreationExpressionSyntax:
             case ImplicitObjectCreationExpressionSyntax:
-                return semanticModel.GetTypeInfo(node).Type is INamedTypeSymbol named && named.IsTupleType;
+                return GetTupleLikeType(semanticModel, node) != null;
             default:
                 return false;
         }
@@ -731,7 +927,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     internal static bool IsTupleCreation(TupleExpressionSyntax tuple) =>
         tuple.Parent is not AssignmentExpressionSyntax assignment || assignment.Left != tuple;
 
-    private static IReadOnlyList<ExpressionSyntax> GetCreationValues(ExpressionSyntax creation)
+    internal static IReadOnlyList<ExpressionSyntax> GetCreationValues(
+        ExpressionSyntax creation,
+        IReadOnlyList<TupleMember> members,
+        SemanticModel? semanticModel = null)
     {
         return creation switch
         {
@@ -739,23 +938,93 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 .Select(a => a.Expression.WithoutTrivia())
                 .ToList(),
             ObjectCreationExpressionSyntax objectCreation =>
-                GetArgumentValues(objectCreation.ArgumentList),
+                MapConstructorArguments(objectCreation.ArgumentList, objectCreation, members, semanticModel),
             ImplicitObjectCreationExpressionSyntax implicitCreation =>
-                GetArgumentValues(implicitCreation.ArgumentList),
+                MapConstructorArguments(implicitCreation.ArgumentList, implicitCreation, members, semanticModel),
             _ => throw new RefactoringException(
                 ErrorCodes.CannotConvert,
                 "The selected expression is not a tuple creation.")
         };
     }
 
-    private static IReadOnlyList<ExpressionSyntax> GetArgumentValues(ArgumentListSyntax? argumentList)
+    internal static IReadOnlyList<ExpressionSyntax> MapConstructorArguments(
+        ArgumentListSyntax? argumentList,
+        ExpressionSyntax creation,
+        IReadOnlyList<TupleMember> members,
+        SemanticModel? semanticModel)
     {
-        if (argumentList == null)
+        if (argumentList == null || argumentList.Arguments.Count == 0)
             return [];
 
-        return argumentList.Arguments
-            .Select(a => a.Expression.WithoutTrivia())
-            .ToList();
+        var ctor = semanticModel?.GetSymbolInfo(creation).Symbol as IMethodSymbol;
+        var mapped = new ExpressionSyntax?[members.Count];
+        var used = new bool[members.Count];
+        var nextPositional = 0;
+
+        foreach (var argument in argumentList.Arguments)
+        {
+            int index;
+            if (argument.NameColon != null)
+            {
+                index = IndexOfConstructorParameter(ctor, members, argument.NameColon.Name.Identifier.ValueText);
+            }
+            else
+            {
+                while (nextPositional < members.Count && used[nextPositional])
+                    nextPositional++;
+                index = nextPositional++;
+            }
+
+            if (index < 0 || index >= members.Count)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CannotConvert,
+                    "Could not map a constructor argument to a tuple element.");
+            }
+
+            mapped[index] = argument.Expression.WithoutTrivia();
+            used[index] = true;
+        }
+
+        var values = new List<ExpressionSyntax>(members.Count);
+        for (var i = 0; i < members.Count; i++)
+        {
+            if (mapped[i] == null)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CannotConvert,
+                    "Could not map a constructor argument to a tuple element.");
+            }
+
+            values.Add(mapped[i]!);
+        }
+
+        return values;
+    }
+
+    internal static int IndexOfConstructorParameter(
+        IMethodSymbol? constructor,
+        IReadOnlyList<TupleMember> members,
+        string argumentName)
+    {
+        if (constructor != null)
+        {
+            for (var i = 0; i < constructor.Parameters.Length && i < members.Count; i++)
+            {
+                if (string.Equals(constructor.Parameters[i].Name, argumentName, StringComparison.OrdinalIgnoreCase))
+                    return i;
+            }
+        }
+
+        for (var i = 0; i < members.Count; i++)
+        {
+            if (string.Equals(members[i].Name, argumentName, StringComparison.OrdinalIgnoreCase))
+                return i;
+            if (string.Equals($"Item{i + 1}", argumentName, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+
+        return -1;
     }
 
     private static bool SpanCoversLine(FileLinePositionSpan span, int line, int? column)
