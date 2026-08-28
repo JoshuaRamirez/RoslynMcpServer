@@ -81,7 +81,8 @@ public sealed class GenerateConstructorParams
     /// <see cref="AddNullChecks"/> null-checks the single copy parameter on
     /// reference types (class / record class) and is skipped on structs /
     /// record structs. Derived records whose base is also a record emit
-    /// <c>: base(other)</c>; ordinary classes do not. Unsealed records
+    /// <c>: base(other)</c>; ordinary classes do not unless
+    /// <see cref="ClassBaseCopy"/> is also true. Unsealed records
     /// require <c>public</c> or <c>protected</c> visibility (CS8878).
     /// Copy mode skips properties without an accessible getter.
     /// The copy-constructor signature for
@@ -89,6 +90,22 @@ public sealed class GenerateConstructorParams
     /// one by-value parameter of the target type.
     /// </summary>
     public bool CopyConstructor { get; init; }
+
+    /// <summary>
+    /// When true with <see cref="CopyConstructor"/>, an ordinary class
+    /// whose immediate base is a class other than <c>object</c> emits
+    /// <c>: base(&lt;copyParameter&gt;)</c> if that base has an accessible
+    /// instance constructor with exactly one by-value parameter of the
+    /// <em>base</em> type. Inherited assignable members are then not
+    /// reassigned in the derived body. Records, record structs, and structs
+    /// ignore this flag (records already chain; structs have no class
+    /// inheritance). When the base is <c>object</c> / a struct / a record,
+    /// or no accessible base copy constructor exists, no class
+    /// <c>: base(...)</c> is emitted and generation still succeeds.
+    /// When true without <see cref="CopyConstructor"/>, the request is
+    /// rejected. Default: false (today's class copy-constructor shape).
+    /// </summary>
+    public bool ClassBaseCopy { get; init; }
 
     /// <summary>
     /// Return computed changes without applying. Default: false.

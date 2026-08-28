@@ -92,6 +92,7 @@ public class GenerateConstructorToolTests
         Assert.True(properties.TryGetProperty("replaceExisting", out _));
         Assert.True(properties.TryGetProperty("visibility", out _));
         Assert.True(properties.TryGetProperty("copyConstructor", out _));
+        Assert.True(properties.TryGetProperty("classBaseCopy", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
     }
 
@@ -165,6 +166,24 @@ public class GenerateConstructorToolTests
         Assert.Equal("boolean", copyConstructor.GetProperty("type").GetString());
         Assert.False(copyConstructor.GetProperty("default").GetBoolean());
         Assert.DoesNotContain("copyConstructor", requiredFields);
+    }
+
+    [Fact]
+    public void GetDefinition_ClassBaseCopyProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var classBaseCopy = doc.RootElement.GetProperty("properties").GetProperty("classBaseCopy");
+        var required = doc.RootElement.GetProperty("required");
+
+        var requiredFields = new List<string>();
+        foreach (var item in required.EnumerateArray())
+            requiredFields.Add(item.GetString()!);
+
+        Assert.Equal("boolean", classBaseCopy.GetProperty("type").GetString());
+        Assert.False(classBaseCopy.GetProperty("default").GetBoolean());
+        Assert.DoesNotContain("classBaseCopy", requiredFields);
     }
 
     [Fact]
