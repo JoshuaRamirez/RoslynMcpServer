@@ -143,6 +143,36 @@ public class GenerateConstructorParamsValidationTests
     }
 
     [Fact]
+    public void ClassBaseCopy_DefaultsToFalse()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass"
+        };
+
+        Assert.False(@params.ClassBaseCopy);
+    }
+
+    [Fact]
+    public void ValidateParams_ClassBaseCopyWithoutCopyConstructor_ThrowsClassBaseCopyRequiresCopyConstructor()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass",
+            ClassBaseCopy = true,
+            CopyConstructor = false
+        };
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(@params));
+
+        Assert.Equal(ErrorCodes.ClassBaseCopyRequiresCopyConstructor, ex.ErrorCode);
+        Assert.Contains("copyConstructor", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void ValidateParams_InvalidVisibility_ThrowsInvalidVisibility()
     {
         var @params = new GenerateConstructorParams

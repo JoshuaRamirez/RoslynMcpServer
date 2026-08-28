@@ -239,11 +239,13 @@ public class HelpGeneratorTests
         Assert.DoesNotContain("--replace-existing", requiredSection);
         Assert.DoesNotContain("--visibility", requiredSection);
         Assert.DoesNotContain("--copy-constructor", requiredSection);
+        Assert.DoesNotContain("--class-base-copy", requiredSection);
 
         Assert.Contains("--include-properties", optionalSection);
         Assert.Contains("--include-inherited-members", optionalSection);
         Assert.Contains("--replace-existing", optionalSection);
         Assert.Contains("--visibility", optionalSection);
         Assert.Contains("--copy-constructor", optionalSection);
+        Assert.Contains("--class-base-copy", optionalSection);
     }
 }

@@ -481,6 +481,9 @@ public static class ErrorCodes
     /// <summary>callSuper was requested but the immediate base's Equals(object) or GetHashCode is abstract.</summary>
     public const string CallSuperOnAbstractBase = "3147";
 
+    /// <summary>classBaseCopy was requested without copyConstructor.</summary>
+    public const string ClassBaseCopyRequiresCopyConstructor = "3148";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

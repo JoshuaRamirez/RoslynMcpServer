@@ -24,7 +24,10 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// and <c>copyConstructor</c> to emit a single same-type parameter whose
 /// body assigns each selected member from that parameter instead of one
 /// parameter per member. Derived records whose base is also a record get
-/// <c>: base(other)</c> (CS8868); ordinary classes do not. Unsealed record
+/// <c>: base(other)</c> (CS8868). Ordinary classes do not unless
+/// <c>classBaseCopy</c> is also true; then they emit
+/// <c>: base((Base)other)</c> when the immediate base has an
+/// accessible copy constructor of the base type. Unsealed record
 /// copy constructors reject visibilities other than public / protected
 /// (CS8878). Copy mode skips setter-only / unreadable properties.
 /// Structs and record structs reject <c>protected</c> /
@@ -84,6 +87,13 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         if (!string.IsNullOrWhiteSpace(@params.Visibility) && !ValidVisibilities.Contains(@params.Visibility.Trim()))
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
+
+        if (@params.ClassBaseCopy && !@params.CopyConstructor)
+        {
+            throw new RefactoringException(
+                ErrorCodes.ClassBaseCopyRequiresCopyConstructor,
+                "classBaseCopy requires copyConstructor to be true.");
+        }
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -222,16 +232,29 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             }
         }
 
+        // Class : base((Base)other) is opt-in. Records already chain (CS8868)
+        // and ignore classBaseCopy. Only an ordinary class whose immediate
+        // base has an accessible Base(Base) copy constructor gets the
+        // initializer; the argument is cast to the base type so that ctor wins.
+        var addClassBaseCopy = @params.CopyConstructor
+            && @params.ClassBaseCopy
+            && TryGetClassBaseCopyInitializer(typeSymbol);
+
+        var bodyMembers = addClassBaseCopy
+            ? members.Where(m => SymbolEqualityComparer.Default.Equals(m.ContainingType, typeSymbol)).ToList()
+            : members;
+
         // Generate the constructor. Visibility is always the requested
         // accessibility (default public) — never copied from a replaced ctor.
         var constructor = @params.CopyConstructor
             ? GenerateCopyConstructor(
-                members,
+                bodyMembers,
                 typeDeclaration,
                 typeSymbol,
                 copyParameterName!,
                 @params.AddNullChecks && typeSymbol.IsReferenceType,
-                visibility)
+                visibility,
+                addClassBaseCopy)
             : GenerateConstructor(members, typeDeclaration, @params.AddNullChecks, visibility);
         var replacing = exactMatch != null;
 
@@ -239,7 +262,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         if (@params.Preview)
         {
             return await CreatePreviewResultAsync(
-                operationId, @params, members, constructor, exactMatch, document.Project.Solution, copyParameterName, cancellationToken);
+                operationId, @params, bodyMembers, constructor, exactMatch, document.Project.Solution, copyParameterName, addClassBaseCopy, cancellationToken);
         }
 
         var solution = document.Project.Solution;
@@ -726,8 +749,9 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     /// Null-check the copy parameter only when requested and the target is a
     /// reference type — structs / record structs skip it.
     /// Derived records whose base is also a record get
-    /// <c>: base(other)</c> (CS8868). Ordinary classes never get a base-copy
-    /// initializer — that remains out of scope.
+    /// <c>: base(other)</c> (CS8868). Ordinary classes get
+    /// <c>: base((Base)other)</c> only when <paramref name="addClassBaseCopy"/>
+    /// is true.
     /// </summary>
     private static ConstructorDeclarationSyntax GenerateCopyConstructor(
         List<ISymbol> members,
@@ -735,7 +759,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         INamedTypeSymbol typeSymbol,
         string parameterName,
         bool addNullCheckOnParameter,
-        string visibility)
+        string visibility,
+        bool addClassBaseCopy)
     {
         var selfTypeName = GetSelfTypeName(typeDeclaration);
         var parameter = SyntaxFactory.Parameter(SyntaxFactory.Identifier(parameterName))
@@ -769,15 +794,19 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SingletonSeparatedList(parameter)))
             .WithBody(SyntaxFactory.Block(statements));
 
-        // Record language rule (CS8868), not the deferred class : base(other) feature.
-        if (RequiresRecordBaseCopyInitializer(typeSymbol))
+        // Record language rule (CS8868) keeps : base(other). Class base-copy
+        // casts to the immediate base type so Base(Base) wins over Base(IFoo)
+        // / a more-specific inaccessible Base(Derived).
+        if (RequiresRecordBaseCopyInitializer(typeSymbol) || addClassBaseCopy)
         {
             constructor = constructor.WithInitializer(
                 SyntaxFactory.ConstructorInitializer(
                     SyntaxKind.BaseConstructorInitializer,
                     SyntaxFactory.ArgumentList(
                         SyntaxFactory.SingletonSeparatedList(
-                            SyntaxFactory.Argument(SyntaxFactory.IdentifierName(parameterName))))));
+                            SyntaxFactory.Argument(
+                                CreateBaseCopyInitializerArgument(
+                                    typeSymbol, parameterName, addClassBaseCopy))))));
         }
 
         return constructor.NormalizeWhitespace();
@@ -799,6 +828,83 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         return baseType.IsRecord;
     }
+
+    /// <summary>
+    /// Record copy constructors pass the copy parameter through unchanged
+    /// (<c>: base(other)</c>, CS8868). Class <c>classBaseCopy</c> casts to
+    /// the immediate base type (<c>: base((Base)other)</c>) so the call
+    /// binds to the validated <c>Base(Base)</c> constructor.
+    /// </summary>
+    private static ExpressionSyntax CreateBaseCopyInitializerArgument(
+        INamedTypeSymbol typeSymbol,
+        string parameterName,
+        bool addClassBaseCopy)
+    {
+        var parameter = SyntaxFactory.IdentifierName(parameterName);
+        if (!addClassBaseCopy || typeSymbol.BaseType == null)
+            return parameter;
+
+        var baseTypeName = typeSymbol.BaseType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+        return SyntaxFactory.CastExpression(
+            SyntaxFactory.ParseTypeName(baseTypeName),
+            parameter);
+    }
+
+    /// <summary>
+    /// True when the target is an ordinary class (not a record / struct /
+    /// record struct) whose immediate base is a class other than
+    /// <c>object</c> and that base has an accessible instance constructor
+    /// with exactly one by-value parameter of the <em>base</em> type.
+    /// Public / protected / protected-internal always count; internal and
+    /// private-protected count when the same assembly. Private and
+    /// otherwise-inaccessible constructors do not. A record / struct base
+    /// does not qualify — classBaseCopy is a no-op in those cases.
+    /// </summary>
+    private static bool TryGetClassBaseCopyInitializer(INamedTypeSymbol typeSymbol)
+    {
+        if (typeSymbol.IsRecord || typeSymbol.TypeKind != TypeKind.Class)
+            return false;
+
+        var baseType = typeSymbol.BaseType;
+        if (baseType == null || IsObjectOrValueType(baseType))
+            return false;
+        if (baseType.IsRecord || baseType.TypeKind != TypeKind.Class)
+            return false;
+
+        foreach (var constructor in baseType.InstanceConstructors)
+        {
+            if (constructor.Parameters.Length != 1)
+                continue;
+
+            var parameter = constructor.Parameters[0];
+            if (parameter.RefKind != RefKind.None)
+                continue;
+            if (!SymbolEqualityComparer.Default.Equals(parameter.Type, baseType))
+                continue;
+            if (!IsConstructorAccessibleFrom(constructor, typeSymbol))
+                continue;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Accessibility of a base constructor from a derived type: public /
+    /// protected / protected-internal, plus internal and private-protected
+    /// when the same assembly.
+    /// </summary>
+    private static bool IsConstructorAccessibleFrom(IMethodSymbol constructor, INamedTypeSymbol fromType) =>
+        constructor.DeclaredAccessibility switch
+        {
+            Accessibility.Public => true,
+            Accessibility.Protected => true,
+            Accessibility.ProtectedOrInternal => true,
+            Accessibility.Internal => SameAssembly(constructor, fromType),
+            Accessibility.ProtectedAndInternal => SameAssembly(constructor, fromType),
+            _ => false
+        };
 
     /// <summary>
     /// Prefer <c>other</c>, then <c>source</c>, then <c>original</c> — first
@@ -1047,6 +1153,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         IMethodSymbol? exactMatch,
         Solution solution,
         string? copyParameterName,
+        bool addClassBaseCopy,
         CancellationToken cancellationToken)
     {
         var replacing = exactMatch != null;
@@ -1057,6 +1164,11 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         var mode = @params.CopyConstructor
             ? $"copy constructor from '{copyParameterName}'"
             : "constructor";
+        var classBaseCopyNote = !@params.ClassBaseCopy || !@params.CopyConstructor
+            ? ""
+            : addClassBaseCopy
+                ? $" with class : base({copyParameterName}) initializer"
+                : " (no class base-copy initializer was added)";
 
         // Show the generated constructor as the "after" snippet
         var afterSnippet = constructor.NormalizeWhitespace().ToFullString();
@@ -1067,7 +1179,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             {
                 File = @params.SourceFile,
                 ChangeType = Contracts.Enums.ChangeKind.Modify,
-                Description = $"{verb} {mode}{inherited} for {@params.TypeName} initializing: {memberNames} ({visibility})",
+                Description = $"{verb} {mode}{inherited} for {@params.TypeName} initializing: {memberNames} ({visibility}){classBaseCopyNote}",
                 BeforeSnippet = replacing
                     ? $"// Type '{@params.TypeName}' (replacing existing constructor)"
                     : $"// Type '{@params.TypeName}' (no constructor with these parameters)",

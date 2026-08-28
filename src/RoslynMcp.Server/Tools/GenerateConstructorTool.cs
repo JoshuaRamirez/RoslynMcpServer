@@ -98,6 +98,12 @@ public sealed class GenerateConstructorTool : IToolHandler
                 description = "Generate a single-parameter copy constructor of the target type that assigns each selected member from that parameter, instead of one parameter per member",
                 @default = false
             },
+            classBaseCopy = new
+            {
+                type = "boolean",
+                description = "When copyConstructor is true, emit : base((Base)<copyParameter>) on an ordinary class whose immediate base has an accessible copy constructor of the base type. Requires copyConstructor. Records, structs, and record structs ignore this flag",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -142,6 +148,7 @@ public sealed class GenerateConstructorTool : IToolHandler
                 ReplaceExisting = args.ReplaceExisting ?? false,
                 Visibility = args.Visibility,
                 CopyConstructor = args.CopyConstructor ?? false,
+                ClassBaseCopy = args.ClassBaseCopy ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -179,6 +186,7 @@ public sealed class GenerateConstructorTool : IToolHandler
         public bool? ReplaceExisting { get; init; }
         public string? Visibility { get; init; }
         public bool? CopyConstructor { get; init; }
+        public bool? ClassBaseCopy { get; init; }
         public bool? Preview { get; init; }
     }
 }

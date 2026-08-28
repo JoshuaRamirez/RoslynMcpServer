@@ -14,7 +14,7 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 /// Unit tests for GenerateConstructorOperation semantic validation,
 /// plus operation-level tests for <c>includeProperties</c>,
 /// <c>includeInheritedMembers</c>, <c>replaceExisting</c>,
-/// <c>visibility</c>, and <c>copyConstructor</c>.
+/// <c>visibility</c>, <c>copyConstructor</c>, and <c>classBaseCopy</c>.
 /// Tests validate type-level constraints for constructor generation.
 /// </summary>
 public class GenerateConstructorOperationTests
@@ -2826,6 +2826,481 @@ public class GenerateConstructorOperationTests
 
     #endregion
 
+    #region classBaseCopy
+
+    private const string DerivedClassWithBaseCopyCtorSource = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public string Species { get; set; }
+
+            public Animal()
+            {
+            }
+
+            public Animal(Animal other)
+            {
+                Species = other.Species;
+            }
+        }
+
+        public class Dog : Animal
+        {
+            public string Name { get; set; }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyOmitted_CopyConstructorTrue_DerivedClass_HasNoBaseInitializer()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DerivedClassWithBaseCopyCtorSource, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("public Dog(Dog other)", ctor);
+        Assert.DoesNotContain(": base(", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+        Assert.DoesNotContain("Species", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyFalse_CopyConstructorTrue_DerivedClass_HasNoBaseInitializer()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DerivedClassWithBaseCopyCtorSource, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true,
+            ClassBaseCopy = false
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("public Dog(Dog other)", ctor);
+        Assert.DoesNotContain(": base(", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+        Assert.DoesNotContain("Species", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_DerivedClassWithAccessibleBaseCopyCtor_EmitsBaseInitializer()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DerivedClassWithBaseCopyCtorSource, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true,
+            ClassBaseCopy = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("public Dog(Dog other) : base((Animal)other)", ctor);
+        Assert.DoesNotContain(": base(other)", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+        Assert.DoesNotContain("this.Species", ctor);
+        Assert.DoesNotContain("Species = other.Species", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_AmbiguousBaseOverloads_CastsToBaseType_AndCompiles()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IFoo
+            {
+            }
+
+            public class Base
+            {
+                public Base()
+                {
+                }
+
+                public Base(Base other)
+                {
+                }
+
+                public Base(IFoo foo)
+                {
+                }
+            }
+
+            public class Derived : Base, IFoo
+            {
+                public int N;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Derived.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Derived",
+            CopyConstructor = true,
+            ClassBaseCopy = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Derived");
+        Assert.Contains("public Derived(Derived other) : base((Base)other)", ctor);
+        Assert.DoesNotContain(": base(other)", ctor);
+        Assert.Contains("this.N = other.N", ctor);
+        AssertGeneratedSourceCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_IncludeInheritedMembersTrue_DoesNotReassignInherited()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DerivedClassWithBaseCopyCtorSource, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true,
+            ClassBaseCopy = true,
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("public Dog(Dog other) : base((Animal)other)", ctor);
+        Assert.DoesNotContain(": base(other)", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+        Assert.DoesNotContain("this.Species", ctor);
+        Assert.DoesNotContain("Species = other.Species", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_BaseHasOnlyParameterlessCtor_HasNoBaseInitializer()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Species { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true,
+            ClassBaseCopy = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("public Dog(Dog other)", ctor);
+        Assert.DoesNotContain(": base(", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+        Assert.DoesNotContain("Species", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_ClassInheritingObject_HasNoBaseInitializer()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            CopyConstructor = true,
+            ClassBaseCopy = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget");
+        Assert.Contains("public Widget(Widget other)", ctor);
+        Assert.DoesNotContain(": base(", ctor);
+        Assert.Contains("this._id = other._id", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_CopyConstructorFalse_RejectsAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DerivedClassWithBaseCopyCtorSource, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                CopyConstructor = false,
+                ClassBaseCopy = true
+            }));
+
+        Assert.Equal(ErrorCodes.ClassBaseCopyRequiresCopyConstructor, ex.ErrorCode);
+        Assert.Contains("copyConstructor", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_CopyConstructorOmitted_RejectsAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DerivedClassWithBaseCopyCtorSource, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                ClassBaseCopy = true
+            }));
+
+        Assert.Equal(ErrorCodes.ClassBaseCopyRequiresCopyConstructor, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_CopyConstructorFalse_Preview_RejectsAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DerivedClassWithBaseCopyCtorSource, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                CopyConstructor = false,
+                ClassBaseCopy = true,
+                Preview = true
+            }));
+
+        Assert.Equal(ErrorCodes.ClassBaseCopyRequiresCopyConstructor, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_DerivedRecord_RecordChainUnchanged()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record Animal(string Species);
+
+            public record Dog(string Species, string Name) : Animal(Species);
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true,
+            ClassBaseCopy = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("public Dog(Dog other) : base(other)", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+        Assert.DoesNotContain("this.Species", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_Struct_IsNoOp()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointStructSource, "Point.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Point",
+            CopyConstructor = true,
+            ClassBaseCopy = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Point");
+        Assert.Contains("public Point(Point other)", ctor);
+        Assert.DoesNotContain(": base(", ctor);
+        Assert.Contains("this.X = other.X", ctor);
+        Assert.Contains("this.Y = other.Y", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_RecordStruct_IsNoOp()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointRecordStructSource, "Point.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Point",
+            CopyConstructor = true,
+            ClassBaseCopy = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Point");
+        Assert.Contains("public Point(Point other)", ctor);
+        Assert.DoesNotContain(": base(", ctor);
+        Assert.Contains("this.X = other.X", ctor);
+        Assert.Contains("this.Y = other.Y", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_PrivateOnlyBaseCopyCtor_TreatsAsAbsent()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Species { get; set; }
+
+                public Animal()
+                {
+                }
+
+                private Animal(Animal other)
+                {
+                    Species = other.Species;
+                }
+            }
+
+            public class Dog : Animal
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true,
+            ClassBaseCopy = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("public Dog(Dog other)", ctor);
+        Assert.DoesNotContain(": base(", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+        Assert.DoesNotContain("this.Species", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_Preview_WritesNothing_AndDescribesInitializer()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DerivedClassWithBaseCopyCtorSource, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true,
+            ClassBaseCopy = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("copy constructor", result.PendingChanges[0].Description);
+        Assert.Contains("class : base(other) initializer", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        Assert.Contains("public Dog(Dog other) : base((Animal)other)", snippet);
+        Assert.DoesNotContain(": base(other)", snippet);
+        Assert.Contains("this.Name = other.Name", snippet);
+        Assert.DoesNotContain("this.Species", snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_NoAccessibleBaseCopyCtor_Preview_SaysNoneAdded()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Species { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true,
+            ClassBaseCopy = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains("no class base-copy initializer was added", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        Assert.Contains("public Dog(Dog other)", snippet);
+        Assert.DoesNotContain(": base(", snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Helper Methods
 
     private static void ValidateTypeForConstructor(INamedTypeSymbol typeSymbol)
@@ -2967,6 +3442,28 @@ public class GenerateConstructorOperationTests
         }
 
         return count;
+    }
+
+    private static void AssertGeneratedSourceCompiles(string source)
+    {
+        var references = new List<MetadataReference>
+        {
+            MetadataReference.CreateFromFile(typeof(object).Assembly.Location)
+        };
+        var runtime = Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, "System.Runtime.dll");
+        if (File.Exists(runtime))
+            references.Add(MetadataReference.CreateFromFile(runtime));
+
+        var compilation = CSharpCompilation.Create(
+            "ClassBaseCopyCompileTest",
+            new[] { CSharpSyntaxTree.ParseText(source) },
+            references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, "Generated constructor did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
     }
 
     private static string ExtractConstructor(string source, string typeName, string visibility = "public")
