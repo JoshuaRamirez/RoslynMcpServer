@@ -498,8 +498,13 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         return true;
     }
 
-    private static bool CanBeAbstract(ISymbol member) =>
-        !member.IsStatic && member is IMethodSymbol or IPropertySymbol;
+    private static bool CanBeAbstract(ISymbol member) => member switch
+    {
+        IMethodSymbol method => !method.IsStatic,
+        IPropertySymbol property => !property.IsStatic,
+        IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
+        _ => false
+    };
 
     private static bool IsRequiredByAbstractBase(ISymbol member)
     {
@@ -790,10 +795,38 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => ToAbstractProperty(property),
+            EventDeclarationSyntax eventDecl when CanMakeEventAbstract(eventDecl) => ToAbstractEvent(eventDecl),
+            EventFieldDeclarationSyntax eventField when CanMakeEventAbstract(eventField) => ToAbstractEvent(eventField),
             _ => throw new RefactoringException(
                 ErrorCodes.MemberNotMoveable,
-                "Only methods and properties can be left as abstract members.")
+                "Only methods, properties, and events can be left as abstract members.")
         };
+    }
+
+    private static bool CanMakeEventAbstract(EventDeclarationSyntax eventDecl) =>
+        !eventDecl.Modifiers.Any(SyntaxKind.StaticKeyword) &&
+        eventDecl.ExplicitInterfaceSpecifier == null;
+
+    private static bool CanMakeEventAbstract(EventFieldDeclarationSyntax eventField) =>
+        !eventField.Modifiers.Any(SyntaxKind.StaticKeyword);
+
+    private static EventDeclarationSyntax ToAbstractEvent(EventDeclarationSyntax eventDecl)
+    {
+        return eventDecl
+            .WithModifiers(ToAbstractModifiers(eventDecl.Modifiers))
+            .WithAccessorList(null)
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
+            .NormalizeWhitespace();
+    }
+
+    private static EventDeclarationSyntax ToAbstractEvent(EventFieldDeclarationSyntax eventField)
+    {
+        var variable = eventField.Declaration.Variables.First();
+        return SyntaxFactory.EventDeclaration(eventField.Declaration.Type, variable.Identifier)
+            .WithAttributeLists(eventField.AttributeLists)
+            .WithModifiers(ToAbstractModifiers(eventField.Modifiers))
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
+            .NormalizeWhitespace();
     }
 
     private static PropertyDeclarationSyntax ToAbstractProperty(PropertyDeclarationSyntax property)
@@ -830,6 +863,10 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             MethodDeclarationSyntax method => EnsureMethodBody(method.WithModifiers(ToOverrideModifiers(method.Modifiers)))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => property.WithModifiers(ToOverrideModifiers(property.Modifiers))
+                .NormalizeWhitespace(),
+            EventDeclarationSyntax eventDecl => eventDecl.WithModifiers(ToOverrideModifiers(eventDecl.Modifiers))
+                .NormalizeWhitespace(),
+            EventFieldDeclarationSyntax eventField => eventField.WithModifiers(ToOverrideModifiers(eventField.Modifiers))
                 .NormalizeWhitespace(),
             _ => member.NormalizeWhitespace()
         };
@@ -926,7 +963,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (modifiers.Any(SyntaxKind.PrivateKeyword) || !HasAccessibility(tokens))
             tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
 
-        tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword));
+        tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword)
+            .WithTrailingTrivia(SyntaxFactory.ElasticSpace));
         return SyntaxFactory.TokenList(tokens);
     }
 
@@ -972,11 +1010,20 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             if (TryKeepRemainingDeclarators(member, pushedNames, out var remaining))
             {
                 newMembers.Add(remaining);
+                if (leaveAbstract)
+                {
+                    foreach (var pushed in members.Where(m => m.Syntax == member))
+                        newMembers.Add(ConvertToAbstract(IsolateMemberSyntax(member, pushed.Name)));
+                }
+
                 continue;
             }
 
             if (leaveAbstract)
-                newMembers.Add(ConvertToAbstract(member));
+            {
+                foreach (var pushed in members.Where(m => m.Syntax == member))
+                    newMembers.Add(ConvertToAbstract(IsolateMemberSyntax(member, pushed.Name)));
+            }
         }
 
         var updated = sourceDecl.WithMembers(SyntaxFactory.List(newMembers));
