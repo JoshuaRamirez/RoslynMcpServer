@@ -216,11 +216,10 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                     newTypeDecl = updatedTypeDecl.WithBaseList(newBaseList);
                 }
 
-                // Remove extracted members from derived class
+                // Remove extracted members from derived class. Multi-variable
+                // event fields drop only the selected declarators.
                 var memberNames = @params.Members.ToHashSet();
-                var newMembers = newTypeDecl.Members
-                    .Where(m => !ShouldRemoveMember(m, memberNames))
-                    .ToList();
+                var newMembers = RebuildDerivedMembers(newTypeDecl.Members, memberNames);
 
                 newTypeDecl = newTypeDecl.WithMembers(SyntaxFactory.List(newMembers));
 
@@ -270,6 +269,22 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
         foreach (var member in typeDeclaration.Members)
         {
+            if (member is EventFieldDeclarationSyntax eventField)
+            {
+                var selected = eventField.Declaration.Variables
+                    .Where(v => nameSet.Contains(v.Identifier.Text))
+                    .ToList();
+                if (selected.Count == 0)
+                    continue;
+
+                foreach (var variable in selected)
+                    nameSet.Remove(variable.Identifier.Text);
+
+                result.Add(eventField.WithDeclaration(
+                    eventField.Declaration.WithVariables(SyntaxFactory.SeparatedList(selected))));
+                continue;
+            }
+
             var name = GetMemberName(member);
             if (name != null && nameSet.Contains(name))
             {
@@ -296,14 +311,67 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             PropertyDeclarationSyntax p => p.Identifier.Text,
             FieldDeclarationSyntax f => f.Declaration.Variables.FirstOrDefault()?.Identifier.Text,
             EventDeclarationSyntax e => e.Identifier.Text,
+            EventFieldDeclarationSyntax ef => ef.Declaration.Variables.FirstOrDefault()?.Identifier.Text,
             _ => null
         };
+    }
+
+    private static IEnumerable<string> GetExtractedMemberNames(MemberDeclarationSyntax member)
+    {
+        if (member is EventFieldDeclarationSyntax eventField)
+        {
+            foreach (var variable in eventField.Declaration.Variables)
+                yield return variable.Identifier.Text;
+            yield break;
+        }
+
+        var name = GetMemberName(member);
+        if (name != null)
+            yield return name;
     }
 
     private static bool ShouldRemoveMember(MemberDeclarationSyntax member, HashSet<string> memberNames)
     {
         var name = GetMemberName(member);
         return name != null && memberNames.Contains(name);
+    }
+
+    /// <summary>
+    /// Drops extracted members from the derived type. Field-like events match
+    /// by declarator name so a multi-variable event field keeps unrelated
+    /// declarators on the derived type.
+    /// </summary>
+    private static List<MemberDeclarationSyntax> RebuildDerivedMembers(
+        SyntaxList<MemberDeclarationSyntax> members,
+        HashSet<string> extractedNames)
+    {
+        var result = new List<MemberDeclarationSyntax>();
+        foreach (var member in members)
+        {
+            if (member is EventFieldDeclarationSyntax eventField)
+            {
+                var remaining = eventField.Declaration.Variables
+                    .Where(v => !extractedNames.Contains(v.Identifier.Text))
+                    .ToList();
+                if (remaining.Count == eventField.Declaration.Variables.Count)
+                {
+                    result.Add(member);
+                    continue;
+                }
+
+                if (remaining.Count == 0)
+                    continue;
+
+                result.Add(eventField.WithDeclaration(
+                    eventField.Declaration.WithVariables(SyntaxFactory.SeparatedList(remaining))));
+                continue;
+            }
+
+            if (!ShouldRemoveMember(member, extractedNames))
+                result.Add(member);
+        }
+
+        return result;
     }
 
     private static ClassDeclarationSyntax GenerateBaseClass(
@@ -334,6 +402,8 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             MethodDeclarationSyntax m => m.Modifiers,
             PropertyDeclarationSyntax p => p.Modifiers,
             FieldDeclarationSyntax f => f.Modifiers,
+            EventDeclarationSyntax e => e.Modifiers,
+            EventFieldDeclarationSyntax ef => ef.Modifiers,
             _ => default
         };
 
@@ -348,6 +418,8 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 MethodDeclarationSyntax m => m.WithModifiers(newModifiers),
                 PropertyDeclarationSyntax p => p.WithModifiers(newModifiers),
                 FieldDeclarationSyntax f => f.WithModifiers(newModifiers),
+                EventDeclarationSyntax e => e.WithModifiers(newModifiers),
+                EventFieldDeclarationSyntax ef => ef.WithModifiers(newModifiers),
                 _ => member
             };
         }
@@ -658,7 +730,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         string targetFile,
         string? projectPath)
     {
-        var memberNames = string.Join(", ", members.Select(m => GetMemberName(m)));
+        var memberNames = string.Join(", ", members.SelectMany(GetExtractedMemberNames));
         var baseClassCode = baseClass.NormalizeWhitespace().ToFullString();
 
         var isNewFile = targetFile != @params.SourceFile;

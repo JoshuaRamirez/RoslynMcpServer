@@ -252,7 +252,8 @@ public static class MemberAnalyzer
     }
 
     /// <summary>
-    /// Gets members that can be moved to a base class.
+    /// Gets members that can be moved to a base class — ordinary methods,
+    /// properties, fields, and events that are not private.
     /// </summary>
     /// <param name="type">The type to analyze.</param>
     /// <returns>Members suitable for extraction to base class.</returns>
@@ -323,6 +324,7 @@ public static class MemberAnalyzer
                                     method.DeclaredAccessibility != Accessibility.Private,
             IPropertySymbol prop => prop.DeclaredAccessibility != Accessibility.Private,
             IFieldSymbol field => field.DeclaredAccessibility != Accessibility.Private,
+            IEventSymbol evt => evt.DeclaredAccessibility != Accessibility.Private,
             _ => false
         };
     }
