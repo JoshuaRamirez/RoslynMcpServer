@@ -249,5 +249,6 @@ public class HelpGeneratorTests
         Assert.Contains("--copy-constructor", optionalSection);
         Assert.Contains("--class-base-copy", optionalSection);
         Assert.Contains("--call-base", optionalSection);
+        Assert.Contains("record class", tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 }

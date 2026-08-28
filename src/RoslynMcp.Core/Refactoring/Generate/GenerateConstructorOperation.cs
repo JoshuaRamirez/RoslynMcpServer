@@ -31,9 +31,9 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// copy constructors reject visibilities other than public / protected
 /// (CS8878). Copy mode skips setter-only / unreadable properties.
 /// <c>callBase</c> (non-copy only) emits <c>: base(...)</c> on an
-/// ordinary class when an accessible immediate-base constructor's
-/// parameter types are a prefix of the generated parameters.
-/// Records, record structs, and structs ignore <c>callBase</c>.
+/// ordinary class or record class when an accessible immediate-base
+/// constructor's parameter types are a prefix of the generated
+/// parameters. Record structs and structs ignore <c>callBase</c>.
 /// Structs and record structs reject <c>protected</c> /
 /// <c>protected internal</c> / <c>private protected</c> (CS0666) before any
 /// generate, replace, or preview write. Primary constructors are not replaced.
@@ -192,9 +192,10 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         // callBase prefix-matching uses generated parameter order. Inherited
         // members are typically the ones passed to the base constructor, so
         // they come first when includeInheritedMembers collected any.
-        // Skip the reorder when callBase is a no-op (record / struct /
-        // object or non-class base) so the documented ignore stays order-neutral.
-        if (@params.CallBase && !@params.CopyConstructor && IsEligibleOrdinaryClassForCallBase(typeSymbol))
+        // Skip the reorder when callBase is a no-op (ineligible record
+        // inheriting object, record struct / struct / object or non-class
+        // base) so the documented ignore stays order-neutral.
+        if (@params.CallBase && !@params.CopyConstructor && IsEligibleForCallBase(typeSymbol))
             members = OrderMembersForCallBase(members, typeSymbol);
 
         // Check for existing constructor with same signature or ambiguous due to optional params.
@@ -260,7 +261,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             && TryGetClassBaseCopyInitializer(typeSymbol);
 
         // Non-copy : base(...) is opt-in via callBase. Copy mode is rejected
-        // above. Records / structs / record structs / object bases are no-ops.
+        // above. Ineligible records (object / ValueType / struct base),
+        // structs, and record structs are no-ops.
         var callBase = @params.CallBase && !@params.CopyConstructor
             ? ResolveCallBaseInitializer(typeSymbol, members)
             : CallBaseResolution.None;
@@ -972,9 +974,9 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
     /// <summary>
     /// Result of resolving a non-copy <c>callBase</c> initializer.
-    /// <see cref="None"/> means the flag was a no-op (record / struct /
-    /// object / non-class base) and generation should continue without
-    /// <c>: base(...)</c>.
+    /// <see cref="None"/> means the flag was a no-op (ineligible record
+    /// inheriting object, record struct / struct / object / non-class
+    /// base) and generation should continue without <c>: base(...)</c>.
     /// </summary>
     private readonly record struct CallBaseResolution(
         ConstructorInitializerSyntax? Initializer,
@@ -985,18 +987,6 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         public static CallBaseResolution None { get; } = new(null, 0, null, false);
     }
 
-    /// <summary>
-    /// Resolves <c>: base(...)</c> for non-copy <c>callBase</c> on an ordinary
-    /// class. Records, structs, record structs, <c>object</c> bases, and
-    /// struct/record bases are no-ops (no initializer, no failure).
-    /// Accessible instance constructors whose parameter types in order
-    /// (by-value, same <see cref="RefKind"/>) are a prefix of the generated
-    /// constructor's parameter types are candidates. The longest prefix
-    /// wins; same-length ties prefer case-insensitive parameter-name
-    /// matches; a remaining tie is <see cref="ErrorCodes.AmbiguousBaseConstructor"/>.
-    /// No accessible match and no accessible parameterless constructor is
-    /// <see cref="ErrorCodes.NoMatchingBaseConstructor"/>.
-    /// </summary>
     /// <summary>
     /// True when non-copy <c>callBase</c> may emit <c>: base(...)</c>:
     /// an ordinary class (not a record / struct / record struct) whose
@@ -1017,11 +1007,53 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         return true;
     }
 
+    /// <summary>
+    /// True when non-copy <c>callBase</c> may emit <c>: base(...)</c> on a
+    /// record class (not a record struct) whose immediate base is a class
+    /// or record other than <c>object</c> / <c>ValueType</c>. A struct
+    /// base is a no-op. Ordinary classes keep
+    /// <see cref="IsEligibleOrdinaryClassForCallBase"/>.
+    /// </summary>
+    private static bool IsEligibleRecordClassForCallBase(INamedTypeSymbol typeSymbol)
+    {
+        if (!typeSymbol.IsRecord || typeSymbol.TypeKind != TypeKind.Class)
+            return false;
+
+        var baseType = typeSymbol.BaseType;
+        if (baseType == null || IsObjectOrValueType(baseType))
+            return false;
+        if (baseType.TypeKind != TypeKind.Class)
+            return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// True when non-copy <c>callBase</c> should attempt prefix matching
+    /// and inherited-member reorder. Ordinary classes and record classes
+    /// use their own eligibility rules; record structs and structs never
+    /// qualify.
+    /// </summary>
+    private static bool IsEligibleForCallBase(INamedTypeSymbol typeSymbol) =>
+        IsEligibleOrdinaryClassForCallBase(typeSymbol) || IsEligibleRecordClassForCallBase(typeSymbol);
+
+    /// <summary>
+    /// Resolves <c>: base(...)</c> for non-copy <c>callBase</c> on an ordinary
+    /// class or record class. Record structs, structs, <c>object</c> /
+    /// <c>ValueType</c> bases, and struct bases are no-ops (no initializer,
+    /// no failure). Accessible instance constructors whose parameter types
+    /// in order (by-value, same <see cref="RefKind"/>) are a prefix of the
+    /// generated constructor's parameter types are candidates. The longest
+    /// prefix wins; same-length ties prefer case-insensitive parameter-name
+    /// matches; a remaining tie is <see cref="ErrorCodes.AmbiguousBaseConstructor"/>.
+    /// No accessible match and no accessible parameterless constructor is
+    /// <see cref="ErrorCodes.NoMatchingBaseConstructor"/>.
+    /// </summary>
     private static CallBaseResolution ResolveCallBaseInitializer(
         INamedTypeSymbol typeSymbol,
         IReadOnlyList<ISymbol> members)
     {
-        if (!IsEligibleOrdinaryClassForCallBase(typeSymbol))
+        if (!IsEligibleForCallBase(typeSymbol))
             return CallBaseResolution.None;
 
         var baseType = typeSymbol.BaseType!;
