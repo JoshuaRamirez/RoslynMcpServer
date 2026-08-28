@@ -78,7 +78,21 @@ public class ImplementAbstractToolTests
         Assert.True(properties.TryGetProperty("sourceFile", out _));
         Assert.True(properties.TryGetProperty("typeName", out _));
         Assert.True(properties.TryGetProperty("members", out _));
+        Assert.True(properties.TryGetProperty("throwNotImplemented", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_ThrowNotImplementedProperty_DefaultsToTrue()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var throwNotImplemented = doc.RootElement.GetProperty("properties").GetProperty("throwNotImplemented");
+
+        Assert.Equal("boolean", throwNotImplemented.GetProperty("type").GetString());
+        Assert.True(throwNotImplemented.GetProperty("default").GetBoolean());
+        Assert.Contains("NotImplementedException", throwNotImplemented.GetProperty("description").GetString());
     }
 
     #endregion
