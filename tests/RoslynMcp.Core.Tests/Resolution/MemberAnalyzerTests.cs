@@ -51,6 +51,38 @@ public class MemberAnalyzerTests
     }
 
     [Fact]
+    public void GetMembersForBaseClass_IncludesNonPrivateIndexers()
+    {
+        const string source = """
+            public class Lookup
+            {
+                public string this[int i]
+                {
+                    get => "";
+                    set { }
+                }
+
+                protected int this[string key] => 0;
+
+                private bool this[bool flag] => flag;
+
+                public string Name { get; set; }
+            }
+            """;
+
+        var type = GetTypeSymbol(source, "Lookup");
+        var members = MemberAnalyzer.GetMembersForBaseClass(type).ToList();
+        var indexers = members.OfType<IPropertySymbol>().Where(p => p.IsIndexer).ToList();
+        var names = members.Select(m => m.Name).ToHashSet();
+
+        Assert.Equal(2, indexers.Count);
+        Assert.All(indexers, i => Assert.NotEqual(Accessibility.Private, i.DeclaredAccessibility));
+        Assert.Contains("this[]", names);
+        Assert.Contains("Name", names);
+        Assert.DoesNotContain(indexers, i => i.Parameters.Any(p => p.Type.SpecialType == SpecialType.System_Boolean));
+    }
+
+    [Fact]
     public void GetMembersForBaseClass_EventSymbolsAreIEventSymbol()
     {
         const string source = """

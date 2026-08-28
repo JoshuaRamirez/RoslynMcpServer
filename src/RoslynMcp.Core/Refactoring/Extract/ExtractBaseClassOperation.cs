@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Generate;
 using RoslynMcp.Core.Refactoring.Rename;
 using RoslynMcp.Core.Workspace;
 
@@ -217,8 +218,16 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 }
 
                 // Remove extracted members from derived class. Multi-variable
-                // event fields drop only the selected declarators.
+                // event fields drop only the selected declarators. Indexers
+                // match by parameter-list signature so Item / this[] /
+                // this[int i] all drop the selected indexer only.
                 var memberNames = @params.Members.ToHashSet();
+                foreach (var extracted in membersToExtract)
+                {
+                    if (extracted is IndexerDeclarationSyntax indexer)
+                        memberNames.Add(GetIndexerRemovalKey(indexer));
+                }
+
                 var newMembers = RebuildDerivedMembers(newTypeDecl.Members, memberNames);
 
                 newTypeDecl = newTypeDecl.WithMembers(SyntaxFactory.List(newMembers));
@@ -264,7 +273,8 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         IReadOnlyList<string> memberNames,
         SemanticModel semanticModel)
     {
-        var nameSet = new HashSet<string>(memberNames);
+        var requestedSet = new HashSet<string>(memberNames);
+        var unmatched = new HashSet<string>(memberNames);
         var result = new List<MemberDeclarationSyntax>();
 
         foreach (var member in typeDeclaration.Members)
@@ -272,32 +282,62 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             if (member is EventFieldDeclarationSyntax eventField)
             {
                 var selected = eventField.Declaration.Variables
-                    .Where(v => nameSet.Contains(v.Identifier.Text))
+                    .Where(v => requestedSet.Contains(v.Identifier.Text))
                     .ToList();
                 if (selected.Count == 0)
                     continue;
 
                 foreach (var variable in selected)
-                    nameSet.Remove(variable.Identifier.Text);
+                    unmatched.Remove(variable.Identifier.Text);
 
                 result.Add(eventField.WithDeclaration(
                     eventField.Declaration.WithVariables(SyntaxFactory.SeparatedList(selected))));
                 continue;
             }
 
+            // Indexers match metadata name (Item), Roslyn name (this[]), and
+            // conventional display (this[int i]) — same identity forms as
+            // implement_interface / extract_interface. Explicit interface
+            // implementations are skipped: copying IFoo.this[...] onto a
+            // base that does not implement IFoo is CS0540.
+            if (member is IndexerDeclarationSyntax indexerDecl
+                && semanticModel.GetDeclaredSymbol(indexerDecl) is IPropertySymbol { IsIndexer: true } indexer)
+            {
+                if (indexer.ExplicitInterfaceImplementations.Length > 0
+                    || indexerDecl.ExplicitInterfaceSpecifier != null)
+                {
+                    continue;
+                }
+
+                if (ImplementInterfaceOperation.MatchesRequestedMember(indexer, requestedSet))
+                {
+                    result.Add(member);
+                    foreach (var requested in unmatched.ToList())
+                    {
+                        if (ImplementInterfaceOperation.MatchesRequestedMember(
+                                indexer, new HashSet<string> { requested }))
+                        {
+                            unmatched.Remove(requested);
+                        }
+                    }
+                }
+
+                continue;
+            }
+
             var name = GetMemberName(member);
-            if (name != null && nameSet.Contains(name))
+            if (name != null && requestedSet.Contains(name))
             {
                 result.Add(member);
-                nameSet.Remove(name);
+                unmatched.Remove(name);
             }
         }
 
-        if (nameSet.Count > 0)
+        if (unmatched.Count > 0)
         {
             throw new RefactoringException(
                 ErrorCodes.MemberNotFound,
-                $"Members not found: {string.Join(", ", nameSet)}");
+                $"Members not found: {string.Join(", ", unmatched)}");
         }
 
         return result;
@@ -309,11 +349,42 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         {
             MethodDeclarationSyntax m => m.Identifier.Text,
             PropertyDeclarationSyntax p => p.Identifier.Text,
+            IndexerDeclarationSyntax => "this[]",
             FieldDeclarationSyntax f => f.Declaration.Variables.FirstOrDefault()?.Identifier.Text,
             EventDeclarationSyntax e => e.Identifier.Text,
             EventFieldDeclarationSyntax ef => ef.Declaration.Variables.FirstOrDefault()?.Identifier.Text,
             _ => null
         };
+    }
+
+    /// <summary>
+    /// Stable key for dropping a selected indexer from the derived type.
+    /// Parameter types, <see cref="RefKind"/>, and the explicit-interface
+    /// specifier distinguish overloads so <c>this[]</c> / <c>Item</c> do
+    /// not remove an unselected or explicit-interface indexer.
+    /// </summary>
+    private static string GetIndexerRemovalKey(IndexerDeclarationSyntax indexer)
+    {
+        var parts = indexer.ParameterList.Parameters.Select(parameter =>
+        {
+            var type = parameter.Type?.ToString() ?? string.Empty;
+            if (parameter.Modifiers.Any(SyntaxKind.RefKeyword)
+                && parameter.Modifiers.Any(SyntaxKind.ReadOnlyKeyword))
+            {
+                return "ref readonly " + type;
+            }
+
+            if (parameter.Modifiers.Any(SyntaxKind.RefKeyword))
+                return "ref " + type;
+            if (parameter.Modifiers.Any(SyntaxKind.OutKeyword))
+                return "out " + type;
+            if (parameter.Modifiers.Any(SyntaxKind.InKeyword))
+                return "in " + type;
+            return type;
+        });
+
+        var specifier = indexer.ExplicitInterfaceSpecifier?.Name.ToString() ?? string.Empty;
+        return "indexer:" + specifier + ":" + string.Join(",", parts);
     }
 
     private static IEnumerable<string> GetExtractedMemberNames(MemberDeclarationSyntax member)
@@ -332,6 +403,9 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
     private static bool ShouldRemoveMember(MemberDeclarationSyntax member, HashSet<string> memberNames)
     {
+        if (member is IndexerDeclarationSyntax indexer)
+            return memberNames.Contains(GetIndexerRemovalKey(indexer));
+
         var name = GetMemberName(member);
         return name != null && memberNames.Contains(name);
     }
@@ -401,6 +475,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         {
             MethodDeclarationSyntax m => m.Modifiers,
             PropertyDeclarationSyntax p => p.Modifiers,
+            IndexerDeclarationSyntax i => i.Modifiers,
             FieldDeclarationSyntax f => f.Modifiers,
             EventDeclarationSyntax e => e.Modifiers,
             EventFieldDeclarationSyntax ef => ef.Modifiers,
@@ -409,14 +484,20 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
         if (modifiers.Any(SyntaxKind.PrivateKeyword))
         {
+            // private → protected. private protected already has
+            // ProtectedKeyword; drop only private so we emit a single
+            // protected (not protected protected).
+            var withoutPrivate = modifiers.Where(m => !m.IsKind(SyntaxKind.PrivateKeyword));
             var newModifiers = SyntaxFactory.TokenList(
-                modifiers.Where(m => !m.IsKind(SyntaxKind.PrivateKeyword))
-                         .Prepend(SyntaxFactory.Token(SyntaxKind.ProtectedKeyword)));
+                withoutPrivate.Any(t => t.IsKind(SyntaxKind.ProtectedKeyword))
+                    ? withoutPrivate
+                    : withoutPrivate.Prepend(SyntaxFactory.Token(SyntaxKind.ProtectedKeyword)));
 
             return member switch
             {
                 MethodDeclarationSyntax m => m.WithModifiers(newModifiers),
                 PropertyDeclarationSyntax p => p.WithModifiers(newModifiers),
+                IndexerDeclarationSyntax i => i.WithModifiers(newModifiers),
                 FieldDeclarationSyntax f => f.WithModifiers(newModifiers),
                 EventDeclarationSyntax e => e.WithModifiers(newModifiers),
                 EventFieldDeclarationSyntax ef => ef.WithModifiers(newModifiers),
