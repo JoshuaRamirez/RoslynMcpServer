@@ -297,18 +297,28 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
             // Indexers match metadata name (Item), Roslyn name (this[]), and
             // conventional display (this[int i]) — same identity forms as
-            // implement_interface / extract_interface.
+            // implement_interface / extract_interface. Explicit interface
+            // implementations are skipped: copying IFoo.this[...] onto a
+            // base that does not implement IFoo is CS0540.
             if (member is IndexerDeclarationSyntax indexerDecl
-                && semanticModel.GetDeclaredSymbol(indexerDecl) is IPropertySymbol { IsIndexer: true } indexer
-                && ImplementInterfaceOperation.MatchesRequestedMember(indexer, requestedSet))
+                && semanticModel.GetDeclaredSymbol(indexerDecl) is IPropertySymbol { IsIndexer: true } indexer)
             {
-                result.Add(member);
-                foreach (var requested in unmatched.ToList())
+                if (indexer.ExplicitInterfaceImplementations.Length > 0
+                    || indexerDecl.ExplicitInterfaceSpecifier != null)
                 {
-                    if (ImplementInterfaceOperation.MatchesRequestedMember(
-                            indexer, new HashSet<string> { requested }))
+                    continue;
+                }
+
+                if (ImplementInterfaceOperation.MatchesRequestedMember(indexer, requestedSet))
+                {
+                    result.Add(member);
+                    foreach (var requested in unmatched.ToList())
                     {
-                        unmatched.Remove(requested);
+                        if (ImplementInterfaceOperation.MatchesRequestedMember(
+                                indexer, new HashSet<string> { requested }))
+                        {
+                            unmatched.Remove(requested);
+                        }
                     }
                 }
 
@@ -349,8 +359,9 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
     /// <summary>
     /// Stable key for dropping a selected indexer from the derived type.
-    /// Parameter types and <see cref="RefKind"/> distinguish overloads so
-    /// <c>this[]</c> / <c>Item</c> do not remove an unselected indexer.
+    /// Parameter types, <see cref="RefKind"/>, and the explicit-interface
+    /// specifier distinguish overloads so <c>this[]</c> / <c>Item</c> do
+    /// not remove an unselected or explicit-interface indexer.
     /// </summary>
     private static string GetIndexerRemovalKey(IndexerDeclarationSyntax indexer)
     {
@@ -372,7 +383,8 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             return type;
         });
 
-        return "indexer:" + string.Join(",", parts);
+        var specifier = indexer.ExplicitInterfaceSpecifier?.Name.ToString() ?? string.Empty;
+        return "indexer:" + specifier + ":" + string.Join(",", parts);
     }
 
     private static IEnumerable<string> GetExtractedMemberNames(MemberDeclarationSyntax member)
@@ -472,9 +484,14 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
         if (modifiers.Any(SyntaxKind.PrivateKeyword))
         {
+            // private → protected. private protected already has
+            // ProtectedKeyword; drop only private so we emit a single
+            // protected (not protected protected).
+            var withoutPrivate = modifiers.Where(m => !m.IsKind(SyntaxKind.PrivateKeyword));
             var newModifiers = SyntaxFactory.TokenList(
-                modifiers.Where(m => !m.IsKind(SyntaxKind.PrivateKeyword))
-                         .Prepend(SyntaxFactory.Token(SyntaxKind.ProtectedKeyword)));
+                withoutPrivate.Any(t => t.IsKind(SyntaxKind.ProtectedKeyword))
+                    ? withoutPrivate
+                    : withoutPrivate.Prepend(SyntaxFactory.Token(SyntaxKind.ProtectedKeyword)));
 
             return member switch
             {
