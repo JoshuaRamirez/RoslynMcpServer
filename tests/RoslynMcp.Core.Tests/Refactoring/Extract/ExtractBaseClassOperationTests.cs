@@ -1,3 +1,6 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -694,6 +697,511 @@ public class ExtractBaseClassOperationTests
 
     #endregion
 
+    #region Indexers
+
+    private const string MixedIndexerSource = """
+        namespace TestApp;
+
+        public class Lookup
+        {
+            public int Count { get; set; }
+
+            public string this[int i]
+            {
+                get => "";
+                set { }
+            }
+
+            public void Work() { }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_Default_PublicIndexer_MovesIndexerOntoBase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            BaseClassName = "Indexable",
+            Members = new[] { "this[]" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Indexable"));
+        Assert.Contains("this[int i]", updated);
+        Assert.Equal("i", Assert.Single(indexer.ParameterList.Parameters).Identifier.Text);
+        Assert.Empty(FindIndexers(updated, "Lookup"));
+        AssertInheritsFrom(updated, "Lookup", "Indexable");
+        Assert.Contains("public int Count { get; set; }", GetClassSection(updated, "Lookup"));
+        Assert.Contains("public void Work()", GetClassSection(updated, "Lookup"));
+        Assert.DoesNotContain("abstract", GetClassSection(updated, "Indexable"));
+        Assert.DoesNotContain(
+            FindType(updated, "Indexable").Members.OfType<PropertyDeclarationSyntax>(),
+            p => p.Identifier.Text.Contains("this", StringComparison.Ordinal));
+        AssertCompiles(updated);
+    }
+
+    [SkippableTheory]
+    [InlineData("this[]")]
+    [InlineData("Item")]
+    [InlineData("this[int i]")]
+    public async Task ExtractBaseClass_MembersFilter_IndexerAliases_MovesOnlyIndexer(string memberName)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            BaseClassName = "Indexable",
+            Members = new[] { memberName }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Single(FindIndexers(updated, "Indexable"));
+        Assert.Contains("this[int i]", GetClassSection(updated, "Indexable"));
+        Assert.Empty(FindIndexers(updated, "Lookup"));
+        Assert.Contains("public int Count { get; set; }", GetClassSection(updated, "Lookup"));
+        Assert.Contains("public void Work()", GetClassSection(updated, "Lookup"));
+        Assert.DoesNotContain("Count", GetClassSection(updated, "Indexable"));
+        Assert.DoesNotContain("Work", GetClassSection(updated, "Indexable"));
+        AssertInheritsFrom(updated, "Lookup", "Indexable");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_OrdinaryProperty_LeavesIndexerOnDerived()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            BaseClassName = "Indexable",
+            Members = new[] { "Count" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var property = FindProperty(updated, "Indexable", "Count");
+        Assert.NotNull(property);
+        Assert.DoesNotContain("this[]", property!.Identifier.Text);
+        Assert.Empty(FindIndexers(updated, "Indexable"));
+        Assert.Single(FindIndexers(updated, "Lookup"));
+        Assert.Contains("this[int i]", GetClassSection(updated, "Lookup"));
+        Assert.DoesNotContain("public int Count", GetClassSection(updated, "Lookup"));
+        AssertInheritsFrom(updated, "Lookup", "Indexable");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_GetOnlyIndexer_PreservesGetOnly()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                public int Count { get; set; }
+
+                public int this[int i] => i;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            BaseClassName = "Indexable",
+            Members = new[] { "this[]" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Indexable"));
+        Assert.True(
+            indexer.ExpressionBody != null
+            || (indexer.AccessorList != null
+                && indexer.AccessorList.Accessors.Any(a => a.IsKind(SyntaxKind.GetAccessorDeclaration))
+                && indexer.AccessorList.Accessors.All(a => !a.IsKind(SyntaxKind.SetAccessorDeclaration))));
+        Assert.Contains("this[int i]", GetClassSection(updated, "Indexable"));
+        Assert.Empty(FindIndexers(updated, "Lookup"));
+        Assert.Contains("public int Count { get; set; }", GetClassSection(updated, "Lookup"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_RefIndexer_KeepsRef()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Cell
+            {
+                private int _value;
+
+                public ref int this[int i] => ref _value;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Cell.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Cell",
+            BaseClassName = "Indexable",
+            Members = new[] { "this[]", "_value" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Indexable"));
+        Assert.IsType<RefTypeSyntax>(indexer.Type);
+        Assert.False(((RefTypeSyntax)indexer.Type).ReadOnlyKeyword.IsKind(SyntaxKind.ReadOnlyKeyword));
+        Assert.Contains("ref int this[int i]", updated);
+        Assert.Contains("_value", GetClassSection(updated, "Indexable"));
+        Assert.Empty(FindIndexers(updated, "Cell"));
+        AssertInheritsFrom(updated, "Cell", "Indexable");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_RefReadonlyIndexer_KeepsRefReadonly()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Origin
+            {
+                private readonly int _value;
+
+                public ref readonly int this[int i] => ref _value;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Origin.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Origin",
+            BaseClassName = "Indexable",
+            Members = new[] { "this[]", "_value" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Indexable"));
+        Assert.IsType<RefTypeSyntax>(indexer.Type);
+        Assert.True(((RefTypeSyntax)indexer.Type).ReadOnlyKeyword.IsKind(SyntaxKind.ReadOnlyKeyword));
+        Assert.Contains("ref readonly int this[int i]", updated);
+        Assert.Contains("_value", GetClassSection(updated, "Indexable"));
+        Assert.Empty(FindIndexers(updated, "Origin"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_Indexer_RefKindParameter_Preserved()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                public int this[in int i] => i;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            BaseClassName = "Indexable",
+            Members = new[] { "this[]" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Indexable"));
+        var parameter = Assert.Single(indexer.ParameterList.Parameters);
+        Assert.Contains(parameter.Modifiers, t => t.IsKind(SyntaxKind.InKeyword));
+        Assert.Contains("this[in int i]", updated);
+        Assert.Empty(FindIndexers(updated, "Lookup"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_InitOnlyIndexer_PreservesInit()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                private int _value;
+
+                public int this[int i]
+                {
+                    get => _value;
+                    init => _value = value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            BaseClassName = "Indexable",
+            Members = new[] { "this[]", "_value" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Indexable"));
+        Assert.Contains(indexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        Assert.Contains(indexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.InitAccessorDeclaration));
+        Assert.DoesNotContain(indexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.Contains("this[int i]", updated);
+        Assert.Contains("init", ExtractMemberText(indexer));
+        Assert.Contains("_value", GetClassSection(updated, "Indexable"));
+        Assert.Empty(FindIndexers(updated, "Lookup"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_PrivateIndexer_BecomesProtectedOnBase()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                private string this[int i]
+                {
+                    get => "";
+                    set { }
+                }
+
+                public void Work() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            BaseClassName = "Indexable",
+            Members = new[] { "this[]" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Indexable"));
+        Assert.Contains(indexer.Modifiers, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.DoesNotContain(indexer.Modifiers, t => t.IsKind(SyntaxKind.PrivateKeyword));
+        Assert.Contains("protected", GetClassSection(updated, "Indexable"));
+        Assert.DoesNotContain("private", GetClassSection(updated, "Indexable"));
+        Assert.Empty(FindIndexers(updated, "Lookup"));
+        Assert.Contains("public void Work()", GetClassSection(updated, "Lookup"));
+        AssertInheritsFrom(updated, "Lookup", "Indexable");
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_SpecificIndexerDisplay_LeavesOtherIndexerOnDerived()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                public string this[int i]
+                {
+                    get => "";
+                    set { }
+                }
+
+                public string this[string key]
+                {
+                    get => key;
+                    set { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            BaseClassName = "Indexable",
+            Members = new[] { "this[int i]" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var baseIndexer = Assert.Single(FindIndexers(updated, "Indexable"));
+        var derivedIndexer = Assert.Single(FindIndexers(updated, "Lookup"));
+        Assert.Equal("int", Assert.Single(baseIndexer.ParameterList.Parameters).Type!.ToString());
+        Assert.Equal("string", Assert.Single(derivedIndexer.ParameterList.Parameters).Type!.ToString());
+        AssertInheritsFrom(updated, "Lookup", "Indexable");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_Indexer_Preview_WritesNothing_AndDescribesIndexer()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var sibling = Path.GetFullPath(Path.Combine(workspace.DirectoryPath, "Indexable.cs"));
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            BaseClassName = "Indexable",
+            Members = new[] { "this[]" },
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("this[]", result.PendingChanges[0].Description);
+        Assert.Contains("this[int i]", result.PendingChanges[0].AfterSnippet);
+        Assert.DoesNotContain(
+            "this[]",
+            result.PendingChanges[0].AfterSnippet?.Replace("this[int i]", "", StringComparison.Ordinal) ?? "");
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.False(File.Exists(sibling));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_MarksClassOnly_DoesNotInventAbstractIndexer()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            BaseClassName = "Indexable",
+            Members = new[] { "this[]" },
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Indexable"));
+        Assert.Contains("abstract class Indexable", updated);
+        Assert.DoesNotContain(indexer.Modifiers, t => t.IsKind(SyntaxKind.AbstractKeyword));
+        Assert.DoesNotContain("abstract string this", updated);
+        Assert.DoesNotContain("abstract this", updated);
+        Assert.Contains("this[int i]", GetClassSection(updated, "Indexable"));
+        Assert.Empty(FindIndexers(updated, "Lookup"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_Indexer_UnknownName_ThrowsMemberNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractBaseClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Lookup",
+                BaseClassName = "Indexable",
+                Members = new[] { "DoesNotExist" }
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotFound, ex.ErrorCode);
+        Assert.Equal("2012", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_Indexer_LeavesMethodsPropertiesFieldsAndEventsOnDerived()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                public string Name { get; set; }
+                public int Age;
+                public event System.EventHandler Changed;
+                public string this[int i]
+                {
+                    get => "";
+                    set { }
+                }
+                public void Work() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            BaseClassName = "Indexable",
+            Members = new[] { "Item" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexable = GetClassSection(updated, "Indexable");
+        var lookup = GetClassSection(updated, "Lookup");
+
+        Assert.Single(FindIndexers(updated, "Indexable"));
+        Assert.Empty(FindIndexers(updated, "Lookup"));
+        Assert.DoesNotContain("Name", indexable);
+        Assert.DoesNotContain("Age", indexable);
+        Assert.DoesNotContain("Changed", indexable);
+        Assert.DoesNotContain("Work", indexable);
+        Assert.Contains("public string Name { get; set; }", lookup);
+        Assert.Contains("public int Age", lookup);
+        Assert.Contains("public event System.EventHandler Changed", lookup);
+        Assert.Contains("public void Work()", lookup);
+    }
+
+    #endregion
+
     [Fact]
     public void AddExplicitCompileItemIfNeeded_SdkDefaults_Unchanged()
     {
@@ -792,6 +1300,46 @@ public class ExtractBaseClassOperationTests
         Assert.True(start >= 0, $"Class '{className}' not found in:\n{source}");
         var next = source.IndexOf("class ", start + marker.Length, StringComparison.Ordinal);
         return next < 0 ? source[start..] : source[start..next];
+    }
+
+    private static TypeDeclarationSyntax FindType(string source, string typeName)
+    {
+        var type = CSharpSyntaxTree.ParseText(source).GetCompilationUnitRoot().DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .FirstOrDefault(t => t.Identifier.Text == typeName);
+        Assert.True(type != null, $"Generated source did not contain type '{typeName}':\n{source}");
+        return type!;
+    }
+
+    private static IReadOnlyList<IndexerDeclarationSyntax> FindIndexers(string source, string typeName) =>
+        FindType(source, typeName).Members.OfType<IndexerDeclarationSyntax>().ToList();
+
+    private static PropertyDeclarationSyntax? FindProperty(string source, string typeName, string name) =>
+        FindType(source, typeName).Members.OfType<PropertyDeclarationSyntax>()
+            .FirstOrDefault(p => p.Identifier.Text == name);
+
+    private static string ExtractMemberText(MemberDeclarationSyntax member) =>
+        NormalizeNewlines(member.NormalizeWhitespace().ToFullString());
+
+    private static void AssertCompiles(string source)
+    {
+        var compilation = CSharpCompilation.Create(
+                "ExtractBaseClassCompileTest",
+                new[]
+                {
+                    CSharpSyntaxTree.ParseText("global using System;"),
+                    CSharpSyntaxTree.ParseText(source)
+                },
+                new[]
+                {
+                    MetadataReference.CreateFromFile(typeof(object).Assembly.Location)
+                },
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, "Generated extract_base_class members did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
     }
 
     private sealed class TempWorkspace : IAsyncDisposable

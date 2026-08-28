@@ -32,7 +32,7 @@ public sealed class ExtractBaseClassTool : IToolHandler
     public string Name => "extract_base_class";
 
     /// <inheritdoc />
-    public string Description => "Extract members to a new base class. When separateFile is true and targetFile is omitted, the base class is written to {BaseClassName}.cs next to the source file.";
+    public string Description => "Extract members to a new base class, including indexers as this[...] declarations. When separateFile is true and targetFile is omitted, the base class is written to {BaseClassName}.cs next to the source file.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -65,7 +65,7 @@ public sealed class ExtractBaseClassTool : IToolHandler
             {
                 type = "array",
                 items = new { type = "string" },
-                description = "Names of members to move to base class"
+                description = "Names of members to move to base class. Indexers match Item, this[], and this[int i]."
             },
             targetFile = new
             {

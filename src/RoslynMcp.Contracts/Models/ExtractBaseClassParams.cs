@@ -21,7 +21,9 @@ public sealed class ExtractBaseClassParams
     public required string BaseClassName { get; init; }
 
     /// <summary>
-    /// Names of members to move to base class.
+    /// Names of members to move to base class. Indexers match metadata name
+    /// (<c>Item</c>), Roslyn name (<c>this[]</c>), and conventional display
+    /// (<c>this[int i]</c>).
     /// </summary>
     public required IReadOnlyList<string> Members { get; init; }
 
