@@ -2008,6 +2008,160 @@ public class GenerateOverridesOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateOverrides_ProtectedInternalEvent_SameAssembly_KeepsProtectedInternal()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                protected internal virtual event System.EventHandler Changed;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Changed" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("protected internal override event System.EventHandler Changed", updated);
+        Assert.DoesNotContain("protected override event System.EventHandler Changed", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CrossAssembly_InternalEvent_IsNotGenerated()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                internal virtual event System.EventHandler Hidden;
+                public virtual event System.EventHandler Changed;
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var namedHidden = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateOverridesParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                Members = new[] { "Hidden" }
+            }));
+
+        Assert.Equal(ErrorCodes.OverrideTargetNotFound, namedHidden.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Changed" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override event System.EventHandler Changed", updated);
+        Assert.DoesNotContain("Hidden", updated[updated.IndexOf("public class Dog", StringComparison.Ordinal)..]);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CrossAssembly_PrivateProtectedEvent_IsNotGenerated()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                private protected virtual event System.EventHandler Hidden;
+                public virtual void Speak() { }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateOverridesParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                Members = new[] { "Hidden" }
+            }));
+
+        Assert.Equal(ErrorCodes.OverrideTargetNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CrossAssembly_ProtectedInternalEvent_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                protected internal virtual event System.EventHandler Changed;
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Changed" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class Dog", StringComparison.Ordinal)..];
+        Assert.Contains("protected override event System.EventHandler Changed", derived);
+        Assert.DoesNotContain("protected internal override", derived);
+        Assert.DoesNotContain("public override event", derived);
+        var evt = ExtractMember(updated, "protected override event System.EventHandler Changed");
+        Assert.Contains("add", evt);
+        Assert.Contains("remove", evt);
+    }
+
+    [SkippableFact]
     public async Task GenerateOverrides_MethodsAndPropertiesUnchanged_WhenEventsPresent()
     {
         const string source = """
@@ -2214,7 +2368,75 @@ public class GenerateOverridesOperationTests
             }
 
             sourcePath ??= Path.Combine(directory, "Person.cs");
+            return await LoadAsync(directory, projectPath, sourcePath);
+        }
 
+        /// <summary>
+        /// Lib project referenced by App. <see cref="SourcePath"/> is App/Dog.cs.
+        /// </summary>
+        public static async Task<TempWorkspace> CreateReferencedLibraryAsync(string librarySource, string appSource)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateOverridesXP_" + Guid.NewGuid().ToString("N"));
+            var libDir = Path.Combine(directory, "Lib");
+            var appDir = Path.Combine(directory, "App");
+            Directory.CreateDirectory(libDir);
+            Directory.CreateDirectory(appDir);
+
+            var libProject = Path.Combine(libDir, "Lib.csproj");
+            var appProject = Path.Combine(appDir, "App.csproj");
+            var libSource = Path.Combine(libDir, "Animal.cs");
+            var appSourcePath = Path.Combine(appDir, "Dog.cs");
+
+            await File.WriteAllTextAsync(libProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(appProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="..\Lib\Lib.csproj" />
+                  </ItemGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(libSource, librarySource);
+            await File.WriteAllTextAsync(appSourcePath, appSource);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            await File.WriteAllTextAsync(solutionPath, """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lib", "Lib\Lib.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\App.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            return await LoadAsync(directory, solutionPath, appSourcePath);
+        }
+
+        private static async Task<TempWorkspace> LoadAsync(string directory, string projectPath, string sourcePath)
+        {
             try
             {
                 var provider = new MSBuildWorkspaceProvider();

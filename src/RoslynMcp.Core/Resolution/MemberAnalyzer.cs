@@ -162,13 +162,19 @@ public static class MemberAnalyzer
                     if (alreadyOverridden.Contains(eventSignature))
                         continue;
 
-                    if (!IsOverridable(evt))
+                    if (!IsOverridable(evt, type))
                     {
                         // Intermediate new / ordinary same-name event hiders
                         // occupy this signature. An override emitted for an
                         // ancestor virtual/abstract event would bind the
                         // hider (or fail CS0115) rather than the ancestor slot.
-                        if (evt.ExplicitInterfaceImplementations.Length == 0)
+                        // Inaccessible virtual events (internal / private
+                        // protected from another assembly) must not occupy —
+                        // they are not hiders and must not hide an ancestor
+                        // public/protected slot.
+                        if (!HasOverridableModifiers(evt)
+                            && evt.ExplicitInterfaceImplementations.Length == 0
+                            && IsAccessibleFrom(evt, type))
                             alreadyOverridden.Add(eventSignature);
                         continue;
                     }
@@ -178,7 +184,7 @@ public static class MemberAnalyzer
                     continue;
                 }
 
-                if (!IsOverridable(member)) continue;
+                if (!IsOverridable(member, type)) continue;
 
                 var signature = GetMemberSignature(member);
                 if (!alreadyOverridden.Contains(signature))
@@ -270,7 +276,10 @@ public static class MemberAnalyzer
         };
     }
 
-    private static bool IsOverridable(ISymbol member)
+    private static bool IsOverridable(ISymbol member, INamedTypeSymbol fromType) =>
+        HasOverridableModifiers(member) && IsAccessibleFrom(member, fromType);
+
+    private static bool HasOverridableModifiers(ISymbol member)
     {
         return member switch
         {
@@ -284,6 +293,27 @@ public static class MemberAnalyzer
             _ => false
         };
     }
+
+    /// <summary>
+    /// True when <paramref name="member"/> is visible for override from
+    /// <paramref name="fromType"/>: public / protected / protected-internal
+    /// always; internal and private-protected only in the same assembly.
+    /// Same switch as constructor / equals inherited-member collection —
+    /// not a new accessibility subsystem.
+    /// </summary>
+    private static bool IsAccessibleFrom(ISymbol member, INamedTypeSymbol fromType) =>
+        member.DeclaredAccessibility switch
+        {
+            Accessibility.Public => true,
+            Accessibility.Protected => true,
+            Accessibility.ProtectedOrInternal => true,
+            Accessibility.Internal => SameAssembly(member, fromType),
+            Accessibility.ProtectedAndInternal => SameAssembly(member, fromType),
+            _ => false
+        };
+
+    private static bool SameAssembly(ISymbol member, INamedTypeSymbol fromType) =>
+        SymbolEqualityComparer.Default.Equals(member.ContainingAssembly, fromType.ContainingAssembly);
 
     private static bool CanMoveToBase(ISymbol member)
     {

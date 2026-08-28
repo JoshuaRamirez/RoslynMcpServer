@@ -137,7 +137,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         var membersToGenerate = membersToOverride.Where(m => !replacements.ContainsKey(m)).ToList();
 
         // Generate overrides
-        var overrides = GenerateOverrideMembers(membersToOverride, @params.CallBase);
+        var overrides = GenerateOverrideMembers(membersToOverride, @params.CallBase, typeSymbol);
 
         // If preview mode, return without applying
         if (@params.Preview)
@@ -528,7 +528,8 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
 
     private static List<MemberDeclarationSyntax> GenerateOverrideMembers(
         List<ISymbol> members,
-        bool callBase)
+        bool callBase,
+        INamedTypeSymbol emittingType)
     {
         var overrides = new List<MemberDeclarationSyntax>();
 
@@ -551,7 +552,9 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
                     explicitInterface: false,
                     throwNotImplemented: property.IsAbstract,
                     callBase: callBase && !property.IsAbstract),
-                IEventSymbol evt => SyntaxGenerationHelper.CreateEventStub(evt),
+                IEventSymbol evt => SyntaxGenerationHelper.CreateEventStub(
+                    evt,
+                    emittingType: emittingType),
                 _ => null
             };
 
