@@ -1301,7 +1301,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse target file.");
         var currentDecl = (TypeDeclarationSyntax)targetRoot.FindNode(targetDeclaration.Span);
         var newTargetRoot = targetRoot.ReplaceNode(currentDecl, InsertMethod(currentDecl, method));
-        var solution = targetDocument.WithSyntaxRoot(newTargetRoot).Project.Solution;
+        solution = targetDocument.WithSyntaxRoot(newTargetRoot).Project.Solution;
 
         if (invokedNameToRewrite == null)
             return solution;
