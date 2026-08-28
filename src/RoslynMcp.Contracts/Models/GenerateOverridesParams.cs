@@ -21,7 +21,9 @@ public sealed class GenerateOverridesParams
     public IReadOnlyList<string>? Members { get; init; }
 
     /// <summary>
-    /// Include base.Method() call in generated overrides. Default: true.
+    /// Include <c>base.Method(...)</c> / <c>base.Prop</c> / <c>base[i]</c> calls
+    /// in generated overrides. Default: true. Abstract members still throw
+    /// <c>NotImplementedException</c> (no legal base implementation).
     /// </summary>
     public bool CallBase { get; init; } = true;
 
