@@ -159,7 +159,16 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
 
         var replacing = existingProperty != null;
         if (@params.Preview)
-            return CreatePreviewResult(operationId, @params, propertyName, property, replacing);
+        {
+            return await CreatePreviewResultAsync(
+                operationId,
+                @params,
+                propertyName,
+                property,
+                existingProperty,
+                document.Project.Solution,
+                cancellationToken);
+        }
 
         var solution = document.Project.Solution;
         if (replacing)
@@ -541,6 +550,10 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
     /// Removes the matched property declaration from every partial that holds
     /// it. Match by span/kind, not SyntaxNode reference — same seam as
     /// constructor / Equals / ToString / overrides replaceExisting.
+    /// Uses <see cref="SyntaxRemoveOptions.KeepExteriorTrivia"/> and
+    /// <see cref="SyntaxRemoveOptions.KeepDirectives"/> so a leading
+    /// <c>#if</c> / <c>#region</c> on the removed property does not orphan
+    /// a following <c>#endif</c> / <c>#endregion</c>.
     /// </summary>
     private static async Task<Solution> RemoveExistingPropertiesAcrossPartialsAsync(
         Solution solution,
@@ -582,7 +595,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
             var treeRoot = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-            var replacements = new Dictionary<TypeDeclarationSyntax, TypeDeclarationSyntax>();
+            var toRemove = new List<MemberDeclarationSyntax>();
             foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
             {
                 if (reference.SyntaxTree != tree)
@@ -592,16 +605,22 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
                 if (!byPart.TryGetValue(part.SpanStart, out var keys) || keys.Count == 0)
                     continue;
 
-                var remainingMembers = part.Members
-                    .Where(m => !keys.Contains((m.SpanStart, m.Span.End, m.Kind())))
-                    .ToArray();
-                replacements[part] = part.WithMembers(SyntaxFactory.List(remainingMembers));
+                foreach (var member in part.Members)
+                {
+                    if (keys.Contains((member.SpanStart, member.Span.End, member.Kind())))
+                        toRemove.Add(member);
+                }
             }
 
-            if (replacements.Count == 0)
+            if (toRemove.Count == 0)
                 continue;
 
-            var newRoot = treeRoot.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+            // KeepDirectives / KeepExteriorTrivia so a leading #if / #region on
+            // the removed property does not orphan a following #endif / #endregion.
+            var newRoot = treeRoot.RemoveNodes(
+                    toRemove,
+                    SyntaxRemoveOptions.KeepExteriorTrivia | SyntaxRemoveOptions.KeepDirectives)
+                ?? treeRoot;
             solution = solution.WithDocumentSyntaxRoot(document.Id, newRoot);
         }
 
@@ -616,13 +635,23 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         return matches.FirstOrDefault(t => t.SpanStart == preferredSpanStart) ?? matches.FirstOrDefault();
     }
 
-    private static RefactoringResult CreatePreviewResult(
+    /// <summary>
+    /// Creates a preview result with the generated property code.
+    /// When replacing a property that lives in another partial, also
+    /// includes a Modify pending change per distinct declaring file with
+    /// that property as <c>BeforeSnippet</c> — same as constructor
+    /// replaceExisting preview.
+    /// </summary>
+    private static async Task<RefactoringResult> CreatePreviewResultAsync(
         Guid operationId,
         GeneratePropertyParams @params,
         string propertyName,
         PropertyDeclarationSyntax property,
-        bool replacing)
+        IPropertySymbol? existingProperty,
+        Solution solution,
+        CancellationToken cancellationToken)
     {
+        var replacing = existingProperty != null;
         var verb = replacing ? "Replace" : "Generate";
         var afterSnippet = property.NormalizeWhitespace().ToFullString();
         var pendingChanges = new List<PendingChange>
@@ -638,6 +667,38 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
                 AfterSnippet = afterSnippet
             }
         };
+
+        if (existingProperty != null)
+        {
+            var sourcePath = PathResolver.NormalizePath(@params.SourceFile);
+            var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var reference in existingProperty.DeclaringSyntaxReferences)
+            {
+                var syntax = await reference.GetSyntaxAsync(cancellationToken);
+                if (syntax is not PropertyDeclarationSyntax existingProp)
+                    continue;
+
+                var declaringDocument = solution.GetDocument(syntax.SyntaxTree);
+                var filePath = declaringDocument?.FilePath ?? syntax.SyntaxTree.FilePath;
+                if (string.IsNullOrWhiteSpace(filePath))
+                    continue;
+
+                var normalized = PathResolver.NormalizePath(filePath);
+                if (!seenFiles.Add(normalized))
+                    continue;
+                if (string.Equals(normalized, sourcePath, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                pendingChanges.Add(new PendingChange
+                {
+                    File = filePath,
+                    ChangeType = ChangeKind.Modify,
+                    Description = $"Remove existing property '{propertyName}' from {@params.TypeName}",
+                    BeforeSnippet = existingProp.NormalizeWhitespace().ToFullString(),
+                    AfterSnippet = "// property removed"
+                });
+            }
+        }
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }

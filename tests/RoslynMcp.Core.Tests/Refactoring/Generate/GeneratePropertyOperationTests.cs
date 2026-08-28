@@ -1058,9 +1058,94 @@ public class GeneratePropertyOperationTests
 
         Assert.True(result.Success);
         Assert.True(result.Preview);
-        Assert.Contains("Replace property 'Name'", result.PendingChanges![0].Description);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Equal(workspace.SourcePath, result.PendingChanges[0].File);
+        Assert.Contains("Replace property 'Name'", result.PendingChanges[0].Description);
+        var otherChange = result.PendingChanges[1];
+        Assert.Equal(otherPath, otherChange.File);
+        Assert.Contains("Remove existing property 'Name'", otherChange.Description);
+        Assert.Contains("public string Name { get; set; }", otherChange.BeforeSnippet);
+        Assert.Contains("old", otherChange.BeforeSnippet);
+        Assert.Equal("// property removed", otherChange.AfterSnippet);
         Assert.Equal(beforeSelected, await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Equal(beforeOther, await File.ReadAllTextAsync(otherPath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_IfDirective_PreservesDirectives()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+            #if true
+                public string Name { get; set; } = "old";
+            #endif
+
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            PropertyName = "Name",
+            PropertyType = "int",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("#if true", updated);
+        Assert.Contains("#endif", updated);
+        Assert.Contains("public int Name { get; set; }", updated);
+        Assert.Contains("public int Age { get; set; }", updated);
+        Assert.DoesNotContain("old", updated);
+        Assert.Equal(updated.Split("#if ").Length - 1, updated.Split("#endif").Length - 1);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_RegionDirective_PreservesDirectives()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+            #region Name
+                public string Name { get; set; } = "old";
+            #endregion
+
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            PropertyName = "Name",
+            PropertyType = "int",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("#region Name", updated);
+        Assert.Contains("#endregion", updated);
+        Assert.Contains("public int Name { get; set; }", updated);
+        Assert.Contains("public int Age { get; set; }", updated);
+        Assert.DoesNotContain("old", updated);
+        Assert.Equal(updated.Split("#region ").Length - 1, updated.Split("#endregion").Length - 1);
     }
 
     [SkippableFact]
