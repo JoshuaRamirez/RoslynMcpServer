@@ -1077,6 +1077,8 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         bool throwNotImplemented)
     {
         var afterSnippet = method.NormalizeWhitespace().ToFullString();
+        // Match the body that will actually be emitted: a false flag still
+        // throws for ref / ref readonly returns (CS8156).
         var throwNote = RequiresThrowBody(method.ReturnType.ToString(), throwNotImplemented)
             ? "stub will throw NotImplementedException"
             : "stub will not throw";
