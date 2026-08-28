@@ -541,17 +541,20 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
                     method,
                     explicitInterface: false,
                     callBase: callBase && !method.IsAbstract,
-                    throwNotImplemented: method.IsAbstract),
+                    throwNotImplemented: method.IsAbstract,
+                    emittingType: emittingType),
                 IPropertySymbol { IsIndexer: true } indexer => SyntaxGenerationHelper.CreateIndexerStub(
                     indexer,
                     explicitInterface: false,
                     throwNotImplemented: indexer.IsAbstract,
-                    callBase: callBase && !indexer.IsAbstract),
+                    callBase: callBase && !indexer.IsAbstract,
+                    emittingType: emittingType),
                 IPropertySymbol property => SyntaxGenerationHelper.CreatePropertyStub(
                     property,
                     explicitInterface: false,
                     throwNotImplemented: property.IsAbstract,
-                    callBase: callBase && !property.IsAbstract),
+                    callBase: callBase && !property.IsAbstract,
+                    emittingType: emittingType),
                 IEventSymbol evt => SyntaxGenerationHelper.CreateEventStub(
                     evt,
                     emittingType: emittingType),
