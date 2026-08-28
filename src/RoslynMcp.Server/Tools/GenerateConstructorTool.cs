@@ -104,6 +104,12 @@ public sealed class GenerateConstructorTool : IToolHandler
                 description = "When copyConstructor is true, emit : base((Base)<copyParameter>) on an ordinary class whose immediate base has an accessible copy constructor of the base type. Requires copyConstructor. Records, structs, and record structs ignore this flag",
                 @default = false
             },
+            callBase = new
+            {
+                type = "boolean",
+                description = "When copyConstructor is false, emit : base(...) on an ordinary class by matching an accessible immediate-base constructor whose parameter types are a prefix of the generated constructor. Conflicts with copyConstructor. Records, structs, and record structs ignore this flag",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -149,6 +155,7 @@ public sealed class GenerateConstructorTool : IToolHandler
                 Visibility = args.Visibility,
                 CopyConstructor = args.CopyConstructor ?? false,
                 ClassBaseCopy = args.ClassBaseCopy ?? false,
+                CallBase = args.CallBase ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -187,6 +194,7 @@ public sealed class GenerateConstructorTool : IToolHandler
         public string? Visibility { get; init; }
         public bool? CopyConstructor { get; init; }
         public bool? ClassBaseCopy { get; init; }
+        public bool? CallBase { get; init; }
         public bool? Preview { get; init; }
     }
 }

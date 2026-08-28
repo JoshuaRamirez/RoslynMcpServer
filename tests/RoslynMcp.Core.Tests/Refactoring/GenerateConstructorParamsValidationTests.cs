@@ -155,6 +155,18 @@ public class GenerateConstructorParamsValidationTests
     }
 
     [Fact]
+    public void CallBase_DefaultsToFalse()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass"
+        };
+
+        Assert.False(@params.CallBase);
+    }
+
+    [Fact]
     public void ValidateParams_ClassBaseCopyWithoutCopyConstructor_ThrowsClassBaseCopyRequiresCopyConstructor()
     {
         var @params = new GenerateConstructorParams
@@ -169,6 +181,24 @@ public class GenerateConstructorParamsValidationTests
             GenerateConstructorOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.ClassBaseCopyRequiresCopyConstructor, ex.ErrorCode);
+        Assert.Contains("copyConstructor", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ValidateParams_CallBaseWithCopyConstructor_ThrowsCallBaseConflictsWithCopyConstructor()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass",
+            CallBase = true,
+            CopyConstructor = true
+        };
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(@params));
+
+        Assert.Equal(ErrorCodes.CallBaseConflictsWithCopyConstructor, ex.ErrorCode);
         Assert.Contains("copyConstructor", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 

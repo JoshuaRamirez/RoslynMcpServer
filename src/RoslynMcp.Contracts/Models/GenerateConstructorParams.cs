@@ -108,6 +108,25 @@ public sealed class GenerateConstructorParams
     public bool ClassBaseCopy { get; init; }
 
     /// <summary>
+    /// When true (and <see cref="CopyConstructor"/> is false), an ordinary
+    /// class whose immediate base is a class other than <c>object</c> emits
+    /// <c>: base(...)</c> for an accessible instance constructor whose
+    /// parameter types (by-value, same <c>RefKind</c>) are a prefix of the
+    /// generated constructor's parameter types. The longest prefix wins;
+    /// if two candidates share that length, the one whose parameter names
+    /// match the generated names (case-insensitive) wins; a remaining tie
+    /// is rejected. Members that produced the passed-through parameters
+    /// are not reassigned in the derived body. An accessible parameterless
+    /// base constructor emits <c>: base()</c> without skipping body
+    /// members. Records, record structs, and structs ignore this flag.
+    /// When the base is <c>object</c> / a struct / a record, no
+    /// <c>: base(...)</c> is emitted and generation still succeeds.
+    /// When true with <see cref="CopyConstructor"/>, the request is
+    /// rejected. Default: false (today's ordinary-class non-copy shape).
+    /// </summary>
+    public bool CallBase { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }

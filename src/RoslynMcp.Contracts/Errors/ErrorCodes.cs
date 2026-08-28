@@ -484,6 +484,15 @@ public static class ErrorCodes
     /// <summary>classBaseCopy was requested without copyConstructor.</summary>
     public const string ClassBaseCopyRequiresCopyConstructor = "3148";
 
+    /// <summary>callBase was requested together with copyConstructor.</summary>
+    public const string CallBaseConflictsWithCopyConstructor = "3149";
+
+    /// <summary>callBase was requested but no accessible base constructor matches the generated parameters.</summary>
+    public const string NoMatchingBaseConstructor = "3150";
+
+    /// <summary>callBase found two equally matching accessible base constructors.</summary>
+    public const string AmbiguousBaseConstructor = "3151";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================
