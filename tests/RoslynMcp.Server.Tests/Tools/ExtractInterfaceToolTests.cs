@@ -33,6 +33,7 @@ public class ExtractInterfaceToolTests
     {
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
+        Assert.Contains("indexer", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -93,6 +94,12 @@ public class ExtractInterfaceToolTests
         Assert.True(properties.TryGetProperty("separateFile", out _));
         Assert.True(properties.TryGetProperty("addInterfaceToType", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+
+        var membersDescription = properties.GetProperty("members").GetProperty("description").GetString();
+        Assert.NotNull(membersDescription);
+        Assert.Contains("Item", membersDescription);
+        Assert.Contains("this[]", membersDescription);
+        Assert.Contains("this[int i]", membersDescription);
     }
 
     [Fact]
