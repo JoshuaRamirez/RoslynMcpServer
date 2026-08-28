@@ -82,6 +82,12 @@ public class PushMembersDownToolTests
         Assert.True(properties.TryGetProperty("targetDerivedTypes", out _));
         Assert.True(properties.TryGetProperty("leaveAbstract", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+
+        var membersDescription = properties.GetProperty("members").GetProperty("description").GetString();
+        Assert.NotNull(membersDescription);
+        Assert.Contains("Item", membersDescription);
+        Assert.Contains("this[]", membersDescription);
+        Assert.Contains("this[int i]", membersDescription);
     }
 
     [Fact]

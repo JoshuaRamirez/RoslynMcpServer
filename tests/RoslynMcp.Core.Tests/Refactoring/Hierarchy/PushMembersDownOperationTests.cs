@@ -1,4 +1,6 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
@@ -960,6 +962,743 @@ public class PushMembersDownOperationTests
 
     #endregion
 
+    #region Indexers
+
+    private const string MixedIndexerSource = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int Count { get; set; }
+
+            public string this[int i]
+            {
+                get => "";
+                set { }
+            }
+
+            public void Work() { }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_Default_PublicIndexer_MovesIndexerOntoDerived()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["this[]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Dog"));
+        Assert.Contains("this[int i]", updated);
+        Assert.Equal("i", Assert.Single(indexer.ParameterList.Parameters).Identifier.Text);
+        Assert.DoesNotContain(indexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.Empty(FindIndexers(updated, "Animal"));
+        Assert.Contains("public int Count { get; set; }", GetTypeSection(updated, "Animal"));
+        Assert.Contains("public void Work()", GetTypeSection(updated, "Animal"));
+        Assert.DoesNotContain(
+            FindType(updated, "Dog").Members.OfType<PropertyDeclarationSyntax>(),
+            p => p.Identifier.Text.Contains("this", StringComparison.Ordinal));
+        AssertCompiles(updated);
+    }
+
+    [SkippableTheory]
+    [InlineData("this[]")]
+    [InlineData("Item")]
+    [InlineData("this[int i]")]
+    public async Task PushMembersDown_MembersFilter_IndexerAliases_MovesOnlyIndexer(string memberName)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = [memberName]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Single(FindIndexers(updated, "Dog"));
+        Assert.Contains("this[int i]", GetTypeSection(updated, "Dog"));
+        Assert.Empty(FindIndexers(updated, "Animal"));
+        Assert.Contains("public int Count { get; set; }", GetTypeSection(updated, "Animal"));
+        Assert.Contains("public void Work()", GetTypeSection(updated, "Animal"));
+        Assert.DoesNotContain("Count", GetTypeSection(updated, "Dog"));
+        Assert.DoesNotContain("Work", GetTypeSection(updated, "Dog"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_OrdinaryProperty_LeavesIndexerOnSource()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Count"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var property = FindProperty(updated, "Dog", "Count");
+        Assert.NotNull(property);
+        Assert.DoesNotContain("this[]", property!.Identifier.Text);
+        Assert.Empty(FindIndexers(updated, "Dog"));
+        Assert.Single(FindIndexers(updated, "Animal"));
+        Assert.Contains("this[int i]", GetTypeSection(updated, "Animal"));
+        Assert.DoesNotContain("public int Count", GetTypeSection(updated, "Animal"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_IndexerLeavesOverrideOnDerived()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["this[]"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var animalIndexer = Assert.Single(FindIndexers(updated, "Animal"));
+        var dogIndexer = Assert.Single(FindIndexers(updated, "Dog"));
+        Assert.Contains(animalIndexer.Modifiers, t => t.IsKind(SyntaxKind.AbstractKeyword));
+        Assert.DoesNotContain(animalIndexer.Modifiers, t => t.IsKind(SyntaxKind.VirtualKeyword));
+        Assert.Null(animalIndexer.ExpressionBody);
+        Assert.All(animalIndexer.AccessorList!.Accessors, a => Assert.True(a.Body == null && a.ExpressionBody == null));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.Contains("abstract class", updated);
+        Assert.DoesNotContain("abstractclass", updated);
+        Assert.Contains("this[int i]", GetTypeSection(updated, "Animal"));
+        Assert.Contains("this[int i]", GetTypeSection(updated, "Dog"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_IndexerToDerivedInterface_EmitsSignature()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IAnimal
+            {
+                string this[int i] { get; set; }
+            }
+
+            public interface IDog : IAnimal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "IAnimal",
+            Members = ["this[]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var sourceIndexer = Assert.Single(FindIndexers(updated, "IAnimal"));
+        var derivedIndexer = Assert.Single(FindIndexers(updated, "IDog"));
+        Assert.Empty(derivedIndexer.Modifiers);
+        Assert.Null(derivedIndexer.ExpressionBody);
+        Assert.Contains(derivedIndexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        Assert.Contains(derivedIndexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.All(derivedIndexer.AccessorList.Accessors, a => Assert.True(a.Body == null && a.ExpressionBody == null));
+        Assert.Contains("this[int i]", GetTypeSection(updated, "IDog"));
+        Assert.Contains(sourceIndexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        Assert.DoesNotContain(
+            FindType(updated, "IDog").Members.OfType<PropertyDeclarationSyntax>(),
+            p => p.Identifier.Text.Contains("this", StringComparison.Ordinal));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_IndexerToDerivedInterface_PrivateSetter_EmitsGetOnly()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IAnimal
+            {
+                int this[int i] { get => i; private set { } }
+            }
+
+            public interface IDog : IAnimal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "IAnimal",
+            Members = ["this[]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derivedIndexer = Assert.Single(FindIndexers(updated, "IDog"));
+        var sourceIndexer = Assert.Single(FindIndexers(updated, "IAnimal"));
+        Assert.Contains(derivedIndexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        Assert.DoesNotContain(derivedIndexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.DoesNotContain(derivedIndexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.InitAccessorDeclaration));
+        Assert.Contains(sourceIndexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        Assert.Contains(sourceIndexer.AccessorList.Accessors, a =>
+            a.IsKind(SyntaxKind.SetAccessorDeclaration)
+            && a.Modifiers.Any(SyntaxKind.PrivateKeyword));
+        Assert.Contains("this[int i]", GetTypeSection(updated, "IDog"));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_Indexer_Preview_WritesNothing_AndDescribesIndexer()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["this[]"],
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => c.Description != null && c.Description.Contains("this[]"));
+        Assert.Contains(result.PendingChanges, c =>
+            c.AfterSnippet != null && c.AfterSnippet.Contains("this[int i]"));
+        Assert.DoesNotContain(result.PendingChanges, c =>
+            c.AfterSnippet != null &&
+            c.AfterSnippet.Replace("this[int i]", "", StringComparison.Ordinal).Contains("this[]"));
+
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(original, after);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_GetOnlyIndexer_PreservesGetOnly()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public int this[int i] => i;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["this[]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Dog"));
+        Assert.True(
+            indexer.ExpressionBody != null
+            || (indexer.AccessorList != null
+                && indexer.AccessorList.Accessors.Any(a => a.IsKind(SyntaxKind.GetAccessorDeclaration))
+                && indexer.AccessorList.Accessors.All(a => !a.IsKind(SyntaxKind.SetAccessorDeclaration))));
+        Assert.Contains("this[int i]", GetTypeSection(updated, "Dog"));
+        Assert.Empty(FindIndexers(updated, "Animal"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_Indexer_RefKindParameter_Preserved()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public int this[in int i] => i;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["this[]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Dog"));
+        Assert.Equal("in", Assert.Single(indexer.ParameterList.Parameters).Modifiers.ToString().Trim());
+        Assert.Contains("this[in int i]", updated);
+        Assert.Empty(FindIndexers(updated, "Animal"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_Indexer_LeavesMethodsPropertiesFieldsAndEventsOnSource()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Name { get; set; } = "";
+                public int Age;
+                public event System.EventHandler Changed;
+
+                public string this[int i]
+                {
+                    get => "";
+                    set { }
+                }
+
+                public int Speak()
+                {
+                    return 1;
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["this[]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var animal = GetTypeSection(updated, "Animal");
+        var dog = GetTypeSection(updated, "Dog");
+        Assert.Contains("public string Name { get; set; }", animal);
+        Assert.Contains("public int Age", animal);
+        Assert.Contains("event System.EventHandler Changed", animal);
+        Assert.Contains("public int Speak()", animal);
+        Assert.Empty(FindIndexers(updated, "Animal"));
+        Assert.Single(FindIndexers(updated, "Dog"));
+        Assert.DoesNotContain("Name", dog);
+        Assert.DoesNotContain("Age", dog);
+        Assert.DoesNotContain("Changed", dog);
+        Assert.DoesNotContain("Speak", dog);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_SpecificIndexerDisplay_LeavesOtherIndexerOnSource()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string this[int i]
+                {
+                    get => "";
+                    set { }
+                }
+
+                public string this[string key]
+                {
+                    get => key;
+                    set { }
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["this[int i]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var sourceIndexer = Assert.Single(FindIndexers(updated, "Animal"));
+        var derivedIndexer = Assert.Single(FindIndexers(updated, "Dog"));
+        Assert.Equal("string", Assert.Single(sourceIndexer.ParameterList.Parameters).Type!.ToString());
+        Assert.Equal("int", Assert.Single(derivedIndexer.ParameterList.Parameters).Type!.ToString());
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AbstractIndexer_MaterializesAccessorBodiesOnDerived()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Animal
+            {
+                public abstract string this[int i] { get; set; }
+            }
+
+            public abstract class Bird : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["this[]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(FindIndexers(updated, "Animal"));
+        var birdIndexer = Assert.Single(FindIndexers(updated, "Bird"));
+        Assert.Contains(birdIndexer.Modifiers, t => t.IsKind(SyntaxKind.VirtualKeyword));
+        Assert.DoesNotContain(birdIndexer.Modifiers, t => t.IsKind(SyntaxKind.AbstractKeyword));
+        Assert.All(birdIndexer.AccessorList!.Accessors, a => Assert.NotNull(a.Body));
+        Assert.Contains("NotImplementedException", GetTypeSection(updated, "Bird"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_AbstractIndexer_MaterializesOverrideBodies()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Animal
+            {
+                public abstract string this[int i] { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["this[]"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var animalIndexer = Assert.Single(FindIndexers(updated, "Animal"));
+        var dogIndexer = Assert.Single(FindIndexers(updated, "Dog"));
+        Assert.Contains(animalIndexer.Modifiers, t => t.IsKind(SyntaxKind.AbstractKeyword));
+        Assert.All(animalIndexer.AccessorList!.Accessors, a => Assert.True(a.Body == null && a.ExpressionBody == null));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.All(dogIndexer.AccessorList!.Accessors, a => Assert.NotNull(a.Body));
+        Assert.Contains("NotImplementedException", GetTypeSection(updated, "Dog"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_GenericIndexer_ConflictsWithSubstitutedSignature()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Box<T>
+            {
+                public T this[T key] => key;
+            }
+
+            public class IntBox : Box<int>
+            {
+                public int this[int key] => key;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Box",
+                Members = ["this[]"]
+            }));
+
+        Assert.Equal(ErrorCodes.ConflictsWithExistingMember, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_GenericIndexer_DifferentSubstitutedArity_DoesNotConflict()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Box<T>
+            {
+                public T this[T key] => key;
+            }
+
+            public class StringBox : Box<string>
+            {
+                public int this[int i] => i;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            Members = ["this[]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(FindIndexers(updated, "Box"));
+        var derived = FindIndexers(updated, "StringBox");
+        Assert.Equal(2, derived.Count);
+        Assert.Contains(derived, indexer =>
+            Assert.Single(indexer.ParameterList.Parameters).Type!.ToString() == "string");
+        Assert.Contains(derived, indexer =>
+            Assert.Single(indexer.ParameterList.Parameters).Type!.ToString() == "int");
+        AssertCompiles(updated);
+    }
+
+    [Fact]
+    public void ReduceCrossAssemblyOverrideAccessibility_DifferentAssembly_StripsInternal()
+    {
+        var (indexer, sameAssemblyType, otherAssemblyType) = CompileProtectedInternalIndexerPair();
+        var modifiers = SyntaxFactory.TokenList(
+            SyntaxFactory.Token(SyntaxKind.ProtectedKeyword),
+            SyntaxFactory.Token(SyntaxKind.InternalKeyword),
+            SyntaxFactory.Token(SyntaxKind.OverrideKeyword));
+
+        var reduced = PushMembersDownOperation.ReduceCrossAssemblyOverrideAccessibility(
+            modifiers, indexer, otherAssemblyType);
+
+        Assert.Contains(reduced, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.DoesNotContain(reduced, t => t.IsKind(SyntaxKind.InternalKeyword));
+        Assert.Contains(reduced, t => t.IsKind(SyntaxKind.OverrideKeyword));
+
+        var same = PushMembersDownOperation.ReduceCrossAssemblyOverrideAccessibility(
+            modifiers, indexer, sameAssemblyType);
+        Assert.Contains(same, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.Contains(same, t => t.IsKind(SyntaxKind.InternalKeyword));
+    }
+
+    [Fact]
+    public void ReduceIndexerOverrideAccessibility_CrossAssembly_ProtectedInternalSetter_BecomesProtected()
+    {
+        var (indexerSymbol, _, otherAssemblyType, indexerSyntax) = CompilePublicIndexerWithProtectedInternalSetter();
+
+        var reduced = PushMembersDownOperation.ReduceIndexerOverrideAccessibility(
+            indexerSyntax, indexerSymbol, otherAssemblyType);
+
+        Assert.Contains(reduced.Modifiers, t => t.IsKind(SyntaxKind.PublicKeyword));
+        Assert.DoesNotContain(reduced.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        var setter = Assert.Single(reduced.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.Contains(setter.Modifiers, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.DoesNotContain(setter.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_SameAssembly_KeepsProtectedInternalIndexer()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                protected internal string this[int i]
+                {
+                    get => "";
+                    set { }
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["this[]"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var dogIndexer = Assert.Single(FindIndexers(updated, "Dog"));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.Contains("protected internal override", GetTypeSection(updated, "Dog"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_CrossAssembly_ProtectedInternalIndexer_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                protected internal string this[int i]
+                {
+                    get => "";
+                    set { }
+                }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.LibraryPath,
+            TypeName = "Animal",
+            Members = ["this[]"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        var dogIndexer = Assert.Single(FindIndexers(derived, "Dog"));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.DoesNotContain(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.Contains("protected override", GetTypeSection(derived, "Dog"));
+        Assert.DoesNotContain("protected internal override", derived);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_CrossAssembly_ProtectedInternalSetter_EmitsProtectedSet()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                public string this[int i]
+                {
+                    get => "";
+                    protected internal set { }
+                }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.LibraryPath,
+            TypeName = "Animal",
+            Members = ["this[]"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        var dogIndexer = Assert.Single(FindIndexers(derived, "Dog"));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.PublicKeyword));
+        Assert.DoesNotContain(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        var setter = Assert.Single(dogIndexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.Contains(setter.Modifiers, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.DoesNotContain(setter.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        Assert.DoesNotContain("protected internal set", derived);
+    }
+
+    #endregion
+
     #region P0 Rejects
 
     [SkippableFact]
@@ -1486,6 +2225,96 @@ public class PushMembersDownOperationTests
         Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
     }
 
+    [SkippableFact]
+    public async Task PushMembersDown_Indexer_UnknownName_ThrowsMemberNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["this[string key]"]
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_PrivateSetter_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public int this[int i] { get => i; private set { } }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["this[]"],
+                LeaveAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_ExplicitInterfaceIndexer_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface ILookup
+            {
+                string this[int i] { get; }
+            }
+
+            public class Animal : ILookup
+            {
+                string ILookup.this[int i] => "";
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["this[int i]"],
+                LeaveAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     #endregion
 
     #region Helpers
@@ -1535,11 +2364,135 @@ public class PushMembersDownOperationTests
         return normalized[open..];
     }
 
+    private static string GetTypeSection(string source, string typeName)
+    {
+        foreach (var keyword in new[] { "class ", "interface " })
+        {
+            var marker = keyword + typeName;
+            var start = source.IndexOf(marker, StringComparison.Ordinal);
+            if (start < 0)
+                continue;
+
+            var nextClass = source.IndexOf("class ", start + marker.Length, StringComparison.Ordinal);
+            var nextInterface = source.IndexOf("interface ", start + marker.Length, StringComparison.Ordinal);
+            var next = nextClass < 0 ? nextInterface
+                : nextInterface < 0 ? nextClass
+                : Math.Min(nextClass, nextInterface);
+            return next < 0 ? source[start..] : source[start..next];
+        }
+
+        throw new InvalidOperationException($"Type '{typeName}' not found.");
+    }
+
+    private static TypeDeclarationSyntax FindType(string source, string typeName)
+    {
+        var type = CSharpSyntaxTree.ParseText(source).GetCompilationUnitRoot().DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .FirstOrDefault(t => t.Identifier.Text == typeName);
+        Assert.True(type != null, $"Generated source did not contain type '{typeName}':\n{source}");
+        return type!;
+    }
+
+    private static IReadOnlyList<IndexerDeclarationSyntax> FindIndexers(string source, string typeName) =>
+        FindType(source, typeName).Members.OfType<IndexerDeclarationSyntax>().ToList();
+
+    private static PropertyDeclarationSyntax? FindProperty(string source, string typeName, string name) =>
+        FindType(source, typeName).Members.OfType<PropertyDeclarationSyntax>()
+            .FirstOrDefault(p => p.Identifier.Text == name);
+
+    private static void AssertCompiles(string source)
+    {
+        var compilation = CSharpCompilation.Create(
+                "PushMembersDownCompileTest",
+                new[]
+                {
+                    CSharpSyntaxTree.ParseText("global using System;"),
+                    CSharpSyntaxTree.ParseText(source)
+                },
+                new[]
+                {
+                    MetadataReference.CreateFromFile(typeof(object).Assembly.Location)
+                },
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, "Generated push_members_down members did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
+    }
+
+    private static (IPropertySymbol Indexer, INamedTypeSymbol SameAssemblyType, INamedTypeSymbol OtherAssemblyType)
+        CompileProtectedInternalIndexerPair()
+    {
+        var libTree = CSharpSyntaxTree.ParseText("""
+            public class Animal
+            {
+                protected internal string this[int i] { get => ""; set { } }
+            }
+            """);
+        var lib = CSharpCompilation.Create(
+            "PushDownLib",
+            new[] { libTree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) },
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var app = CSharpCompilation.Create(
+            "PushDownApp",
+            new[] { CSharpSyntaxTree.ParseText("public class Dog : Animal { }") },
+            new MetadataReference[]
+            {
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                lib.ToMetadataReference()
+            },
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var animal = lib.GetTypeByMetadataName("Animal");
+        Assert.NotNull(animal);
+        var indexer = animal!.GetMembers().OfType<IPropertySymbol>().Single(p => p.IsIndexer);
+        var dog = app.GetTypeByMetadataName("Dog");
+        Assert.NotNull(dog);
+        return (indexer, animal, dog!);
+    }
+
+    private static (IPropertySymbol Indexer, INamedTypeSymbol SameAssemblyType, INamedTypeSymbol OtherAssemblyType, IndexerDeclarationSyntax Syntax)
+        CompilePublicIndexerWithProtectedInternalSetter()
+    {
+        var libTree = CSharpSyntaxTree.ParseText("""
+            public class Animal
+            {
+                public string this[int i] { get => ""; protected internal set { } }
+            }
+            """);
+        var lib = CSharpCompilation.Create(
+            "PushDownLibSetter",
+            new[] { libTree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) },
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var app = CSharpCompilation.Create(
+            "PushDownAppSetter",
+            new[] { CSharpSyntaxTree.ParseText("public class Dog : Animal { }") },
+            new MetadataReference[]
+            {
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                lib.ToMetadataReference()
+            },
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var animal = lib.GetTypeByMetadataName("Animal");
+        Assert.NotNull(animal);
+        var indexer = animal!.GetMembers().OfType<IPropertySymbol>().Single(p => p.IsIndexer);
+        var dog = app.GetTypeByMetadataName("Dog");
+        Assert.NotNull(dog);
+        var syntax = libTree.GetCompilationUnitRoot().DescendantNodes().OfType<IndexerDeclarationSyntax>().Single();
+        return (indexer, animal, dog!, syntax);
+    }
+
     private sealed class TempWorkspace : IAsyncDisposable
     {
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public string LibraryPath { get; init; } = "";
+        public string DerivedPath { get; init; } = "";
         public required WorkspaceContext Context { get; init; }
 
         public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
@@ -1577,6 +2530,105 @@ public class PushMembersDownOperationTests
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
                     SourcePath = sourcePath,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Lib project referenced by App. <see cref="LibraryPath"/> is the
+        /// base type; <see cref="DerivedPath"/> / <see cref="SourcePath"/>
+        /// is the derived type until the caller picks the base file.
+        /// </summary>
+        public static async Task<TempWorkspace> CreateReferencedLibraryAsync(string librarySource, string appSource)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpPushMembersDownXP_" + Guid.NewGuid().ToString("N"));
+            var libDir = Path.Combine(directory, "Lib");
+            var appDir = Path.Combine(directory, "App");
+            Directory.CreateDirectory(libDir);
+            Directory.CreateDirectory(appDir);
+
+            var libProject = Path.Combine(libDir, "Lib.csproj");
+            var appProject = Path.Combine(appDir, "App.csproj");
+            var libSource = Path.Combine(libDir, "Animal.cs");
+            var appSourcePath = Path.Combine(appDir, "Dog.cs");
+
+            await File.WriteAllTextAsync(libProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(appProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="..\Lib\Lib.csproj" />
+                  </ItemGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(libSource, librarySource);
+            await File.WriteAllTextAsync(appSourcePath, appSource);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            await File.WriteAllTextAsync(solutionPath, """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lib", "Lib\Lib.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\App.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                if (context.GetDocumentByPath(libSource) == null || context.GetDocumentByPath(appSourcePath) == null)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException("Workspace loaded but did not include Lib/App sources.");
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = solutionPath,
+                    SourcePath = libSource,
+                    LibraryPath = libSource,
+                    DerivedPath = appSourcePath,
                     Context = context
                 };
             }

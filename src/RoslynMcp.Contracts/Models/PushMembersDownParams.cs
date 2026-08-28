@@ -16,7 +16,9 @@ public sealed class PushMembersDownParams
     public required string TypeName { get; init; }
 
     /// <summary>
-    /// Names of members to push down. At least one is required.
+    /// Names of members to push down. At least one is required. Indexers match
+    /// metadata name (<c>Item</c>), Roslyn name (<c>this[]</c>), and
+    /// conventional display (<c>this[int i]</c>).
     /// </summary>
     public required IReadOnlyList<string> Members { get; init; }
 
