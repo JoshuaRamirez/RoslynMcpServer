@@ -1054,7 +1054,9 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             target is ClassDeclarationSyntax &&
             !target.Modifiers.Any(SyntaxKind.AbstractKeyword))
         {
-            updated = updated.AddModifiers(SyntaxFactory.Token(SyntaxKind.AbstractKeyword));
+            updated = updated.AddModifiers(
+                SyntaxFactory.Token(SyntaxKind.AbstractKeyword)
+                    .WithTrailingTrivia(SyntaxFactory.Space));
         }
 
         return updated;
