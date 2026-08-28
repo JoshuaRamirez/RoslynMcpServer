@@ -514,7 +514,13 @@ public class ExtractInterfaceOperationTests
 
             public class Lookup
             {
-                public int this[int i] { get; init; }
+                private int _value;
+
+                public int this[int i]
+                {
+                    get => _value;
+                    init => _value = value;
+                }
             }
             """;
 
