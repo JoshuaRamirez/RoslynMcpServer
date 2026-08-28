@@ -1198,10 +1198,18 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     {
         return member switch
         {
-            MethodDeclarationSyntax method => EnsureMethodBody(method.WithModifiers(ToOverrideModifiers(method.Modifiers)))
+            MethodDeclarationSyntax method => EnsureMethodBody(
+                    ReduceOverrideAccessibility(
+                        method.WithModifiers(ToOverrideModifiers(method.Modifiers)),
+                        symbol,
+                        target))
                 .NormalizeWhitespace(),
-            PropertyDeclarationSyntax property => property.WithModifiers(ToOverrideModifiers(property.Modifiers))
-                .NormalizeWhitespace(),
+            PropertyDeclarationSyntax property =>
+                ReduceOverrideAccessibility(
+                        property.WithModifiers(ToOverrideModifiers(property.Modifiers)),
+                        symbol,
+                        target)
+                    .NormalizeWhitespace(),
             IndexerDeclarationSyntax indexer when symbol is IPropertySymbol property =>
                 EnsureIndexerBodies(
                     ReduceIndexerOverrideAccessibility(
@@ -1212,10 +1220,18 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             IndexerDeclarationSyntax indexer => EnsureIndexerBodies(
                     indexer.WithModifiers(ToOverrideModifiers(indexer.Modifiers)))
                 .NormalizeWhitespace(),
-            EventDeclarationSyntax eventDecl => eventDecl.WithModifiers(ToOverrideModifiers(eventDecl.Modifiers))
-                .NormalizeWhitespace(),
-            EventFieldDeclarationSyntax eventField => eventField.WithModifiers(ToOverrideModifiers(eventField.Modifiers))
-                .NormalizeWhitespace(),
+            EventDeclarationSyntax eventDecl =>
+                ReduceOverrideAccessibility(
+                        eventDecl.WithModifiers(ToOverrideModifiers(eventDecl.Modifiers)),
+                        symbol,
+                        target)
+                    .NormalizeWhitespace(),
+            EventFieldDeclarationSyntax eventField =>
+                ReduceOverrideAccessibility(
+                        eventField.WithModifiers(ToOverrideModifiers(eventField.Modifiers)),
+                        symbol,
+                        target)
+                    .NormalizeWhitespace(),
             _ => member.NormalizeWhitespace()
         };
     }
@@ -1242,6 +1258,30 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     }
 
     /// <summary>
+    /// Reduces member and accessor <c>protected internal</c> to
+    /// <c>protected</c> when the override is emitted in another assembly.
+    /// Methods, properties, events, and indexers share this path.
+    /// </summary>
+    internal static T ReduceOverrideAccessibility<T>(
+        T member,
+        ISymbol symbol,
+        INamedTypeSymbol target)
+        where T : MemberDeclarationSyntax
+    {
+        var updated = (T)member.WithModifiers(
+            ReduceCrossAssemblyOverrideAccessibility(member.Modifiers, symbol, target));
+
+        if (updated is BasePropertyDeclarationSyntax propertyDecl &&
+            symbol is IPropertySymbol property)
+        {
+            return (T)(MemberDeclarationSyntax)ReduceAccessorOverrideAccessibility(
+                propertyDecl, property, target);
+        }
+
+        return updated;
+    }
+
+    /// <summary>
     /// Reduces indexer and accessor <c>protected internal</c> to
     /// <c>protected</c> when the override is emitted in another assembly.
     /// </summary>
@@ -1249,15 +1289,18 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         IndexerDeclarationSyntax indexer,
         IPropertySymbol symbol,
         INamedTypeSymbol target)
-    {
-        var updated = indexer.WithModifiers(
-            ReduceCrossAssemblyOverrideAccessibility(indexer.Modifiers, symbol, target));
+        => ReduceOverrideAccessibility(indexer, symbol, target);
 
-        if (updated.AccessorList == null)
-            return updated;
+    private static BasePropertyDeclarationSyntax ReduceAccessorOverrideAccessibility(
+        BasePropertyDeclarationSyntax member,
+        IPropertySymbol symbol,
+        INamedTypeSymbol target)
+    {
+        if (member.AccessorList == null)
+            return member;
 
         var accessors = new List<AccessorDeclarationSyntax>();
-        foreach (var accessor in updated.AccessorList.Accessors)
+        foreach (var accessor in member.AccessorList.Accessors)
         {
             var accessorSymbol = accessor.Kind() switch
             {
@@ -1272,7 +1315,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                     ReduceCrossAssemblyOverrideAccessibility(accessor.Modifiers, accessorSymbol, target)));
         }
 
-        return updated.WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
+        return member.WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
     }
 
     private static MethodDeclarationSyntax EnsureMethodBody(MethodDeclarationSyntax method)
