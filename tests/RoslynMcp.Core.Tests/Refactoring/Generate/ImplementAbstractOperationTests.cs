@@ -396,6 +396,114 @@ public class ImplementAbstractOperationTests
     }
 
     [SkippableFact]
+    public async Task ImplementAbstract_ThrowNotImplementedFalse_RefReturnMethod_StillThrows()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract ref int GetCell();
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override ref int GetCell()", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+        Assert.DoesNotContain("return default", updated);
+        Assert.DoesNotContain("return null", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ThrowNotImplementedFalse_RefReadonlyReturnMethod_StillThrows()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract ref readonly int GetOrigin();
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override ref readonly int GetOrigin()", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+        Assert.DoesNotContain("return default", updated);
+        Assert.DoesNotContain("return null", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ThrowNotImplementedFalse_RefPropertyAndIndexerGetters_StillThrow()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract ref int Cell { get; }
+                public abstract ref int this[int index] { get; }
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override ref int Cell", updated);
+        Assert.Contains("public override ref int this[int index]", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+        Assert.DoesNotContain("return default", updated);
+        Assert.DoesNotContain("return null", updated);
+        Assert.Equal(2, CountOccurrences(updated, "throw new global::System.NotImplementedException();"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
     public async Task ImplementAbstract_ThrowNotImplementedFalse_Property_GetterDefaultSetterEmpty()
     {
         const string source = """

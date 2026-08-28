@@ -19,7 +19,9 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// <c>throw new global::System.NotImplementedException();</c>.
 /// When false, methods and getters use
 /// <see cref="SyntaxGenerationHelper.CreateDefaultReturnBody"/> and
-/// setters / init setters use empty blocks.
+/// setters / init setters use empty blocks, except <c>ref</c> /
+/// <c>ref readonly</c> methods and getters which still throw
+/// (a default return is not a valid ref return).
 /// </summary>
 public sealed class ImplementAbstractOperation : RefactoringOperationBase<ImplementAbstractParams>
 {
@@ -206,13 +208,15 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// is true, the body is
     /// <c>throw new global::System.NotImplementedException();</c>;
     /// otherwise it uses <see cref="SyntaxGenerationHelper.CreateDefaultReturnBody"/>.
+    /// <c>ref</c> / <c>ref readonly</c> methods always throw — a default
+    /// return is not a valid ref return (CS8156).
     /// </summary>
     internal static MethodDeclarationSyntax CreateMethodStub(
         IMethodSymbol method,
         bool throwNotImplemented = true)
     {
         var parameters = method.Parameters.Select(CreateParameter);
-        var body = throwNotImplemented
+        var body = RequiresThrowBody(method, throwNotImplemented)
             ? CreateThrowNotImplementedBody()
             : SyntaxGenerationHelper.CreateDefaultReturnBody(method.ReturnType);
         var methodDecl = SyntaxFactory.MethodDeclaration(
@@ -237,7 +241,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// is true, accessors throw
     /// <c>new global::System.NotImplementedException()</c>;
     /// otherwise getters use a default-return body and setters / init setters
-    /// use an empty block.
+    /// use an empty block. <c>ref</c> / <c>ref readonly</c> getters always throw.
     /// Preserves init setters, accessor-specific accessibility, and required.
     /// </summary>
     internal static PropertyDeclarationSyntax CreatePropertyStub(
@@ -306,7 +310,9 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         bool throwNotImplemented)
     {
         BlockSyntax body;
-        if (throwNotImplemented)
+        if (kind == SyntaxKind.GetAccessorDeclaration
+            ? RequiresThrowBody(accessor, throwNotImplemented)
+            : throwNotImplemented)
         {
             body = CreateThrowNotImplementedBody();
         }
@@ -328,6 +334,9 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
 
         return declaration;
     }
+
+    private static bool RequiresThrowBody(IMethodSymbol method, bool throwNotImplemented)
+        => throwNotImplemented || method.ReturnsByRef || method.ReturnsByRefReadonly;
 
     private static SyntaxTokenList CreateAccessorModifiers(
         Accessibility accessorAccessibility,
