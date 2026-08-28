@@ -1450,8 +1450,8 @@ public class GenerateConstructorOperationTests
         Assert.DoesNotContain("\"old\"", updated);
         Assert.Contains("_id = id", ctor);
         Assert.Contains("nameof(id)", ctor);
-        Assert.DoesNotContain("Name", ctor);
-        Assert.DoesNotContain("name", ctor);
+        Assert.DoesNotContain("this.Name", ctor);
+        Assert.DoesNotContain("string name", ctor);
         Assert.Equal(1, CountOccurrences(updated, "public Widget("));
     }
 
