@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
+using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
@@ -352,7 +353,8 @@ public class GeneratePropertyOperationTests
         Assert.True(result.Success);
         Assert.True(result.Preview);
         Assert.NotNull(result.PendingChanges);
-        Assert.NotEmpty(result.PendingChanges);
+        Assert.Single(result.PendingChanges);
+        Assert.Equal(workspace.SourcePath, result.PendingChanges[0].File);
         Assert.Contains("get; set;", result.PendingChanges[0].AfterSnippet);
         Assert.Contains("Generate property 'Name'", result.PendingChanges[0].Description);
         Assert.Contains("no property 'Name'", result.PendingChanges[0].BeforeSnippet);
@@ -966,10 +968,46 @@ public class GeneratePropertyOperationTests
         Assert.True(result.Success);
         Assert.True(result.Preview);
         Assert.NotNull(result.PendingChanges);
-        Assert.NotEmpty(result.PendingChanges);
+        Assert.Single(result.PendingChanges);
+        Assert.Equal(workspace.SourcePath, result.PendingChanges[0].File);
         Assert.Contains("Replace property 'Name'", result.PendingChanges[0].Description);
         Assert.Contains("replacing existing property 'Name'", result.PendingChanges[0].BeforeSnippet);
         Assert.Contains("public int Name { get; set; }", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_Preview_NoExisting_IsSingleGenerateChange()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            PropertyName = "Name",
+            PropertyType = "string",
+            ReplaceExisting = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Single(result.PendingChanges);
+        Assert.Equal(workspace.SourcePath, result.PendingChanges[0].File);
+        Assert.Contains("Generate property 'Name'", result.PendingChanges[0].Description);
+        Assert.Contains("no property 'Name'", result.PendingChanges[0].BeforeSnippet);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
@@ -1064,6 +1102,7 @@ public class GeneratePropertyOperationTests
         Assert.Contains("Replace property 'Name'", result.PendingChanges[0].Description);
         var otherChange = result.PendingChanges[1];
         Assert.Equal(otherPath, otherChange.File);
+        Assert.Equal(ChangeKind.Modify, otherChange.ChangeType);
         Assert.Contains("Remove existing property 'Name'", otherChange.Description);
         Assert.Contains("public string Name { get; set; }", otherChange.BeforeSnippet);
         Assert.Contains("old", otherChange.BeforeSnippet);
@@ -1080,7 +1119,7 @@ public class GeneratePropertyOperationTests
 
             public class Widget
             {
-            #if true
+            #if DEBUG
                 public string Name { get; set; } = "old";
             #endif
 
@@ -1102,12 +1141,13 @@ public class GeneratePropertyOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("#if true", updated);
+        Assert.Contains("#if DEBUG", updated);
         Assert.Contains("#endif", updated);
         Assert.Contains("public int Name { get; set; }", updated);
         Assert.Contains("public int Age { get; set; }", updated);
         Assert.DoesNotContain("old", updated);
         Assert.Equal(updated.Split("#if ").Length - 1, updated.Split("#endif").Length - 1);
+        AssertCompiles(updated, preprocessorSymbols: "DEBUG");
     }
 
     [SkippableFact]
@@ -1146,6 +1186,7 @@ public class GeneratePropertyOperationTests
         Assert.Contains("public int Age { get; set; }", updated);
         Assert.DoesNotContain("old", updated);
         Assert.Equal(updated.Split("#region ").Length - 1, updated.Split("#endregion").Length - 1);
+        AssertCompiles(updated);
     }
 
     [SkippableFact]
@@ -1196,6 +1237,21 @@ public class GeneratePropertyOperationTests
             ?? throw new InvalidOperationException($"Could not resolve type '{typeName}'.");
     }
 
+    private static void AssertCompiles(string source, params string[] preprocessorSymbols)
+    {
+        var parseOptions = CSharpParseOptions.Default.WithPreprocessorSymbols(preprocessorSymbols);
+        var compilation = CSharpCompilation.Create(
+                "GeneratePropertyCompileTest",
+                new[] { CSharpSyntaxTree.ParseText(source, parseOptions) },
+                new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) },
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, "Replaced source did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
+    }
+
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpGeneratePropertyMissing.cs");
 
@@ -1240,6 +1296,7 @@ public class GeneratePropertyOperationTests
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <DefineConstants>$(DefineConstants);DEBUG</DefineConstants>
                   </PropertyGroup>
                 </Project>
                 """);
