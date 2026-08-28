@@ -203,6 +203,9 @@ public class GenerateConstructorToolTests
         Assert.Equal("boolean", callBase.GetProperty("type").GetString());
         Assert.False(callBase.GetProperty("default").GetBoolean());
         Assert.DoesNotContain("callBase", requiredFields);
+        var description = callBase.GetProperty("description").GetString();
+        Assert.Contains("record class", description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Records, structs, and record structs ignore", description, StringComparison.Ordinal);
     }
 
     [Fact]

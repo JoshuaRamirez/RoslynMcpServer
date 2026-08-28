@@ -107,7 +107,7 @@ public sealed class GenerateConstructorTool : IToolHandler
             callBase = new
             {
                 type = "boolean",
-                description = "When copyConstructor is false, emit : base(...) on an ordinary class by matching an accessible immediate-base constructor whose parameter types are a prefix of the generated constructor. Conflicts with copyConstructor. Records, structs, and record structs ignore this flag",
+                description = "When copyConstructor is false, emit : base(...) on an ordinary class or record class by matching an accessible immediate-base constructor whose parameter types are a prefix of the generated constructor. Conflicts with copyConstructor. Record structs and structs ignore this flag",
                 @default = false
             },
             preview = new

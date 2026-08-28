@@ -109,20 +109,22 @@ public sealed class GenerateConstructorParams
 
     /// <summary>
     /// When true (and <see cref="CopyConstructor"/> is false), an ordinary
-    /// class whose immediate base is a class other than <c>object</c> emits
-    /// <c>: base(...)</c> for an accessible instance constructor whose
-    /// parameter types (by-value, same <c>RefKind</c>) are a prefix of the
-    /// generated constructor's parameter types. The longest prefix wins;
-    /// if two candidates share that length, the one whose parameter names
-    /// match the generated names (case-insensitive) wins; a remaining tie
-    /// is rejected. Members that produced the passed-through parameters
-    /// are not reassigned in the derived body. An accessible parameterless
+    /// class or record class whose immediate base is a class or (for record
+    /// classes) a record other than <c>object</c> emits <c>: base(...)</c>
+    /// for an accessible instance constructor whose parameter types
+    /// (by-value, same <c>RefKind</c>) are a prefix of the generated
+    /// constructor's parameter types. The longest prefix wins; if two
+    /// candidates share that length, the one whose parameter names match
+    /// the generated names (case-insensitive) wins; a remaining tie is
+    /// rejected. Members that produced the passed-through parameters are
+    /// not reassigned in the derived body. An accessible parameterless
     /// base constructor emits <c>: base()</c> without skipping body
-    /// members. Records, record structs, and structs ignore this flag.
-    /// When the base is <c>object</c> / a struct / a record, no
+    /// members. Record structs and structs ignore this flag. When the
+    /// base is <c>object</c> / <c>ValueType</c> / a struct, no
     /// <c>: base(...)</c> is emitted and generation still succeeds.
+    /// Ordinary-class matching still requires a class (not record) base.
     /// When true with <see cref="CopyConstructor"/>, the request is
-    /// rejected. Default: false (today's ordinary-class non-copy shape).
+    /// rejected. Default: false (today's non-copy shape).
     /// </summary>
     public bool CallBase { get; init; }
 
