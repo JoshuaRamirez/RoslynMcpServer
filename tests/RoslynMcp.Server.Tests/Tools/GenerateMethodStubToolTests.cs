@@ -84,6 +84,7 @@ public class GenerateMethodStubToolTests
         Assert.True(properties.TryGetProperty("visibility", out _));
         Assert.True(properties.TryGetProperty("generateAsync", out _));
         Assert.True(properties.TryGetProperty("throwNotImplemented", out _));
+        Assert.True(properties.TryGetProperty("replaceExisting", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
     }
 
@@ -104,6 +105,29 @@ public class GenerateMethodStubToolTests
     public void GetDefinition_Description_MentionsThrowNotImplemented()
     {
         Assert.Contains("throwNotImplemented", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_ReplaceExistingProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var replaceExisting = doc.RootElement.GetProperty("properties").GetProperty("replaceExisting");
+        var required = doc.RootElement.GetProperty("required");
+        var requiredFields = required.EnumerateArray().Select(item => item.GetString()).ToList();
+
+        Assert.Equal("boolean", replaceExisting.GetProperty("type").GetString());
+        Assert.False(replaceExisting.GetProperty("default").GetBoolean());
+        Assert.DoesNotContain("replaceExisting", requiredFields);
+        var description = replaceExisting.GetProperty("description").GetString();
+        Assert.Contains("Replace", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_Description_MentionsReplaceExisting()
+    {
+        Assert.Contains("replaceExisting", _tool.Description);
     }
 
     #endregion

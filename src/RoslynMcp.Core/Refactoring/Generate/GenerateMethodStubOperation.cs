@@ -24,6 +24,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// <c>ref</c> / <c>ref readonly</c> returns which still throw (a default
 /// return is not a valid ref return). Async <c>Task</c> / <c>Task&lt;T&gt;</c>
 /// stubs unwrap the task type so the body stays compilable.
+/// Honors <c>replaceExisting</c> to remove a compatible ordinary method
+/// (including across partials) before inserting a freshly generated stub.
 /// </summary>
 public sealed class GenerateMethodStubOperation : RefactoringOperationBase<GenerateMethodStubParams>
 {
@@ -127,8 +129,6 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
                 $"No method invocation found at line {@params.Line}, column {@params.Column}.");
         }
 
-        ValidateInvocationIsUnresolved(invocation, semanticModel, cancellationToken);
-
         var invokedName = GetInvokedName(invocation);
         var methodName = ResolveMethodName(@params, invokedName);
         var typeParameters = InferTypeParameters(invokedName);
@@ -145,7 +145,13 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         ValidateDocumentIsEditable(targetDocument, Context.Workspace);
 
         var parameters = InferParameters(invocation, semanticModel);
-        ValidateNoCompatibleMethod(target.Type, methodName, parameters, typeParameters.Count);
+        var existingMethod = ResolveMethodToReplace(
+            target.Type, methodName, parameters, typeParameters.Count, @params.ReplaceExisting);
+        // A resolved call is the common replaceExisting case only when it
+        // binds to the method we are about to remove. A methodName override
+        // that matches a *different* existing method must not skip this
+        // guard and rewrite a working call.
+        ValidateInvocationIsUnresolved(invocation, semanticModel, existingMethod, cancellationToken);
 
         var returnType = InferReturnType(invocation, semanticModel, @params, cancellationToken);
         var isAsync = @params.GenerateAsync || IsAwaited(invocation);
@@ -168,7 +174,20 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             semanticModel.Compilation);
 
         if (@params.Preview)
-            return CreatePreviewResult(operationId, callSiteDocument, targetDocument, target.Type.Name, methodName, method, rewriteCallSite, invokedName, @params.ThrowNotImplemented);
+        {
+            return await CreatePreviewResultAsync(
+                operationId,
+                callSiteDocument,
+                targetDocument,
+                target.Type.Name,
+                methodName,
+                method,
+                rewriteCallSite,
+                invokedName,
+                @params.ThrowNotImplemented,
+                existingMethod,
+                cancellationToken);
+        }
 
         var newSolution = await ApplyChangesAsync(
             callSiteDocument,
@@ -178,6 +197,8 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             method,
             rewriteCallSite ? invokedName : null,
             methodName,
+            existingMethod,
+            target.Type,
             cancellationToken);
 
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
@@ -234,14 +255,32 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         InvocationExpressionSyntax invocation,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
+        => ValidateInvocationIsUnresolved(invocation, semanticModel, allowedReplacement: null, cancellationToken);
+
+    /// <summary>
+    /// Rejects a call that already binds, unless it binds to
+    /// <paramref name="allowedReplacement"/> — the ordinary method
+    /// <c>replaceExisting</c> is about to remove.
+    /// </summary>
+    internal static void ValidateInvocationIsUnresolved(
+        InvocationExpressionSyntax invocation,
+        SemanticModel semanticModel,
+        IMethodSymbol? allowedReplacement,
+        CancellationToken cancellationToken)
     {
         var symbol = semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol;
-        if (symbol != null)
+        if (symbol == null)
+            return;
+
+        if (allowedReplacement != null
+            && SymbolEqualityComparer.Default.Equals(symbol, allowedReplacement))
         {
-            throw new RefactoringException(
-                ErrorCodes.NameCollision,
-                $"The call already resolves to '{symbol.ToDisplayString()}'.");
+            return;
         }
+
+        throw new RefactoringException(
+            ErrorCodes.NameCollision,
+            $"The call already resolves to '{symbol.ToDisplayString()}'.");
     }
 
     private static string ResolveMethodName(
@@ -534,15 +573,61 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         }
     }
 
-    internal static void ValidateNoCompatibleMethod(
+    /// <summary>
+    /// Rejects a compatible-signature clash when <paramref name="replaceExisting"/>
+    /// is false, or returns the single existing ordinary method that
+    /// <c>replaceExisting</c> will remove. Constructors, operators, local
+    /// functions, explicit interface implementations, accessors, and other
+    /// non-ordinary methods are never replaced. Two compatible ordinary
+    /// methods with no single target fail before any write.
+    /// </summary>
+    internal static IMethodSymbol? ResolveMethodToReplace(
+        INamedTypeSymbol typeSymbol,
+        string methodName,
+        IReadOnlyList<InferredParameter> parameters,
+        int typeParameterCount,
+        bool replaceExisting)
+    {
+        var matches = FindCompatibleOrdinaryMethods(
+            typeSymbol, methodName, parameters, typeParameterCount);
+
+        if (matches.Count >= 2)
+        {
+            throw new RefactoringException(
+                ErrorCodes.NameCollision,
+                $"Multiple methods named '{methodName}' with a compatible signature exist on '{typeSymbol.Name}'; replaceExisting cannot choose a target.");
+        }
+
+        if (matches.Count == 1)
+        {
+            if (replaceExisting && HasMethodDeclaration(matches[0]))
+                return matches[0];
+
+            throw new RefactoringException(
+                ErrorCodes.NameCollision,
+                $"Method '{methodName}' with a compatible signature already exists on '{typeSymbol.Name}'.");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Finds ordinary methods on <paramref name="typeSymbol"/> that match
+    /// today's <see cref="ValidateNoCompatibleMethod"/> rules (name,
+    /// type-parameter arity, parameter count, <see cref="ParameterTypeMatches"/>)
+    /// plus <see cref="RefKind"/> so <c>ref</c>/<c>out</c>/<c>in</c>
+    /// overloads are not wrongly replaced.
+    /// </summary>
+    internal static List<IMethodSymbol> FindCompatibleOrdinaryMethods(
         INamedTypeSymbol typeSymbol,
         string methodName,
         IReadOnlyList<InferredParameter> parameters,
         int typeParameterCount)
     {
+        var matches = new List<IMethodSymbol>();
         foreach (var existing in typeSymbol.GetMembers(methodName).OfType<IMethodSymbol>())
         {
-            if (existing.MethodKind != MethodKind.Ordinary || existing.IsImplicitlyDeclared)
+            if (!IsReplaceableOrdinaryMethod(existing))
                 continue;
 
             if (existing.TypeParameters.Length != typeParameterCount)
@@ -551,23 +636,54 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             if (existing.Parameters.Length != parameters.Count)
                 continue;
 
-            var matches = true;
+            var matchesSignature = true;
             for (var i = 0; i < parameters.Count; i++)
             {
-                if (!ParameterTypeMatches(parameters[i].TypeName, existing.Parameters[i].Type))
+                if (existing.Parameters[i].RefKind != parameters[i].RefKind
+                    || !ParameterTypeMatches(parameters[i].TypeName, existing.Parameters[i].Type))
                 {
-                    matches = false;
+                    matchesSignature = false;
                     break;
                 }
             }
 
-            if (matches)
-            {
-                throw new RefactoringException(
-                    ErrorCodes.NameCollision,
-                    $"Method '{methodName}' with a compatible signature already exists on '{typeSymbol.Name}'.");
-            }
+            if (matchesSignature)
+                matches.Add(existing);
         }
+
+        return matches;
+    }
+
+    /// <summary>
+    /// True for a user-declared ordinary method that replaceExisting may
+    /// remove. Constructors, operators, local functions, accessors,
+    /// explicit interface implementations, and implicit members are
+    /// excluded.
+    /// </summary>
+    internal static bool IsReplaceableOrdinaryMethod(IMethodSymbol method)
+    {
+        if (method.MethodKind != MethodKind.Ordinary || method.IsImplicitlyDeclared)
+            return false;
+
+        if (method.ExplicitInterfaceImplementations.Length > 0)
+            return false;
+
+        return true;
+    }
+
+    internal static bool HasMethodDeclaration(IMethodSymbol method) =>
+        method.DeclaringSyntaxReferences.Any(reference => reference.GetSyntax() is MethodDeclarationSyntax);
+
+    /// <summary>
+    /// Fail-on-clash used when <c>replaceExisting</c> is false / omitted.
+    /// </summary>
+    internal static void ValidateNoCompatibleMethod(
+        INamedTypeSymbol typeSymbol,
+        string methodName,
+        IReadOnlyList<InferredParameter> parameters,
+        int typeParameterCount)
+    {
+        ResolveMethodToReplace(typeSymbol, methodName, parameters, typeParameterCount, replaceExisting: false);
     }
 
     internal static bool ParameterTypeMatches(string requestedType, ITypeSymbol existingType)
@@ -1004,6 +1120,128 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         return typeDeclaration.WithMembers(SyntaxFactory.List(members));
     }
 
+    /// <summary>
+    /// Removes the matched method declaration from every partial that holds
+    /// it. Match by span/kind, not SyntaxNode reference — same seam as
+    /// generate_property replaceExisting. Uses
+    /// <see cref="SyntaxRemoveOptions.KeepExteriorTrivia"/> and
+    /// <see cref="SyntaxRemoveOptions.KeepDirectives"/> so a leading
+    /// <c>#if</c> / <c>#region</c> on the removed method does not orphan a
+    /// following <c>#endif</c> / <c>#endregion</c>.
+    /// </summary>
+    private static async Task<Solution> RemoveExistingMethodsAcrossPartialsAsync(
+        Solution solution,
+        INamedTypeSymbol typeSymbol,
+        IMethodSymbol method,
+        CancellationToken cancellationToken)
+    {
+        // Key by DocumentId, not SyntaxTree identity — a prior in-memory
+        // annotation on the call-site document replaces that tree.
+        var membersByDocumentAndPart = new Dictionary<DocumentId, Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>>();
+
+        foreach (var reference in method.DeclaringSyntaxReferences)
+        {
+            var syntax = await reference.GetSyntaxAsync(cancellationToken);
+            if (syntax is not MethodDeclarationSyntax)
+                continue;
+            if (syntax.Parent is not TypeDeclarationSyntax part)
+                continue;
+
+            var document = GetDocumentForTree(solution, syntax.SyntaxTree)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
+
+            if (!membersByDocumentAndPart.TryGetValue(document.Id, out var byPart))
+            {
+                byPart = new Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>();
+                membersByDocumentAndPart[document.Id] = byPart;
+            }
+
+            if (!byPart.TryGetValue(part.SpanStart, out var keys))
+            {
+                keys = new HashSet<(int Start, int End, SyntaxKind Kind)>();
+                byPart[part.SpanStart] = keys;
+            }
+
+            keys.Add((syntax.SpanStart, syntax.Span.End, syntax.Kind()));
+        }
+
+        foreach (var (documentId, byPart) in membersByDocumentAndPart)
+        {
+            var document = solution.GetDocument(documentId)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
+            var treeRoot = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+
+            var toRemove = new List<MemberDeclarationSyntax>();
+            foreach (var part in treeRoot.DescendantNodes().OfType<TypeDeclarationSyntax>())
+            {
+                if (!TypeNameMatches(part, typeSymbol.Name))
+                    continue;
+                if (!byPart.TryGetValue(part.SpanStart, out var keys) || keys.Count == 0)
+                    continue;
+
+                foreach (var member in part.Members)
+                {
+                    if (keys.Contains((member.SpanStart, member.Span.End, member.Kind())))
+                        toRemove.Add(member);
+                }
+            }
+
+            if (toRemove.Count == 0)
+                continue;
+
+            // KeepDirectives / KeepExteriorTrivia so a leading #if / #region on
+            // the removed method does not orphan a following #endif / #endregion.
+            var newRoot = treeRoot.RemoveNodes(
+                    toRemove,
+                    SyntaxRemoveOptions.KeepExteriorTrivia | SyntaxRemoveOptions.KeepDirectives)
+                ?? treeRoot;
+            solution = solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+        }
+
+        return solution;
+    }
+
+    /// <summary>
+    /// Resolves a document after an in-memory <c>WithSyntaxRoot</c> may have
+    /// replaced the tree identity. Fall back to file path so a call-site
+    /// annotation does not make the declaring document unfindable.
+    /// </summary>
+    internal static Document? GetDocumentForTree(Solution solution, SyntaxTree tree)
+    {
+        var document = solution.GetDocument(tree);
+        if (document != null)
+            return document;
+
+        if (string.IsNullOrWhiteSpace(tree.FilePath))
+            return null;
+
+        var ids = solution.GetDocumentIdsWithFilePath(tree.FilePath);
+        return ids.Length > 0 ? solution.GetDocument(ids[0]) : null;
+    }
+
+    /// <summary>
+    /// Matches a type declaration to a symbol name. Escaped identifiers
+    /// such as <c>class @class</c> have <see cref="SyntaxToken.Text"/>
+    /// <c>@class</c> and <see cref="SyntaxToken.ValueText"/> <c>class</c>
+    /// (the latter equals <see cref="ISymbol.Name"/>).
+    /// </summary>
+    internal static bool TypeNameMatches(TypeDeclarationSyntax type, string typeName) =>
+        string.Equals(type.Identifier.ValueText, typeName, StringComparison.Ordinal)
+        || string.Equals(type.Identifier.Text, typeName, StringComparison.Ordinal);
+
+    private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName, int preferredSpanStart)
+    {
+        var matches = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .Where(t => TypeNameMatches(t, typeName))
+            .ToList();
+        return matches.FirstOrDefault(t => t.SpanStart == preferredSpanStart) ?? matches.FirstOrDefault();
+    }
+
     private async Task<Solution> ApplyChangesAsync(
         Document callSiteDocument,
         SyntaxNode callSiteRoot,
@@ -1012,8 +1250,75 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         MethodDeclarationSyntax method,
         SimpleNameSyntax? invokedNameToRewrite,
         string methodName,
+        IMethodSymbol? existingToReplace,
+        INamedTypeSymbol typeSymbol,
         CancellationToken cancellationToken)
     {
+        var solution = callSiteDocument.Project.Solution;
+        var callAnnotation = new SyntaxAnnotation("generate-method-stub-call");
+
+        // Annotate the call-site name before any same-file remove so a
+        // method above the invocation cannot shift the rewrite target.
+        if (invokedNameToRewrite != null)
+        {
+            var annotated = invokedNameToRewrite.WithAdditionalAnnotations(callAnnotation);
+            callSiteRoot = callSiteRoot.ReplaceNode(invokedNameToRewrite, annotated);
+            callSiteDocument = callSiteDocument.WithSyntaxRoot(callSiteRoot);
+            solution = callSiteDocument.Project.Solution;
+            invokedNameToRewrite = (SimpleNameSyntax)callSiteRoot.GetAnnotatedNodes(callAnnotation).Single();
+
+            if (targetDocument.Id == callSiteDocument.Id)
+            {
+                targetDocument = callSiteDocument;
+                targetDeclaration = (TypeDeclarationSyntax)callSiteRoot.FindNode(targetDeclaration.Span);
+            }
+            else
+            {
+                targetDocument = solution.GetDocument(targetDocument.Id)
+                    ?? throw new RefactoringException(
+                        ErrorCodes.RoslynError,
+                        "Could not locate the target document.");
+            }
+        }
+
+        if (existingToReplace != null)
+        {
+            solution = await RemoveExistingMethodsAcrossPartialsAsync(
+                solution, typeSymbol, existingToReplace, cancellationToken);
+
+            callSiteDocument = solution.GetDocument(callSiteDocument.Id)
+                ?? throw new RefactoringException(
+                    ErrorCodes.RoslynError,
+                    "Could not locate the call-site document.");
+            callSiteRoot = await callSiteDocument.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+
+            targetDocument = solution.GetDocument(targetDocument.Id)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate the document for type '{typeSymbol.Name}'.");
+            var refreshedTargetRoot = await targetDocument.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse target file.");
+            targetDeclaration = FindTypeDeclaration(
+                    refreshedTargetRoot, typeSymbol.Name, targetDeclaration.SpanStart)
+                ?? throw new RefactoringException(
+                    ErrorCodes.TypeNotFound,
+                    $"Could not relocate type '{typeSymbol.Name}' after removing the existing method.");
+
+            if (invokedNameToRewrite != null)
+            {
+                invokedNameToRewrite = callSiteRoot.GetAnnotatedNodes(callAnnotation)
+                    .OfType<SimpleNameSyntax>()
+                    .FirstOrDefault();
+                if (invokedNameToRewrite == null)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.MethodNotFound,
+                        "Could not rewrite the call site to the overridden method name.");
+                }
+            }
+        }
+
         if (targetDocument.Id == callSiteDocument.Id)
         {
             var targetInCallSite = (TypeDeclarationSyntax)callSiteRoot.FindNode(targetDeclaration.Span);
@@ -1045,7 +1350,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse target file.");
         var currentDecl = (TypeDeclarationSyntax)targetRoot.FindNode(targetDeclaration.Span);
         var newTargetRoot = targetRoot.ReplaceNode(currentDecl, InsertMethod(currentDecl, method));
-        var solution = targetDocument.WithSyntaxRoot(newTargetRoot).Project.Solution;
+        solution = targetDocument.WithSyntaxRoot(newTargetRoot).Project.Solution;
 
         if (invokedNameToRewrite == null)
             return solution;
@@ -1065,7 +1370,14 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         return updatedCallSite.WithSyntaxRoot(rewrittenRoot).Project.Solution;
     }
 
-    private static RefactoringResult CreatePreviewResult(
+    /// <summary>
+    /// Creates a preview result with the generated method stub.
+    /// When replacing a method that lives in another partial, also includes
+    /// a Modify pending change per distinct declaring file with that method
+    /// as <c>BeforeSnippet</c> — same as generate_property replaceExisting
+    /// preview.
+    /// </summary>
+    private static async Task<RefactoringResult> CreatePreviewResultAsync(
         Guid operationId,
         Document callSiteDocument,
         Document targetDocument,
@@ -1074,8 +1386,12 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         MethodDeclarationSyntax method,
         bool rewriteCallSite,
         SimpleNameSyntax? invokedName,
-        bool throwNotImplemented)
+        bool throwNotImplemented,
+        IMethodSymbol? existingMethod,
+        CancellationToken cancellationToken)
     {
+        var replacing = existingMethod != null;
+        var verb = replacing ? "Replace" : "Generate";
         var afterSnippet = method.NormalizeWhitespace().ToFullString();
         // Match the body that will actually be emitted: a false flag still
         // throws for ref / ref readonly returns (CS8156).
@@ -1088,11 +1404,45 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             {
                 File = targetDocument.FilePath ?? typeName,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Generate method stub '{methodName}' on {typeName} ({throwNote})",
-                BeforeSnippet = $"// Type '{typeName}' (no method '{methodName}')",
+                Description = $"{verb} method stub '{methodName}' on {typeName} ({throwNote})",
+                BeforeSnippet = replacing
+                    ? $"// Type '{typeName}' (replacing existing method '{methodName}')"
+                    : $"// Type '{typeName}' (no method '{methodName}')",
                 AfterSnippet = afterSnippet
             }
         };
+
+        if (existingMethod != null)
+        {
+            var sourcePath = PathResolver.NormalizePath(targetDocument.FilePath ?? "");
+            var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var reference in existingMethod.DeclaringSyntaxReferences)
+            {
+                var syntax = await reference.GetSyntaxAsync(cancellationToken);
+                if (syntax is not MethodDeclarationSyntax existingMethodSyntax)
+                    continue;
+
+                var declaringDocument = callSiteDocument.Project.Solution.GetDocument(syntax.SyntaxTree);
+                var filePath = declaringDocument?.FilePath ?? syntax.SyntaxTree.FilePath;
+                if (string.IsNullOrWhiteSpace(filePath))
+                    continue;
+
+                var normalized = PathResolver.NormalizePath(filePath);
+                if (!seenFiles.Add(normalized))
+                    continue;
+                if (string.Equals(normalized, sourcePath, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                pendingChanges.Add(new PendingChange
+                {
+                    File = filePath,
+                    ChangeType = ChangeKind.Modify,
+                    Description = $"Remove existing method '{methodName}' from {typeName}",
+                    BeforeSnippet = existingMethodSyntax.NormalizeWhitespace().ToFullString(),
+                    AfterSnippet = "// method removed"
+                });
+            }
+        }
 
         if (rewriteCallSite && invokedName != null)
         {

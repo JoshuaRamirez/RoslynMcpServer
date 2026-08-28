@@ -330,13 +330,16 @@ public class HelpGeneratorTests
         Assert.DoesNotContain("--throw-not-implemented", requiredSection);
         Assert.DoesNotContain("--generate-async", requiredSection);
         Assert.DoesNotContain("--visibility", requiredSection);
+        Assert.DoesNotContain("--replace-existing", requiredSection);
         Assert.DoesNotContain("--preview", requiredSection);
 
         Assert.Contains("--throw-not-implemented", optionalSection);
         Assert.Contains("--generate-async", optionalSection);
         Assert.Contains("--visibility", optionalSection);
+        Assert.Contains("--replace-existing", optionalSection);
         Assert.Contains("--preview", optionalSection);
         Assert.Contains("throwNotImplemented", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("replaceExisting", tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

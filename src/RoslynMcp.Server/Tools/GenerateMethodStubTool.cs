@@ -33,7 +33,7 @@ public sealed class GenerateMethodStubTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Generate a method from an undefined call site, inferring the signature from usage. Placeholder body is throw new NotImplementedException() when throwNotImplemented is true (the default); otherwise default-return / empty void bodies.";
+        "Generate a method from an undefined call site, inferring the signature from usage. Placeholder body is throw new NotImplementedException() when throwNotImplemented is true (the default); otherwise default-return / empty void bodies. replaceExisting (default false) replaces a compatible ordinary method instead of failing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -92,6 +92,12 @@ public sealed class GenerateMethodStubTool : IToolHandler
                 description = "Throw NotImplementedException in the generated stub body",
                 @default = true
             },
+            replaceExisting = new
+            {
+                type = "boolean",
+                description = "Replace a compatible existing ordinary method instead of failing. Constructors, operators, local functions, explicit interface implementations, and accessors are left alone. Default false.",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -133,6 +139,7 @@ public sealed class GenerateMethodStubTool : IToolHandler
                 Visibility = args.Visibility,
                 GenerateAsync = args.GenerateAsync ?? false,
                 ThrowNotImplemented = args.ThrowNotImplemented ?? true,
+                ReplaceExisting = args.ReplaceExisting ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -169,6 +176,7 @@ public sealed class GenerateMethodStubTool : IToolHandler
         public string? Visibility { get; init; }
         public bool? GenerateAsync { get; init; }
         public bool? ThrowNotImplemented { get; init; }
+        public bool? ReplaceExisting { get; init; }
         public bool? Preview { get; init; }
     }
 }

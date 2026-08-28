@@ -51,6 +51,22 @@ public sealed class GenerateMethodStubParams
     public bool ThrowNotImplemented { get; init; } = true;
 
     /// <summary>
+    /// When true, remove an existing ordinary method declaration that matches
+    /// the inferred/requested signature (same name, type-parameter arity,
+    /// parameter count, parameter types in order, and <c>RefKind</c> when
+    /// inferred) — including on other partials of the same type — before
+    /// inserting a freshly generated stub. Body still follows
+    /// <see cref="ThrowNotImplemented"/>, <see cref="GenerateAsync"/>,
+    /// <see cref="Visibility"/>, and <see cref="ReturnType"/>.
+    /// Constructors, operators, local functions, explicit interface
+    /// implementations, accessors, and other non-ordinary methods are never
+    /// replaced. Two compatible ordinary methods with no single target fail
+    /// with <c>NameCollision</c> — this flag does not guess.
+    /// Default: false (fail if a compatible ordinary method already exists).
+    /// </summary>
+    public bool ReplaceExisting { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }
