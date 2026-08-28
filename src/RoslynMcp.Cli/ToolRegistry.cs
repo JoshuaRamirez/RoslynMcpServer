@@ -237,7 +237,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<GenerateOverridesOperation, GenerateOverridesParams>(
             "generate-overrides", "Generate method overrides from a base class; replaceExisting (default false) replaces already-overridden members instead of skipping them");
         r.RegisterRefactoring<GenerateToStringOperation, GenerateToStringParams>(
-            "generate-tostring", "Generate a ToString override; format interpolated (default) or stringbuilder; includeProperties (default true) includes readable properties as ToString members; false uses instance fields only unless fields names a property; includeInheritedMembers (default false) also collects accessible instance fields/properties declared on base types; replaceExisting (default false) replaces an existing parameterless ToString instead of failing");
+            "generate-tostring", "Generate a ToString override; format interpolated (default) or stringbuilder; includeProperties (default true) includes readable properties as ToString members; false uses instance fields only unless fields names a property; includeInheritedMembers (default false) also collects accessible instance fields/properties declared on base types; replaceExisting (default false) replaces an existing parameterless ToString instead of failing; callSuper (default false) folds the immediate base type's ToString into the generated override");
         r.RegisterRefactoring<ImplementInterfaceOperation, ImplementInterfaceParams>(
             "implement-interface", "Generate implementation stubs for an interface");
         r.RegisterRefactoring<ImplementAbstractOperation, ImplementAbstractParams>(

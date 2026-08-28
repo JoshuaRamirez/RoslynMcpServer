@@ -158,6 +158,7 @@ public class HelpGeneratorTests
         Assert.Contains("--include-properties", help);
         Assert.Contains("--format", help);
         Assert.Contains("--replace-existing", help);
+        Assert.Contains("--call-super", help);
     }
 
     [Fact]
@@ -213,8 +214,10 @@ public class HelpGeneratorTests
         Assert.Contains("--source-file", requiredSection);
         Assert.Contains("--type-name", requiredSection);
         Assert.DoesNotContain("--include-properties", requiredSection);
+        Assert.DoesNotContain("--call-super", requiredSection);
 
         Assert.Contains("--include-properties", optionalSection);
+        Assert.Contains("--call-super", optionalSection);
     }
 
     [Fact]

@@ -11,7 +11,7 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
 /// Operation-level tests for <see cref="GenerateToStringOperation"/>, including <c>format</c>,
-/// <c>includeProperties</c>, <c>includeInheritedMembers</c>, and <c>replaceExisting</c>.
+/// <c>includeProperties</c>, <c>includeInheritedMembers</c>, <c>replaceExisting</c>, and <c>callSuper</c>.
 /// </summary>
 public class GenerateToStringOperationTests
 {
@@ -100,6 +100,18 @@ public class GenerateToStringOperationTests
         Assert.Contains(format, ex.Message);
         Assert.Contains("interpolated", ex.Message);
         Assert.Contains("stringbuilder", ex.Message);
+    }
+
+    [Fact]
+    public void CallSuper_DefaultsToFalse()
+    {
+        var @params = new GenerateToStringParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Person"
+        };
+
+        Assert.False(@params.CallSuper);
     }
 
     [Theory]
@@ -1471,6 +1483,456 @@ public class GenerateToStringOperationTests
 
     #endregion
 
+    #region callSuper
+
+    private const string EntitySource = """
+        namespace TestApp;
+
+        public class Entity
+        {
+            public int Id { get; set; }
+
+            public override string ToString() => $"Entity {{ Id = {Id} }}";
+        }
+        """;
+
+    private const string PersonOnEntitySource = """
+        namespace TestApp;
+
+        public class Person : Entity
+        {
+            public string Name { get; set; }
+
+            public int Age { get; set; }
+        }
+        """;
+
+    private const string EmployeeOnEntitySource = """
+        namespace TestApp;
+
+        public class Employee : Entity
+        {
+        }
+        """;
+
+    private const string PointSource = """
+        namespace TestApp;
+
+        public struct Point
+        {
+            public int X { get; set; }
+
+            public int Y { get; set; }
+        }
+        """;
+
+    private static Task<TempWorkspace> CreateDerivedOnEntityAsync(string derivedSource, string fileName = "Person.cs") =>
+        TempWorkspace.CreateAsync((fileName, derivedSource), ("Entity.cs", EntitySource));
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperOmitted_DoesNotCallBase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertInterpolatedToString(updated);
+        Assert.DoesNotContain("base.ToString()", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperFalse_DoesNotCallBase()
+    {
+        await using var workspace = await CreateDerivedOnEntityAsync(PersonOnEntitySource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = false
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{Name}", toString);
+        Assert.Contains("{Age}", toString);
+        Assert.DoesNotContain("base.ToString()", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperTrue_Interpolated_IncludesBaseToStringFirst()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Entity
+            {
+                public int Id { get; set; }
+
+                public override string ToString() => $"Entity {{ Id = {Id} }}";
+            }
+
+            public class Person : Entity
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.Contains("$\"Person {{ {base.ToString()}", toString);
+        Assert.Contains("{base.ToString()}", toString);
+        Assert.Contains("{Name}", toString);
+        Assert.Contains("{Age}", toString);
+        Assert.DoesNotContain("StringBuilder", toString);
+        var baseCall = toString.IndexOf("{base.ToString()}", StringComparison.Ordinal);
+        var nameInterp = toString.IndexOf("{Name}", StringComparison.Ordinal);
+        Assert.True(baseCall >= 0 && nameInterp > baseCall, "base.ToString() should appear before this type's members");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperTrue_StringBuilder_AppendsBaseToStringFirst()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Entity
+            {
+                public int Id { get; set; }
+
+                public override string ToString() => $"Entity {{ Id = {Id} }}";
+            }
+
+            public class Person : Entity
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = true,
+            Format = "stringbuilder"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.Contains("global::System.Text.StringBuilder", toString);
+        Assert.Contains("Append(base.ToString())", toString);
+        Assert.Contains("Append(this.Name)", toString);
+        Assert.Contains("Append(this.Age)", toString);
+        Assert.DoesNotContain("$\"Person", toString);
+        var appendBase = toString.IndexOf("Append(base.ToString())", StringComparison.Ordinal);
+        var appendName = toString.IndexOf("Append(this.Name)", StringComparison.Ordinal);
+        Assert.True(appendBase >= 0 && appendName > appendBase, "base.ToString() should be Append-ed before members");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperTrue_ObjectBase_FailsWith3146()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateToStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                CallSuper = true
+            }));
+
+        Assert.Equal(ErrorCodes.CallSuperOnObjectBase, ex.ErrorCode);
+        Assert.Equal("3146", ex.ErrorCode);
+        Assert.Contains("Object", ex.Message);
+        Assert.Equal(PersonSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperTrue_Struct_FailsWith3146()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointSource, "Point.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateToStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Point",
+                CallSuper = true
+            }));
+
+        Assert.Equal(ErrorCodes.CallSuperOnObjectBase, ex.ErrorCode);
+        Assert.Equal("3146", ex.ErrorCode);
+        Assert.Contains("ValueType", ex.Message);
+        Assert.Equal(PointSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    private const string AbstractEntityPersonSource = """
+        namespace TestApp;
+
+        public abstract class Entity
+        {
+            public abstract override string ToString();
+        }
+
+        public class Person : Entity
+        {
+            public string Name { get; set; }
+
+            public int Age { get; set; }
+
+            public override string ToString() => "old";
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperTrue_AbstractBaseToString_FailsWith3147()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEntityPersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateToStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                CallSuper = true
+            }));
+
+        Assert.Equal(ErrorCodes.CallSuperOnAbstractBase, ex.ErrorCode);
+        Assert.Equal("3147", ex.ErrorCode);
+        Assert.Contains("abstract", ex.Message);
+        Assert.Equal(AbstractEntityPersonSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperTrue_ReplaceExisting_AbstractBase_FailsWith3147_DoesNotRewrite()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AbstractEntityPersonSource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateToStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                CallSuper = true,
+                ReplaceExisting = true
+            }));
+
+        Assert.Equal(ErrorCodes.CallSuperOnAbstractBase, ex.ErrorCode);
+        Assert.Equal("3147", ex.ErrorCode);
+        Assert.Contains("abstract", ex.Message);
+        Assert.Equal(AbstractEntityPersonSource, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("=> \"old\"", await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("base.ToString()", await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperTrue_NoMembers_GeneratesBaseOnly()
+    {
+        await using var workspace = await CreateDerivedOnEntityAsync(EmployeeOnEntitySource, "Employee.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            CallSuper = true
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{base.ToString()}", toString);
+        Assert.DoesNotContain("Id = ", toString);
+        Assert.DoesNotContain("{Id}", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperTrue_IncludeInheritedMembers_StillCollectsAsToday()
+    {
+        const string derived = """
+            namespace TestApp;
+
+            public class Person : Entity
+            {
+                public string Name;
+            }
+            """;
+
+        await using var workspace = await CreateDerivedOnEntityAsync(derived);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = true,
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{base.ToString()}", toString);
+        Assert.Contains("{Name}", toString);
+        Assert.Contains("{Id}", toString);
+        Assert.DoesNotContain("{Age}", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperTrue_IncludePropertiesFalse_StillCollectsFieldsOnly()
+    {
+        const string derived = """
+            namespace TestApp;
+
+            public class Widget : Entity
+            {
+                public string _id;
+
+                public string Label { get; set; }
+            }
+            """;
+
+        await using var workspace = await CreateDerivedOnEntityAsync(derived, "Widget.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            CallSuper = true,
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{base.ToString()}", toString);
+        Assert.Contains("{_id}", toString);
+        Assert.DoesNotContain("{Label}", toString);
+        Assert.DoesNotContain("Label = ", toString);
+        Assert.DoesNotContain("{Id}", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperTrue_NamedFields_StillCollectsOnlyNamed()
+    {
+        await using var workspace = await CreateDerivedOnEntityAsync(PersonOnEntitySource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = true,
+            Fields = new[] { "Name" }
+        });
+
+        Assert.True(result.Success);
+        var toString = ExtractToStringMethod(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+        Assert.Contains("{base.ToString()}", toString);
+        Assert.Contains("{Name}", toString);
+        Assert.DoesNotContain("{Age}", toString);
+        Assert.DoesNotContain("Age = ", toString);
+        Assert.DoesNotContain("{Id}", toString);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperTrue_ReplaceExisting_ReplacesAndIncludesBaseCall()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person : Entity
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+
+                public override string ToString() => "old";
+            }
+            """;
+
+        await using var workspace = await CreateDerivedOnEntityAsync(source);
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = true,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var toString = ExtractToStringMethod(updated);
+        Assert.DoesNotContain("=> \"old\"", updated);
+        Assert.Contains("{base.ToString()}", toString);
+        Assert.Contains("{Name}", toString);
+        Assert.Contains("{Age}", toString);
+        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_CallSuperTrue_Preview_DoesNotWriteFiles_AndDescribesBase()
+    {
+        await using var workspace = await CreateDerivedOnEntityAsync(PersonOnEntitySource);
+        var operation = new GenerateToStringOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            CallSuper = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("base ToString", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        Assert.Contains("{base.ToString()}", snippet);
+        Assert.Contains("{Name}", snippet);
+        Assert.Contains("{Age}", snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static void AssertInterpolatedToString(string text)
@@ -1481,7 +1943,7 @@ public class GenerateToStringOperationTests
         Assert.Contains("{Age}", text);
 
         var toString = ExtractToStringMethod(text);
-        Assert.Contains("$\"Person", toString);
+        Assert.Contains("$\"Person {{", toString);
         Assert.DoesNotContain("new System.Text.StringBuilder", toString);
     }
 

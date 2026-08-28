@@ -124,6 +124,18 @@ public class GenerateToStringToolTests
         Assert.False(replaceExisting.GetProperty("default").GetBoolean());
     }
 
+    [Fact]
+    public void GetDefinition_CallSuperProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var callSuper = doc.RootElement.GetProperty("properties").GetProperty("callSuper");
+
+        Assert.Equal("boolean", callSuper.GetProperty("type").GetString());
+        Assert.False(callSuper.GetProperty("default").GetBoolean());
+    }
+
     #endregion
 
     #region ExecuteAsync Argument Validation Tests
