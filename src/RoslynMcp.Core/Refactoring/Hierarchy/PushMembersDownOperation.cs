@@ -415,7 +415,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
             foreach (var target in targets)
             {
-                if (!CanMoveMember(member.Symbol, target))
+                if (!CanMoveMember(MemberAsSeenFromTarget(member.Symbol, source, target), target))
                 {
                     if (target.TypeKind == TypeKind.Interface && !IsInterfaceCompatible(member.Symbol))
                     {
@@ -658,6 +658,29 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     private static bool IsInvokeWhenNotNull(ExpressionSyntax whenNotNull) =>
         whenNotNull is InvocationExpressionSyntax invocation && InvocationRaisesEvent(invocation);
+
+    /// <summary>
+    /// For indexers, returns the member as constructed on <paramref name="target"/>'s
+    /// base / interface (so <c>this[T]</c> on <c>Box&lt;T&gt;</c> is <c>this[int]</c>
+    /// when the target is <c>Box&lt;int&gt;</c>). Other members are unchanged.
+    /// </summary>
+    private static ISymbol MemberAsSeenFromTarget(ISymbol member, INamedTypeSymbol source, INamedTypeSymbol target)
+    {
+        if (member is not IPropertySymbol { IsIndexer: true })
+            return member;
+
+        var constructed = GetConstructedBase(source, target);
+        if (constructed == null)
+            return member;
+
+        foreach (var candidate in constructed.GetMembers(member.Name))
+        {
+            if (SymbolEqualityComparer.Default.Equals(candidate.OriginalDefinition, member.OriginalDefinition))
+                return candidate;
+        }
+
+        return member;
+    }
 
     /// <summary>
     /// Returns whether <paramref name="member"/> can be copied onto <paramref name="target"/>.
@@ -1175,7 +1198,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => property.WithModifiers(ToOverrideModifiers(property.Modifiers))
                 .NormalizeWhitespace(),
-            IndexerDeclarationSyntax indexer => indexer.WithModifiers(ToOverrideModifiers(indexer.Modifiers))
+            IndexerDeclarationSyntax indexer => EnsureIndexerBodies(
+                    indexer.WithModifiers(ToOverrideModifiers(indexer.Modifiers)))
                 .NormalizeWhitespace(),
             EventDeclarationSyntax eventDecl => eventDecl.WithModifiers(ToOverrideModifiers(eventDecl.Modifiers))
                 .NormalizeWhitespace(),
@@ -1192,12 +1216,46 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
         return method
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(
-                SyntaxFactory.ThrowStatement(
-                    SyntaxFactory.ObjectCreationExpression(
-                            SyntaxFactory.ParseTypeName("System.NotImplementedException"))
-                        .WithArgumentList(SyntaxFactory.ArgumentList()))));
+            .WithBody(CreateNotImplementedBlock());
     }
+
+    /// <summary>
+    /// Indexers cannot be auto-implemented. After <c>abstract</c> is stripped
+    /// (or an abstract indexer is copied as <c>override</c>), bodyless
+    /// accessors would be CS0501. Methods already get a throwing body.
+    /// </summary>
+    private static IndexerDeclarationSyntax EnsureIndexerBodies(IndexerDeclarationSyntax indexer)
+    {
+        if (indexer.ExpressionBody != null || indexer.AccessorList == null)
+            return indexer;
+
+        var changed = false;
+        var accessors = new List<AccessorDeclarationSyntax>();
+        foreach (var accessor in indexer.AccessorList.Accessors)
+        {
+            if (accessor.Body != null || accessor.ExpressionBody != null)
+            {
+                accessors.Add(accessor);
+                continue;
+            }
+
+            changed = true;
+            accessors.Add(accessor
+                .WithSemicolonToken(default)
+                .WithBody(CreateNotImplementedBlock()));
+        }
+
+        return changed
+            ? indexer.WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
+            : indexer;
+    }
+
+    private static BlockSyntax CreateNotImplementedBlock() =>
+        SyntaxFactory.Block(
+            SyntaxFactory.ThrowStatement(
+                SyntaxFactory.ObjectCreationExpression(
+                        SyntaxFactory.ParseTypeName("System.NotImplementedException"))
+                    .WithArgumentList(SyntaxFactory.ArgumentList())));
 
     private static MemberDeclarationSyntax StripHierarchyModifiers(MemberDeclarationSyntax member)
     {
@@ -1222,12 +1280,13 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                     property.Modifiers.Any(SyntaxKind.AbstractKeyword))
                 .NormalizeWhitespace(),
             IndexerDeclarationSyntax indexer =>
-                WithVirtualIfAbstract(indexer.WithModifiers(StripModifiers(
-                    indexer.Modifiers,
-                    SyntaxKind.AbstractKeyword,
-                    SyntaxKind.NewKeyword,
-                    SyntaxKind.SealedKeyword)),
-                    indexer.Modifiers.Any(SyntaxKind.AbstractKeyword))
+                EnsureIndexerBodies(
+                    WithVirtualIfAbstract(indexer.WithModifiers(StripModifiers(
+                        indexer.Modifiers,
+                        SyntaxKind.AbstractKeyword,
+                        SyntaxKind.NewKeyword,
+                        SyntaxKind.SealedKeyword)),
+                        indexer.Modifiers.Any(SyntaxKind.AbstractKeyword)))
                 .NormalizeWhitespace(),
             FieldDeclarationSyntax field => field.NormalizeWhitespace(),
             EventFieldDeclarationSyntax eventField => eventField.NormalizeWhitespace(),

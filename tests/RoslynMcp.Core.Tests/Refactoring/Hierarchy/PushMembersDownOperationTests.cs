@@ -1384,6 +1384,154 @@ public class PushMembersDownOperationTests
         AssertCompiles(updated);
     }
 
+    [SkippableFact]
+    public async Task PushMembersDown_AbstractIndexer_MaterializesAccessorBodiesOnDerived()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Animal
+            {
+                public abstract string this[int i] { get; set; }
+            }
+
+            public abstract class Bird : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["this[]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(FindIndexers(updated, "Animal"));
+        var birdIndexer = Assert.Single(FindIndexers(updated, "Bird"));
+        Assert.Contains(birdIndexer.Modifiers, t => t.IsKind(SyntaxKind.VirtualKeyword));
+        Assert.DoesNotContain(birdIndexer.Modifiers, t => t.IsKind(SyntaxKind.AbstractKeyword));
+        Assert.All(birdIndexer.AccessorList!.Accessors, a => Assert.NotNull(a.Body));
+        Assert.Contains("NotImplementedException", GetTypeSection(updated, "Bird"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_AbstractIndexer_MaterializesOverrideBodies()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Animal
+            {
+                public abstract string this[int i] { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["this[]"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var animalIndexer = Assert.Single(FindIndexers(updated, "Animal"));
+        var dogIndexer = Assert.Single(FindIndexers(updated, "Dog"));
+        Assert.Contains(animalIndexer.Modifiers, t => t.IsKind(SyntaxKind.AbstractKeyword));
+        Assert.All(animalIndexer.AccessorList!.Accessors, a => Assert.True(a.Body == null && a.ExpressionBody == null));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.All(dogIndexer.AccessorList!.Accessors, a => Assert.NotNull(a.Body));
+        Assert.Contains("NotImplementedException", GetTypeSection(updated, "Dog"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_GenericIndexer_ConflictsWithSubstitutedSignature()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Box<T>
+            {
+                public T this[T key] => key;
+            }
+
+            public class IntBox : Box<int>
+            {
+                public int this[int key] => key;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Box",
+                Members = ["this[]"]
+            }));
+
+        Assert.Equal(ErrorCodes.ConflictsWithExistingMember, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_GenericIndexer_DifferentSubstitutedArity_DoesNotConflict()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Box<T>
+            {
+                public T this[T key] => key;
+            }
+
+            public class StringBox : Box<string>
+            {
+                public int this[int i] => i;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Box",
+            Members = ["this[]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(FindIndexers(updated, "Box"));
+        var derived = FindIndexers(updated, "StringBox");
+        Assert.Equal(2, derived.Count);
+        Assert.Contains(derived, indexer =>
+            Assert.Single(indexer.ParameterList.Parameters).Type!.ToString() == "string");
+        Assert.Contains(derived, indexer =>
+            Assert.Single(indexer.ParameterList.Parameters).Type!.ToString() == "int");
+        AssertCompiles(updated);
+    }
+
     #endregion
 
     #region P0 Rejects
