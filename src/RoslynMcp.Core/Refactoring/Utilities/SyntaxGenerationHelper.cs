@@ -389,24 +389,32 @@ public static class SyntaxGenerationHelper
     /// <summary>
     /// Interface indexer: <c>this[params] { get; set; }</c> with the real
     /// parameter list / <c>RefKind</c> and <c>ref</c> / <c>ref readonly</c>
-    /// return kind. Ordinary properties stay on
-    /// <see cref="CreateInterfaceProperty"/>.
+    /// return kind. Only publicly accessible accessors are emitted so a
+    /// private setter cannot become a public interface <c>set;</c>. An
+    /// init-only setter is emitted as <c>init;</c>. Ordinary properties
+    /// stay on <see cref="CreateInterfaceProperty"/>.
     /// </summary>
-    private static IndexerDeclarationSyntax CreateInterfaceIndexer(IPropertySymbol indexer)
+    private static IndexerDeclarationSyntax? CreateInterfaceIndexer(IPropertySymbol indexer)
     {
         var accessors = new List<AccessorDeclarationSyntax>();
 
-        if (indexer.GetMethod != null)
+        if (IsPublicInterfaceAccessor(indexer.GetMethod))
         {
             accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
         }
 
-        if (indexer.SetMethod != null)
+        if (IsPublicInterfaceAccessor(indexer.SetMethod))
         {
-            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+            var kind = indexer.SetMethod!.IsInitOnly
+                ? SyntaxKind.InitAccessorDeclaration
+                : SyntaxKind.SetAccessorDeclaration;
+            accessors.Add(SyntaxFactory.AccessorDeclaration(kind)
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
         }
+
+        if (accessors.Count == 0)
+            return null;
 
         var parameters = indexer.Parameters.Select(CreateParameter);
         return SyntaxFactory.IndexerDeclaration(
@@ -414,6 +422,9 @@ public static class SyntaxGenerationHelper
             .WithParameterList(SyntaxFactory.BracketedParameterList(SyntaxFactory.SeparatedList(parameters)))
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
     }
+
+    private static bool IsPublicInterfaceAccessor(IMethodSymbol? accessor) =>
+        accessor is { DeclaredAccessibility: Accessibility.Public };
 
     private static EventDeclarationSyntax CreateInterfaceEvent(IEventSymbol eventSymbol)
     {

@@ -444,6 +444,103 @@ public class ExtractInterfaceOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractInterface_PublicIndexer_PrivateSetter_EmitsGetOnlyAndCompiles()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                public int this[int i] { get => i; private set { } }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            InterfaceName = "ILookup"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "ILookup"));
+        Assert.Contains(indexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        Assert.DoesNotContain(indexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.DoesNotContain(indexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.InitAccessorDeclaration));
+        AssertImplementsInterface(updated, "Lookup", "ILookup");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_PublicIndexer_PrivateGetter_EmitsSetOnlyAndCompiles()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                public int this[int i] { private get => 0; set { } }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            InterfaceName = "ILookup"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "ILookup"));
+        Assert.DoesNotContain(indexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        Assert.Contains(indexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        AssertImplementsInterface(updated, "Lookup", "ILookup");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_InitOnlyIndexer_EmitsInitAndCompiles()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                public int this[int i] { get; init; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            InterfaceName = "ILookup"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "ILookup"));
+        Assert.Contains(indexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        Assert.Contains(indexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.InitAccessorDeclaration));
+        Assert.DoesNotContain(indexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.Contains("this[int i]", updated);
+        Assert.Contains("init;", ExtractMemberText(indexer));
+        AssertImplementsInterface(updated, "Lookup", "ILookup");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
     public async Task ExtractInterface_Indexer_Preview_DescribesIndexerAndWritesNothing()
     {
         await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
@@ -512,6 +609,9 @@ public class ExtractInterfaceOperationTests
     private static MethodDeclarationSyntax? FindMethod(string source, string typeName, string name) =>
         FindType(source, typeName).Members.OfType<MethodDeclarationSyntax>()
             .FirstOrDefault(m => m.Identifier.Text == name);
+
+    private static string ExtractMemberText(MemberDeclarationSyntax member) =>
+        NormalizeNewlines(member.NormalizeWhitespace().ToFullString());
 
     private static void AssertCompiles(string source)
     {
