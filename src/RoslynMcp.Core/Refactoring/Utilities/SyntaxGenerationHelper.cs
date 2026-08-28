@@ -16,6 +16,21 @@ public static class SyntaxGenerationHelper
     /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
     /// <param name="callBase">If true, adds base.Method() call for overrides.</param>
     /// <param name="throwNotImplemented">If true, throws NotImplementedException.</param>
+    /// <returns>Method declaration syntax.</returns>
+    public static MethodDeclarationSyntax CreateMethodStub(
+        IMethodSymbol method,
+        bool explicitInterface = false,
+        bool callBase = false,
+        bool throwNotImplemented = true)
+        => CreateMethodStub(method, explicitInterface, callBase, throwNotImplemented, emittingType: null);
+
+    /// <summary>
+    /// Creates a method stub for interface implementation or override.
+    /// </summary>
+    /// <param name="method">The method to implement.</param>
+    /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
+    /// <param name="callBase">If true, adds base.Method() call for overrides.</param>
+    /// <param name="throwNotImplemented">If true, throws NotImplementedException.</param>
     /// <param name="emittingType">
     /// Type that will declare the stub. When set and the method lives in
     /// another assembly, <c>protected internal</c> is emitted as
@@ -24,10 +39,10 @@ public static class SyntaxGenerationHelper
     /// <returns>Method declaration syntax.</returns>
     public static MethodDeclarationSyntax CreateMethodStub(
         IMethodSymbol method,
-        bool explicitInterface = false,
-        bool callBase = false,
-        bool throwNotImplemented = true,
-        INamedTypeSymbol? emittingType = null)
+        bool explicitInterface,
+        bool callBase,
+        bool throwNotImplemented,
+        INamedTypeSymbol? emittingType)
     {
         // Build parameter list, preserving each parameter's RefKind so a
         // regenerated override of M(ref/out/in/ref readonly T) still overrides.
@@ -103,6 +118,21 @@ public static class SyntaxGenerationHelper
     /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
     /// <param name="throwNotImplemented">If true, throws NotImplementedException in accessors.</param>
     /// <param name="callBase">If true, non-abstract accessors call <c>base.Prop</c>.</param>
+    /// <returns>Property declaration syntax.</returns>
+    public static PropertyDeclarationSyntax CreatePropertyStub(
+        IPropertySymbol property,
+        bool explicitInterface = false,
+        bool throwNotImplemented = true,
+        bool callBase = false)
+        => CreatePropertyStub(property, explicitInterface, throwNotImplemented, callBase, emittingType: null);
+
+    /// <summary>
+    /// Creates a property stub for interface implementation or override.
+    /// </summary>
+    /// <param name="property">The property to implement.</param>
+    /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
+    /// <param name="throwNotImplemented">If true, throws NotImplementedException in accessors.</param>
+    /// <param name="callBase">If true, non-abstract accessors call <c>base.Prop</c>.</param>
     /// <param name="emittingType">
     /// Type that will declare the stub. When set and the property lives in
     /// another assembly, <c>protected internal</c> is emitted as
@@ -112,10 +142,10 @@ public static class SyntaxGenerationHelper
     /// <returns>Property declaration syntax.</returns>
     public static PropertyDeclarationSyntax CreatePropertyStub(
         IPropertySymbol property,
-        bool explicitInterface = false,
-        bool throwNotImplemented = true,
-        bool callBase = false,
-        INamedTypeSymbol? emittingType = null)
+        bool explicitInterface,
+        bool throwNotImplemented,
+        bool callBase,
+        INamedTypeSymbol? emittingType)
     {
         var propertyType = SyntaxFactory.ParseTypeName(property.Type.ToDisplayString());
         var accessors = CreatePropertyAccessors(property, throwNotImplemented, callBase, emittingType);
@@ -156,6 +186,21 @@ public static class SyntaxGenerationHelper
     /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
     /// <param name="throwNotImplemented">If true, throws NotImplementedException in accessors.</param>
     /// <param name="callBase">If true, non-abstract accessors call <c>base[i]</c>.</param>
+    /// <returns>Indexer declaration syntax.</returns>
+    public static IndexerDeclarationSyntax CreateIndexerStub(
+        IPropertySymbol indexer,
+        bool explicitInterface = false,
+        bool throwNotImplemented = true,
+        bool callBase = false)
+        => CreateIndexerStub(indexer, explicitInterface, throwNotImplemented, callBase, emittingType: null);
+
+    /// <summary>
+    /// Creates an indexer stub for interface implementation or override.
+    /// </summary>
+    /// <param name="indexer">The indexer to implement.</param>
+    /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
+    /// <param name="throwNotImplemented">If true, throws NotImplementedException in accessors.</param>
+    /// <param name="callBase">If true, non-abstract accessors call <c>base[i]</c>.</param>
     /// <param name="emittingType">
     /// Type that will declare the stub. When set and the indexer lives in
     /// another assembly, <c>protected internal</c> is emitted as
@@ -165,10 +210,10 @@ public static class SyntaxGenerationHelper
     /// <returns>Indexer declaration syntax.</returns>
     public static IndexerDeclarationSyntax CreateIndexerStub(
         IPropertySymbol indexer,
-        bool explicitInterface = false,
-        bool throwNotImplemented = true,
-        bool callBase = false,
-        INamedTypeSymbol? emittingType = null)
+        bool explicitInterface,
+        bool throwNotImplemented,
+        bool callBase,
+        INamedTypeSymbol? emittingType)
     {
         var indexerType = CreateMemberType(indexer.Type, indexer.ReturnsByRef, indexer.ReturnsByRefReadonly);
         var parameters = indexer.Parameters.Select(CreateParameter);
