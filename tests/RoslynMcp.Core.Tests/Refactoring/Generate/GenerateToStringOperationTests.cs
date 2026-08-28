@@ -1570,7 +1570,25 @@ public class GenerateToStringOperationTests
     [SkippableFact]
     public async Task GenerateToString_CallSuperTrue_Interpolated_IncludesBaseToStringFirst()
     {
-        await using var workspace = await CreateDerivedOnEntityAsync(PersonOnEntitySource);
+        const string source = """
+            namespace TestApp;
+
+            public class Entity
+            {
+                public int Id { get; set; }
+
+                public override string ToString() => $"Entity {{ Id = {Id} }}";
+            }
+
+            public class Person : Entity
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
         var operation = new GenerateToStringOperation(workspace.Context);
 
         var result = await operation.ExecuteAsync(new GenerateToStringParams
@@ -1583,6 +1601,7 @@ public class GenerateToStringOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         var toString = ExtractToStringMethod(updated);
+        Assert.Contains("$\"Person {{ {base.ToString()}", toString);
         Assert.Contains("{base.ToString()}", toString);
         Assert.Contains("{Name}", toString);
         Assert.Contains("{Age}", toString);
@@ -1590,12 +1609,31 @@ public class GenerateToStringOperationTests
         var baseCall = toString.IndexOf("{base.ToString()}", StringComparison.Ordinal);
         var nameInterp = toString.IndexOf("{Name}", StringComparison.Ordinal);
         Assert.True(baseCall >= 0 && nameInterp > baseCall, "base.ToString() should appear before this type's members");
+        AssertCompiles(updated);
     }
 
     [SkippableFact]
     public async Task GenerateToString_CallSuperTrue_StringBuilder_AppendsBaseToStringFirst()
     {
-        await using var workspace = await CreateDerivedOnEntityAsync(PersonOnEntitySource);
+        const string source = """
+            namespace TestApp;
+
+            public class Entity
+            {
+                public int Id { get; set; }
+
+                public override string ToString() => $"Entity {{ Id = {Id} }}";
+            }
+
+            public class Person : Entity
+            {
+                public string Name { get; set; }
+
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
         var operation = new GenerateToStringOperation(workspace.Context);
 
         var result = await operation.ExecuteAsync(new GenerateToStringParams
@@ -1617,6 +1655,7 @@ public class GenerateToStringOperationTests
         var appendBase = toString.IndexOf("Append(base.ToString())", StringComparison.Ordinal);
         var appendName = toString.IndexOf("Append(this.Name)", StringComparison.Ordinal);
         Assert.True(appendBase >= 0 && appendName > appendBase, "base.ToString() should be Append-ed before members");
+        AssertCompiles(updated);
     }
 
     [SkippableFact]
@@ -1904,7 +1943,7 @@ public class GenerateToStringOperationTests
         Assert.Contains("{Age}", text);
 
         var toString = ExtractToStringMethod(text);
-        Assert.Contains("$\"Person", toString);
+        Assert.Contains("$\"Person {{", toString);
         Assert.DoesNotContain("new System.Text.StringBuilder", toString);
     }
 

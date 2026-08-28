@@ -317,46 +317,16 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
     {
         // $"TypeName {{ Field1 = {Field1}, Field2 = {Field2} }}"
         // With callSuper: $"TypeName {{ {base.ToString()}, Field1 = {Field1}, ... }}"
-        var parts = new List<InterpolatedStringContentSyntax>();
-
-        parts.Add(SyntaxFactory.InterpolatedStringText(
-            SyntaxFactory.Token(
-                SyntaxFactory.TriviaList(),
-                SyntaxKind.InterpolatedStringTextToken,
-                $"{typeName} {{ ",
-                $"{typeName} {{ ",
-                SyntaxFactory.TriviaList())));
-
+        // ParseExpression keeps "{{ {" intact — building the interpolation by hand
+        // then NormalizeWhitespace collapses the opening "{{" into a single "{".
+        var pieces = new List<string>();
         if (callSuper)
-            parts.Add(SyntaxFactory.Interpolation(BaseToStringCall()));
+            pieces.Add("{base.ToString()}");
+        foreach (var member in members)
+            pieces.Add($"{member.Name} = {{{member.Name}}}");
 
-        for (int i = 0; i < members.Count; i++)
-        {
-            var member = members[i];
-            var prefix = i == 0 && !callSuper ? "" : ", ";
-
-            parts.Add(SyntaxFactory.InterpolatedStringText(
-                SyntaxFactory.Token(
-                    SyntaxFactory.TriviaList(),
-                    SyntaxKind.InterpolatedStringTextToken,
-                    $"{prefix}{member.Name} = ",
-                    $"{prefix}{member.Name} = ",
-                    SyntaxFactory.TriviaList())));
-
-            parts.Add(SyntaxFactory.Interpolation(SyntaxFactory.IdentifierName(member.Name)));
-        }
-
-        parts.Add(SyntaxFactory.InterpolatedStringText(
-            SyntaxFactory.Token(
-                SyntaxFactory.TriviaList(),
-                SyntaxKind.InterpolatedStringTextToken,
-                " }}",
-                " }}",
-                SyntaxFactory.TriviaList())));
-
-        var interpolatedString = SyntaxFactory.InterpolatedStringExpression(
-            SyntaxFactory.Token(SyntaxKind.InterpolatedStringStartToken),
-            SyntaxFactory.List(parts));
+        var inner = string.Join(", ", pieces);
+        var interpolatedString = SyntaxFactory.ParseExpression("$\"" + typeName + " {{ " + inner + " }}\"");
 
         return CreateToStringMethod(SyntaxFactory.Block(SyntaxFactory.ReturnStatement(interpolatedString)));
     }
