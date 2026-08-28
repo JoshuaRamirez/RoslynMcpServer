@@ -16,7 +16,9 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// unless <c>members</c> names a property (named resolution still considers
 /// fields and settable properties).
 /// Honors <c>includeInheritedMembers</c> to append accessible base-type members
-/// (settable properties, not the readable-property equality collector).
+/// (settable properties, not the readable-property equality collector),
+/// and <c>replaceExisting</c> to remove an existing non-implicit constructor
+/// with the exact same signature before generating a fresh one.
 /// </summary>
 public sealed class GenerateConstructorOperation : RefactoringOperationBase<GenerateConstructorParams>
 {
@@ -100,16 +102,24 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 "No members found to initialize in constructor.");
         }
 
-        // Check for existing constructor with same signature or ambiguous due to optional params
+        // Check for existing constructor with same signature or ambiguous due to optional params.
+        // replaceExisting only lifts the exact-signature reject (same count/types in order);
+        // optional-param / required-param ambiguity still throws — do not guess an overload.
         var parameterTypes = members.Select(m => GetMemberType(m)).ToList();
         var newParamCount = parameterTypes.Count;
+        IMethodSymbol? exactMatch = null;
 
         foreach (var ctor in typeSymbol.Constructors.Where(c => !c.IsImplicitlyDeclared))
         {
             // Exact signature match
-            if (ctor.Parameters.Length == newParamCount &&
-                ctor.Parameters.Select(p => p.Type).SequenceEqual(parameterTypes, SymbolEqualityComparer.Default))
+            if (HasExactSignature(ctor, parameterTypes))
             {
+                if (@params.ReplaceExisting)
+                {
+                    exactMatch = ctor;
+                    continue;
+                }
+
                 throw new RefactoringException(
                     ErrorCodes.ConstructorExists,
                     "A constructor with the same signature already exists.");
@@ -144,11 +154,29 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         // Generate the constructor
         var constructor = GenerateConstructor(members, typeDeclaration, @params.AddNullChecks);
+        var replacing = exactMatch != null;
 
         // If preview mode, return without applying (but include generated constructor code)
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params, members, constructor);
+            return CreatePreviewResult(operationId, @params, members, constructor, replacing);
+        }
+
+        var solution = document.Project.Solution;
+        if (replacing)
+        {
+            solution = await RemoveExistingConstructorAcrossPartialsAsync(
+                solution, typeSymbol, exactMatch!, cancellationToken);
+            document = solution.GetDocument(document.Id)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate the document for type '{@params.TypeName}'.");
+            root = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+            typeDeclaration = FindTypeDeclaration(root, @params.TypeName, typeDeclaration.SpanStart)
+                ?? throw new RefactoringException(
+                    ErrorCodes.TypeNotFound,
+                    $"Type '{@params.TypeName}' not found in file.");
         }
 
         // Add constructor to type
@@ -156,10 +184,9 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         var newRoot = root.ReplaceNode(typeDeclaration, newTypeDeclaration);
 
         var newDocument = document.WithSyntaxRoot(newRoot);
-        var newSolution = newDocument.Project.Solution;
 
         // Commit changes
-        var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
+        var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
 
         return RefactoringResult.Succeeded(
             operationId,
@@ -339,6 +366,87 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
     private static bool SameAssembly(ISymbol member, INamedTypeSymbol fromType) =>
         SymbolEqualityComparer.Default.Equals(member.ContainingAssembly, fromType.ContainingAssembly);
+
+    private static bool HasExactSignature(IMethodSymbol constructor, IReadOnlyList<ITypeSymbol> parameterTypes) =>
+        constructor.Parameters.Length == parameterTypes.Count &&
+        constructor.Parameters.Select(p => p.Type).SequenceEqual(parameterTypes, SymbolEqualityComparer.Default);
+
+    /// <summary>
+    /// Removes the exact-signature constructor declaration from every partial
+    /// that holds it. Match by span/kind, not SyntaxNode reference — same seam
+    /// as Equals / ToString replaceExisting.
+    /// </summary>
+    private static async Task<Solution> RemoveExistingConstructorAcrossPartialsAsync(
+        Solution solution,
+        INamedTypeSymbol typeSymbol,
+        IMethodSymbol constructor,
+        CancellationToken cancellationToken)
+    {
+        var membersByTreeAndPart = new Dictionary<SyntaxTree, Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>>();
+
+        foreach (var reference in constructor.DeclaringSyntaxReferences)
+        {
+            var syntax = await reference.GetSyntaxAsync(cancellationToken);
+            if (syntax.Parent is not TypeDeclarationSyntax part)
+                continue;
+
+            if (!membersByTreeAndPart.TryGetValue(syntax.SyntaxTree, out var byPart))
+            {
+                byPart = new Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>();
+                membersByTreeAndPart[syntax.SyntaxTree] = byPart;
+            }
+
+            if (!byPart.TryGetValue(part.SpanStart, out var keys))
+            {
+                keys = new HashSet<(int Start, int End, SyntaxKind Kind)>();
+                byPart[part.SpanStart] = keys;
+            }
+
+            keys.Add((syntax.SpanStart, syntax.Span.End, syntax.Kind()));
+        }
+
+        foreach (var (tree, byPart) in membersByTreeAndPart)
+        {
+            var document = solution.GetDocument(tree)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
+            var root = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+
+            var replacements = new Dictionary<TypeDeclarationSyntax, TypeDeclarationSyntax>();
+            foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
+            {
+                if (reference.SyntaxTree != tree)
+                    continue;
+                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax part)
+                    continue;
+                if (!byPart.TryGetValue(part.SpanStart, out var keys) || keys.Count == 0)
+                    continue;
+
+                var remainingMembers = part.Members
+                    .Where(m => !keys.Contains((m.SpanStart, m.Span.End, m.Kind())))
+                    .ToArray();
+                replacements[part] = part.WithMembers(SyntaxFactory.List(remainingMembers));
+            }
+
+            if (replacements.Count == 0)
+                continue;
+
+            var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+            solution = solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+        }
+
+        return solution;
+    }
+
+    private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName, int preferredSpanStart)
+    {
+        var matches = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == typeName)
+            .ToList();
+        return matches.FirstOrDefault(t => t.SpanStart == preferredSpanStart) ?? matches.FirstOrDefault();
+    }
 
     private static ITypeSymbol GetMemberType(ISymbol member)
     {
@@ -587,10 +695,12 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         Guid operationId,
         GenerateConstructorParams @params,
         List<ISymbol> members,
-        ConstructorDeclarationSyntax constructor)
+        ConstructorDeclarationSyntax constructor,
+        bool replacing)
     {
         var memberNames = string.Join(", ", members.Select(m => m.Name));
         var inherited = @params.IncludeInheritedMembers ? " including inherited members" : "";
+        var verb = replacing ? "Replace" : "Generate";
 
         // Show the generated constructor as the "after" snippet
         var afterSnippet = constructor.NormalizeWhitespace().ToFullString();
@@ -601,8 +711,10 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             {
                 File = @params.SourceFile,
                 ChangeType = Contracts.Enums.ChangeKind.Modify,
-                Description = $"Generate constructor{inherited} for {@params.TypeName} initializing: {memberNames}",
-                BeforeSnippet = $"// Type '{@params.TypeName}' (no constructor with these parameters)",
+                Description = $"{verb} constructor{inherited} for {@params.TypeName} initializing: {memberNames}",
+                BeforeSnippet = replacing
+                    ? $"// Type '{@params.TypeName}' (replacing existing constructor)"
+                    : $"// Type '{@params.TypeName}' (no constructor with these parameters)",
                 AfterSnippet = afterSnippet
             }
         };
