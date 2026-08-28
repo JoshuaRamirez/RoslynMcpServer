@@ -96,11 +96,13 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         // Get unimplemented members
         var unimplementedMembers = MemberAnalyzer.GetUnimplementedMembers(typeSymbol, interfaceSymbol).ToList();
 
-        // Filter to requested members if specified
+        // Filter to requested members if specified. Indexers match metadata
+        // name ("Item"), Roslyn name ("this[]"), and conventional display
+        // ("this[int i]") so callers can filter by any of those forms.
         if (@params.Members != null && @params.Members.Count > 0)
         {
             var requestedSet = new HashSet<string>(@params.Members);
-            unimplementedMembers = unimplementedMembers.Where(m => requestedSet.Contains(m.Name)).ToList();
+            unimplementedMembers = unimplementedMembers.Where(m => MatchesRequestedMember(m, requestedSet)).ToList();
         }
 
         if (unimplementedMembers.Count == 0)
@@ -186,6 +188,10 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                     explicitImplementation,
                     callBase: false,
                     throwNotImplemented),
+                IPropertySymbol { IsIndexer: true } indexer => SyntaxGenerationHelper.CreateIndexerStub(
+                    indexer,
+                    explicitImplementation,
+                    throwNotImplemented),
                 IPropertySymbol property => SyntaxGenerationHelper.CreatePropertyStub(
                     property,
                     explicitImplementation,
@@ -219,6 +225,36 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         }
 
         return typeDeclaration.WithMembers(SyntaxFactory.List(members));
+    }
+
+    private static bool MatchesRequestedMember(ISymbol member, HashSet<string> requested)
+    {
+        if (requested.Contains(member.Name))
+            return true;
+
+        if (member is not IPropertySymbol { IsIndexer: true } indexer)
+            return false;
+
+        var withNames = $"this[{string.Join(", ", indexer.Parameters.Select(FormatIndexerParameterDisplay))}]";
+        var typesOnly = $"this[{string.Join(",", indexer.Parameters.Select(p => p.Type.ToDisplayString()))}]";
+        var typesOnlySpaced = $"this[{string.Join(", ", indexer.Parameters.Select(p => p.Type.ToDisplayString()))}]";
+        return requested.Contains(indexer.MetadataName)
+            || requested.Contains(withNames)
+            || requested.Contains(typesOnly)
+            || requested.Contains(typesOnlySpaced);
+    }
+
+    private static string FormatIndexerParameterDisplay(IParameterSymbol parameter)
+    {
+        var type = parameter.Type.ToDisplayString();
+        return parameter.RefKind switch
+        {
+            RefKind.Ref => $"ref {type} {parameter.Name}",
+            RefKind.Out => $"out {type} {parameter.Name}",
+            RefKind.In => $"in {type} {parameter.Name}",
+            RefKind.RefReadOnlyParameter => $"ref readonly {type} {parameter.Name}",
+            _ => $"{type} {parameter.Name}"
+        };
     }
 
     private static RefactoringResult CreatePreviewResult(
