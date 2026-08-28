@@ -1024,6 +1024,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         if (!IsEligibleOrdinaryClassForCallBase(typeSymbol))
             return CallBaseResolution.None;
 
+        var baseType = typeSymbol.BaseType!;
         var generatedTypes = members.Select(GetMemberType).ToList();
         var generatedNames = members.Select(m => ToCamelCase(m.Name)).ToList();
 
