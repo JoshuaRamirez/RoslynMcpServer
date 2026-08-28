@@ -2379,11 +2379,6 @@ public class GenerateMethodStubOperationTests
         const string source = """
             namespace TestApp;
 
-            public interface IWork
-            {
-                void DoWork();
-            }
-
             public class Widget : IWork
             {
                 public void Run()
@@ -2395,6 +2390,11 @@ public class GenerateMethodStubOperationTests
                 {
                     throw new System.InvalidOperationException("keep-explicit");
                 }
+            }
+
+            public interface IWork
+            {
+                void DoWork();
             }
             """;
 

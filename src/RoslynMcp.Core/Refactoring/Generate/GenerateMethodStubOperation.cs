@@ -129,8 +129,6 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
                 $"No method invocation found at line {@params.Line}, column {@params.Column}.");
         }
 
-        ValidateInvocationIsUnresolved(invocation, semanticModel, cancellationToken);
-
         var invokedName = GetInvokedName(invocation);
         var methodName = ResolveMethodName(@params, invokedName);
         var typeParameters = InferTypeParameters(invokedName);
