@@ -1077,7 +1077,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         bool throwNotImplemented)
     {
         var afterSnippet = method.NormalizeWhitespace().ToFullString();
-        var throwNote = throwNotImplemented
+        var throwNote = RequiresThrowBody(method.ReturnType.ToString(), throwNotImplemented)
             ? "stub will throw NotImplementedException"
             : "stub will not throw";
         var pendingChanges = new List<PendingChange>

@@ -399,6 +399,7 @@ public class GenerateMethodStubOperationTests
         Assert.NotEmpty(result.PendingChanges);
         Assert.Contains("DoWork", result.PendingChanges[0].AfterSnippet);
         Assert.Contains("NotImplementedException", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("stub will throw NotImplementedException", result.PendingChanges[0].Description);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
@@ -943,6 +944,228 @@ public class GenerateMethodStubOperationTests
         Assert.Contains("stub will not throw", result.PendingChanges[0].Description);
         Assert.DoesNotContain("NotImplementedException", result.PendingChanges[0].AfterSnippet);
         Assert.Contains("DoWork", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ThrowNotImplementedFalse_Preview_OrdinaryValueReturn_DescribesNonThrowingStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public void Run()
+                {
+                    int value = Compute();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Compute");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ThrowNotImplemented = false,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains("stub will not throw", result.PendingChanges![0].Description);
+        Assert.DoesNotContain("NotImplementedException", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("return default(int);", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ThrowNotImplementedFalse_Preview_OrdinaryReferenceReturn_DescribesNonThrowingStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public void Run()
+                {
+                    string value = Compute();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Compute");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ThrowNotImplemented = false,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains("stub will not throw", result.PendingChanges![0].Description);
+        Assert.DoesNotContain("NotImplementedException", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("return null;", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ThrowNotImplementedFalse_Preview_InferredRefReturn_DescribesThrowingStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public void Run()
+                {
+                    ref int value = ref GetCell();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "GetCell");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ThrowNotImplemented = false,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains("stub will throw NotImplementedException", result.PendingChanges![0].Description);
+        Assert.Contains("NotImplementedException", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("ref int GetCell()", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ThrowNotImplementedFalse_Preview_InferredRefReadonlyReturn_DescribesThrowingStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public void Run()
+                {
+                    ref readonly int value = ref GetOrigin();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "GetOrigin");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ThrowNotImplemented = false,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains("stub will throw NotImplementedException", result.PendingChanges![0].Description);
+        Assert.Contains("NotImplementedException", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("ref readonly int GetOrigin()", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ThrowNotImplementedFalse_Preview_ExplicitRefReturn_DescribesThrowingStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public void Run()
+                {
+                    GetCell();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "GetCell");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ReturnType = "ref int",
+            ThrowNotImplemented = false,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains("stub will throw NotImplementedException", result.PendingChanges![0].Description);
+        Assert.Contains("NotImplementedException", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("ref int GetCell()", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ThrowNotImplementedTrue_Preview_DescribesThrowingStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public void Run()
+                {
+                    DoWork();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "DoWork");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ThrowNotImplemented = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains("stub will throw NotImplementedException", result.PendingChanges![0].Description);
+        Assert.Contains("NotImplementedException", result.PendingChanges[0].AfterSnippet);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
