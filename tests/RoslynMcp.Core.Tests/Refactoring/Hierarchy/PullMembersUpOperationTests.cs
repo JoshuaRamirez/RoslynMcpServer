@@ -1918,6 +1918,148 @@ public class PullMembersUpOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    [SkippableFact]
+    public async Task PullMembersUp_IndexerToInterface_PrivateSetter_EmitsGetOnlyAndCompiles()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IAnimal
+            {
+            }
+
+            public class Dog : IAnimal
+            {
+                public int this[int i] { get => i; private set { } }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["this[]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ifaceIndexer = Assert.Single(FindIndexers(updated, "IAnimal"));
+        var dogIndexer = Assert.Single(FindIndexers(updated, "Dog"));
+        Assert.Contains(ifaceIndexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        Assert.DoesNotContain(ifaceIndexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.DoesNotContain(ifaceIndexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.InitAccessorDeclaration));
+        Assert.Contains(dogIndexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        Assert.Contains(dogIndexer.AccessorList.Accessors, a =>
+            a.IsKind(SyntaxKind.SetAccessorDeclaration)
+            && a.Modifiers.Any(SyntaxKind.PrivateKeyword));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_PrivateSetter_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public int this[int i] { get => i; private set { } }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PullMembersUpParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                Members = ["this[]"],
+                MakeAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_SelectedIndexer_DependsOnOtherIndexerOverload_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public string this[int i] => this[i.ToString()];
+
+                public string this[string key] => key;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PullMembersUpParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                Members = ["this[int i]"]
+            }));
+
+        Assert.Equal(ErrorCodes.MemberDependsOnDerived, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_BothIndexerOverloads_AllowsCrossReference()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public string this[int i] => this[i.ToString()];
+
+                public string this[string key] => key;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["this[int i]", "this[string key]"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(2, FindIndexers(updated, "Animal").Count);
+        Assert.Empty(FindIndexers(updated, "Dog"));
+        AssertCompiles(updated);
+    }
+
     #endregion
 
     #region Helpers

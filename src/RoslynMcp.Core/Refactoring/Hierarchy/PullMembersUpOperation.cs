@@ -376,7 +376,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                     $"Member '{member.Name}' cannot be pulled to interface '{target.Name}'.");
             }
 
-            var dependency = FindDerivedOnlyDependency(member, derived, pulledNames, semanticModel);
+            var dependency = FindDerivedOnlyDependency(member, derived, pulledNames, members, semanticModel);
             if (dependency != null)
             {
                 throw new RefactoringException(
@@ -491,24 +491,45 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
     private static bool CanPullAsAbstract(ISymbol symbol) => symbol switch
     {
         IMethodSymbol method => method.MethodKind == MethodKind.Ordinary,
-        IPropertySymbol property => !property.IsIndexer
-            || (!property.IsStatic && property.ExplicitInterfaceImplementations.Length == 0),
+        IPropertySymbol property => !property.IsIndexer || CanPullIndexerAsAbstract(property),
         IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
         _ => false
     };
+
+    private static bool CanPullIndexerAsAbstract(IPropertySymbol indexer)
+    {
+        if (indexer.IsStatic || indexer.ExplicitInterfaceImplementations.Length > 0)
+            return false;
+
+        // A wholly private indexer is lifted to protected; implicit
+        // accessors follow. An explicit private accessor on a more
+        // visible indexer cannot become abstract (CS0621) and cannot
+        // stay on the override if the base drops it (CS0546).
+        if (indexer.DeclaredAccessibility == Accessibility.Private)
+            return true;
+
+        return indexer.GetMethod?.DeclaredAccessibility != Accessibility.Private
+            && indexer.SetMethod?.DeclaredAccessibility != Accessibility.Private;
+    }
 
     private static string? FindDerivedOnlyDependency(
         PullableMember member,
         INamedTypeSymbol derived,
         HashSet<string> pulledNames,
+        IReadOnlyList<PullableMember> pulledMembers,
         SemanticModel semanticModel)
     {
-        foreach (var identifier in member.Syntax.DescendantNodes().OfType<IdentifierNameSyntax>())
+        foreach (var node in member.Syntax.DescendantNodes())
         {
-            if (IsUnselectedEventDeclaratorIdentifier(member, identifier))
-                continue;
+            ISymbol? referenced = node switch
+            {
+                IdentifierNameSyntax identifier when !IsUnselectedEventDeclaratorIdentifier(member, identifier) =>
+                    semanticModel.GetSymbolInfo(identifier).Symbol,
+                ElementAccessExpressionSyntax access => semanticModel.GetSymbolInfo(access).Symbol,
+                _ => null
+            };
 
-            var referenced = semanticModel.GetSymbolInfo(identifier).Symbol;
+            referenced = AssociatedMemberSymbol(referenced);
             if (referenced == null)
                 continue;
 
@@ -538,6 +559,20 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 continue;
             }
 
+            // Indexers share the Roslyn name this[]. Name matching would
+            // treat an unselected overload as already pulled. Match the
+            // selected indexer by symbol instead.
+            if (referenced is IPropertySymbol { IsIndexer: true } referencedIndexer)
+            {
+                if (pulledMembers.Any(pulled =>
+                        SymbolEqualityComparer.Default.Equals(pulled.Symbol, referencedIndexer)))
+                {
+                    continue;
+                }
+
+                return referencedIndexer.Name;
+            }
+
             if (pulledNames.Contains(referenced.Name))
                 continue;
 
@@ -545,6 +580,21 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         }
 
         return null;
+    }
+
+    private static ISymbol? AssociatedMemberSymbol(ISymbol? symbol)
+    {
+        if (symbol is IMethodSymbol accessor
+            && accessor.AssociatedSymbol is IPropertySymbol or IEventSymbol
+            && accessor.MethodKind is MethodKind.PropertyGet
+                or MethodKind.PropertySet
+                or MethodKind.EventAdd
+                or MethodKind.EventRemove)
+        {
+            return accessor.AssociatedSymbol;
+        }
+
+        return symbol;
     }
 
     private static bool IsUnselectedEventDeclaratorIdentifier(
@@ -654,6 +704,12 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         {
             foreach (var accessor in indexer.AccessorList.Accessors)
             {
+                // Same public-accessor gate as extract_interface
+                // CreateInterfaceIndexer: a private/protected/internal
+                // setter must not become a public interface set;.
+                if (HasNonPublicAccessibility(accessor))
+                    continue;
+
                 accessors.Add(accessor
                     .WithModifiers(SyntaxFactory.TokenList())
                     .WithBody(null)
@@ -667,6 +723,13 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
         }
 
+        if (accessors.Count == 0)
+        {
+            throw new RefactoringException(
+                ErrorCodes.MemberNotInterfaceCompatible,
+                "Indexer cannot be pulled to an interface because it has no public accessors.");
+        }
+
         return indexer
             .WithModifiers(SyntaxFactory.TokenList())
             .WithExplicitInterfaceSpecifier(null)
@@ -675,6 +738,12 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
             .NormalizeWhitespace();
     }
+
+    private static bool HasNonPublicAccessibility(AccessorDeclarationSyntax accessor) =>
+        accessor.Modifiers.Any(token =>
+            token.IsKind(SyntaxKind.PrivateKeyword)
+            || token.IsKind(SyntaxKind.ProtectedKeyword)
+            || token.IsKind(SyntaxKind.InternalKeyword));
 
     private static MemberDeclarationSyntax ConvertToAbstract(MemberDeclarationSyntax member)
     {
@@ -698,7 +767,9 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
 
     private static bool CanMakeIndexerAbstract(IndexerDeclarationSyntax indexer) =>
         !indexer.Modifiers.Any(SyntaxKind.StaticKeyword) &&
-        indexer.ExplicitInterfaceSpecifier == null;
+        indexer.ExplicitInterfaceSpecifier == null &&
+        (indexer.AccessorList == null
+            || indexer.AccessorList.Accessors.All(accessor => !IsPrivateOnlyAccessor(accessor)));
 
     private static bool CanMakeEventAbstract(EventDeclarationSyntax eventDecl) =>
         !eventDecl.Modifiers.Any(SyntaxKind.StaticKeyword) &&
@@ -779,6 +850,11 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
             .NormalizeWhitespace();
     }
+
+    private static bool IsPrivateOnlyAccessor(AccessorDeclarationSyntax accessor) =>
+        accessor.Modifiers.Any(SyntaxKind.PrivateKeyword)
+        && !accessor.Modifiers.Any(SyntaxKind.ProtectedKeyword)
+        && !accessor.Modifiers.Any(SyntaxKind.InternalKeyword);
 
     private static MemberDeclarationSyntax ConvertToVirtualOnBase(MemberDeclarationSyntax member)
     {
