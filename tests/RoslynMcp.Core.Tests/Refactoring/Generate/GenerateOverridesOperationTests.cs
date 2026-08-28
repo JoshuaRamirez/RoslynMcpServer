@@ -760,6 +760,156 @@ public class GenerateOverridesOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateOverrides_ReplaceExistingTrue_ProtectedMethod_KeepsProtectedAccessibility()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                protected virtual void Speak() { }
+            }
+
+            public class Dog : Animal
+            {
+                protected override void Speak() { /* old-speak */ }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Speak" },
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("old-speak", updated);
+        Assert.Contains("protected override void Speak()", updated);
+        Assert.DoesNotContain("public override void Speak()", updated);
+        Assert.Contains("base.Speak()", updated);
+        Assert.Equal(1, CountOccurrences(updated, "override void Speak()"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ReplaceExistingTrue_ProtectedProperty_KeepsProtectedAccessibility()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                protected virtual string Label { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+                protected override string Label { get; set; } = "old-label";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Label" },
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("old-label", updated);
+        Assert.Contains("protected override string Label", updated);
+        Assert.DoesNotContain("public override string Label", updated);
+        Assert.Equal(1, CountOccurrences(updated, "override string Label"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ReplaceExistingTrue_RefOutInParameters_PreservedOnSignatureAndBaseCall()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual void Mutate(ref int x, out int y, in int z) { y = x; }
+            }
+
+            public class Dog : Animal
+            {
+                public override void Mutate(ref int x, out int y, in int z) { y = x; /* old-mutate */ }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Mutate" },
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("old-mutate", updated);
+        Assert.Contains("override void Mutate(ref int x, out int y, in int z)", updated);
+        Assert.DoesNotContain("override void Mutate(int x", updated);
+        var mutate = ExtractMember(updated, "override void Mutate(");
+        Assert.Contains("base.Mutate", mutate);
+        Assert.Contains("ref x", mutate);
+        Assert.Contains("out y", mutate);
+        Assert.Contains("in z", mutate);
+        Assert.Equal(1, CountOccurrences(updated, "override void Mutate("));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ReplaceExistingTrue_GenericMethod_ReplacesOverride()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual void Handle<T>(T value) { }
+            }
+
+            public class Dog : Animal
+            {
+                public override void Handle<T>(T value) { /* old-generic */ }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Handle" },
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("old-generic", updated);
+        Assert.Contains("override void Handle<T>(T value)", updated);
+        Assert.Equal(1, CountOccurrences(updated, "override void Handle"));
+        Assert.Contains("base.Handle(value)", updated);
+    }
+
+    [SkippableFact]
     public async Task GenerateOverrides_ReplaceExistingTrue_UnknownName_OverrideTargetNotFound_WritesNothing()
     {
         await using var workspace = await TempWorkspace.CreateAsync(DogWithToStringSource, "Dog.cs");

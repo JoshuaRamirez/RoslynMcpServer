@@ -37,7 +37,8 @@ public sealed class GenerateOverridesParams
     /// <c>new</c> hiders, explicit interface implementations, non-override
     /// methods, and primary constructors are never replaced.
     /// Extra modifiers on the old override (<c>sealed</c>, <c>async</c>,
-    /// attributes) are not copied.
+    /// attributes) are not copied. The new override uses the inherited
+    /// accessibility and each parameter's <c>RefKind</c>.
     /// Default: false (skip members this type already overrides; a named
     /// member that is already overridden fails with
     /// <c>OverrideTargetNotFound</c>).

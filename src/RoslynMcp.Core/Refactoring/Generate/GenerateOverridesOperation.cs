@@ -448,11 +448,30 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         {
             if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
                 return false;
-            if (!SymbolEqualityComparer.Default.Equals(left.Parameters[i].Type, right.Parameters[i].Type))
+            if (!ParameterTypesMatch(left.Parameters[i].Type, right.Parameters[i].Type))
                 return false;
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Method type parameters are distinct symbols on the base vs override
+    /// (<c>Base.M&lt;T&gt;(T)</c> vs <c>Derived.M&lt;T&gt;(T)</c>), so
+    /// <see cref="SymbolEqualityComparer.Default"/> misses an exact match.
+    /// Compare those by ordinal; keep concrete / named types as today.
+    /// </summary>
+    private static bool ParameterTypesMatch(ITypeSymbol left, ITypeSymbol right)
+    {
+        if (left is ITypeParameterSymbol leftTp
+            && leftTp.TypeParameterKind == TypeParameterKind.Method
+            && right is ITypeParameterSymbol rightTp
+            && rightTp.TypeParameterKind == TypeParameterKind.Method)
+        {
+            return leftTp.Ordinal == rightTp.Ordinal;
+        }
+
+        return SymbolEqualityComparer.Default.Equals(left, right);
     }
 
     private static bool PropertySignaturesMatch(IPropertySymbol left, IPropertySymbol right)
