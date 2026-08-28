@@ -22,6 +22,27 @@ public static class SyntaxGenerationHelper
         bool explicitInterface = false,
         bool callBase = false,
         bool throwNotImplemented = true)
+        => CreateMethodStub(method, explicitInterface, callBase, throwNotImplemented, emittingType: null);
+
+    /// <summary>
+    /// Creates a method stub for interface implementation or override.
+    /// </summary>
+    /// <param name="method">The method to implement.</param>
+    /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
+    /// <param name="callBase">If true, adds base.Method() call for overrides.</param>
+    /// <param name="throwNotImplemented">If true, throws NotImplementedException.</param>
+    /// <param name="emittingType">
+    /// Type that will declare the stub. When set and the method lives in
+    /// another assembly, <c>protected internal</c> is emitted as
+    /// <c>protected</c> (CS0507). Omitted / same-assembly is unchanged.
+    /// </param>
+    /// <returns>Method declaration syntax.</returns>
+    public static MethodDeclarationSyntax CreateMethodStub(
+        IMethodSymbol method,
+        bool explicitInterface,
+        bool callBase,
+        bool throwNotImplemented,
+        INamedTypeSymbol? emittingType)
     {
         // Build parameter list, preserving each parameter's RefKind so a
         // regenerated override of M(ref/out/in/ref readonly T) still overrides.
@@ -64,9 +85,11 @@ public static class SyntaxGenerationHelper
         {
             // Implicit implementation or override. Overrides must keep the
             // inherited accessibility (CS0507); interface members are public
-            // and must not use override (CS0115).
+            // and must not use override (CS0115). Across assemblies,
+            // protected internal must be protected.
             var modifiers = new List<SyntaxToken>();
-            modifiers.AddRange(AccessibilityModifierTokens(method.DeclaredAccessibility));
+            modifiers.AddRange(AccessibilityModifierTokens(
+                OverrideAccessibility(method, emittingType)));
 
             if (NeedsOverrideModifier(method))
             {
@@ -101,9 +124,31 @@ public static class SyntaxGenerationHelper
         bool explicitInterface = false,
         bool throwNotImplemented = true,
         bool callBase = false)
+        => CreatePropertyStub(property, explicitInterface, throwNotImplemented, callBase, emittingType: null);
+
+    /// <summary>
+    /// Creates a property stub for interface implementation or override.
+    /// </summary>
+    /// <param name="property">The property to implement.</param>
+    /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
+    /// <param name="throwNotImplemented">If true, throws NotImplementedException in accessors.</param>
+    /// <param name="callBase">If true, non-abstract accessors call <c>base.Prop</c>.</param>
+    /// <param name="emittingType">
+    /// Type that will declare the stub. When set and the property lives in
+    /// another assembly, <c>protected internal</c> is emitted as
+    /// <c>protected</c> (CS0507) on the member and on any restricted
+    /// accessor. Omitted / same-assembly is unchanged.
+    /// </param>
+    /// <returns>Property declaration syntax.</returns>
+    public static PropertyDeclarationSyntax CreatePropertyStub(
+        IPropertySymbol property,
+        bool explicitInterface,
+        bool throwNotImplemented,
+        bool callBase,
+        INamedTypeSymbol? emittingType)
     {
         var propertyType = SyntaxFactory.ParseTypeName(property.Type.ToDisplayString());
-        var accessors = CreatePropertyAccessors(property, throwNotImplemented, callBase);
+        var accessors = CreatePropertyAccessors(property, throwNotImplemented, callBase, emittingType);
 
         var propDecl = SyntaxFactory.PropertyDeclaration(propertyType, property.Name)
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
@@ -118,8 +163,10 @@ public static class SyntaxGenerationHelper
         {
             // Overrides must keep the inherited accessibility (CS0507).
             // Interface members are public and must not use override (CS0115).
+            // Across assemblies, protected internal must be protected.
             var modifiers = new List<SyntaxToken>();
-            modifiers.AddRange(AccessibilityModifierTokens(property.DeclaredAccessibility));
+            modifiers.AddRange(AccessibilityModifierTokens(
+                OverrideAccessibility(property, emittingType)));
 
             if (NeedsOverrideModifier(property))
             {
@@ -145,10 +192,32 @@ public static class SyntaxGenerationHelper
         bool explicitInterface = false,
         bool throwNotImplemented = true,
         bool callBase = false)
+        => CreateIndexerStub(indexer, explicitInterface, throwNotImplemented, callBase, emittingType: null);
+
+    /// <summary>
+    /// Creates an indexer stub for interface implementation or override.
+    /// </summary>
+    /// <param name="indexer">The indexer to implement.</param>
+    /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
+    /// <param name="throwNotImplemented">If true, throws NotImplementedException in accessors.</param>
+    /// <param name="callBase">If true, non-abstract accessors call <c>base[i]</c>.</param>
+    /// <param name="emittingType">
+    /// Type that will declare the stub. When set and the indexer lives in
+    /// another assembly, <c>protected internal</c> is emitted as
+    /// <c>protected</c> (CS0507) on the member and on any restricted
+    /// accessor. Omitted / same-assembly is unchanged.
+    /// </param>
+    /// <returns>Indexer declaration syntax.</returns>
+    public static IndexerDeclarationSyntax CreateIndexerStub(
+        IPropertySymbol indexer,
+        bool explicitInterface,
+        bool throwNotImplemented,
+        bool callBase,
+        INamedTypeSymbol? emittingType)
     {
         var indexerType = CreateMemberType(indexer.Type, indexer.ReturnsByRef, indexer.ReturnsByRefReadonly);
         var parameters = indexer.Parameters.Select(CreateParameter);
-        var accessors = CreatePropertyAccessors(indexer, throwNotImplemented, callBase);
+        var accessors = CreatePropertyAccessors(indexer, throwNotImplemented, callBase, emittingType);
 
         var indexerDecl = SyntaxFactory.IndexerDeclaration(indexerType)
             .WithParameterList(SyntaxFactory.BracketedParameterList(SyntaxFactory.SeparatedList(parameters)))
@@ -163,7 +232,8 @@ public static class SyntaxGenerationHelper
         else
         {
             var modifiers = new List<SyntaxToken>();
-            modifiers.AddRange(AccessibilityModifierTokens(indexer.DeclaredAccessibility));
+            modifiers.AddRange(AccessibilityModifierTokens(
+                OverrideAccessibility(indexer, emittingType)));
 
             if (NeedsOverrideModifier(indexer))
             {
@@ -492,10 +562,12 @@ public static class SyntaxGenerationHelper
     private static List<AccessorDeclarationSyntax> CreatePropertyAccessors(
         IPropertySymbol property,
         bool throwNotImplemented,
-        bool callBase)
+        bool callBase,
+        INamedTypeSymbol? emittingType = null)
     {
         var accessors = new List<AccessorDeclarationSyntax>();
         var useBase = callBase && !property.IsAbstract;
+        var propertyAccessibility = OverrideAccessibility(property, emittingType);
 
         if (property.GetMethod != null)
         {
@@ -504,8 +576,12 @@ public static class SyntaxGenerationHelper
                 : RequiresThrowBody(property, throwNotImplemented)
                     ? CreateThrowNotImplementedBody()
                     : CreateDefaultReturnBody(property.Type);
-            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                .WithBody(getBody));
+            accessors.Add(WithOverrideAccessorModifiers(
+                SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                    .WithBody(getBody),
+                property.GetMethod,
+                propertyAccessibility,
+                emittingType));
         }
 
         if (property.SetMethod != null)
@@ -515,11 +591,37 @@ public static class SyntaxGenerationHelper
                 : throwNotImplemented
                     ? CreateThrowNotImplementedBody()
                     : SyntaxFactory.Block();
-            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
-                .WithBody(setBody));
+            accessors.Add(WithOverrideAccessorModifiers(
+                SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+                    .WithBody(setBody),
+                property.SetMethod,
+                propertyAccessibility,
+                emittingType));
         }
 
         return accessors;
+    }
+
+    /// <summary>
+    /// Emits an accessor modifier only when it is more restricted than the
+    /// (possibly CS0507-reduced) property. Cross-assembly
+    /// <c>protected internal</c> becomes <c>protected</c>.
+    /// </summary>
+    private static AccessorDeclarationSyntax WithOverrideAccessorModifiers(
+        AccessorDeclarationSyntax declaration,
+        IMethodSymbol accessor,
+        Accessibility propertyAccessibility,
+        INamedTypeSymbol? emittingType)
+    {
+        var accessorAccessibility = OverrideAccessibility(accessor, emittingType);
+        if (accessorAccessibility == Accessibility.NotApplicable
+            || accessorAccessibility == propertyAccessibility)
+        {
+            return declaration;
+        }
+
+        return declaration.WithModifiers(
+            SyntaxFactory.TokenList(AccessibilityModifierTokens(accessorAccessibility)));
     }
 
     private static ExpressionSyntax CreateBasePropertyAccess(IPropertySymbol property)

@@ -11,7 +11,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
 /// Operation-level tests for <see cref="GenerateOverridesOperation"/>, including
-/// <c>callBase</c>, <c>members</c>, <c>preview</c>, and <c>replaceExisting</c>.
+/// <c>callBase</c>, <c>members</c>, <c>preview</c>, <c>replaceExisting</c>, and
+/// cross-assembly CS0507 accessibility for methods, properties, and indexers.
 /// </summary>
 public class GenerateOverridesOperationTests
 {
@@ -2201,6 +2202,340 @@ public class GenerateOverridesOperationTests
         var evt = ExtractMember(updated, "public override event System.EventHandler Changed");
         Assert.DoesNotContain("base.", evt);
         AssertCompiles(updated);
+    }
+
+    #endregion
+
+    #region CS0507 methods / properties / indexers
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ProtectedInternalMethod_SameAssembly_KeepsProtectedInternal()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                protected internal virtual void Speak() { }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Speak" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("protected internal override void Speak()", updated);
+        Assert.DoesNotContain("protected override void Speak()", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ProtectedInternalProperty_SameAssembly_KeepsProtectedInternal()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                protected internal virtual int Width { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Width" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("protected internal override int Width", updated);
+        Assert.DoesNotContain("protected override int Width", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ProtectedInternalIndexer_SameAssembly_KeepsProtectedInternal()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                protected internal virtual int this[int i]
+                {
+                    get => 0;
+                    set { }
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "this[]" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("protected internal override int this[int i]", updated);
+        Assert.DoesNotContain("protected override int this[int i]", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ProtectedInternalAccessor_SameAssembly_KeepsProtectedInternal()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual int Width { get; protected internal set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Width" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override int Width", updated);
+        Assert.Contains("protected internal set", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CrossAssembly_ProtectedInternalMethod_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                protected internal virtual void Speak() { }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Speak" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class Dog", StringComparison.Ordinal)..];
+        Assert.Contains("protected override void Speak()", derived);
+        Assert.DoesNotContain("protected internal override", derived);
+        Assert.DoesNotContain("public override void Speak()", derived);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CrossAssembly_ProtectedInternalProperty_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                protected internal virtual int Width { get; set; }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Width" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class Dog", StringComparison.Ordinal)..];
+        Assert.Contains("protected override int Width", derived);
+        Assert.DoesNotContain("protected internal override", derived);
+        Assert.DoesNotContain("public override int Width", derived);
+        var property = ExtractMember(updated, "protected override int Width");
+        Assert.Contains("get", property);
+        Assert.Contains("set", property);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CrossAssembly_ProtectedInternalIndexer_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                protected internal virtual int this[int i]
+                {
+                    get => 0;
+                    set { }
+                }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "this[]" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class Dog", StringComparison.Ordinal)..];
+        Assert.Contains("protected override int this[int i]", derived);
+        Assert.DoesNotContain("protected internal override", derived);
+        var indexer = ExtractMember(updated, "protected override int this[int i]");
+        Assert.Contains("get", indexer);
+        Assert.Contains("set", indexer);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CrossAssembly_ProtectedInternalAccessor_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                public virtual int Width { get; protected internal set; }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Width" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class Dog", StringComparison.Ordinal)..];
+        Assert.Contains("public override int Width", derived);
+        Assert.Contains("protected set", derived);
+        Assert.DoesNotContain("protected internal set", derived);
+        Assert.DoesNotContain("protected internal override", derived);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CrossAssembly_ProtectedInternalMethod_Preview_DoesNotWriteFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                protected internal virtual void Speak() { }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Speak" },
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Speak", result.PendingChanges[0].Description);
+        Assert.Contains("protected override void Speak()", result.PendingChanges[0].AfterSnippet);
+        Assert.DoesNotContain("protected internal override", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
     #endregion
