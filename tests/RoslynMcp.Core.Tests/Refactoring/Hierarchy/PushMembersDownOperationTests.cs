@@ -1414,6 +1414,78 @@ public class PushMembersDownOperationTests
         Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
     }
 
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_EventRaisedInSource_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public event System.EventHandler Changed;
+
+                public void Speak()
+                {
+                    Changed?.Invoke(this, System.EventArgs.Empty);
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Changed"],
+                LeaveAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_NamedSubsetOmitsConcreteDerived_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public event System.EventHandler Changed;
+            }
+
+            public class Dog : Animal
+            {
+            }
+
+            public class Cat : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Changed"],
+                TargetDerivedTypes = ["Dog"],
+                LeaveAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+    }
+
     #endregion
 
     #region Helpers
