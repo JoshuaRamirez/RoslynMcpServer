@@ -147,11 +147,11 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         var parameters = InferParameters(invocation, semanticModel);
         var existingMethod = ResolveMethodToReplace(
             target.Type, methodName, parameters, typeParameters.Count, @params.ReplaceExisting);
-        // A resolved call is the common replaceExisting case (the invocation
-        // already binds to the method we are about to remove). Keep today's
-        // fail-on-resolved-call only when we are generating, not replacing.
-        if (existingMethod == null)
-            ValidateInvocationIsUnresolved(invocation, semanticModel, cancellationToken);
+        // A resolved call is the common replaceExisting case only when it
+        // binds to the method we are about to remove. A methodName override
+        // that matches a *different* existing method must not skip this
+        // guard and rewrite a working call.
+        ValidateInvocationIsUnresolved(invocation, semanticModel, existingMethod, cancellationToken);
 
         var returnType = InferReturnType(invocation, semanticModel, @params, cancellationToken);
         var isAsync = @params.GenerateAsync || IsAwaited(invocation);
@@ -255,14 +255,32 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         InvocationExpressionSyntax invocation,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
+        => ValidateInvocationIsUnresolved(invocation, semanticModel, allowedReplacement: null, cancellationToken);
+
+    /// <summary>
+    /// Rejects a call that already binds, unless it binds to
+    /// <paramref name="allowedReplacement"/> — the ordinary method
+    /// <c>replaceExisting</c> is about to remove.
+    /// </summary>
+    internal static void ValidateInvocationIsUnresolved(
+        InvocationExpressionSyntax invocation,
+        SemanticModel semanticModel,
+        IMethodSymbol? allowedReplacement,
+        CancellationToken cancellationToken)
     {
         var symbol = semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol;
-        if (symbol != null)
+        if (symbol == null)
+            return;
+
+        if (allowedReplacement != null
+            && SymbolEqualityComparer.Default.Equals(symbol, allowedReplacement))
         {
-            throw new RefactoringException(
-                ErrorCodes.NameCollision,
-                $"The call already resolves to '{symbol.ToDisplayString()}'.");
+            return;
         }
+
+        throw new RefactoringException(
+            ErrorCodes.NameCollision,
+            $"The call already resolves to '{symbol.ToDisplayString()}'.");
     }
 
     private static string ResolveMethodName(
@@ -1117,7 +1135,9 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         IMethodSymbol method,
         CancellationToken cancellationToken)
     {
-        var membersByTreeAndPart = new Dictionary<SyntaxTree, Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>>();
+        // Key by DocumentId, not SyntaxTree identity — a prior in-memory
+        // annotation on the call-site document replaces that tree.
+        var membersByDocumentAndPart = new Dictionary<DocumentId, Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>>();
 
         foreach (var reference in method.DeclaringSyntaxReferences)
         {
@@ -1127,10 +1147,15 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             if (syntax.Parent is not TypeDeclarationSyntax part)
                 continue;
 
-            if (!membersByTreeAndPart.TryGetValue(syntax.SyntaxTree, out var byPart))
+            var document = GetDocumentForTree(solution, syntax.SyntaxTree)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
+
+            if (!membersByDocumentAndPart.TryGetValue(document.Id, out var byPart))
             {
                 byPart = new Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>();
-                membersByTreeAndPart[syntax.SyntaxTree] = byPart;
+                membersByDocumentAndPart[document.Id] = byPart;
             }
 
             if (!byPart.TryGetValue(part.SpanStart, out var keys))
@@ -1142,9 +1167,9 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             keys.Add((syntax.SpanStart, syntax.Span.End, syntax.Kind()));
         }
 
-        foreach (var (tree, byPart) in membersByTreeAndPart)
+        foreach (var (documentId, byPart) in membersByDocumentAndPart)
         {
-            var document = solution.GetDocument(tree)
+            var document = solution.GetDocument(documentId)
                 ?? throw new RefactoringException(
                     ErrorCodes.DocumentNotEditable,
                     $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
@@ -1152,11 +1177,9 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
             var toRemove = new List<MemberDeclarationSyntax>();
-            foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
+            foreach (var part in treeRoot.DescendantNodes().OfType<TypeDeclarationSyntax>())
             {
-                if (reference.SyntaxTree != tree)
-                    continue;
-                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax part)
+                if (!TypeNameMatches(part, typeSymbol.Name))
                     continue;
                 if (!byPart.TryGetValue(part.SpanStart, out var keys) || keys.Count == 0)
                     continue;
@@ -1183,10 +1206,38 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         return solution;
     }
 
+    /// <summary>
+    /// Resolves a document after an in-memory <c>WithSyntaxRoot</c> may have
+    /// replaced the tree identity. Fall back to file path so a call-site
+    /// annotation does not make the declaring document unfindable.
+    /// </summary>
+    internal static Document? GetDocumentForTree(Solution solution, SyntaxTree tree)
+    {
+        var document = solution.GetDocument(tree);
+        if (document != null)
+            return document;
+
+        if (string.IsNullOrWhiteSpace(tree.FilePath))
+            return null;
+
+        var ids = solution.GetDocumentIdsWithFilePath(tree.FilePath);
+        return ids.Length > 0 ? solution.GetDocument(ids[0]) : null;
+    }
+
+    /// <summary>
+    /// Matches a type declaration to a symbol name. Escaped identifiers
+    /// such as <c>class @class</c> have <see cref="SyntaxToken.Text"/>
+    /// <c>@class</c> and <see cref="SyntaxToken.ValueText"/> <c>class</c>
+    /// (the latter equals <see cref="ISymbol.Name"/>).
+    /// </summary>
+    internal static bool TypeNameMatches(TypeDeclarationSyntax type, string typeName) =>
+        string.Equals(type.Identifier.ValueText, typeName, StringComparison.Ordinal)
+        || string.Equals(type.Identifier.Text, typeName, StringComparison.Ordinal);
+
     private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName, int preferredSpanStart)
     {
         var matches = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
-            .Where(t => t.Identifier.Text == typeName)
+            .Where(t => TypeNameMatches(t, typeName))
             .ToList();
         return matches.FirstOrDefault(t => t.SpanStart == preferredSpanStart) ?? matches.FirstOrDefault();
     }

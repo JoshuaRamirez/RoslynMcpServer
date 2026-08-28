@@ -278,6 +278,19 @@ public class GenerateMethodStubOperationTests
     }
 
     [Fact]
+    public void TypeNameMatches_EscapedIdentifier_MatchesSymbolName()
+    {
+        var tree = CSharpSyntaxTree.ParseText("public class @class { }");
+        var type = tree.GetCompilationUnitRoot().DescendantNodes().OfType<TypeDeclarationSyntax>().Single();
+
+        Assert.Equal("@class", type.Identifier.Text);
+        Assert.Equal("class", type.Identifier.ValueText);
+        Assert.True(GenerateMethodStubOperation.TypeNameMatches(type, "class"));
+        Assert.True(GenerateMethodStubOperation.TypeNameMatches(type, "@class"));
+        Assert.False(GenerateMethodStubOperation.TypeNameMatches(type, "Widget"));
+    }
+
+    [Fact]
     public void ResolveMethodToReplace_SkipsConstructorOperatorAndExplicitInterface()
     {
         var type = CompileType("""
@@ -2371,6 +2384,135 @@ public class GenerateMethodStubOperationTests
         Assert.DoesNotContain("old", updated);
         Assert.Equal(updated.Split("#if ").Length - 1, updated.Split("#endif").Length - 1);
         AssertCompiles(updated, preprocessorSymbols: "DEBUG");
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ReplaceExistingTrue_MethodNameOverride_ResolvedDifferentMethod_FailsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public void Run()
+                {
+                    Old();
+                }
+
+                private void Old()
+                {
+                }
+
+                private void New()
+                {
+                    throw new System.InvalidOperationException("keep-new");
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Old");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateMethodStubParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                Column = column,
+                MethodName = "New",
+                ReplaceExisting = true
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Contains("already resolves", ex.Message);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ReplaceExistingTrue_MethodNameOverride_SameFile_ReplacesAndRewritesCall()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public void Run()
+                {
+                    Old();
+                }
+
+                private void New()
+                {
+                    throw new System.InvalidOperationException("old");
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "Old");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            MethodName = "New",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("New();", updated);
+        Assert.DoesNotContain("Old();", updated);
+        Assert.DoesNotContain("old", updated);
+        Assert.Contains("private void New()", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+        Assert.Equal(1, CountOccurrences(updated, "void New()"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_ReplaceExistingTrue_EscapedTypeName_ReplacesMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class @class
+            {
+                public void Run()
+                {
+                    DoWork();
+                }
+
+                private void DoWork()
+                {
+                    throw new System.InvalidOperationException("old");
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var (line, column) = FindIdentifier(source, "DoWork");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("old", updated);
+        Assert.Contains("private void DoWork()", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+        Assert.Equal(1, CountOccurrences(updated, "void DoWork()"));
+        AssertCompiles(updated);
     }
 
     [SkippableFact]
