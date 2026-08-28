@@ -177,14 +177,22 @@ public static class SyntaxGenerationHelper
     }
 
     /// <summary>
-    /// Creates an event stub for interface implementation.
+    /// Creates an event stub for interface implementation or override
+    /// with empty add/remove accessors. Same body shape as
+    /// <c>ImplementAbstractOperation.CreateEventStub</c>.
     /// </summary>
-    /// <param name="eventSymbol">The event to implement.</param>
+    /// <param name="eventSymbol">The event to implement or override.</param>
     /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
+    /// <param name="emittingType">
+    /// Type that will declare the stub. When set and the event lives in
+    /// another assembly, <c>protected internal</c> is emitted as
+    /// <c>protected</c> (CS0507). Omitted / same-assembly is unchanged.
+    /// </param>
     /// <returns>Event declaration syntax.</returns>
     public static EventDeclarationSyntax CreateEventStub(
         IEventSymbol eventSymbol,
-        bool explicitInterface = false)
+        bool explicitInterface = false,
+        INamedTypeSymbol? emittingType = null)
     {
         var eventType = SyntaxFactory.ParseTypeName(eventSymbol.Type.ToDisplayString());
 
@@ -205,8 +213,19 @@ public static class SyntaxGenerationHelper
         }
         else
         {
-            eventDecl = eventDecl.WithModifiers(
-                SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)));
+            // Overrides must keep the inherited accessibility (CS0507).
+            // Interface members are public and must not use override (CS0115).
+            // Across assemblies, protected internal must be protected.
+            var modifiers = new List<SyntaxToken>();
+            modifiers.AddRange(AccessibilityModifierTokens(
+                OverrideAccessibility(eventSymbol, emittingType)));
+
+            if (NeedsOverrideModifier(eventSymbol))
+            {
+                modifiers.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword));
+            }
+
+            eventDecl = eventDecl.WithModifiers(SyntaxFactory.TokenList(modifiers));
         }
 
         return eventDecl.NormalizeWhitespace();
@@ -383,6 +402,23 @@ public static class SyntaxGenerationHelper
     private static bool NeedsOverrideModifier(ISymbol member) =>
         member.ContainingType?.TypeKind != TypeKind.Interface
         && (member.IsAbstract || member.IsVirtual || member.IsOverride);
+
+    /// <summary>
+    /// Same-assembly: keep <see cref="ISymbol.DeclaredAccessibility"/>.
+    /// Cross-assembly <c>protected internal</c> becomes <c>protected</c>
+    /// (CS0507). Other accessibilities are unchanged.
+    /// </summary>
+    private static Accessibility OverrideAccessibility(ISymbol member, INamedTypeSymbol? emittingType)
+    {
+        var accessibility = member.DeclaredAccessibility;
+        if (emittingType == null)
+            return accessibility;
+        if (accessibility != Accessibility.ProtectedOrInternal)
+            return accessibility;
+        if (SymbolEqualityComparer.Default.Equals(member.ContainingAssembly, emittingType.ContainingAssembly))
+            return accessibility;
+        return Accessibility.Protected;
+    }
 
     /// <summary>
     /// True when a getter must throw: the flag is on, or the indexer /

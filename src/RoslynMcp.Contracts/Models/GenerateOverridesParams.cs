@@ -23,21 +23,22 @@ public sealed class GenerateOverridesParams
     /// <summary>
     /// Include <c>base.Method(...)</c> / <c>base.Prop</c> / <c>base[i]</c> calls
     /// in generated overrides. Default: true. Abstract members still throw
-    /// <c>NotImplementedException</c> (no legal base implementation).
+    /// <c>NotImplementedException</c> (no legal base implementation). Events
+    /// always use empty add/remove regardless of this flag.
     /// </summary>
     public bool CallBase { get; init; } = true;
 
     /// <summary>
     /// When true, already-overridden members of this type become eligible
     /// alongside missing overridable members. Existing override declarations
-    /// (methods and properties, including on other partials) that match a
-    /// selected member by signature are removed and a standard generated
-    /// override is inserted. Match methods by name + parameter types in order
-    /// + <c>RefKind</c>, and properties by name. Two existing overrides that
-    /// share a name with no exact signature match fail with
-    /// <c>OverrideExists</c> — this flag does not guess an overload.
-    /// <c>new</c> hiders, explicit interface implementations, non-override
-    /// methods, and primary constructors are never replaced.
+    /// (methods, properties, and events, including on other partials) that
+    /// match a selected member by signature are removed and a standard
+    /// generated override is inserted. Match methods by name + parameter
+    /// types in order + <c>RefKind</c>, and properties and events by name.
+    /// Two existing overrides that share a name with no exact signature
+    /// match fail with <c>OverrideExists</c> — this flag does not guess an
+    /// overload. <c>new</c> hiders, explicit interface implementations,
+    /// non-override methods, and primary constructors are never replaced.
     /// Extra modifiers on the old override (<c>sealed</c>, <c>async</c>,
     /// attributes) are not copied. The new override uses the inherited
     /// accessibility and each parameter's <c>RefKind</c>.

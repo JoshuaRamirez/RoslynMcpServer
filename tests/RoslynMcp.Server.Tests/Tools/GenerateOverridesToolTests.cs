@@ -158,6 +158,12 @@ public class GenerateOverridesToolTests
         Assert.Contains("base[i]", _tool.Description);
     }
 
+    [Fact]
+    public void GetDefinition_Description_MentionsEvents()
+    {
+        Assert.Contains("event", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
     #endregion
 
     #region ExecuteAsync Argument Validation Tests
