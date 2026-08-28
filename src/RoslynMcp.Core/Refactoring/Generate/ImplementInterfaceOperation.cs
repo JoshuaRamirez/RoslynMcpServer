@@ -368,14 +368,45 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
 
     private static bool NamesMatch(ISymbol left, ISymbol right)
     {
-        if (string.Equals(left.Name, right.Name, StringComparison.Ordinal))
+        if (string.Equals(UnqualifiedName(left), UnqualifiedName(right), StringComparison.Ordinal))
             return true;
+
+        if (ExplicitlyImplementsName(left, UnqualifiedName(right))
+            || ExplicitlyImplementsName(right, UnqualifiedName(left)))
+        {
+            return true;
+        }
 
         return left is IPropertySymbol { IsIndexer: true }
             && right is IPropertySymbol { IsIndexer: true }
             && (string.Equals(left.MetadataName, right.MetadataName, StringComparison.Ordinal)
                 || string.Equals(left.MetadataName, "Item", StringComparison.Ordinal)
                 || string.Equals(right.MetadataName, "Item", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Explicit interface implementations may report <c>IFoo.M</c> as
+    /// <see cref="ISymbol.Name"/>; strip the interface qualifier so they
+    /// still match the interface member name.
+    /// </summary>
+    private static string UnqualifiedName(ISymbol symbol)
+    {
+        var name = symbol.Name;
+        var dot = name.LastIndexOf('.');
+        return dot >= 0 ? name[(dot + 1)..] : name;
+    }
+
+    private static bool ExplicitlyImplementsName(ISymbol member, string name)
+    {
+        IEnumerable<ISymbol> implemented = member switch
+        {
+            IMethodSymbol method => method.ExplicitInterfaceImplementations,
+            IPropertySymbol property => property.ExplicitInterfaceImplementations,
+            IEventSymbol evt => evt.ExplicitInterfaceImplementations,
+            _ => []
+        };
+
+        return implemented.Any(i => string.Equals(i.Name, name, StringComparison.Ordinal));
     }
 
     internal static bool SignaturesMatch(ISymbol left, ISymbol right)
@@ -387,14 +418,14 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             return PropertySignaturesMatch(leftProp, rightProp);
 
         if (left is IEventSymbol leftEvent && right is IEventSymbol rightEvent)
-            return string.Equals(leftEvent.Name, rightEvent.Name, StringComparison.Ordinal);
+            return string.Equals(UnqualifiedName(leftEvent), UnqualifiedName(rightEvent), StringComparison.Ordinal);
 
         return false;
     }
 
     private static bool MethodSignaturesMatch(IMethodSymbol left, IMethodSymbol right)
     {
-        if (!string.Equals(left.Name, right.Name, StringComparison.Ordinal))
+        if (!string.Equals(UnqualifiedName(left), UnqualifiedName(right), StringComparison.Ordinal))
             return false;
         if (left.Arity != right.Arity)
             return false;
@@ -436,7 +467,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         if (left.IsIndexer != right.IsIndexer)
             return false;
         if (!left.IsIndexer)
-            return string.Equals(left.Name, right.Name, StringComparison.Ordinal);
+            return string.Equals(UnqualifiedName(left), UnqualifiedName(right), StringComparison.Ordinal);
         if (left.Parameters.Length != right.Parameters.Length)
             return false;
 
@@ -628,21 +659,20 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         return solution;
     }
 
-    private static MemberDeclarationSyntax? AsRemovableMember(SyntaxNode syntax) =>
-        syntax switch
+    private static MemberDeclarationSyntax? AsRemovableMember(SyntaxNode syntax)
+    {
+        if (syntax is MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
+            or EventDeclarationSyntax or EventFieldDeclarationSyntax)
         {
-            MethodDeclarationSyntax method => method,
-            PropertyDeclarationSyntax property => property,
-            IndexerDeclarationSyntax indexer => indexer,
-            EventDeclarationSyntax evt => evt,
-            EventFieldDeclarationSyntax eventField => eventField,
-            _ => syntax.FirstAncestorOrSelf<MemberDeclarationSyntax>() switch
-            {
-                MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
-                    or EventDeclarationSyntax or EventFieldDeclarationSyntax member => member,
-                _ => null
-            }
-        };
+            return (MemberDeclarationSyntax)syntax;
+        }
+
+        var ancestor = syntax.FirstAncestorOrSelf<MemberDeclarationSyntax>();
+        return ancestor is MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
+            or EventDeclarationSyntax or EventFieldDeclarationSyntax
+            ? ancestor
+            : null;
+    }
 
     private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName, int preferredSpanStart)
     {

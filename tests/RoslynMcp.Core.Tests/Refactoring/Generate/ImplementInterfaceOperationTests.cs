@@ -665,7 +665,7 @@ public class ImplementInterfaceOperationTests
         Assert.NotNull(method);
         Assert.DoesNotContain("old-body", updated);
         Assert.Contains("throw new NotImplementedException()", updated);
-        Assert.Equal(1, CountOccurrences(updated, "void DoWork("));
+        Assert.Equal(1, CountOccurrences(ExtractMemberText(FindType(updated, "Widget")), "void DoWork("));
         Assert.DoesNotContain("void get_", updated);
         Assert.DoesNotContain("void set_", updated);
     }
@@ -704,8 +704,9 @@ public class ImplementInterfaceOperationTests
         Assert.NotNull(property);
         Assert.DoesNotContain("= 42", updated);
         Assert.Contains("throw new NotImplementedException()", updated);
-        Assert.Empty(FindType(updated, "Widget").Members.OfType<MethodDeclarationSyntax>()
-            .Where(m => m.Identifier.Text is "get_Count" or "set_Count"));
+        Assert.DoesNotContain(
+            FindType(updated, "Widget").Members.OfType<MethodDeclarationSyntax>(),
+            m => m.Identifier.Text is "get_Count" or "set_Count");
         Assert.DoesNotContain("get_Count", updated);
         Assert.DoesNotContain("set_Count", updated);
     }
@@ -747,8 +748,9 @@ public class ImplementInterfaceOperationTests
         var indexer = Assert.Single(FindIndexers(updated, "Lookup"));
         Assert.DoesNotContain("old", updated);
         Assert.Contains("throw new NotImplementedException()", ExtractAccessor(indexer, SyntaxKind.GetAccessorDeclaration));
-        Assert.Empty(FindType(updated, "Lookup").Members.OfType<MethodDeclarationSyntax>()
-            .Where(m => m.Identifier.Text is "get_Item" or "set_Item" or "get_this" or "set_this"));
+        Assert.DoesNotContain(
+            FindType(updated, "Lookup").Members.OfType<MethodDeclarationSyntax>(),
+            m => m.Identifier.Text is "get_Item" or "set_Item" or "get_this" or "set_this");
         Assert.DoesNotContain("get_Item", updated);
         Assert.DoesNotContain("set_Item", updated);
     }
@@ -784,10 +786,11 @@ public class ImplementInterfaceOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.NotNull(FindEvent(updated, "Widget", "Changed"));
-        Assert.Equal(1, CountOccurrences(updated, "event EventHandler Changed"));
-        Assert.Empty(FindType(updated, "Widget").Members.OfType<MethodDeclarationSyntax>()
-            .Where(m => m.Identifier.Text.StartsWith("add_", StringComparison.Ordinal)
-                || m.Identifier.Text.StartsWith("remove_", StringComparison.Ordinal)));
+        Assert.Equal(1, CountOccurrences(ExtractMemberText(FindType(updated, "Widget")), "event EventHandler Changed"));
+        Assert.DoesNotContain(
+            FindType(updated, "Widget").Members.OfType<MethodDeclarationSyntax>(),
+            m => m.Identifier.Text.StartsWith("add_", StringComparison.Ordinal)
+                || m.Identifier.Text.StartsWith("remove_", StringComparison.Ordinal));
     }
 
     [SkippableFact]
@@ -824,7 +827,7 @@ public class ImplementInterfaceOperationTests
         Assert.DoesNotContain("old-body", updated);
         Assert.NotNull(FindMethod(updated, "Widget", "DoWork"));
         Assert.NotNull(FindProperty(updated, "Widget", "Count"));
-        Assert.Equal(1, CountOccurrences(updated, "void DoWork("));
+        Assert.Equal(1, CountOccurrences(ExtractMemberText(FindType(updated, "Widget")), "void DoWork("));
         Assert.Contains("throw new NotImplementedException()", updated);
     }
 
@@ -938,7 +941,7 @@ public class ImplementInterfaceOperationTests
         Assert.Contains("IWidget", method.ExplicitInterfaceSpecifier!.Name.ToString());
         Assert.DoesNotContain("old-explicit", updated);
         Assert.Contains("throw new NotImplementedException()", updated);
-        Assert.Equal(1, CountOccurrences(updated, "DoWork("));
+        Assert.Equal(1, CountOccurrences(ExtractMemberText(FindType(updated, "Widget")), "DoWork("));
     }
 
     [SkippableFact]
@@ -1035,7 +1038,7 @@ public class ImplementInterfaceOperationTests
         Assert.DoesNotContain("old-partial", selected);
         Assert.DoesNotContain("void DoWork(", other);
         Assert.DoesNotContain("old-partial", other);
-        Assert.Equal(1, CountOccurrences(selected, "void DoWork("));
+        Assert.Equal(1, CountOccurrences(ExtractMemberText(FindType(selected, "Widget")), "void DoWork("));
     }
 
     [SkippableFact]
