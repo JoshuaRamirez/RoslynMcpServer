@@ -322,6 +322,7 @@ public static class SyntaxGenerationHelper
             MemberDeclarationSyntax? syntax = member switch
             {
                 IMethodSymbol method => CreateInterfaceMethod(method),
+                IPropertySymbol { IsIndexer: true } indexer => CreateInterfaceIndexer(indexer),
                 IPropertySymbol prop => CreateInterfaceProperty(prop),
                 IEventSymbol evt => CreateInterfaceEvent(evt),
                 _ => null
@@ -382,6 +383,35 @@ public static class SyntaxGenerationHelper
         return SyntaxFactory.PropertyDeclaration(
                 SyntaxFactory.ParseTypeName(property.Type.ToDisplayString()),
                 property.Name)
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
+    }
+
+    /// <summary>
+    /// Interface indexer: <c>this[params] { get; set; }</c> with the real
+    /// parameter list / <c>RefKind</c> and <c>ref</c> / <c>ref readonly</c>
+    /// return kind. Ordinary properties stay on
+    /// <see cref="CreateInterfaceProperty"/>.
+    /// </summary>
+    private static IndexerDeclarationSyntax CreateInterfaceIndexer(IPropertySymbol indexer)
+    {
+        var accessors = new List<AccessorDeclarationSyntax>();
+
+        if (indexer.GetMethod != null)
+        {
+            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
+        }
+
+        if (indexer.SetMethod != null)
+        {
+            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
+        }
+
+        var parameters = indexer.Parameters.Select(CreateParameter);
+        return SyntaxFactory.IndexerDeclaration(
+                CreateMemberType(indexer.Type, indexer.ReturnsByRef, indexer.ReturnsByRefReadonly))
+            .WithParameterList(SyntaxFactory.BracketedParameterList(SyntaxFactory.SeparatedList(parameters)))
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
     }
 

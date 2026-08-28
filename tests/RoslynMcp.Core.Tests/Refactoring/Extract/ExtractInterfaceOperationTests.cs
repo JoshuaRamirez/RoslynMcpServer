@@ -1,3 +1,6 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -21,6 +24,23 @@ public class ExtractInterfaceOperationTests
             public int Add(int a, int b) => a + b;
 
             public int Multiply(int a, int b) => a * b;
+        }
+        """;
+
+    private const string MixedIndexerSource = """
+        namespace TestApp;
+
+        public class Lookup
+        {
+            public int Count { get; set; }
+
+            public string this[int i]
+            {
+                get => "";
+                set { }
+            }
+
+            public int Add(int a, int b) => a + b;
         }
         """;
 
@@ -211,8 +231,308 @@ public class ExtractInterfaceOperationTests
         Assert.Equal(siblingBefore, await File.ReadAllTextAsync(sibling));
     }
 
+    [SkippableFact]
+    public async Task ExtractInterface_Default_PublicIndexer_EmitsLegalIndexerAndCompiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            InterfaceName = "ILookup"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var iface = FindType(updated, "ILookup");
+        var indexer = Assert.Single(FindIndexers(updated, "ILookup"));
+        Assert.Contains("this[int i]", updated);
+        Assert.Equal("i", Assert.Single(indexer.ParameterList.Parameters).Identifier.Text);
+        Assert.DoesNotContain(iface.Members.OfType<PropertyDeclarationSyntax>(),
+            p => p.Identifier.Text.Contains("this", StringComparison.Ordinal));
+        Assert.NotNull(FindProperty(updated, "ILookup", "Count"));
+        Assert.NotNull(FindMethod(updated, "ILookup", "Add"));
+        AssertImplementsInterface(updated, "Lookup", "ILookup");
+        AssertCompiles(updated);
+    }
+
+    [SkippableTheory]
+    [InlineData("this[]")]
+    [InlineData("Item")]
+    [InlineData("this[int i]")]
+    public async Task ExtractInterface_MembersFilter_IndexerAliases_ExtractsOnlyIndexer(string memberName)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            InterfaceName = "ILookup",
+            Members = new[] { memberName }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var iface = FindType(updated, "ILookup");
+        Assert.Single(FindIndexers(updated, "ILookup"));
+        Assert.Contains("this[int i]", updated);
+        Assert.Null(FindProperty(updated, "ILookup", "Count"));
+        Assert.Null(FindMethod(updated, "ILookup", "Add"));
+        Assert.DoesNotContain(iface.Members.OfType<PropertyDeclarationSyntax>(),
+            p => p.Identifier.Text.Contains("this", StringComparison.Ordinal));
+        AssertImplementsInterface(updated, "Lookup", "ILookup");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_MembersFilter_OrdinaryProperty_DoesNotExtractIndexer()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            InterfaceName = "ILookup",
+            Members = new[] { "Count" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var property = FindProperty(updated, "ILookup", "Count");
+        Assert.NotNull(property);
+        Assert.Empty(FindIndexers(updated, "ILookup"));
+        Assert.DoesNotContain("this[]", property!.Identifier.Text);
+        Assert.Null(FindMethod(updated, "ILookup", "Add"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_GetOnlyIndexer_EmitsGetOnly()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                public int Count { get; set; }
+
+                public int this[int i] => i;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            InterfaceName = "ILookup"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "ILookup"));
+        Assert.Contains(indexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        Assert.DoesNotContain(indexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.Contains("this[int i]", updated);
+        Assert.NotNull(FindProperty(updated, "ILookup", "Count"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_RefIndexer_KeepsRef()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Cell
+            {
+                private int _value;
+
+                public ref int this[int i] => ref _value;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Cell.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Cell",
+            InterfaceName = "ICell"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "ICell"));
+        Assert.IsType<RefTypeSyntax>(indexer.Type);
+        Assert.False(((RefTypeSyntax)indexer.Type).ReadOnlyKeyword.IsKind(SyntaxKind.ReadOnlyKeyword));
+        Assert.Contains("ref int this[int i]", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_RefReadonlyIndexer_KeepsRefReadonly()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Origin
+            {
+                private readonly int _value;
+
+                public ref readonly int this[int i] => ref _value;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Origin.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Origin",
+            InterfaceName = "IOrigin"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "IOrigin"));
+        Assert.IsType<RefTypeSyntax>(indexer.Type);
+        Assert.True(((RefTypeSyntax)indexer.Type).ReadOnlyKeyword.IsKind(SyntaxKind.ReadOnlyKeyword));
+        Assert.Contains("ref readonly int this[int i]", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_Indexer_RefKindParameter_Preserved()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                public int this[in int i] => i;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            InterfaceName = "ILookup"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "ILookup"));
+        var parameter = Assert.Single(indexer.ParameterList.Parameters);
+        Assert.Contains(parameter.Modifiers, t => t.IsKind(SyntaxKind.InKeyword));
+        Assert.Contains("this[in int i]", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_Indexer_Preview_DescribesIndexerAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var sibling = Path.GetFullPath(Path.Combine(workspace.DirectoryPath, "ILookup.cs"));
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            InterfaceName = "ILookup",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("this[]", result.PendingChanges[0].Description);
+        Assert.Contains("this[int i]", result.PendingChanges[0].AfterSnippet);
+        Assert.DoesNotContain("this[]", result.PendingChanges[0].AfterSnippet?.Replace("this[int i]", "", StringComparison.Ordinal) ?? "");
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.False(File.Exists(sibling));
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_MembersFilter_UnknownIndexerAlias_ThrowsMemberNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractInterfaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Lookup",
+                InterfaceName = "ILookup",
+                Members = new[] { "DoesNotExist" }
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
+
+    private static TypeDeclarationSyntax FindType(string source, string typeName)
+    {
+        var type = CSharpSyntaxTree.ParseText(source).GetCompilationUnitRoot().DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .FirstOrDefault(t => t.Identifier.Text == typeName);
+        Assert.True(type != null, $"Generated source did not contain type '{typeName}':\n{source}");
+        return type!;
+    }
+
+    private static IReadOnlyList<IndexerDeclarationSyntax> FindIndexers(string source, string typeName) =>
+        FindType(source, typeName).Members.OfType<IndexerDeclarationSyntax>().ToList();
+
+    private static PropertyDeclarationSyntax? FindProperty(string source, string typeName, string name) =>
+        FindType(source, typeName).Members.OfType<PropertyDeclarationSyntax>()
+            .FirstOrDefault(p => p.Identifier.Text == name);
+
+    private static MethodDeclarationSyntax? FindMethod(string source, string typeName, string name) =>
+        FindType(source, typeName).Members.OfType<MethodDeclarationSyntax>()
+            .FirstOrDefault(m => m.Identifier.Text == name);
+
+    private static void AssertCompiles(string source)
+    {
+        var compilation = CSharpCompilation.Create(
+                "ExtractInterfaceCompileTest",
+                new[]
+                {
+                    CSharpSyntaxTree.ParseText("global using System;"),
+                    CSharpSyntaxTree.ParseText(source)
+                },
+                new[]
+                {
+                    MetadataReference.CreateFromFile(typeof(object).Assembly.Location)
+                },
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, "Generated extract_interface members did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
+    }
 
     /// <summary>
     /// Base-list trivia from <c>WithBaseList</c> may omit spaces; compare a compacted form.

@@ -21,7 +21,9 @@ public sealed class ExtractInterfaceParams
     public required string InterfaceName { get; init; }
 
     /// <summary>
-    /// Names of members to include in interface. If null, includes all public instance members.
+    /// Names of members to include in interface. If null, includes all public
+    /// instance members. Indexers match metadata name (<c>Item</c>), Roslyn
+    /// name (<c>this[]</c>), and conventional display (<c>this[int i]</c>).
     /// </summary>
     public IReadOnlyList<string>? Members { get; init; }
 

@@ -32,7 +32,7 @@ public sealed class ExtractInterfaceTool : IToolHandler
     public string Name => "extract_interface";
 
     /// <inheritdoc />
-    public string Description => "Extract an interface from a class's public members. When separateFile is true and targetFile is omitted, the interface is written to {InterfaceName}.cs next to the source file.";
+    public string Description => "Extract an interface from a class's public members, including indexers as this[...] declarations. When separateFile is true and targetFile is omitted, the interface is written to {InterfaceName}.cs next to the source file.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -65,7 +65,7 @@ public sealed class ExtractInterfaceTool : IToolHandler
             {
                 type = "array",
                 items = new { type = "string" },
-                description = "Names of members to include. If not specified, includes all public instance members."
+                description = "Names of members to include. If not specified, includes all public instance members. Indexers match Item, this[], and this[int i]."
             },
             targetFile = new
             {

@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Generate;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
@@ -214,11 +215,17 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         }
 
         var requestedSet = new HashSet<string>(requestedMembers);
-        var filtered = allMembers.Where(m => requestedSet.Contains(m.Name)).ToList();
+        // Indexers match metadata name (Item), Roslyn name (this[]), and
+        // conventional display (this[int i]) — same identity forms as
+        // implement_interface.
+        var filtered = allMembers
+            .Where(m => ImplementInterfaceOperation.MatchesRequestedMember(m, requestedSet))
+            .ToList();
 
-        // Validate all requested members were found
-        var foundNames = filtered.Select(m => m.Name).ToHashSet();
-        var notFound = requestedMembers.Where(n => !foundNames.Contains(n)).ToList();
+        var notFound = requestedMembers
+            .Where(n => !allMembers.Any(m =>
+                ImplementInterfaceOperation.MatchesRequestedMember(m, new HashSet<string> { n })))
+            .ToList();
 
         if (notFound.Count > 0)
         {
