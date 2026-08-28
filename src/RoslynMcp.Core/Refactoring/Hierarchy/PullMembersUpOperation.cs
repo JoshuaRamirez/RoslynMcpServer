@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Generate;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Hierarchy;
@@ -78,7 +79,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         var target = GetTargetBaseType(derivedSymbol, @params.TargetBaseType);
         ValidateTarget(target);
 
-        var members = FindMembersToPull(derivedDecl, @params.Members, semanticModel, cancellationToken);
+        var members = FindMembersToPull(derivedDecl, @params.Members, semanticModel, target, cancellationToken);
         ValidateMembersForPull(members, derivedSymbol, target, semanticModel, @params.MakeAbstract);
 
         var pulledNames = members.Select(m => m.Name).ToList();
@@ -213,13 +214,53 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         TypeDeclarationSyntax typeDeclaration,
         IReadOnlyList<string> memberNames,
         SemanticModel semanticModel,
+        INamedTypeSymbol target,
         CancellationToken cancellationToken)
     {
         var requested = new HashSet<string>(memberNames.Where(n => !string.IsNullOrWhiteSpace(n)));
+        var unmatched = new HashSet<string>(requested);
         var found = new List<PullableMember>();
 
         foreach (var (name, symbol, syntax) in EnumerateDeclaredMembers(typeDeclaration, semanticModel, cancellationToken))
         {
+            if (symbol is IPropertySymbol { IsIndexer: true } indexer)
+            {
+                // Indexers match metadata name (Item), Roslyn name (this[]),
+                // and conventional display (this[int i]) — same identity
+                // forms as implement_interface / extract_interface /
+                // extract_base_class. Explicit interface implementations
+                // are skipped when the target does not implement that
+                // interface: copying IFoo.this[...] onto a base that does
+                // not implement IFoo is CS0540.
+                if (IsExplicitInterfaceIndexer(indexer, syntax)
+                    && !TargetSupportsExplicitInterface(target, indexer))
+                {
+                    continue;
+                }
+
+                if (!ImplementInterfaceOperation.MatchesRequestedMember(indexer, requested))
+                    continue;
+
+                if (!IsSupportedMember(indexer))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.MemberNotMoveable,
+                        $"Member '{indexer.Name}' cannot be pulled up.");
+                }
+
+                found.Add(new PullableMember(indexer.Name, indexer, syntax));
+                foreach (var request in unmatched.ToList())
+                {
+                    if (ImplementInterfaceOperation.MatchesRequestedMember(
+                            indexer, new HashSet<string> { request }))
+                    {
+                        unmatched.Remove(request);
+                    }
+                }
+
+                continue;
+            }
+
             if (!requested.Contains(name))
                 continue;
 
@@ -238,14 +279,14 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             }
 
             found.Add(new PullableMember(name, symbol, syntax));
-            requested.Remove(name);
+            unmatched.Remove(name);
         }
 
-        if (requested.Count > 0)
+        if (unmatched.Count > 0)
         {
             throw new RefactoringException(
                 ErrorCodes.MemberNotFound,
-                $"Members not found: {string.Join(", ", requested)}");
+                $"Members not found: {string.Join(", ", unmatched)}");
         }
 
         return found;
@@ -265,6 +306,9 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                     break;
                 case PropertyDeclarationSyntax property:
                     yield return (property.Identifier.Text, semanticModel.GetDeclaredSymbol(property, cancellationToken), property);
+                    break;
+                case IndexerDeclarationSyntax indexer:
+                    yield return ("this[]", semanticModel.GetDeclaredSymbol(indexer, cancellationToken), indexer);
                     break;
                 case FieldDeclarationSyntax field:
                     foreach (var variable in field.Declaration.Variables)
@@ -313,7 +357,9 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                     ErrorCodes.MemberNotMoveable,
                     member.Symbol is IEventSymbol
                         ? $"Event '{member.Name}' cannot be pulled up as an abstract member."
-                        : "Only methods, properties, and events can be pulled up as abstract members.");
+                        : member.Symbol is IPropertySymbol { IsIndexer: true }
+                            ? $"Indexer '{member.Name}' cannot be pulled up as an abstract member."
+                            : "Only methods, properties, indexers, and events can be pulled up as abstract members.");
             }
 
             if (HasConflict(target, member.Symbol))
@@ -354,6 +400,14 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 continue;
             }
 
+            if (member is IPropertySymbol { IsIndexer: true } indexer
+                && existing is IPropertySymbol { IsIndexer: true } existingIndexer)
+            {
+                if (IndexerSignaturesMatch(indexer, existingIndexer))
+                    return true;
+                continue;
+            }
+
             return true;
         }
 
@@ -379,6 +433,44 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         return true;
     }
 
+    private static bool IndexerSignaturesMatch(IPropertySymbol left, IPropertySymbol right)
+    {
+        if (left.Parameters.Length != right.Parameters.Length)
+            return false;
+
+        for (var i = 0; i < left.Parameters.Length; i++)
+        {
+            if (!SymbolEqualityComparer.Default.Equals(left.Parameters[i].Type, right.Parameters[i].Type))
+                return false;
+            if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsExplicitInterfaceIndexer(IPropertySymbol indexer, MemberDeclarationSyntax syntax) =>
+        indexer.ExplicitInterfaceImplementations.Length > 0
+        || (syntax is IndexerDeclarationSyntax declaration && declaration.ExplicitInterfaceSpecifier != null);
+
+    private static bool TargetSupportsExplicitInterface(INamedTypeSymbol target, IPropertySymbol indexer)
+    {
+        foreach (var implemented in indexer.ExplicitInterfaceImplementations)
+        {
+            var iface = implemented.ContainingType;
+            if (SymbolEqualityComparer.Default.Equals(target, iface))
+                return true;
+
+            if (target.AllInterfaces.Any(candidate =>
+                    SymbolEqualityComparer.Default.Equals(candidate, iface)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool IsInterfaceCompatible(ISymbol member)
     {
         if (member.IsStatic)
@@ -399,7 +491,8 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
     private static bool CanPullAsAbstract(ISymbol symbol) => symbol switch
     {
         IMethodSymbol method => method.MethodKind == MethodKind.Ordinary,
-        IPropertySymbol => true,
+        IPropertySymbol property => !property.IsIndexer
+            || (!property.IsStatic && property.ExplicitInterfaceImplementations.Length == 0),
         IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
         _ => false
     };
@@ -511,6 +604,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => ToInterfaceProperty(property),
+            IndexerDeclarationSyntax indexer => ToInterfaceIndexer(indexer),
             EventDeclarationSyntax eventDecl => eventDecl
                 .WithModifiers(SyntaxFactory.TokenList())
                 .WithAccessorList(null)
@@ -553,6 +647,35 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             .NormalizeWhitespace();
     }
 
+    private static IndexerDeclarationSyntax ToInterfaceIndexer(IndexerDeclarationSyntax indexer)
+    {
+        var accessors = new List<AccessorDeclarationSyntax>();
+        if (indexer.AccessorList != null)
+        {
+            foreach (var accessor in indexer.AccessorList.Accessors)
+            {
+                accessors.Add(accessor
+                    .WithModifiers(SyntaxFactory.TokenList())
+                    .WithBody(null)
+                    .WithExpressionBody(null)
+                    .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
+            }
+        }
+        else
+        {
+            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
+        }
+
+        return indexer
+            .WithModifiers(SyntaxFactory.TokenList())
+            .WithExplicitInterfaceSpecifier(null)
+            .WithExpressionBody(null)
+            .WithSemicolonToken(default)
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
+            .NormalizeWhitespace();
+    }
+
     private static MemberDeclarationSyntax ConvertToAbstract(MemberDeclarationSyntax member)
     {
         return member switch
@@ -564,13 +687,18 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => ToAbstractProperty(property),
+            IndexerDeclarationSyntax indexer when CanMakeIndexerAbstract(indexer) => ToAbstractIndexer(indexer),
             EventDeclarationSyntax eventDecl when CanMakeEventAbstract(eventDecl) => ToAbstractEvent(eventDecl),
             EventFieldDeclarationSyntax eventField when CanMakeEventAbstract(eventField) => ToAbstractEvent(eventField),
             _ => throw new RefactoringException(
                 ErrorCodes.MemberNotMoveable,
-                "Only methods, properties, and events can be pulled up as abstract members.")
+                "Only methods, properties, indexers, and events can be pulled up as abstract members.")
         };
     }
+
+    private static bool CanMakeIndexerAbstract(IndexerDeclarationSyntax indexer) =>
+        !indexer.Modifiers.Any(SyntaxKind.StaticKeyword) &&
+        indexer.ExplicitInterfaceSpecifier == null;
 
     private static bool CanMakeEventAbstract(EventDeclarationSyntax eventDecl) =>
         !eventDecl.Modifiers.Any(SyntaxKind.StaticKeyword) &&
@@ -625,6 +753,33 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             .NormalizeWhitespace();
     }
 
+    private static IndexerDeclarationSyntax ToAbstractIndexer(IndexerDeclarationSyntax indexer)
+    {
+        var accessors = new List<AccessorDeclarationSyntax>();
+        if (indexer.AccessorList != null)
+        {
+            foreach (var accessor in indexer.AccessorList.Accessors)
+            {
+                accessors.Add(accessor
+                    .WithBody(null)
+                    .WithExpressionBody(null)
+                    .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
+            }
+        }
+        else
+        {
+            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
+        }
+
+        return indexer
+            .WithModifiers(ToAbstractModifiers(indexer.Modifiers))
+            .WithExpressionBody(null)
+            .WithSemicolonToken(default)
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
+            .NormalizeWhitespace();
+    }
+
     private static MemberDeclarationSyntax ConvertToVirtualOnBase(MemberDeclarationSyntax member)
     {
         return member switch
@@ -634,6 +789,12 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => property
                 .WithModifiers(AdjustBaseClassModifiers(property.Modifiers, addVirtual: !property.Modifiers.Any(SyntaxKind.StaticKeyword)))
+                .NormalizeWhitespace(),
+            IndexerDeclarationSyntax indexer => indexer
+                .WithModifiers(AdjustBaseClassModifiers(
+                    indexer.Modifiers,
+                    addVirtual: !indexer.Modifiers.Any(SyntaxKind.StaticKeyword)
+                        && indexer.ExplicitInterfaceSpecifier == null))
                 .NormalizeWhitespace(),
             FieldDeclarationSyntax field => field
                 .WithModifiers(AdjustBaseClassModifiers(field.Modifiers, addVirtual: false))
@@ -776,6 +937,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         {
             MethodDeclarationSyntax method => method.WithModifiers(ToOverrideModifiers(method.Modifiers)),
             PropertyDeclarationSyntax property => property.WithModifiers(ToOverrideModifiers(property.Modifiers)),
+            IndexerDeclarationSyntax indexer => indexer.WithModifiers(ToOverrideModifiers(indexer.Modifiers)),
             EventDeclarationSyntax eventDecl => eventDecl.WithModifiers(ToOverrideModifiers(eventDecl.Modifiers)),
             EventFieldDeclarationSyntax eventField => eventField.WithModifiers(ToOverrideModifiers(eventField.Modifiers)),
             _ => member

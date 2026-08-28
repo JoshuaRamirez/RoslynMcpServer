@@ -60,7 +60,7 @@ public sealed class PullMembersUpTool : IToolHandler
             {
                 type = "array",
                 items = new { type = "string" },
-                description = "Names of members to move to the base class or interface"
+                description = "Names of members to move to the base class or interface. Indexers match Item, this[], and this[int i]."
             },
             targetBaseType = new
             {
