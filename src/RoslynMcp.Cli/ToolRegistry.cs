@@ -231,7 +231,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<GeneratePropertyOperation, GeneratePropertyParams>(
             "generate-property", "Generate a property on a type (auto, init-only, or backing-field); replaceExisting (default false) replaces an existing property of the same name instead of failing");
         r.RegisterRefactoring<GenerateMethodStubOperation, GenerateMethodStubParams>(
-            "generate-method-stub", "Generate a method from an undefined call site, inferring the signature from usage");
+            "generate-method-stub", "Generate a method from an undefined call site, inferring the signature from usage; throwNotImplemented (default true) throws NotImplementedException in the stub body, false uses default-return / empty void bodies");
         r.RegisterRefactoring<GenerateEqualsHashCodeOperation, GenerateEqualsHashCodeParams>(
             "generate-equals-hashcode", "Generate Equals and GetHashCode overrides; implementIEquatable (default false) also adds IEquatable<T>; generateOperators (default false) also adds == and !=; replaceExisting (default false) replaces existing equality members instead of failing; useHashCodeCombine (default true) uses HashCode.Combine / builder instead of an unchecked prime-multiply GetHashCode; includeProperties (default true) includes readable properties as equality members; false uses instance fields only unless fields names a property; callSuper (default false) folds the immediate base type's Equals/GetHashCode into the generated methods; includeInheritedMembers (default false) also collects accessible instance fields/properties declared on base types");
         r.RegisterRefactoring<GenerateOverridesOperation, GenerateOverridesParams>(

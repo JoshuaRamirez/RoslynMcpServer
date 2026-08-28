@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -13,8 +14,16 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
 /// Generates a method declaration from an undefined call site, inferring the
-/// signature from usage. The placeholder body is
+/// signature from usage. When <see cref="GenerateMethodStubParams.ThrowNotImplemented"/>
+/// is true (the default), the placeholder body is
 /// <c>throw new global::System.NotImplementedException();</c>.
+/// When false, the body uses
+/// <see cref="SyntaxGenerationHelper.CreateDefaultReturnBody"/> (empty block
+/// for <c>void</c>; <c>return null;</c> for reference types;
+/// <c>return default(T);</c> for value types and type parameters), except
+/// <c>ref</c> / <c>ref readonly</c> returns which still throw (a default
+/// return is not a valid ref return). Async <c>Task</c> / <c>Task&lt;T&gt;</c>
+/// stubs unwrap the task type so the body stays compilable.
 /// </summary>
 public sealed class GenerateMethodStubOperation : RefactoringOperationBase<GenerateMethodStubParams>
 {
@@ -145,10 +154,21 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
 
         var isStatic = ShouldBeStatic(target, invocation, semanticModel, cancellationToken);
         var visibility = ResolveVisibility(@params, target.SameTypeAsCaller);
-        var method = CreateMethodStub(methodName, returnType, parameters, visibility, isStatic, isAsync, typeParameters);
+        var resolvedReturnType = TryResolveReturnType(semanticModel, returnType, position);
+        var method = CreateMethodStub(
+            methodName,
+            returnType,
+            parameters,
+            visibility,
+            isStatic,
+            isAsync,
+            typeParameters,
+            @params.ThrowNotImplemented,
+            resolvedReturnType,
+            semanticModel.Compilation);
 
         if (@params.Preview)
-            return CreatePreviewResult(operationId, callSiteDocument, targetDocument, target.Type.Name, methodName, method, rewriteCallSite, invokedName);
+            return CreatePreviewResult(operationId, callSiteDocument, targetDocument, target.Type.Name, methodName, method, rewriteCallSite, invokedName, @params.ThrowNotImplemented);
 
         var newSolution = await ApplyChangesAsync(
             callSiteDocument,
@@ -579,6 +599,8 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         var usage = (SyntaxNode)invocation;
         if (invocation.Parent is AwaitExpressionSyntax awaitExpr)
             usage = awaitExpr;
+        else if (invocation.Parent is RefExpressionSyntax refExpr)
+            usage = refExpr;
 
         switch (usage.Parent)
         {
@@ -710,7 +732,15 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
     }
 
     /// <summary>
-    /// Creates a method stub with a <c>throw new global::System.NotImplementedException();</c> body.
+    /// Creates a method stub. When <paramref name="throwNotImplemented"/> is
+    /// true, the body is
+    /// <c>throw new global::System.NotImplementedException();</c>;
+    /// otherwise it uses <see cref="SyntaxGenerationHelper.CreateDefaultReturnBody"/>
+    /// (or the same shape when the return type cannot be bound).
+    /// <c>ref</c> / <c>ref readonly</c> methods always throw — a default
+    /// return is not a valid ref return (CS8156). Async <c>Task</c> /
+    /// <c>Task&lt;T&gt;</c> stubs unwrap the task so the body compiles
+    /// (empty block / return-default of the inner type; no dummy storage).
     /// </summary>
     internal static MethodDeclarationSyntax CreateMethodStub(
         string name,
@@ -719,7 +749,10 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         string visibility,
         bool isStatic,
         bool isAsync,
-        IReadOnlyList<string>? typeParameters = null)
+        IReadOnlyList<string>? typeParameters = null,
+        bool throwNotImplemented = true,
+        ITypeSymbol? resolvedReturnType = null,
+        Compilation? compilation = null)
     {
         var parameterList = SyntaxFactory.ParameterList(
             SyntaxFactory.SeparatedList(parameters.Select(CreateParameter)));
@@ -730,12 +763,16 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         if (isAsync)
             modifiers.Add(SyntaxFactory.Token(SyntaxKind.AsyncKeyword).WithTrailingTrivia(SyntaxFactory.Space));
 
+        var body = RequiresThrowBody(returnType, throwNotImplemented)
+            ? CreateThrowNotImplementedBody()
+            : CreateNonThrowingBody(returnType, isAsync, resolvedReturnType, typeParameters, compilation);
+
         var method = SyntaxFactory.MethodDeclaration(
                 SyntaxFactory.ParseTypeName(returnType).WithTrailingTrivia(SyntaxFactory.Space),
                 name)
             .WithModifiers(SyntaxFactory.TokenList(modifiers))
             .WithParameterList(parameterList)
-            .WithBody(CreateThrowNotImplementedBody());
+            .WithBody(body);
 
         if (typeParameters is { Count: > 0 })
         {
@@ -746,6 +783,184 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
 
         return method.NormalizeWhitespace();
     }
+
+    /// <summary>
+    /// True when the stub must throw: the flag is on, or the inferred /
+    /// requested return is <c>ref</c> / <c>ref readonly</c> (CS8156).
+    /// </summary>
+    internal static bool RequiresThrowBody(string returnType, bool throwNotImplemented)
+        => throwNotImplemented || IsRefReturn(returnType);
+
+    /// <summary>
+    /// True when <paramref name="returnType"/> is a <c>ref</c> or
+    /// <c>ref readonly</c> return (a default return is not valid).
+    /// </summary>
+    internal static bool IsRefReturn(string returnType)
+    {
+        var trimmed = returnType.Trim();
+        return trimmed.StartsWith("ref ", StringComparison.Ordinal);
+    }
+
+    internal static ITypeSymbol? TryResolveReturnType(
+        SemanticModel semanticModel,
+        string returnType,
+        int position)
+    {
+        var stripped = StripRefModifiers(returnType);
+        if (stripped.Equals("void", StringComparison.Ordinal))
+            return semanticModel.Compilation.GetSpecialType(SpecialType.System_Void);
+
+        var typeSyntax = SyntaxFactory.ParseTypeName(stripped);
+        var info = semanticModel.GetSpeculativeTypeInfo(
+            position,
+            typeSyntax,
+            SpeculativeBindingOption.BindAsTypeOrNamespace);
+        return IsUsableType(info.Type) ? info.Type : null;
+    }
+
+    internal static string StripRefModifiers(string returnType)
+    {
+        var trimmed = returnType.Trim();
+        if (trimmed.StartsWith("ref readonly ", StringComparison.Ordinal))
+            return trimmed["ref readonly ".Length..].Trim();
+        if (trimmed.StartsWith("ref ", StringComparison.Ordinal))
+            return trimmed["ref ".Length..].Trim();
+        return trimmed;
+    }
+
+    private static BlockSyntax CreateNonThrowingBody(
+        string returnType,
+        bool isAsync,
+        ITypeSymbol? resolvedReturnType,
+        IReadOnlyList<string>? typeParameters,
+        Compilation? compilation)
+    {
+        var bodyType = isAsync
+            ? UnwrapTaskLike(resolvedReturnType, compilation)
+            : resolvedReturnType;
+
+        if (bodyType != null)
+            return SyntaxGenerationHelper.CreateDefaultReturnBody(bodyType);
+
+        var bodyTypeName = isAsync
+            ? UnwrapAsyncReturnTypeName(returnType)
+            : StripRefModifiers(returnType);
+        return CreateDefaultReturnBodyFromTypeName(bodyTypeName, typeParameters);
+    }
+
+    /// <summary>
+    /// Unwraps <c>Task</c> / <c>ValueTask</c> to <c>void</c> and
+    /// <c>Task&lt;T&gt;</c> / <c>ValueTask&lt;T&gt;</c> to <c>T</c> so
+    /// <see cref="SyntaxGenerationHelper.CreateDefaultReturnBody"/> is applied
+    /// to the type an <c>async</c> method actually returns.
+    /// </summary>
+    internal static ITypeSymbol? UnwrapTaskLike(ITypeSymbol? type, Compilation? compilation)
+    {
+        if (type is not INamedTypeSymbol named || !IsTaskLikeSymbol(named))
+            return type;
+
+        if (named.TypeArguments.Length == 1)
+            return named.TypeArguments[0];
+
+        return compilation?.GetSpecialType(SpecialType.System_Void);
+    }
+
+    internal static bool IsTaskLikeSymbol(INamedTypeSymbol type)
+    {
+        if (type.Name is not ("Task" or "ValueTask"))
+            return false;
+
+        return type.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks";
+    }
+
+    /// <summary>
+    /// String-level Task unwrap used when the return type could not be bound.
+    /// </summary>
+    internal static string UnwrapAsyncReturnTypeName(string returnType)
+    {
+        var trimmed = StripRefModifiers(returnType);
+        if (IsNonGenericTaskName(trimmed))
+            return "void";
+
+        if (TryUnwrapGeneric(trimmed, "Task", out var inner)
+            || TryUnwrapGeneric(trimmed, "ValueTask", out inner)
+            || TryUnwrapGeneric(trimmed, "System.Threading.Tasks.Task", out inner)
+            || TryUnwrapGeneric(trimmed, "System.Threading.Tasks.ValueTask", out inner))
+        {
+            return inner;
+        }
+
+        return trimmed;
+    }
+
+    private static bool IsNonGenericTaskName(string typeName) =>
+        typeName.Equals("Task", StringComparison.Ordinal)
+        || typeName.Equals("ValueTask", StringComparison.Ordinal)
+        || typeName.Equals("System.Threading.Tasks.Task", StringComparison.Ordinal)
+        || typeName.Equals("System.Threading.Tasks.ValueTask", StringComparison.Ordinal);
+
+    private static bool TryUnwrapGeneric(string typeName, string genericName, out string inner)
+    {
+        var prefix = genericName + "<";
+        if (typeName.StartsWith(prefix, StringComparison.Ordinal)
+            && typeName.EndsWith(">", StringComparison.Ordinal)
+            && typeName.Length > prefix.Length + 1)
+        {
+            inner = typeName.Substring(prefix.Length, typeName.Length - prefix.Length - 1);
+            return true;
+        }
+
+        inner = "";
+        return false;
+    }
+
+    /// <summary>
+    /// Fallback when the return type cannot be bound to an
+    /// <see cref="ITypeSymbol"/> — same shapes as
+    /// <see cref="SyntaxGenerationHelper.CreateDefaultReturnBody"/>.
+    /// </summary>
+    internal static BlockSyntax CreateDefaultReturnBodyFromTypeName(
+        string returnType,
+        IReadOnlyList<string>? typeParameters)
+    {
+        var trimmed = returnType.Trim();
+        if (trimmed.Equals("void", StringComparison.Ordinal))
+            return SyntaxFactory.Block();
+
+        if (IsKnownValueTypeName(trimmed)
+            || IsGeneratedTypeParameter(trimmed, typeParameters))
+        {
+            return SyntaxFactory.Block(
+                SyntaxFactory.ReturnStatement(
+                    SyntaxFactory.DefaultExpression(SyntaxFactory.ParseTypeName(trimmed))));
+        }
+
+        if (IsKnownReferenceTypeName(trimmed))
+        {
+            return SyntaxFactory.Block(
+                SyntaxFactory.ReturnStatement(
+                    SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression)));
+        }
+
+        // Unresolved user types: default(T) compiles for both structs and classes.
+        return SyntaxFactory.Block(
+            SyntaxFactory.ReturnStatement(
+                SyntaxFactory.DefaultExpression(SyntaxFactory.ParseTypeName(trimmed))));
+    }
+
+    private static bool IsGeneratedTypeParameter(string typeName, IReadOnlyList<string>? typeParameters) =>
+        typeParameters != null
+        && typeParameters.Any(tp => tp.Equals(typeName, StringComparison.Ordinal));
+
+    private static bool IsKnownValueTypeName(string typeName) =>
+        typeName is "bool" or "byte" or "sbyte" or "short" or "ushort"
+            or "int" or "uint" or "long" or "ulong"
+            or "float" or "double" or "decimal"
+            or "char" or "nint" or "nuint";
+
+    private static bool IsKnownReferenceTypeName(string typeName) =>
+        typeName is "string" or "object" or "dynamic"
+        || typeName.EndsWith("[]", StringComparison.Ordinal);
 
     private static ParameterSyntax CreateParameter(InferredParameter parameter)
     {
@@ -858,16 +1073,22 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         string methodName,
         MethodDeclarationSyntax method,
         bool rewriteCallSite,
-        SimpleNameSyntax? invokedName)
+        SimpleNameSyntax? invokedName,
+        bool throwNotImplemented)
     {
         var afterSnippet = method.NormalizeWhitespace().ToFullString();
+        // Match the body that will actually be emitted: a false flag still
+        // throws for ref / ref readonly returns (CS8156).
+        var throwNote = RequiresThrowBody(method.ReturnType.ToString(), throwNotImplemented)
+            ? "stub will throw NotImplementedException"
+            : "stub will not throw";
         var pendingChanges = new List<PendingChange>
         {
             new()
             {
                 File = targetDocument.FilePath ?? typeName,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Generate method stub '{methodName}' on {typeName}",
+                Description = $"Generate method stub '{methodName}' on {typeName} ({throwNote})",
                 BeforeSnippet = $"// Type '{typeName}' (no method '{methodName}')",
                 AfterSnippet = afterSnippet
             }
