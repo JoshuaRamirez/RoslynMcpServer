@@ -1122,7 +1122,8 @@ public class ImplementAbstractOperationTests
         Assert.Contains("public override string this[int i]", updated);
         Assert.DoesNotContain("old", updated);
         Assert.Contains("throw new global::System.NotImplementedException();", updated);
-        Assert.Equal(1, CountOccurrences(updated, "this[int i]"));
+        var derived = updated[updated.IndexOf("public class FastLookup", StringComparison.Ordinal)..];
+        Assert.Equal(1, CountOccurrences(derived, "this[int i]"));
     }
 
     [SkippableFact]
