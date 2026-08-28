@@ -368,6 +368,513 @@ public class PullMembersUpOperationTests
     }
 
     [SkippableFact]
+    public async Task PullMembersUp_FieldLikeEvent_MovesEventOntoBase()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public event System.EventHandler Changed;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Changed"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("public event System.EventHandler Changed", animal);
+        Assert.DoesNotContain("virtual", animal);
+        Assert.DoesNotContain("event System.EventHandler Changed", dog);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_AccessorStyleEvent_MovesEventOntoBaseAsVirtual()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public event System.EventHandler Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Changed"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("public virtual event System.EventHandler Changed", animal);
+        Assert.Contains("add", animal);
+        Assert.Contains("remove", animal);
+        Assert.DoesNotContain("event System.EventHandler Changed", dog);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MultiVariableEventField_LeavesUnrelatedDeclarator()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public event System.EventHandler Changed, Other;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Changed"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("public event System.EventHandler Changed", animal);
+        Assert.DoesNotContain("Other", animal);
+        Assert.DoesNotContain("Changed, Other", text);
+        Assert.Contains("public event System.EventHandler Other", dog);
+        Assert.DoesNotContain("event System.EventHandler Changed", dog);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_PrivateEvent_BecomesProtectedOnBase()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                private event System.EventHandler Changed;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Changed"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        Assert.Contains("protected event System.EventHandler Changed", animal);
+        Assert.DoesNotContain("private event", animal);
+        Assert.DoesNotContain("virtual", animal);
+        Assert.DoesNotContain("event System.EventHandler Changed", ExtractTypeBody(text, "Dog"));
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_EventLeavesOverrideOnDerived()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public event System.EventHandler Changed;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Changed"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("abstract", text);
+        Assert.Contains("abstract event System.EventHandler Changed", animal);
+        Assert.Contains("override event System.EventHandler Changed", dog);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_AccessorStyleEventLeavesOverrideOnDerived()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public event System.EventHandler Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Changed"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("abstract event System.EventHandler Changed", animal);
+        Assert.DoesNotContain("add", animal);
+        Assert.Contains("override event System.EventHandler Changed", dog);
+        Assert.Contains("add", dog);
+        Assert.Contains("remove", dog);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_MultiVariableEventField_LeavesUnrelatedAndOverridesSelected()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public event System.EventHandler Changed, Other;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Changed"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("abstract event System.EventHandler Changed", animal);
+        Assert.DoesNotContain("Other", animal);
+        Assert.Contains("override event System.EventHandler Changed", dog);
+        Assert.Contains("public event System.EventHandler Other", dog);
+        Assert.DoesNotContain("Changed, Other", text);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_StaticEvent_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public static event System.EventHandler Changed;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PullMembersUpParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                Members = ["Changed"],
+                MakeAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_ExplicitInterfaceEvent_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface INotify
+            {
+                event System.EventHandler Changed;
+            }
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal, INotify
+            {
+                event System.EventHandler INotify.Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PullMembersUpParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                Members = ["Changed"],
+                MakeAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MultiVariableEventField_IgnoresUnrelatedDeclaratorDependency()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public event System.Action Selected, Other = DerivedHandler;
+
+                private static void DerivedHandler() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Selected"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("event System.Action Selected", animal);
+        Assert.DoesNotContain("Other", animal);
+        Assert.Contains("Other", dog);
+        Assert.Contains("DerivedHandler", dog);
+        Assert.DoesNotContain("Selected", dog);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_EventToInterface_AddsSignatureAndKeepsImplementation()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IAnimal
+            {
+            }
+
+            public class Dog : IAnimal
+            {
+                public event System.EventHandler Changed;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Changed"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var iface = ExtractTypeBody(text, "IAnimal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("event System.EventHandler Changed", iface);
+        Assert.DoesNotContain("public event", iface);
+        Assert.Contains("public event System.EventHandler Changed", dog);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_Event_Preview_WritesNothing_AndDescribesEvent()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public event System.EventHandler Changed;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Changed"],
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => c.Description != null && c.Description.Contains("Changed"));
+        Assert.Contains(result.PendingChanges, c =>
+            c.AfterSnippet != null &&
+            c.AfterSnippet.Contains("event", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet.Contains("Changed"));
+
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(original, after);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_Event_LeavesMethodsPropertiesAndFieldsOnDerived()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public string Name { get; set; } = "";
+                public int Age;
+                public event System.EventHandler Changed;
+
+                public int Speak()
+                {
+                    return 1;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Changed"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("public event System.EventHandler Changed", animal);
+        Assert.DoesNotContain("Name", animal);
+        Assert.DoesNotContain("Age", animal);
+        Assert.DoesNotContain("Speak", animal);
+        Assert.Contains("public string Name { get; set; }", dog);
+        Assert.Contains("public int Age", dog);
+        Assert.Contains("public int Speak()", dog);
+        Assert.DoesNotContain("event System.EventHandler Changed", dog);
+    }
+
+    [SkippableFact]
     public async Task PullMembersUp_ExplicitTarget_UsesNamedBase()
     {
         const string source = """

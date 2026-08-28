@@ -79,11 +79,11 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         ValidateTarget(target);
 
         var members = FindMembersToPull(derivedDecl, @params.Members, semanticModel, cancellationToken);
-        ValidateMembersForPull(members, derivedSymbol, target, semanticModel);
+        ValidateMembersForPull(members, derivedSymbol, target, semanticModel, @params.MakeAbstract);
 
         var pulledNames = members.Select(m => m.Name).ToList();
         var targetMembers = members
-            .Select(m => ConvertForTarget(m.Syntax, target, @params.MakeAbstract))
+            .Select(m => ConvertForTarget(m.Syntax, m.Name, target, @params.MakeAbstract))
             .ToList();
         var derivedReplacement = BuildDerivedReplacement(
             derivedDecl,
@@ -298,12 +298,24 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         IReadOnlyList<PullableMember> members,
         INamedTypeSymbol derived,
         INamedTypeSymbol target,
-        SemanticModel semanticModel)
+        SemanticModel semanticModel,
+        bool makeAbstract)
     {
         var pulledNames = members.Select(m => m.Name).ToHashSet();
 
         foreach (var member in members)
         {
+            if (makeAbstract &&
+                target.TypeKind != TypeKind.Interface &&
+                !CanPullAsAbstract(member.Symbol))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MemberNotMoveable,
+                    member.Symbol is IEventSymbol
+                        ? $"Event '{member.Name}' cannot be pulled up as an abstract member."
+                        : "Only methods, properties, and events can be pulled up as abstract members.");
+            }
+
             if (HasConflict(target, member.Symbol))
             {
                 throw new RefactoringException(
@@ -384,6 +396,14 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         };
     }
 
+    private static bool CanPullAsAbstract(ISymbol symbol) => symbol switch
+    {
+        IMethodSymbol method => method.MethodKind == MethodKind.Ordinary,
+        IPropertySymbol => true,
+        IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
+        _ => false
+    };
+
     private static string? FindDerivedOnlyDependency(
         PullableMember member,
         INamedTypeSymbol derived,
@@ -392,6 +412,9 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
     {
         foreach (var identifier in member.Syntax.DescendantNodes().OfType<IdentifierNameSyntax>())
         {
+            if (IsUnselectedEventDeclaratorIdentifier(member, identifier))
+                continue;
+
             var referenced = semanticModel.GetSymbolInfo(identifier).Symbol;
             if (referenced == null)
                 continue;
@@ -431,17 +454,50 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         return null;
     }
 
+    private static bool IsUnselectedEventDeclaratorIdentifier(
+        PullableMember member,
+        IdentifierNameSyntax identifier)
+    {
+        if (member.Syntax is not EventFieldDeclarationSyntax eventField)
+            return false;
+
+        if (eventField.Declaration.Variables.Count <= 1)
+            return false;
+
+        var declarator = identifier.FirstAncestorOrSelf<VariableDeclaratorSyntax>();
+        return declarator != null && declarator.Identifier.Text != member.Name;
+    }
+
     private static MemberDeclarationSyntax ConvertForTarget(
         MemberDeclarationSyntax member,
+        string name,
         INamedTypeSymbol target,
         bool makeAbstract)
     {
+        var isolated = IsolateMemberSyntax(member, name);
+
         if (target.TypeKind == TypeKind.Interface)
-            return ConvertToInterfaceMember(member);
+            return ConvertToInterfaceMember(isolated);
 
         return makeAbstract
-            ? ConvertToAbstract(member)
-            : ConvertToVirtualOnBase(member);
+            ? ConvertToAbstract(isolated)
+            : ConvertToVirtualOnBase(isolated);
+    }
+
+    /// <summary>
+    /// Keeps only the requested declarator when an event field declares
+    /// multiple variables.
+    /// </summary>
+    private static MemberDeclarationSyntax IsolateMemberSyntax(MemberDeclarationSyntax syntax, string name)
+    {
+        return syntax switch
+        {
+            EventFieldDeclarationSyntax eventField when eventField.Declaration.Variables.Count > 1 =>
+                eventField.WithDeclaration(eventField.Declaration.WithVariables(
+                    SyntaxFactory.SingletonSeparatedList(
+                        eventField.Declaration.Variables.First(v => v.Identifier.Text == name)))),
+            _ => syntax
+        };
     }
 
     private static MemberDeclarationSyntax ConvertToInterfaceMember(MemberDeclarationSyntax member)
@@ -508,10 +564,38 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => ToAbstractProperty(property),
+            EventDeclarationSyntax eventDecl when CanMakeEventAbstract(eventDecl) => ToAbstractEvent(eventDecl),
+            EventFieldDeclarationSyntax eventField when CanMakeEventAbstract(eventField) => ToAbstractEvent(eventField),
             _ => throw new RefactoringException(
                 ErrorCodes.MemberNotMoveable,
-                "Only methods and properties can be pulled up as abstract members.")
+                "Only methods, properties, and events can be pulled up as abstract members.")
         };
+    }
+
+    private static bool CanMakeEventAbstract(EventDeclarationSyntax eventDecl) =>
+        !eventDecl.Modifiers.Any(SyntaxKind.StaticKeyword) &&
+        eventDecl.ExplicitInterfaceSpecifier == null;
+
+    private static bool CanMakeEventAbstract(EventFieldDeclarationSyntax eventField) =>
+        !eventField.Modifiers.Any(SyntaxKind.StaticKeyword);
+
+    private static EventDeclarationSyntax ToAbstractEvent(EventDeclarationSyntax eventDecl)
+    {
+        return eventDecl
+            .WithModifiers(ToAbstractModifiers(eventDecl.Modifiers))
+            .WithAccessorList(null)
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
+            .NormalizeWhitespace();
+    }
+
+    private static EventDeclarationSyntax ToAbstractEvent(EventFieldDeclarationSyntax eventField)
+    {
+        var variable = eventField.Declaration.Variables.First();
+        return SyntaxFactory.EventDeclaration(eventField.Declaration.Type, variable.Identifier)
+            .WithAttributeLists(eventField.AttributeLists)
+            .WithModifiers(ToAbstractModifiers(eventField.Modifiers))
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
+            .NormalizeWhitespace();
     }
 
     private static PropertyDeclarationSyntax ToAbstractProperty(PropertyDeclarationSyntax property)
@@ -624,13 +708,15 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         INamedTypeSymbol target,
         bool makeAbstract)
     {
-        var pulledSyntax = members.Select(m => m.Syntax).ToHashSet();
+        var pulledBySyntax = members
+            .GroupBy(member => member.Syntax)
+            .ToDictionary(group => group.Key, group => group.ToList());
         var keepAsOverride = makeAbstract && target.TypeKind != TypeKind.Interface;
         var newMembers = new List<MemberDeclarationSyntax>();
 
         foreach (var member in derivedDecl.Members)
         {
-            if (!pulledSyntax.Contains(member))
+            if (!pulledBySyntax.TryGetValue(member, out var pulled))
             {
                 newMembers.Add(member);
                 continue;
@@ -639,6 +725,18 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             if (target.TypeKind == TypeKind.Interface)
             {
                 newMembers.Add(member);
+                continue;
+            }
+
+            if (TryKeepRemainingEventDeclarators(member, pulled, out var remaining))
+            {
+                newMembers.Add(remaining);
+                if (keepAsOverride)
+                {
+                    foreach (var pulledMember in pulled)
+                        newMembers.Add(AddOverrideModifier(IsolateMemberSyntax(member, pulledMember.Name)));
+                }
+
                 continue;
             }
 
@@ -651,12 +749,35 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         return derivedDecl.WithMembers(SyntaxFactory.List(newMembers));
     }
 
+    private static bool TryKeepRemainingEventDeclarators(
+        MemberDeclarationSyntax member,
+        IReadOnlyList<PullableMember> pulled,
+        out MemberDeclarationSyntax remaining)
+    {
+        remaining = member;
+        if (member is not EventFieldDeclarationSyntax eventField)
+            return false;
+
+        var pulledNames = pulled.Select(p => p.Name).ToHashSet();
+        var keep = eventField.Declaration.Variables
+            .Where(variable => !pulledNames.Contains(variable.Identifier.Text))
+            .ToList();
+        if (keep.Count == 0)
+            return false;
+
+        remaining = eventField.WithDeclaration(
+            eventField.Declaration.WithVariables(SyntaxFactory.SeparatedList(keep)));
+        return true;
+    }
+
     private static MemberDeclarationSyntax AddOverrideModifier(MemberDeclarationSyntax member)
     {
         return member switch
         {
             MethodDeclarationSyntax method => method.WithModifiers(ToOverrideModifiers(method.Modifiers)),
             PropertyDeclarationSyntax property => property.WithModifiers(ToOverrideModifiers(property.Modifiers)),
+            EventDeclarationSyntax eventDecl => eventDecl.WithModifiers(ToOverrideModifiers(eventDecl.Modifiers)),
+            EventFieldDeclarationSyntax eventField => eventField.WithModifiers(ToOverrideModifiers(eventField.Modifiers)),
             _ => member
         };
     }
@@ -675,7 +796,8 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         if (modifiers.Any(SyntaxKind.PrivateKeyword) || !HasAccessibility(tokens))
             tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
 
-        tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword));
+        tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword)
+            .WithTrailingTrivia(SyntaxFactory.ElasticSpace));
         return SyntaxFactory.TokenList(tokens);
     }
 
