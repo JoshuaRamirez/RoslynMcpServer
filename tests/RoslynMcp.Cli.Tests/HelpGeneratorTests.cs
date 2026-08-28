@@ -237,9 +237,11 @@ public class HelpGeneratorTests
         Assert.DoesNotContain("--include-properties", requiredSection);
         Assert.DoesNotContain("--include-inherited-members", requiredSection);
         Assert.DoesNotContain("--replace-existing", requiredSection);
+        Assert.DoesNotContain("--visibility", requiredSection);
 
         Assert.Contains("--include-properties", optionalSection);
         Assert.Contains("--include-inherited-members", optionalSection);
         Assert.Contains("--replace-existing", optionalSection);
+        Assert.Contains("--visibility", optionalSection);
     }
 }

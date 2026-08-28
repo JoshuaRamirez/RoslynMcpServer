@@ -86,6 +86,12 @@ public sealed class GenerateConstructorTool : IToolHandler
                 description = "Replace an existing constructor with the exact same signature instead of failing. Optional-parameter / required-parameter ambiguity still fails",
                 @default = false
             },
+            visibility = new
+            {
+                type = "string",
+                description = "Accessibility of the generated constructor. Valid values: public, private, protected, internal, protected internal, private protected. Structs and record structs reject the three protected forms",
+                @default = "public"
+            },
             preview = new
             {
                 type = "boolean",
@@ -128,6 +134,7 @@ public sealed class GenerateConstructorTool : IToolHandler
                 IncludeInheritedMembers = args.IncludeInheritedMembers ?? false,
                 AddNullChecks = args.AddNullChecks ?? false,
                 ReplaceExisting = args.ReplaceExisting ?? false,
+                Visibility = args.Visibility,
                 Preview = args.Preview ?? false
             };
 
@@ -163,6 +170,7 @@ public sealed class GenerateConstructorTool : IToolHandler
         public bool? IncludeInheritedMembers { get; init; }
         public bool? AddNullChecks { get; init; }
         public bool? ReplaceExisting { get; init; }
+        public string? Visibility { get; init; }
         public bool? Preview { get; init; }
     }
 }

@@ -13,7 +13,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 /// <summary>
 /// Unit tests for GenerateConstructorOperation semantic validation,
 /// plus operation-level tests for <c>includeProperties</c>,
-/// <c>includeInheritedMembers</c>, and <c>replaceExisting</c>.
+/// <c>includeInheritedMembers</c>, <c>replaceExisting</c>, and
+/// <c>visibility</c>.
 /// Tests validate type-level constraints for constructor generation.
 /// </summary>
 public class GenerateConstructorOperationTests
@@ -1688,6 +1689,371 @@ public class GenerateConstructorOperationTests
 
     #endregion
 
+    #region visibility
+
+    [SkippableFact]
+    public async Task GenerateConstructor_VisibilityOmitted_EmitsPublicConstructor()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Widget");
+        Assert.StartsWith("public Widget(", ctor);
+        Assert.Contains("_id = id", ctor);
+        Assert.Contains("this.Name = name", ctor);
+        Assert.DoesNotContain("private Widget(", updated);
+        Assert.DoesNotContain("internal Widget(", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_VisibilityPublic_EmitsPublicConstructor()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Visibility = "public"
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(
+            NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget");
+        Assert.StartsWith("public Widget(", ctor);
+    }
+
+    [SkippableTheory]
+    [InlineData("private")]
+    [InlineData("protected")]
+    [InlineData("internal")]
+    [InlineData("protected internal")]
+    [InlineData("private protected")]
+    [InlineData("Internal")]
+    public async Task GenerateConstructor_ValidVisibility_EmitsThatModifier(string visibility)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Visibility = visibility
+        });
+
+        Assert.True(result.Success);
+        var expected = visibility.ToLowerInvariant();
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Widget", expected);
+        Assert.StartsWith($"{expected} Widget(", ctor);
+        Assert.Contains("_id = id", ctor);
+        Assert.Contains("this.Name = name", ctor);
+        if (!expected.Contains("public", StringComparison.Ordinal))
+            Assert.DoesNotContain("public Widget(", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_InvalidVisibility_FailsWithInvalidVisibility_AndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                Visibility = "secret"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ReplaceExistingTrue_UsesRequestedVisibility_NotOldAccessibility()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithExactCtorSource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            ReplaceExisting = true,
+            Visibility = "internal"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Widget", "internal");
+        Assert.StartsWith("internal Widget(", ctor);
+        Assert.DoesNotContain("\"old\"", updated);
+        Assert.Contains("_id = id", ctor);
+        Assert.Contains("this.Name = name", ctor);
+        Assert.DoesNotContain("public Widget(", updated);
+        Assert.Equal(1, CountOccurrences(updated, "internal Widget("));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_VisibilityInternal_IncludePropertiesFalse_AddNullChecks_StillWorks()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Visibility = "private",
+            IncludeProperties = false,
+            AddNullChecks = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Widget", "private");
+        Assert.StartsWith("private Widget(", ctor);
+        Assert.Contains("ArgumentNullException", ctor);
+        Assert.Contains("nameof(id)", ctor);
+        Assert.Contains("_id = id", ctor);
+        Assert.DoesNotContain("Name", ctor);
+        Assert.DoesNotContain("nameof(name)", ctor);
+        Assert.DoesNotContain("public Widget(", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_VisibilityProtected_Preview_DoesNotWriteFiles_AndDescribesVisibility()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Visibility = "protected",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("protected", result.PendingChanges[0].Description);
+        Assert.Contains("_id", result.PendingChanges[0].Description);
+        Assert.Contains("Name", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        Assert.Contains("protected Widget(", snippet);
+        Assert.Contains("_id = id", snippet);
+        Assert.Contains("this.Name = name", snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_VisibilityOmitted_Preview_MentionsPublic()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains("public", result.PendingChanges![0].Description);
+        Assert.Contains("public Widget(", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    private const string PointStructSource = """
+        namespace TestApp;
+
+        public struct Point
+        {
+            public int X;
+
+            public int Y;
+        }
+        """;
+
+    private const string PointStructWithCtorSource = """
+        namespace TestApp;
+
+        public struct Point
+        {
+            public int X;
+
+            public int Y;
+
+            public Point(int x, int y)
+            {
+                X = 0;
+                Y = 0;
+            }
+        }
+        """;
+
+    private const string PointRecordStructSource = """
+        namespace TestApp;
+
+        public record struct Point
+        {
+            public int X;
+
+            public int Y;
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData("protected")]
+    [InlineData("protected internal")]
+    [InlineData("private protected")]
+    public async Task GenerateConstructor_Struct_ProtectedVisibility_FailsWithInvalidVisibility_AndWritesNothing(
+        string visibility)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointStructSource, "Point.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Point",
+                Visibility = visibility
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.Contains("struct", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CS0666", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_RecordStruct_Protected_FailsWithInvalidVisibility_AndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointRecordStructSource, "Point.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Point",
+                Visibility = "protected"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.Contains("struct", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData(null, "public")]
+    [InlineData("public", "public")]
+    [InlineData("internal", "internal")]
+    [InlineData("private", "private")]
+    public async Task GenerateConstructor_Struct_NonProtectedVisibility_Succeeds(string? visibility, string expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointStructSource, "Point.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Point",
+            Visibility = visibility
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(
+            NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Point", expected);
+        Assert.StartsWith($"{expected} Point(", ctor);
+        Assert.Contains("this.X = x", ctor);
+        Assert.Contains("this.Y = y", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_Class_Protected_StillSucceeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Visibility = "protected"
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(
+            NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget", "protected");
+        Assert.StartsWith("protected Widget(", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_Struct_Protected_Preview_FailsAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointStructSource, "Point.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Point",
+                Visibility = "protected",
+                Preview = true
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_Struct_Protected_ReplaceExisting_FailsAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointStructWithCtorSource, "Point.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Point",
+                Visibility = "protected internal",
+                ReplaceExisting = true
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public Point(int x, int y)", before);
+    }
+
+    #endregion
+
     #region Helper Methods
 
     private static void ValidateTypeForConstructor(INamedTypeSymbol typeSymbol)
@@ -1831,9 +2197,9 @@ public class GenerateConstructorOperationTests
         return count;
     }
 
-    private static string ExtractConstructor(string source, string typeName)
+    private static string ExtractConstructor(string source, string typeName, string visibility = "public")
     {
-        var marker = $"public {typeName}(";
+        var marker = $"{visibility} {typeName}(";
         var start = source.IndexOf(marker, StringComparison.Ordinal);
         Assert.True(start >= 0, $"Constructor for {typeName} not found in:\n{source}");
 

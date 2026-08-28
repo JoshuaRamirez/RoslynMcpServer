@@ -60,6 +60,18 @@ public sealed class GenerateConstructorParams
     public bool ReplaceExisting { get; init; }
 
     /// <summary>
+    /// Accessibility of the generated constructor. Omitted / null / empty
+    /// defaults to <c>public</c> (today's behavior). Valid values:
+    /// <c>public</c>, <c>private</c>, <c>protected</c>, <c>internal</c>,
+    /// <c>protected internal</c>, <c>private protected</c>.
+    /// When <see cref="ReplaceExisting"/> replaces an exact-signature
+    /// constructor, the new constructor uses this visibility rather than
+    /// copying the old constructor's accessibility. Structs and record
+    /// structs reject the three protected forms (CS0666).
+    /// </summary>
+    public string? Visibility { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }

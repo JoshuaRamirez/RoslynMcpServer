@@ -1,6 +1,7 @@
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Generate;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring;
@@ -28,7 +29,7 @@ public class GenerateConstructorParamsValidationTests
         };
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            GenerateConstructorOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
@@ -43,7 +44,7 @@ public class GenerateConstructorParamsValidationTests
         };
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            GenerateConstructorOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
@@ -58,7 +59,7 @@ public class GenerateConstructorParamsValidationTests
         };
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            GenerateConstructorOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
     }
@@ -76,7 +77,7 @@ public class GenerateConstructorParamsValidationTests
 
         // Should only fail on file not found
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            GenerateConstructorOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
@@ -118,6 +119,60 @@ public class GenerateConstructorParamsValidationTests
     }
 
     [Fact]
+    public void Visibility_DefaultsToNull()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass"
+        };
+
+        Assert.Null(@params.Visibility);
+    }
+
+    [Fact]
+    public void ValidateParams_InvalidVisibility_ThrowsInvalidVisibility()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass",
+            Visibility = "secret"
+        };
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(@params));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("public")]
+    [InlineData("private")]
+    [InlineData("protected")]
+    [InlineData("internal")]
+    [InlineData("protected internal")]
+    [InlineData("private protected")]
+    [InlineData("Public")]
+    public void ValidateParams_OmittedOrValidVisibility_DoesNotThrowForVisibility(string? visibility)
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass",
+            Visibility = visibility
+        };
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(@params));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
     public void ValidateParams_NullMembers_AcceptsNull()
     {
         var @params = new GenerateConstructorParams
@@ -129,29 +184,9 @@ public class GenerateConstructorParamsValidationTests
 
         // Should only fail on file not found, not on null members
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            GenerateConstructorOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
-    /// <summary>
-    /// Mimics the parameter validation from GenerateConstructorOperation.
-    /// </summary>
-    private static void ThrowIfInvalidParams(GenerateConstructorParams @params)
-    {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-
-        if (string.IsNullOrWhiteSpace(@params.TypeName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "typeName is required.");
-
-        if (!IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
-    }
-
-    private static bool IsAbsolutePath(string path) =>
-        Path.IsPathRooted(path);
 }

@@ -17,12 +17,26 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// fields and settable properties).
 /// Honors <c>includeInheritedMembers</c> to append accessible base-type members
 /// (settable properties, not the readable-property equality collector),
-/// and <c>replaceExisting</c> to remove an existing non-implicit constructor
+/// <c>replaceExisting</c> to remove an existing non-implicit constructor
 /// with the exact same signature (count, types, and RefKind) before generating
-/// a fresh one. Primary constructors are not replaced.
+/// a fresh one, and <c>visibility</c> for the generated constructor's
+/// accessibility (omitted / public keeps today's public constructor).
+/// Structs and record structs reject <c>protected</c> /
+/// <c>protected internal</c> / <c>private protected</c> (CS0666) before any
+/// generate, replace, or preview write. Primary constructors are not replaced.
 /// </summary>
 public sealed class GenerateConstructorOperation : RefactoringOperationBase<GenerateConstructorParams>
 {
+    private static readonly HashSet<string> ValidVisibilities = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "public", "private", "protected", "internal", "protected internal", "private protected"
+    };
+
+    private static readonly HashSet<string> ProtectedVisibilities = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "protected", "protected internal", "private protected"
+    };
+
     /// <summary>
     /// Creates a new generate constructor operation.
     /// </summary>
@@ -32,7 +46,13 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(GenerateConstructorParams @params)
+    protected override void ValidateParams(GenerateConstructorParams @params) => Validate(@params);
+
+    /// <summary>
+    /// Validates generate-constructor parameters. Internal so tests can exercise
+    /// input rules without loading a workspace.
+    /// </summary>
+    internal static void Validate(GenerateConstructorParams @params)
     {
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
@@ -45,6 +65,9 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+
+        if (!string.IsNullOrWhiteSpace(@params.Visibility) && !ValidVisibilities.Contains(@params.Visibility.Trim()))
+            throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -90,6 +113,16 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             throw new RefactoringException(
                 ErrorCodes.TypeIsStatic,
                 "Cannot add constructor to static class.");
+        }
+
+        // C# forbids protected members on structs / record structs (CS0666).
+        // Reject before member collection, generation, replaceExisting, or preview.
+        var visibility = ResolveVisibility(@params.Visibility);
+        if (typeSymbol.TypeKind == TypeKind.Struct && ProtectedVisibilities.Contains(visibility))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidVisibility,
+                $"Cannot generate a {visibility} constructor on struct '{@params.TypeName}'. C# does not allow protected members on structs (CS0666).");
         }
 
         // Get fields and properties to initialize
@@ -153,8 +186,9 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             }
         }
 
-        // Generate the constructor
-        var constructor = GenerateConstructor(members, typeDeclaration, @params.AddNullChecks);
+        // Generate the constructor. Visibility is always the requested
+        // accessibility (default public) — never copied from a replaced ctor.
+        var constructor = GenerateConstructor(members, typeDeclaration, @params.AddNullChecks, visibility);
         var replacing = exactMatch != null;
 
         // If preview mode, return without applying (but include generated constructor code)
@@ -514,10 +548,14 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         };
     }
 
+    private static string ResolveVisibility(string? visibility) =>
+        string.IsNullOrWhiteSpace(visibility) ? "public" : visibility.Trim();
+
     private static ConstructorDeclarationSyntax GenerateConstructor(
         List<ISymbol> members,
         TypeDeclarationSyntax typeDeclaration,
-        bool addNullChecks)
+        bool addNullChecks,
+        string visibility)
     {
         // Build parameters
         var parameters = new List<ParameterSyntax>();
@@ -596,13 +634,40 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         // Build constructor
         var constructor = SyntaxFactory.ConstructorDeclaration(typeDeclaration.Identifier)
-            .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
+            .WithModifiers(SyntaxFactory.TokenList(ParseVisibilityTokens(visibility)))
             .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(parameters)))
             .WithBody(SyntaxFactory.Block(statements))
             .NormalizeWhitespace();
 
         return constructor;
     }
+
+    /// <summary>
+    /// Same token split as generate_property / generate_method_stub: one token
+    /// per whitespace-separated keyword so <c>protected internal</c> and
+    /// <c>private protected</c> emit both modifiers.
+    /// </summary>
+    private static IEnumerable<SyntaxToken> ParseVisibilityTokens(string visibility)
+    {
+        var tokens = visibility
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(ParseVisibilityKeyword)
+            .ToList();
+
+        if (tokens.Count == 0)
+            tokens.Add(SyntaxFactory.Token(SyntaxKind.PublicKeyword));
+
+        return tokens;
+    }
+
+    private static SyntaxToken ParseVisibilityKeyword(string keyword) => keyword.ToLowerInvariant() switch
+    {
+        "public" => SyntaxFactory.Token(SyntaxKind.PublicKeyword),
+        "private" => SyntaxFactory.Token(SyntaxKind.PrivateKeyword),
+        "protected" => SyntaxFactory.Token(SyntaxKind.ProtectedKeyword),
+        "internal" => SyntaxFactory.Token(SyntaxKind.InternalKeyword),
+        _ => SyntaxFactory.Token(SyntaxKind.PublicKeyword)
+    };
 
     private static TypeDeclarationSyntax InsertConstructor(
         TypeDeclarationSyntax typeDeclaration,
@@ -762,6 +827,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         var replacing = exactMatch != null;
         var memberNames = string.Join(", ", members.Select(m => m.Name));
         var inherited = @params.IncludeInheritedMembers ? " including inherited members" : "";
+        var visibility = ResolveVisibility(@params.Visibility);
         var verb = replacing ? "Replace" : "Generate";
 
         // Show the generated constructor as the "after" snippet
@@ -773,7 +839,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             {
                 File = @params.SourceFile,
                 ChangeType = Contracts.Enums.ChangeKind.Modify,
-                Description = $"{verb} constructor{inherited} for {@params.TypeName} initializing: {memberNames}",
+                Description = $"{verb} constructor{inherited} for {@params.TypeName} initializing: {memberNames} ({visibility})",
                 BeforeSnippet = replacing
                     ? $"// Type '{@params.TypeName}' (replacing existing constructor)"
                     : $"// Type '{@params.TypeName}' (no constructor with these parameters)",
