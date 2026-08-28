@@ -576,6 +576,89 @@ public class ImplementAbstractOperationTests
     }
 
     [SkippableFact]
+    public async Task ImplementAbstract_IntermediateNewVirtualEventHider_DoesNotEmitOverride()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract event System.EventHandler Changed;
+                public abstract event System.EventHandler Resized;
+            }
+
+            public abstract class Intermediate : Shape
+            {
+                public new virtual event System.EventHandler Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+
+            public class Circle : Intermediate
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class Circle", StringComparison.Ordinal)..];
+        Assert.Contains("public override event System.EventHandler Resized", derived);
+        Assert.DoesNotContain("public override event System.EventHandler Changed", derived);
+        Assert.Contains("public new virtual event System.EventHandler Changed", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_IntermediateNewVirtualEventHider_OnlyHiddenEvent_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract event System.EventHandler Changed;
+            }
+
+            public abstract class Intermediate : Shape
+            {
+                public new virtual event System.EventHandler Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+
+            public class Circle : Intermediate
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Circle"
+            }));
+
+        Assert.Equal(ErrorCodes.NoUnimplementedAbstractMembers, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
     public async Task ImplementAbstract_ExplicitInterfaceEvent_DoesNotCountAsImplementation()
     {
         const string source = """

@@ -100,7 +100,15 @@ public static class MemberAnalyzer
                 }
 
                 if (!isAbstract)
+                {
+                    // Intermediate event hiders (new / new virtual / ordinary
+                    // same-name) occupy this signature. An override emitted
+                    // for the ancestor abstract event would bind the hider's
+                    // slot and leave the abstract slot unimplemented.
+                    if (member is IEventSymbol)
+                        declared.Add(signature);
                     continue;
+                }
 
                 declared.Add(signature);
                 yield return member;
