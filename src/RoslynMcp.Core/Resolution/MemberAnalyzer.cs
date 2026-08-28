@@ -302,7 +302,7 @@ public static class MemberAnalyzer
     /// Same switch as constructor / equals inherited-member collection —
     /// not a new accessibility subsystem.
     /// </summary>
-    private static bool IsAccessibleFrom(ISymbol member, INamedTypeSymbol fromType) =>
+    internal static bool IsAccessibleFrom(ISymbol member, INamedTypeSymbol fromType) =>
         member.DeclaredAccessibility switch
         {
             Accessibility.Public => true,
