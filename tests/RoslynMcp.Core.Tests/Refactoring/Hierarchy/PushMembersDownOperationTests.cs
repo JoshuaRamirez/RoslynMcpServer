@@ -2438,7 +2438,7 @@ public class PushMembersDownOperationTests
         var app = CSharpCompilation.Create(
             "PushDownApp",
             new[] { CSharpSyntaxTree.ParseText("public class Dog : Animal { }") },
-            new[]
+            new MetadataReference[]
             {
                 MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
                 lib.ToMetadataReference()
@@ -2470,7 +2470,7 @@ public class PushMembersDownOperationTests
         var app = CSharpCompilation.Create(
             "PushDownAppSetter",
             new[] { CSharpSyntaxTree.ParseText("public class Dog : Animal { }") },
-            new[]
+            new MetadataReference[]
             {
                 MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
                 lib.ToMetadataReference()
