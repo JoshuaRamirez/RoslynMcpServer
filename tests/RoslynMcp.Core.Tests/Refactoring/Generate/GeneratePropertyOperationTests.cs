@@ -1,4 +1,6 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -172,6 +174,62 @@ public class GeneratePropertyOperationTests
         Assert.False(GeneratePropertyOperation.IsValidIdentifier("namespace"));
         Assert.True(GeneratePropertyOperation.IsValidIdentifier("Name"));
         Assert.True(GeneratePropertyOperation.IsValidIdentifier("@class"));
+    }
+
+    [Fact]
+    public void ResolvePropertyToReplace_TwoSameNamedProperties_ThrowsNameCollision()
+    {
+        var type = CompileType("""
+            public interface INamed
+            {
+                string Name { get; set; }
+            }
+
+            public class Widget : INamed
+            {
+                string INamed.Name { get; set; }
+
+                public string Name { get; set; }
+            }
+            """, "Widget");
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.ResolvePropertyToReplace(type, "Name", replaceExisting: true));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Contains("Multiple properties named 'Name'", ex.Message);
+    }
+
+    [Fact]
+    public void ResolvePropertyToReplace_SinglePublicProperty_ReturnsIt()
+    {
+        var type = CompileType("""
+            public class Widget
+            {
+                public string Name { get; set; }
+            }
+            """, "Widget");
+
+        var existing = GeneratePropertyOperation.ResolvePropertyToReplace(type, "Name", replaceExisting: true);
+
+        Assert.NotNull(existing);
+        Assert.Equal("Name", existing.Name);
+    }
+
+    [Fact]
+    public void ResolvePropertyToReplace_OmittedFlag_ExistingProperty_Throws()
+    {
+        var type = CompileType("""
+            public class Widget
+            {
+                public string Name { get; set; }
+            }
+            """, "Widget");
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.ResolvePropertyToReplace(type, "Name", replaceExisting: false));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
     }
 
     #endregion
@@ -1035,6 +1093,23 @@ public class GeneratePropertyOperationTests
     #endregion
 
     #region Helpers
+
+    private static INamedTypeSymbol CompileType(string source, string typeName)
+    {
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+                "GeneratePropertyResolveTest",
+                new[] { tree },
+                new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) },
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var model = compilation.GetSemanticModel(tree);
+        var decl = tree.GetCompilationUnitRoot()
+            .DescendantNodes()
+            .OfType<BaseTypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == typeName);
+        return model.GetDeclaredSymbol(decl) as INamedTypeSymbol
+            ?? throw new InvalidOperationException($"Could not resolve type '{typeName}'.");
+    }
 
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpGeneratePropertyMissing.cs");

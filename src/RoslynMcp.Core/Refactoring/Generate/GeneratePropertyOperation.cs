@@ -303,8 +303,11 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         string propertyName,
         bool replaceExisting)
     {
-        var existing = typeSymbol.GetMembers(propertyName)
-            .Where(m => !m.IsImplicitlyDeclared)
+        // GetMembers(name) misses explicit interface properties whose
+        // metadata name is "IFoo.Name". Scan all members and match by
+        // Name plus explicit-interface implemented names.
+        var existing = typeSymbol.GetMembers()
+            .Where(m => !m.IsImplicitlyDeclared && MemberNameMatches(m, propertyName))
             .ToList();
 
         var properties = existing
@@ -343,6 +346,23 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
 
     internal static bool HasPropertyDeclaration(IPropertySymbol property) =>
         property.DeclaringSyntaxReferences.Any(reference => reference.GetSyntax() is PropertyDeclarationSyntax);
+
+    internal static bool MemberNameMatches(ISymbol member, string propertyName)
+    {
+        if (string.Equals(member.Name, propertyName, StringComparison.Ordinal))
+            return true;
+
+        return member switch
+        {
+            IPropertySymbol property => property.ExplicitInterfaceImplementations
+                .Any(impl => string.Equals(impl.Name, propertyName, StringComparison.Ordinal)),
+            IMethodSymbol method => method.ExplicitInterfaceImplementations
+                .Any(impl => string.Equals(impl.Name, propertyName, StringComparison.Ordinal)),
+            IEventSymbol @event => @event.ExplicitInterfaceImplementations
+                .Any(impl => string.Equals(impl.Name, propertyName, StringComparison.Ordinal)),
+            _ => false
+        };
+    }
 
     private static IFieldSymbol ResolveBackingField(INamedTypeSymbol typeSymbol, string fieldName)
     {
