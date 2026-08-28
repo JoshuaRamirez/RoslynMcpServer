@@ -80,7 +80,11 @@ public sealed class GenerateConstructorParams
     /// <see cref="IncludeProperties"/>, and <see cref="IncludeInheritedMembers"/>.
     /// <see cref="AddNullChecks"/> null-checks the single copy parameter on
     /// reference types (class / record class) and is skipped on structs /
-    /// record structs. The copy-constructor signature for
+    /// record structs. Derived records whose base is also a record emit
+    /// <c>: base(other)</c>; ordinary classes do not. Unsealed records
+    /// require <c>public</c> or <c>protected</c> visibility (CS8878).
+    /// Copy mode skips properties without an accessible getter.
+    /// The copy-constructor signature for
     /// <c>ConstructorExists</c> / <see cref="ReplaceExisting"/> is exactly
     /// one by-value parameter of the target type.
     /// </summary>

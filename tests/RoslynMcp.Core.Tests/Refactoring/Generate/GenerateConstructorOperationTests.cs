@@ -2416,6 +2416,412 @@ public class GenerateConstructorOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    [SkippableFact]
+    public async Task GenerateConstructor_CopyConstructorTrue_DerivedRecord_PositionalBase_EmitsBaseCopyInitializer()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record Animal(string Species);
+
+            public record Dog(string Species, string Name) : Animal(Species);
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("public Dog(Dog other) : base(other)", ctor);
+        Assert.Contains("this.Species = other.Species", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CopyConstructorTrue_DerivedRecordClass_EmitsBaseCopyInitializer()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record class Animal
+            {
+                public string Species { get; set; }
+            }
+
+            public record class Dog : Animal
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("public Dog(Dog other) : base(other)", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+        Assert.DoesNotContain("Species", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CopyConstructorTrue_ClassWithParameterlessBase_HasNoBaseInitializer()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Species { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("public Dog(Dog other)", ctor);
+        Assert.DoesNotContain(": base(", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+        Assert.DoesNotContain("Species", ctor);
+    }
+
+    [SkippableTheory]
+    [InlineData("internal")]
+    [InlineData("private")]
+    [InlineData("protected internal")]
+    [InlineData("private protected")]
+    public async Task GenerateConstructor_CopyConstructorTrue_UnsealedRecord_InvalidVisibility_FailsWithInvalidVisibility(
+        string visibility)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record Widget
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                CopyConstructor = true,
+                Visibility = visibility
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.Contains("CS8878", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("unsealed record", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CopyConstructorTrue_UnsealedRecord_Protected_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record Widget
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            CopyConstructor = true,
+            Visibility = "protected"
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(
+            NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget", "protected");
+        Assert.StartsWith("protected Widget(", ctor);
+        Assert.Contains("protected Widget(Widget other)", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+        Assert.DoesNotContain(": base(", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CopyConstructorTrue_SealedRecord_Internal_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public sealed record Widget
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            CopyConstructor = true,
+            Visibility = "internal"
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(
+            NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget", "internal");
+        Assert.StartsWith("internal Widget(", ctor);
+        Assert.Contains("internal Widget(Widget other)", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CopyConstructorTrue_UnsealedRecord_Internal_Preview_WritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record Widget
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                CopyConstructor = true,
+                Visibility = "internal",
+                Preview = true
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CopyConstructorFalse_SetterOnlyProperty_StillIncluded()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string Name { get; set; }
+
+                public int Value { set { } }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            CopyConstructor = false
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget");
+        Assert.Contains("string name", ctor);
+        Assert.Contains("int value", ctor);
+        Assert.Contains("this.Name = name", ctor);
+        Assert.Contains("this.Value = value", ctor);
+        Assert.DoesNotContain("other.Value", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CopyConstructorTrue_AutoCollection_SkipsSetterOnlyProperty()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string Name { get; set; }
+
+                public int Value { set { } }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            CopyConstructor = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget");
+        Assert.Contains("public Widget(Widget other)", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+        Assert.DoesNotContain("Value", ctor);
+        Assert.DoesNotContain("other.Value", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CopyConstructorTrue_NamedSetterOnlyProperty_FailsWithMemberNotFound()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string Name { get; set; }
+
+                public int Value { set { } }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                CopyConstructor = true,
+                Members = new[] { "Value" }
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotFound, ex.ErrorCode);
+        Assert.Contains("Value", ex.Message);
+        Assert.Contains("readable", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CopyConstructorTrue_IncludeInheritedMembers_SkipsInheritedSetterOnlyAndPrivateGetter()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public int Secret { set { } }
+
+                public string Hidden { private get; set; }
+
+                public string Species { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CopyConstructor = true,
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("public Dog(Dog other)", ctor);
+        Assert.DoesNotContain(": base(", ctor);
+        Assert.Contains("this.Name = other.Name", ctor);
+        Assert.Contains("this.Species = other.Species", ctor);
+        Assert.DoesNotContain("Secret", ctor);
+        Assert.DoesNotContain("Hidden", ctor);
+        Assert.DoesNotContain("other.Secret", ctor);
+        Assert.DoesNotContain("other.Hidden", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CopyConstructorTrue_NamedInheritedUnreadableProperty_FailsWithMemberNotFound()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public int Secret { set { } }
+
+                public string Species { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                CopyConstructor = true,
+                IncludeInheritedMembers = true,
+                Members = new[] { "Secret" }
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotFound, ex.ErrorCode);
+        Assert.Contains("Secret", ex.Message);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     #endregion
 
     #region Helper Methods

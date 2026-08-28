@@ -23,7 +23,10 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// accessibility (omitted / public keeps today's public constructor),
 /// and <c>copyConstructor</c> to emit a single same-type parameter whose
 /// body assigns each selected member from that parameter instead of one
-/// parameter per member.
+/// parameter per member. Derived records whose base is also a record get
+/// <c>: base(other)</c> (CS8868); ordinary classes do not. Unsealed record
+/// copy constructors reject visibilities other than public / protected
+/// (CS8878). Copy mode skips setter-only / unreadable properties.
 /// Structs and record structs reject <c>protected</c> /
 /// <c>protected internal</c> / <c>private protected</c> (CS0666) before any
 /// generate, replace, or preview write. Primary constructors are not replaced.
@@ -41,6 +44,14 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     };
 
     private static readonly string[] CopyParameterNameCandidates = ["other", "source", "original"];
+
+    /// <summary>
+    /// CS8878: an unsealed record copy constructor must be public or protected.
+    /// </summary>
+    private static readonly HashSet<string> UnsealedRecordCopyVisibilities = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "public", "protected"
+    };
 
     /// <summary>
     /// Creates a new generate constructor operation.
@@ -130,9 +141,25 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 $"Cannot generate a {visibility} constructor on struct '{@params.TypeName}'. C# does not allow protected members on structs (CS0666).");
         }
 
+        // CS8878: a copy constructor on an unsealed record must be public or protected.
+        // Sealed records and record structs (implicitly sealed) may use other visibilities.
+        if (@params.CopyConstructor &&
+            typeSymbol.IsRecord &&
+            !typeSymbol.IsSealed &&
+            !UnsealedRecordCopyVisibilities.Contains(visibility))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidVisibility,
+                $"Cannot generate a {visibility} copy constructor on unsealed record '{@params.TypeName}'. C# requires the copy constructor to be public or protected (CS8878).");
+        }
+
         // Get fields and properties to initialize
         var members = GetMembersToInitialize(
-            typeSymbol, @params.Members, @params.IncludeProperties, @params.IncludeInheritedMembers);
+            typeSymbol,
+            @params.Members,
+            @params.IncludeProperties,
+            @params.IncludeInheritedMembers,
+            @params.CopyConstructor);
 
         if (members.Count == 0)
         {
@@ -201,6 +228,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             ? GenerateCopyConstructor(
                 members,
                 typeDeclaration,
+                typeSymbol,
                 copyParameterName!,
                 @params.AddNullChecks && typeSymbol.IsReferenceType,
                 visibility)
@@ -262,7 +290,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         INamedTypeSymbol typeSymbol,
         IReadOnlyList<string>? requestedMembers,
         bool includeProperties,
-        bool includeInheritedMembers)
+        bool includeInheritedMembers,
+        bool copyConstructor)
     {
         var allMembers = new List<ISymbol>();
         var hasRequestedMembers = requestedMembers != null && requestedMembers.Count > 0;
@@ -297,6 +326,27 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                     ErrorCodes.MemberNotFound,
                     $"Members not found: {string.Join(", ", notFound)}");
             }
+
+            // Copy mode reads other.Member — a named setter-only / unreadable
+            // property is not a silent skip; fail with MemberNotFound.
+            if (copyConstructor)
+            {
+                var unreadable = allMembers
+                    .Where(m => !IsReadableInCopyConstructor(m, typeSymbol))
+                    .Select(m => m.Name)
+                    .ToList();
+                if (unreadable.Count > 0)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.MemberNotFound,
+                        $"Members not readable in copy constructor: {string.Join(", ", unreadable)}");
+                }
+            }
+        }
+        else if (copyConstructor)
+        {
+            // Auto-collection: skip properties that cannot be read as other.Member.
+            allMembers = allMembers.Where(m => IsReadableInCopyConstructor(m, typeSymbol)).ToList();
         }
 
         return allMembers;
@@ -418,6 +468,36 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
     private static bool SameAssembly(ISymbol member, INamedTypeSymbol fromType) =>
         SymbolEqualityComparer.Default.Equals(member.ContainingAssembly, fromType.ContainingAssembly);
+
+    /// <summary>
+    /// Copy mode emits <c>other.Member</c>, so the member must be readable.
+    /// Fields already collected are readable. Properties need a getter; inherited
+    /// getters must be accessible from <paramref name="fromType"/>.
+    /// </summary>
+    private static bool IsReadableInCopyConstructor(ISymbol member, INamedTypeSymbol fromType)
+    {
+        if (member is IFieldSymbol)
+            return true;
+
+        if (member is not IPropertySymbol property || property.GetMethod == null)
+            return false;
+
+        if (SymbolEqualityComparer.Default.Equals(property.ContainingType, fromType))
+            return true;
+
+        return IsAccessorAccessibleFrom(property.GetMethod, fromType);
+    }
+
+    private static bool IsAccessorAccessibleFrom(IMethodSymbol accessor, INamedTypeSymbol fromType) =>
+        accessor.DeclaredAccessibility switch
+        {
+            Accessibility.Public => true,
+            Accessibility.Protected => true,
+            Accessibility.ProtectedOrInternal => true,
+            Accessibility.Internal => SameAssembly(accessor, fromType),
+            Accessibility.ProtectedAndInternal => SameAssembly(accessor, fromType),
+            _ => false
+        };
 
     /// <summary>
     /// True when <paramref name="constructor"/> has the same parameter count, types
@@ -645,10 +725,14 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     /// that does not collide with a member or type parameter on the type.
     /// Null-check the copy parameter only when requested and the target is a
     /// reference type — structs / record structs skip it.
+    /// Derived records whose base is also a record get
+    /// <c>: base(other)</c> (CS8868). Ordinary classes never get a base-copy
+    /// initializer — that remains out of scope.
     /// </summary>
     private static ConstructorDeclarationSyntax GenerateCopyConstructor(
         List<ISymbol> members,
         TypeDeclarationSyntax typeDeclaration,
+        INamedTypeSymbol typeSymbol,
         string parameterName,
         bool addNullCheckOnParameter,
         string visibility)
@@ -680,11 +764,40 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                     right)));
         }
 
-        return SyntaxFactory.ConstructorDeclaration(typeDeclaration.Identifier)
+        var constructor = SyntaxFactory.ConstructorDeclaration(typeDeclaration.Identifier)
             .WithModifiers(SyntaxFactory.TokenList(ParseVisibilityTokens(visibility)))
             .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SingletonSeparatedList(parameter)))
-            .WithBody(SyntaxFactory.Block(statements))
-            .NormalizeWhitespace();
+            .WithBody(SyntaxFactory.Block(statements));
+
+        // Record language rule (CS8868), not the deferred class : base(other) feature.
+        if (RequiresRecordBaseCopyInitializer(typeSymbol))
+        {
+            constructor = constructor.WithInitializer(
+                SyntaxFactory.ConstructorInitializer(
+                    SyntaxKind.BaseConstructorInitializer,
+                    SyntaxFactory.ArgumentList(
+                        SyntaxFactory.SingletonSeparatedList(
+                            SyntaxFactory.Argument(SyntaxFactory.IdentifierName(parameterName))))));
+        }
+
+        return constructor.NormalizeWhitespace();
+    }
+
+    /// <summary>
+    /// True when the target is a record whose immediate base is also a record
+    /// (not <c>object</c> / <c>ValueType</c>). The generated copy constructor
+    /// must invoke the base copy constructor.
+    /// </summary>
+    private static bool RequiresRecordBaseCopyInitializer(INamedTypeSymbol typeSymbol)
+    {
+        if (!typeSymbol.IsRecord)
+            return false;
+
+        var baseType = typeSymbol.BaseType;
+        if (baseType == null || IsObjectOrValueType(baseType))
+            return false;
+
+        return baseType.IsRecord;
     }
 
     /// <summary>
