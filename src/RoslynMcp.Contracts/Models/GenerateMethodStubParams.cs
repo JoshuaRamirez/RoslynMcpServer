@@ -41,6 +41,16 @@ public sealed class GenerateMethodStubParams
     public bool GenerateAsync { get; init; }
 
     /// <summary>
+    /// Throw NotImplementedException in the generated stub body. Default: true.
+    /// When false, uses a default-return body (empty block for <c>void</c> /
+    /// async <c>Task</c>; <c>return null;</c> for reference types;
+    /// <c>return default(T);</c> for value types and type parameters).
+    /// <c>ref</c> / <c>ref readonly</c> returns still throw (a default return
+    /// is not a valid ref return).
+    /// </summary>
+    public bool ThrowNotImplemented { get; init; } = true;
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }

@@ -310,6 +310,36 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_GenerateMethodStub_ThrowNotImplementedIsOptional()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("generate-method-stub")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.Contains("--line", requiredSection);
+        Assert.Contains("--column", requiredSection);
+        Assert.DoesNotContain("--throw-not-implemented", requiredSection);
+        Assert.DoesNotContain("--generate-async", requiredSection);
+        Assert.DoesNotContain("--visibility", requiredSection);
+        Assert.DoesNotContain("--preview", requiredSection);
+
+        Assert.Contains("--throw-not-implemented", optionalSection);
+        Assert.Contains("--generate-async", optionalSection);
+        Assert.Contains("--visibility", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+        Assert.Contains("throwNotImplemented", tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ImplementAbstract_ThrowNotImplementedIsOptional()
     {
         var registry = ToolRegistry.BuildDefault();

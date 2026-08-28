@@ -33,7 +33,7 @@ public sealed class GenerateMethodStubTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Generate a method from an undefined call site, inferring the signature from usage. Placeholder body is throw new NotImplementedException();";
+        "Generate a method from an undefined call site, inferring the signature from usage. Placeholder body is throw new NotImplementedException() when throwNotImplemented is true (the default); otherwise default-return / empty void bodies.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -86,6 +86,12 @@ public sealed class GenerateMethodStubTool : IToolHandler
                 description = "Force async method generation",
                 @default = false
             },
+            throwNotImplemented = new
+            {
+                type = "boolean",
+                description = "Throw NotImplementedException in the generated stub body",
+                @default = true
+            },
             preview = new
             {
                 type = "boolean",
@@ -126,6 +132,7 @@ public sealed class GenerateMethodStubTool : IToolHandler
                 ReturnType = args.ReturnType,
                 Visibility = args.Visibility,
                 GenerateAsync = args.GenerateAsync ?? false,
+                ThrowNotImplemented = args.ThrowNotImplemented ?? true,
                 Preview = args.Preview ?? false
             };
 
@@ -161,6 +168,7 @@ public sealed class GenerateMethodStubTool : IToolHandler
         public string? ReturnType { get; init; }
         public string? Visibility { get; init; }
         public bool? GenerateAsync { get; init; }
+        public bool? ThrowNotImplemented { get; init; }
         public bool? Preview { get; init; }
     }
 }
