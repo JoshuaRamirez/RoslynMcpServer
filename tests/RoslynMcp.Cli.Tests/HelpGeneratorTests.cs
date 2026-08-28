@@ -256,6 +256,33 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_GenerateProperty_ReplaceExistingIsOptional()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("generate-property")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.Contains("--type-name", requiredSection);
+        Assert.DoesNotContain("--replace-existing", requiredSection);
+        Assert.DoesNotContain("--init-only", requiredSection);
+        Assert.DoesNotContain("--preview", requiredSection);
+
+        Assert.Contains("--replace-existing", optionalSection);
+        Assert.Contains("--init-only", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+        Assert.Contains("replaceExisting", tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void GenerateToolHelp_GenerateOverrides_ReplaceExistingIsOptional()
     {
         var registry = ToolRegistry.BuildDefault();

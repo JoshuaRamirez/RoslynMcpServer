@@ -10,7 +10,8 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
-/// Operation-level tests for <see cref="GeneratePropertyOperation"/>.
+/// Operation-level tests for <see cref="GeneratePropertyOperation"/>, including
+/// <c>replaceExisting</c>.
 /// </summary>
 public class GeneratePropertyOperationTests
 {
@@ -118,6 +119,20 @@ public class GeneratePropertyOperationTests
             }));
 
         Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void ReplaceExisting_DefaultsToFalse()
+    {
+        var @params = new GeneratePropertyParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Widget",
+            PropertyName = "Name",
+            PropertyType = "string"
+        };
+
+        Assert.False(@params.ReplaceExisting);
     }
 
     [Fact]
@@ -281,6 +296,8 @@ public class GeneratePropertyOperationTests
         Assert.NotNull(result.PendingChanges);
         Assert.NotEmpty(result.PendingChanges);
         Assert.Contains("get; set;", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("Generate property 'Name'", result.PendingChanges[0].Description);
+        Assert.Contains("no property 'Name'", result.PendingChanges[0].BeforeSnippet);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
@@ -372,6 +389,37 @@ public class GeneratePropertyOperationTests
             }));
 
         Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingFalse_NameClash_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                PropertyName = "Name",
+                PropertyType = "string",
+                ReplaceExisting = false
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Equal("3003", ex.ErrorCode);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
@@ -620,6 +668,372 @@ public class GeneratePropertyOperationTests
 
     #endregion
 
+    #region replaceExisting
+
+    private const string WidgetWithNamePropertySource = """
+        namespace TestApp;
+
+        public class Widget
+        {
+            public string Name { get; set; } = "old";
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_ReplacesAutoProperty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithNamePropertySource);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            PropertyName = "Name",
+            PropertyType = "int",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public int Name { get; set; }", updated);
+        Assert.DoesNotContain("old", updated);
+        Assert.DoesNotContain("public string Name", updated);
+        Assert.Equal(1, CountOccurrences(updated, "public int Name"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_InitOnly_ReplacesWithGetInit()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithNamePropertySource);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            PropertyName = "Name",
+            PropertyType = "string",
+            InitOnly = true,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public string Name { get; init; }", updated);
+        Assert.DoesNotContain("{ get; set; }", updated);
+        Assert.DoesNotContain("old", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_FieldName_ReplacesPropertyAndKeepsField()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                private string _name = "keep";
+
+                public string Name { get; set; } = "old";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            FieldName = "_name",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private string _name = \"keep\";", updated);
+        Assert.Contains("get => _name;", updated);
+        Assert.Contains("set => _name = value;", updated);
+        Assert.DoesNotContain("old", updated);
+        Assert.DoesNotContain("{ get; set; }", updated);
+        Assert.Equal(1, CountOccurrences(updated, "public string Name"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_NoExistingProperty_GeneratesAsToday()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            PropertyName = "Name",
+            PropertyType = "string",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public string Name { get; set; }", updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_ExistingFieldSameName_FailsAndLeavesField()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string Name;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                PropertyName = "Name",
+                PropertyType = "string",
+                ReplaceExisting = true
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_ExistingMethodSameName_FailsAndLeavesMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public void Name() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                PropertyName = "Name",
+                PropertyType = "string",
+                ReplaceExisting = true
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Contains("public void Name()", before);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_TwoSameNamedProperties_FailsBeforeWrite()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface INamed
+            {
+                string Name { get; set; }
+            }
+
+            public class Widget : INamed
+            {
+                string INamed.Name { get; set; } = "iface";
+
+                public string Name { get; set; } = "old";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                PropertyName = "Name",
+                PropertyType = "string",
+                ReplaceExisting = true
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Equal("3003", ex.ErrorCode);
+        Assert.Contains("Multiple properties named 'Name'", ex.Message);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_Preview_DoesNotWriteFiles_AndDescribesReplacement()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithNamePropertySource);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            PropertyName = "Name",
+            PropertyType = "int",
+            ReplaceExisting = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Replace property 'Name'", result.PendingChanges[0].Description);
+        Assert.Contains("replacing existing property 'Name'", result.PendingChanges[0].BeforeSnippet);
+        Assert.Contains("public int Name { get; set; }", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_PartialOtherFile_RemovesThere_InsertsOnTarget()
+    {
+        const string typePart = """
+            namespace TestApp;
+
+            public partial class Widget
+            {
+            }
+            """;
+
+        const string propertyPart = """
+            namespace TestApp;
+
+            public partial class Widget
+            {
+                public string Name { get; set; } = "old";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Widget.cs", typePart),
+            ("Widget.Properties.cs", propertyPart));
+        var otherPath = workspace.PathFor("Widget.Properties.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            PropertyName = "Name",
+            PropertyType = "int",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var selected = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var other = NormalizeNewlines(await File.ReadAllTextAsync(otherPath));
+        Assert.Contains("public int Name { get; set; }", selected);
+        Assert.DoesNotContain("old", selected);
+        Assert.DoesNotContain("public string Name", other);
+        Assert.DoesNotContain("old", other);
+        Assert.Equal(1, CountOccurrences(selected, "public int Name"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_PartialOtherFile_Preview_DoesNotWriteFiles()
+    {
+        const string typePart = """
+            namespace TestApp;
+
+            public partial class Widget
+            {
+            }
+            """;
+
+        const string propertyPart = """
+            namespace TestApp;
+
+            public partial class Widget
+            {
+                public string Name { get; set; } = "old";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Widget.cs", typePart),
+            ("Widget.Properties.cs", propertyPart));
+        var otherPath = workspace.PathFor("Widget.Properties.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var beforeSelected = await File.ReadAllTextAsync(workspace.SourcePath);
+        var beforeOther = await File.ReadAllTextAsync(otherPath);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            PropertyName = "Name",
+            PropertyType = "int",
+            ReplaceExisting = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains("Replace property 'Name'", result.PendingChanges![0].Description);
+        Assert.Equal(beforeSelected, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(beforeOther, await File.ReadAllTextAsync(otherPath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_ReplaceExistingTrue_RecordPositionalProperty_FailsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record Widget(string Name);
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                PropertyName = "Name",
+                PropertyType = "string",
+                ReplaceExisting = true
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static string AbsoluteTestPath() =>
@@ -628,6 +1042,19 @@ public class GeneratePropertyOperationTests
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal);
 
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
+    }
+
     private sealed class TempWorkspace : IAsyncDisposable
     {
         public required string DirectoryPath { get; init; }
@@ -635,7 +1062,12 @@ public class GeneratePropertyOperationTests
         public required string SourcePath { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public string PathFor(string fileName) => Path.Combine(DirectoryPath, fileName);
+
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -643,8 +1075,6 @@ public class GeneratePropertyOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
-
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
@@ -653,7 +1083,16 @@ public class GeneratePropertyOperationTests
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            string? sourcePath = null;
+            foreach (var (fileName, source) in files)
+            {
+                var path = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(path, source);
+                sourcePath ??= path;
+            }
+
+            sourcePath ??= Path.Combine(directory, "Types.cs");
 
             try
             {
