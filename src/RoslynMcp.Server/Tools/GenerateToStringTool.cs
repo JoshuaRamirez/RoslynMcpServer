@@ -77,13 +77,19 @@ public sealed class GenerateToStringTool : IToolHandler
             includeInheritedMembers = new
             {
                 type = "boolean",
-                description = "Also collect accessible instance fields (and readable properties when includeProperties is true) declared on base types",
+                description = "Also collect accessible instance fields (and readable properties when includeProperties is true) declared on base types. Distinct from callSuper, which only folds base.ToString()",
                 @default = false
             },
             replaceExisting = new
             {
                 type = "boolean",
                 description = "Replace an existing parameterless ToString() override instead of failing",
+                @default = false
+            },
+            callSuper = new
+            {
+                type = "boolean",
+                description = "Fold the immediate base type's ToString into the generated override. Rejected when the immediate base is System.Object or System.ValueType, or when the base ToString() is abstract",
                 @default = false
             },
             preview = new
@@ -128,6 +134,7 @@ public sealed class GenerateToStringTool : IToolHandler
                 Format = args.Format,
                 IncludeInheritedMembers = args.IncludeInheritedMembers ?? false,
                 ReplaceExisting = args.ReplaceExisting ?? false,
+                CallSuper = args.CallSuper ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -163,6 +170,7 @@ public sealed class GenerateToStringTool : IToolHandler
         public string? Format { get; init; }
         public bool? IncludeInheritedMembers { get; init; }
         public bool? ReplaceExisting { get; init; }
+        public bool? CallSuper { get; init; }
         public bool? Preview { get; init; }
     }
 }

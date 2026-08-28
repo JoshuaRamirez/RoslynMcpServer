@@ -43,7 +43,9 @@ public sealed class GenerateToStringParams
     /// <see cref="IncludeProperties"/> is true, readable properties)
     /// declared on base types until <c>System.Object</c> / <c>System.ValueType</c>.
     /// Only members visible from this type are included (public / protected /
-    /// protected-internal; internal when same assembly).
+    /// protected-internal; internal when same assembly). Distinct from
+    /// <see cref="CallSuper"/>, which folds <c>base.ToString()</c> and does
+    /// not change the collected member list.
     /// Default: false (this-type-only collection).
     /// </summary>
     public bool IncludeInheritedMembers { get; init; }
@@ -56,6 +58,19 @@ public sealed class GenerateToStringParams
     /// Default: false (fail if a non-implicit non-generic parameterless ToString exists).
     /// </summary>
     public bool ReplaceExisting { get; init; }
+
+    /// <summary>
+    /// When true, fold the immediate base type's parameterless instance
+    /// <c>ToString()</c> into the generated override
+    /// (<c>{base.ToString()}</c> first in an interpolated body;
+    /// <c>sb.Append(base.ToString())</c> first on the StringBuilder path).
+    /// Rejected when the immediate base is <c>System.Object</c> or
+    /// <c>System.ValueType</c>, or when the immediate base's parameterless
+    /// instance <c>ToString()</c> is abstract.
+    /// Does not change member collection.
+    /// Default: false (selected members only; no <c>base.ToString()</c>).
+    /// </summary>
+    public bool CallSuper { get; init; }
 
     /// <summary>
     /// Return computed changes without applying. Default: false.

@@ -15,8 +15,9 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// Honors <c>format</c> for interpolated vs StringBuilder bodies,
 /// <c>includeProperties</c> when collecting ToString members,
 /// <c>includeInheritedMembers</c> to append accessible base-type members,
-/// and <c>replaceExisting</c> to remove an existing non-generic parameterless
-/// ToString (instance or static) before generating a fresh override.
+/// <c>replaceExisting</c> to remove an existing non-generic parameterless
+/// ToString (instance or static) before generating a fresh override,
+/// and <c>callSuper</c> to fold the immediate base type's ToString into the body.
 /// </summary>
 public sealed class GenerateToStringOperation : RefactoringOperationBase<GenerateToStringParams>
 {
@@ -78,14 +79,28 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         if (typeSymbol == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve type symbol.");
 
+        if (@params.CallSuper && IsObjectOrValueTypeBase(typeSymbol))
+        {
+            throw new RefactoringException(
+                ErrorCodes.CallSuperOnObjectBase,
+                "callSuper cannot be used when the immediate base type is System.Object or System.ValueType.");
+        }
+
+        if (@params.CallSuper && HasAbstractBaseToString(typeSymbol))
+        {
+            throw new RefactoringException(
+                ErrorCodes.CallSuperOnAbstractBase,
+                "callSuper cannot be used when the immediate base type's ToString() is abstract.");
+        }
+
         if (!@params.ReplaceExisting && HasExistingToStringOverride(typeSymbol))
             throw new RefactoringException(ErrorCodes.AlreadyHasOverride, "Type already has a ToString override.");
 
         var members = CollectToStringMembers(typeSymbol, @params);
-        if (members.Count == 0)
+        if (members.Count == 0 && !@params.CallSuper)
             throw new RefactoringException(ErrorCodes.NoMembersToGenerate, "No fields or properties available for ToString generation.");
 
-        var toStringMethod = GenerateToString(@params.TypeName, members, @params.Format);
+        var toStringMethod = GenerateToString(@params.TypeName, members, @params.Format, @params.CallSuper);
 
         if (@params.Preview)
         {
@@ -101,7 +116,8 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
                         members,
                         @params.Format,
                         @params.IncludeInheritedMembers,
-                        @params.ReplaceExisting),
+                        @params.ReplaceExisting,
+                        @params.CallSuper),
                     BeforeSnippet = @params.ReplaceExisting
                         ? $"// Type '{@params.TypeName}' (replacing existing ToString)"
                         : $"// Type '{@params.TypeName}' (no ToString)",
@@ -180,13 +196,21 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         IReadOnlyList<ISymbol> members,
         string? format,
         bool includeInheritedMembers,
-        bool replaceExisting = false)
+        bool replaceExisting = false,
+        bool callSuper = false)
     {
         var verb = replaceExisting ? "Replace" : "Generate";
         var formatName = IsStringBuilderFormat(format) ? StringBuilderFormat : InterpolatedFormat;
-        var inherited = includeInheritedMembers ? " including inherited members" : "";
-        var memberList = string.Join(", ", members.Select(m => m.Name));
-        return $"{verb} ToString ({formatName}){inherited} for {typeName}: {memberList}";
+        var notes = new List<string>();
+        if (callSuper)
+            notes.Add("base ToString");
+        if (includeInheritedMembers)
+            notes.Add("inherited members");
+        var extraNote = notes.Count > 0 ? " including " + string.Join(" and ", notes) : "";
+        var memberList = members.Count > 0
+            ? ": " + string.Join(", ", members.Select(m => m.Name))
+            : "";
+        return $"{verb} ToString ({formatName}){extraNote} for {typeName}{memberList}";
     }
 
     private static async Task<Solution> RemoveExistingToStringOverridesAcrossPartialsAsync(
@@ -275,16 +299,24 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         return matches.FirstOrDefault(t => t.SpanStart == preferredSpanStart) ?? matches.FirstOrDefault();
     }
 
-    private static MethodDeclarationSyntax GenerateToString(string typeName, List<ISymbol> members, string? format)
+    private static MethodDeclarationSyntax GenerateToString(
+        string typeName,
+        List<ISymbol> members,
+        string? format,
+        bool callSuper)
     {
         return IsStringBuilderFormat(format)
-            ? GenerateStringBuilderToString(typeName, members)
-            : GenerateInterpolatedToString(typeName, members);
+            ? GenerateStringBuilderToString(typeName, members, callSuper)
+            : GenerateInterpolatedToString(typeName, members, callSuper);
     }
 
-    private static MethodDeclarationSyntax GenerateInterpolatedToString(string typeName, List<ISymbol> members)
+    private static MethodDeclarationSyntax GenerateInterpolatedToString(
+        string typeName,
+        List<ISymbol> members,
+        bool callSuper)
     {
         // $"TypeName {{ Field1 = {Field1}, Field2 = {Field2} }}"
+        // With callSuper: $"TypeName {{ {base.ToString()}, Field1 = {Field1}, ... }}"
         var parts = new List<InterpolatedStringContentSyntax>();
 
         parts.Add(SyntaxFactory.InterpolatedStringText(
@@ -295,10 +327,13 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
                 $"{typeName} {{ ",
                 SyntaxFactory.TriviaList())));
 
+        if (callSuper)
+            parts.Add(SyntaxFactory.Interpolation(BaseToStringCall()));
+
         for (int i = 0; i < members.Count; i++)
         {
             var member = members[i];
-            var prefix = i == 0 ? "" : ", ";
+            var prefix = i == 0 && !callSuper ? "" : ", ";
 
             parts.Add(SyntaxFactory.InterpolatedStringText(
                 SyntaxFactory.Token(
@@ -326,7 +361,10 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         return CreateToStringMethod(SyntaxFactory.Block(SyntaxFactory.ReturnStatement(interpolatedString)));
     }
 
-    private static MethodDeclarationSyntax GenerateStringBuilderToString(string typeName, List<ISymbol> members)
+    private static MethodDeclarationSyntax GenerateStringBuilderToString(
+        string typeName,
+        List<ISymbol> members,
+        bool callSuper)
     {
         // Same display shape as interpolated: TypeName { Field1 = {Field1}, Field2 = {Field2} }
         var statements = new List<StatementSyntax>
@@ -343,10 +381,13 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
 
         statements.Add(AppendLiteral($"{typeName} {{ "));
 
+        if (callSuper)
+            statements.Add(AppendExpression(BaseToStringCall()));
+
         for (int i = 0; i < members.Count; i++)
         {
             var member = members[i];
-            var prefix = i == 0 ? "" : ", ";
+            var prefix = i == 0 && !callSuper ? "" : ", ";
             statements.Add(AppendLiteral($"{prefix}{member.Name} = "));
             statements.Add(AppendExpression(MemberAccess(member.Name)));
         }
@@ -362,6 +403,47 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
 
         return CreateToStringMethod(SyntaxFactory.Block(statements));
     }
+
+    private static bool IsObjectOrValueTypeBase(INamedTypeSymbol typeSymbol)
+    {
+        var baseType = typeSymbol.BaseType;
+        return baseType == null
+            || baseType.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
+    }
+
+    private static bool HasAbstractBaseToString(INamedTypeSymbol typeSymbol)
+    {
+        var baseType = typeSymbol.BaseType;
+        if (baseType == null)
+            return false;
+
+        var toString = FindParameterlessInstanceToString(baseType);
+        return toString?.IsAbstract == true;
+    }
+
+    private static IMethodSymbol? FindParameterlessInstanceToString(INamedTypeSymbol type)
+    {
+        for (var current = type; current != null; current = current.BaseType)
+        {
+            foreach (var method in current.GetMembers("ToString").OfType<IMethodSymbol>())
+            {
+                if (method.IsStatic || method.Arity != 0 || method.Parameters.Length != 0)
+                    continue;
+
+                return method;
+            }
+        }
+
+        return null;
+    }
+
+    private static InvocationExpressionSyntax BaseToStringCall() =>
+        SyntaxFactory.InvocationExpression(
+                SyntaxFactory.MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    SyntaxFactory.BaseExpression(),
+                    SyntaxFactory.IdentifierName("ToString")))
+            .WithArgumentList(SyntaxFactory.ArgumentList());
 
     private static MethodDeclarationSyntax CreateToStringMethod(BlockSyntax body) =>
         SyntaxFactory.MethodDeclaration(
