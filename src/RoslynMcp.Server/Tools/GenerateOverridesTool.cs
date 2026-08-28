@@ -32,7 +32,7 @@ public sealed class GenerateOverridesTool : IToolHandler
     public string Name => "generate_overrides";
 
     /// <inheritdoc />
-    public string Description => "Generate override methods for base class virtual/abstract members.";
+    public string Description => "Generate override methods for base class virtual/abstract members. replaceExisting (default false) replaces already-overridden members instead of skipping them.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -67,6 +67,12 @@ public sealed class GenerateOverridesTool : IToolHandler
                 type = "boolean",
                 description = "Include base.Method() call in generated overrides",
                 @default = true
+            },
+            replaceExisting = new
+            {
+                type = "boolean",
+                description = "Replace already-overridden members with a freshly generated override instead of skipping them. Default false.",
+                @default = false
             },
             preview = new
             {
@@ -105,6 +111,7 @@ public sealed class GenerateOverridesTool : IToolHandler
                 TypeName = args.TypeName,
                 Members = args.Members,
                 CallBase = args.CallBase ?? true,
+                ReplaceExisting = args.ReplaceExisting ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -137,6 +144,7 @@ public sealed class GenerateOverridesTool : IToolHandler
         public string TypeName { get; init; } = "";
         public List<string>? Members { get; init; }
         public bool? CallBase { get; init; }
+        public bool? ReplaceExisting { get; init; }
         public bool? Preview { get; init; }
     }
 }

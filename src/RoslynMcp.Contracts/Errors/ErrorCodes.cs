@@ -493,6 +493,11 @@ public static class ErrorCodes
     /// <summary>callBase found two equally matching accessible base constructors.</summary>
     public const string AmbiguousBaseConstructor = "3151";
 
+    /// <summary>
+    /// Two existing overrides share a name and none matches the selected signature.
+    /// </summary>
+    public const string OverrideExists = "3152";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================
