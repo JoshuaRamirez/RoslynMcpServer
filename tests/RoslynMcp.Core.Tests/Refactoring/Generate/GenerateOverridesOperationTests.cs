@@ -1408,8 +1408,12 @@ public class GenerateOverridesOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("old-event", updated);
-        Assert.Equal(1, CountOccurrences(updated, "event System.EventHandler Changed"));
+        Assert.Equal(1, CountOccurrences(
+            updated[updated.IndexOf("public class Dog", StringComparison.Ordinal)..],
+            "event System.EventHandler Changed"));
         Assert.Contains("public override void Speak()", updated);
+        Assert.DoesNotContain("public override event System.EventHandler Changed",
+            updated[updated.IndexOf("public override void Speak()", StringComparison.Ordinal)..]);
     }
 
     [SkippableFact]
