@@ -219,7 +219,7 @@ public class GenerateOverridesOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("public override void Speak()", updated);
         Assert.DoesNotContain("public override string Label", updated);
-        Assert.DoesNotContain("public override string ToString()", updated);
+        Assert.False(HasOverrideToString(updated));
         Assert.DoesNotContain("public override bool Equals(", updated);
         Assert.DoesNotContain("public override int GetHashCode()", updated);
     }
@@ -287,7 +287,7 @@ public class GenerateOverridesOperationTests
         Assert.Contains("public override void Speak()", updated);
         Assert.Contains("base.Speak()", updated);
         Assert.Contains("public override string Label", updated);
-        Assert.Contains("public override string ToString()", updated);
+        Assert.True(HasOverrideToString(updated));
         Assert.Contains("base.ToString()", updated);
         Assert.Contains("public override bool Equals(", updated);
         Assert.Contains("public override int GetHashCode()", updated);
@@ -312,7 +312,7 @@ public class GenerateOverridesOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("=> \"old\"", updated);
-        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+        Assert.Equal(1, CountOverrideToString(updated));
         Assert.DoesNotContain("base.ToString()", updated);
         Assert.Contains("public override void Speak()", updated);
         Assert.Contains("public override string Label", updated);
@@ -334,7 +334,7 @@ public class GenerateOverridesOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("=> \"old\"", updated);
-        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+        Assert.Equal(1, CountOverrideToString(updated));
         Assert.DoesNotContain("base.ToString()", updated);
         Assert.Contains("public override void Speak()", updated);
         Assert.Contains("public override string Label", updated);
@@ -382,7 +382,7 @@ public class GenerateOverridesOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.DoesNotContain("=> \"old\"", updated);
-        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+        Assert.Equal(1, CountOverrideToString(updated));
         Assert.Contains("base.ToString()", updated);
         Assert.Contains("public override void Speak()", updated);
         Assert.Contains("base.Speak()", updated);
@@ -409,7 +409,7 @@ public class GenerateOverridesOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.DoesNotContain("old-tostring", updated);
         Assert.Contains("base.ToString()", updated);
-        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+        Assert.Equal(1, CountOverrideToString(updated));
         Assert.Contains("old-speak", updated);
         Assert.Equal(1, CountOccurrences(updated, "public override void Speak()"));
         Assert.DoesNotContain("public override string Label", updated);
@@ -435,7 +435,7 @@ public class GenerateOverridesOperationTests
         Assert.Contains("public override void Speak()", updated);
         Assert.Contains("base.Speak()", updated);
         Assert.Contains("public override string Label", updated);
-        Assert.Contains("public override string ToString()", updated);
+        Assert.True(HasOverrideToString(updated));
         Assert.Contains("base.ToString()", updated);
         Assert.Contains("public override bool Equals(", updated);
         Assert.Contains("public override int GetHashCode()", updated);
@@ -459,7 +459,7 @@ public class GenerateOverridesOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.DoesNotContain("=> \"old\"", updated);
-        Assert.Contains("public override string ToString()", updated);
+        Assert.True(HasOverrideToString(updated));
         Assert.DoesNotContain("base.", updated);
     }
 
@@ -575,12 +575,12 @@ public class GenerateOverridesOperationTests
         Assert.True(result.Success);
         var selected = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         var other = NormalizeNewlines(await File.ReadAllTextAsync(otherPath));
-        Assert.Contains("public override string ToString()", selected);
+        Assert.True(HasOverrideToString(selected));
         Assert.Contains("base.ToString()", selected);
         Assert.DoesNotContain("=> \"old\"", selected);
-        Assert.DoesNotContain("public override string ToString", other);
+        Assert.False(HasOverrideToString(other));
         Assert.DoesNotContain("=> \"old\"", other);
-        Assert.Equal(1, CountOccurrences(selected, "public override string ToString()"));
+        Assert.Equal(1, CountOverrideToString(selected));
     }
 
     [SkippableFact]
@@ -649,7 +649,7 @@ public class GenerateOverridesOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("public new string ToString() => \"hid\";", updated);
-        Assert.DoesNotContain("public override string ToString()", updated);
+        Assert.False(HasOverrideToString(updated));
         Assert.Contains("public override void Speak()", updated);
     }
 
@@ -711,7 +711,7 @@ public class GenerateOverridesOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        var toString = ExtractMember(updated, "string ToString()");
+        var toString = ExtractOverrideToString(updated);
         Assert.DoesNotContain("sealed", toString);
         Assert.DoesNotContain("Obsolete", toString);
         Assert.DoesNotContain("=> \"old\"", updated);
@@ -789,6 +789,20 @@ public class GenerateOverridesOperationTests
             : $"/test/file{extension}";
 
     private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
+
+    private static bool HasOverrideToString(string source) =>
+        source.Contains("override string ToString()", StringComparison.Ordinal)
+        || source.Contains("override string? ToString()", StringComparison.Ordinal);
+
+    private static int CountOverrideToString(string source) =>
+        CountOccurrences(source, "override string ToString()")
+        + CountOccurrences(source, "override string? ToString()");
+
+    private static string ExtractOverrideToString(string source)
+    {
+        var extracted = ExtractMember(source, "string? ToString()");
+        return extracted.Length > 0 ? extracted : ExtractMember(source, "string ToString()");
+    }
 
     private static int CountOccurrences(string haystack, string needle)
     {
