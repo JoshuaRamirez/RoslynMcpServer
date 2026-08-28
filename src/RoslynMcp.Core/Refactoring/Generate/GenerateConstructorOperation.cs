@@ -192,7 +192,9 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         // callBase prefix-matching uses generated parameter order. Inherited
         // members are typically the ones passed to the base constructor, so
         // they come first when includeInheritedMembers collected any.
-        if (@params.CallBase && !@params.CopyConstructor)
+        // Skip the reorder when callBase is a no-op (record / struct /
+        // object or non-class base) so the documented ignore stays order-neutral.
+        if (@params.CallBase && !@params.CopyConstructor && IsEligibleOrdinaryClassForCallBase(typeSymbol))
             members = OrderMembersForCallBase(members, typeSymbol);
 
         // Check for existing constructor with same signature or ambiguous due to optional params.
@@ -742,24 +744,30 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             parameters.Add(parameter);
         }
 
-        // Build body statements — skip members whose parameters were
-        // passed through to the base constructor.
+        // Build body statements. Null-check every generated parameter
+        // (including those forwarded to : base(...)) before assignments.
+        // Assignments skip members whose parameters were passed through.
         var statements = new List<StatementSyntax>();
+
+        if (addNullChecks)
+        {
+            foreach (var member in parameterMembers)
+            {
+                var memberType = GetMemberType(member);
+                // Null checks are generated for:
+                // - Reference types that are not nullable (e.g., string, not string?)
+                // - Nullable<T> value types (e.g., int?) since they can hold null
+                // Null checks are NOT generated for:
+                // - Non-nullable value types (e.g., int, bool) - cannot be null
+                // - Nullable-annotated reference types (e.g., string?) - null is expected
+                if (ShouldGenerateNullCheck(memberType))
+                    statements.Add(CreateArgumentNullCheck(ToCamelCase(member.Name)));
+            }
+        }
 
         foreach (var member in bodyMembers)
         {
             var paramName = ToCamelCase(member.Name);
-            var memberType = GetMemberType(member);
-
-            // Add null check if requested and type can be null.
-            // Null checks are generated for:
-            // - Reference types that are not nullable (e.g., string, not string?)
-            // - Nullable<T> value types (e.g., int?) since they can hold null
-            // Null checks are NOT generated for:
-            // - Non-nullable value types (e.g., int, bool) - cannot be null
-            // - Nullable-annotated reference types (e.g., string?) - null is expected
-            if (addNullChecks && ShouldGenerateNullCheck(memberType))
-                statements.Add(CreateArgumentNullCheck(paramName));
 
             // Assignment statement
             ExpressionSyntax left;
@@ -989,17 +997,31 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     /// No accessible match and no accessible parameterless constructor is
     /// <see cref="ErrorCodes.NoMatchingBaseConstructor"/>.
     /// </summary>
+    /// <summary>
+    /// True when non-copy <c>callBase</c> may emit <c>: base(...)</c>:
+    /// an ordinary class (not a record / struct / record struct) whose
+    /// immediate base is a class other than <c>object</c> / <c>ValueType</c>
+    /// and is not itself a record or struct.
+    /// </summary>
+    private static bool IsEligibleOrdinaryClassForCallBase(INamedTypeSymbol typeSymbol)
+    {
+        if (typeSymbol.IsRecord || typeSymbol.TypeKind != TypeKind.Class)
+            return false;
+
+        var baseType = typeSymbol.BaseType;
+        if (baseType == null || IsObjectOrValueType(baseType))
+            return false;
+        if (baseType.IsRecord || baseType.TypeKind != TypeKind.Class)
+            return false;
+
+        return true;
+    }
+
     private static CallBaseResolution ResolveCallBaseInitializer(
         INamedTypeSymbol typeSymbol,
         IReadOnlyList<ISymbol> members)
     {
-        if (typeSymbol.IsRecord || typeSymbol.TypeKind != TypeKind.Class)
-            return CallBaseResolution.None;
-
-        var baseType = typeSymbol.BaseType;
-        if (baseType == null || IsObjectOrValueType(baseType))
-            return CallBaseResolution.None;
-        if (baseType.IsRecord || baseType.TypeKind != TypeKind.Class)
+        if (!IsEligibleOrdinaryClassForCallBase(typeSymbol))
             return CallBaseResolution.None;
 
         var generatedTypes = members.Select(GetMemberType).ToList();

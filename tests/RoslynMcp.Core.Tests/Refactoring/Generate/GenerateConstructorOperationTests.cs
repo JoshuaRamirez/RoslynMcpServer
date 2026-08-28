@@ -3409,6 +3409,49 @@ public class GenerateConstructorOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateConstructor_CallBaseTrue_AddNullChecks_GuardsForwardedReferenceParams()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public Animal(string name)
+                {
+                }
+            }
+
+            public class Dog : Animal
+            {
+                public string Name;
+                public bool Active;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            CallBase = true,
+            AddNullChecks = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("public Dog(string name, bool active) : base(name)", ctor);
+        Assert.Contains("ArgumentNullException", ctor);
+        Assert.Contains("nameof(name)", ctor);
+        Assert.DoesNotContain("this.Name = name", ctor);
+        Assert.Contains("this.Active = active", ctor);
+        var nameGuard = ctor.IndexOf("nameof(name)", StringComparison.Ordinal);
+        var activeAssign = ctor.IndexOf("this.Active = active", StringComparison.Ordinal);
+        Assert.True(nameGuard >= 0 && activeAssign > nameGuard, "Null check for forwarded name must appear before assignments.");
+    }
+
+    [SkippableFact]
     public async Task GenerateConstructor_CallBaseTrue_IncludeInheritedMembers_DoesNotReassignInherited()
     {
         await using var workspace = await TempWorkspace.CreateAsync(DerivedClassWithInheritedIntStringFieldsSource, "Dog.cs");
@@ -3428,6 +3471,19 @@ public class GenerateConstructorOperationTests
         Assert.DoesNotContain("this.Age = age", ctor);
         Assert.DoesNotContain("this.Label = label", ctor);
         Assert.Contains("this.Flag = flag", ctor);
+
+        await using var withoutCallBase = await TempWorkspace.CreateAsync(DerivedClassWithInheritedIntStringFieldsSource, "Dog.cs");
+        var withoutResult = await new GenerateConstructorOperation(withoutCallBase.Context).ExecuteAsync(
+            new GenerateConstructorParams
+            {
+                SourceFile = withoutCallBase.SourcePath,
+                TypeName = "Dog",
+                IncludeInheritedMembers = true
+            });
+        Assert.True(withoutResult.Success);
+        var withoutCtor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(withoutCallBase.SourcePath)), "Dog");
+        Assert.Contains("public Dog(bool flag, int age, string label)", withoutCtor);
+        Assert.DoesNotContain(": base(", withoutCtor);
     }
 
     [SkippableFact]
@@ -3650,6 +3706,52 @@ public class GenerateConstructorOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateConstructor_CallBaseTrue_DerivedRecord_IncludeInheritedMembers_DoesNotReorder()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record Animal
+            {
+                public string Species { get; set; }
+            }
+
+            public record Dog : Animal
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var withoutCallBase = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var withoutResult = await new GenerateConstructorOperation(withoutCallBase.Context).ExecuteAsync(
+            new GenerateConstructorParams
+            {
+                SourceFile = withoutCallBase.SourcePath,
+                TypeName = "Dog",
+                IncludeInheritedMembers = true
+            });
+        Assert.True(withoutResult.Success);
+        var withoutCtor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(withoutCallBase.SourcePath)), "Dog");
+
+        await using var withCallBase = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var withResult = await new GenerateConstructorOperation(withCallBase.Context).ExecuteAsync(
+            new GenerateConstructorParams
+            {
+                SourceFile = withCallBase.SourcePath,
+                TypeName = "Dog",
+                IncludeInheritedMembers = true,
+                CallBase = true
+            });
+        Assert.True(withResult.Success);
+        var withCtor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(withCallBase.SourcePath)), "Dog");
+
+        Assert.Contains("public Dog(string name, string species)", withoutCtor);
+        Assert.Contains("public Dog(string name, string species)", withCtor);
+        Assert.DoesNotContain("public Dog(string species, string name)", withCtor);
+        Assert.DoesNotContain(": base(", withCtor);
+    }
+
+    [SkippableFact]
     public async Task GenerateConstructor_CallBaseTrue_Struct_IsNoOp()
     {
         await using var workspace = await TempWorkspace.CreateAsync(PointStructSource, "Point.cs");
@@ -3668,6 +3770,47 @@ public class GenerateConstructorOperationTests
         Assert.DoesNotContain(": base(", ctor);
         Assert.Contains("this.X = x", ctor);
         Assert.Contains("this.Y = y", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_CallBaseTrue_Struct_IncludeInheritedMembers_DoesNotReorder()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Point
+            {
+                public int X;
+                public string Label { get; set; }
+            }
+            """;
+
+        await using var withoutCallBase = await TempWorkspace.CreateAsync(source, "Point.cs");
+        var withoutResult = await new GenerateConstructorOperation(withoutCallBase.Context).ExecuteAsync(
+            new GenerateConstructorParams
+            {
+                SourceFile = withoutCallBase.SourcePath,
+                TypeName = "Point",
+                IncludeInheritedMembers = true
+            });
+        Assert.True(withoutResult.Success);
+        var withoutCtor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(withoutCallBase.SourcePath)), "Point");
+
+        await using var withCallBase = await TempWorkspace.CreateAsync(source, "Point.cs");
+        var withResult = await new GenerateConstructorOperation(withCallBase.Context).ExecuteAsync(
+            new GenerateConstructorParams
+            {
+                SourceFile = withCallBase.SourcePath,
+                TypeName = "Point",
+                IncludeInheritedMembers = true,
+                CallBase = true
+            });
+        Assert.True(withResult.Success);
+        var withCtor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(withCallBase.SourcePath)), "Point");
+
+        Assert.Contains("public Point(int x, string label)", withoutCtor);
+        Assert.Contains("public Point(int x, string label)", withCtor);
+        Assert.DoesNotContain(": base(", withCtor);
     }
 
     [SkippableFact]
