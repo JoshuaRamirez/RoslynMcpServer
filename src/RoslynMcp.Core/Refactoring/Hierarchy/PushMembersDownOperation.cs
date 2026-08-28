@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Refactoring.Generate;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Hierarchy;
@@ -859,7 +860,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return ConvertToInterfaceMember(isolated);
 
         var converted = leaveAbstract
-            ? AddOverrideModifier(isolated)
+            ? AddOverrideModifier(isolated, member.Symbol, target)
             : StripHierarchyModifiers(isolated);
 
         if (source.TypeKind == TypeKind.Interface && target.TypeKind != TypeKind.Interface)
@@ -1190,7 +1191,10 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             .NormalizeWhitespace();
     }
 
-    private static MemberDeclarationSyntax AddOverrideModifier(MemberDeclarationSyntax member)
+    private static MemberDeclarationSyntax AddOverrideModifier(
+        MemberDeclarationSyntax member,
+        ISymbol symbol,
+        INamedTypeSymbol target)
     {
         return member switch
         {
@@ -1198,6 +1202,13 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => property.WithModifiers(ToOverrideModifiers(property.Modifiers))
                 .NormalizeWhitespace(),
+            IndexerDeclarationSyntax indexer when symbol is IPropertySymbol property =>
+                EnsureIndexerBodies(
+                    ReduceIndexerOverrideAccessibility(
+                        indexer.WithModifiers(ToOverrideModifiers(indexer.Modifiers)),
+                        property,
+                        target))
+                    .NormalizeWhitespace(),
             IndexerDeclarationSyntax indexer => EnsureIndexerBodies(
                     indexer.WithModifiers(ToOverrideModifiers(indexer.Modifiers)))
                 .NormalizeWhitespace(),
@@ -1207,6 +1218,61 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .NormalizeWhitespace(),
             _ => member.NormalizeWhitespace()
         };
+    }
+
+    /// <summary>
+    /// Same-assembly: keep <c>protected internal</c>. Cross-assembly
+    /// <c>protected internal</c> becomes <c>protected</c> (CS0507). Other
+    /// accessibilities are unchanged.
+    /// </summary>
+    internal static SyntaxTokenList ReduceCrossAssemblyOverrideAccessibility(
+        SyntaxTokenList modifiers,
+        ISymbol member,
+        INamedTypeSymbol target)
+    {
+        if (SyntaxGenerationHelper.OverrideAccessibility(member, target) != Accessibility.Protected)
+            return modifiers;
+        if (!modifiers.Any(SyntaxKind.InternalKeyword))
+            return modifiers;
+
+        var tokens = modifiers.Where(token => !token.IsKind(SyntaxKind.InternalKeyword)).ToList();
+        if (!HasAccessibility(tokens))
+            tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
+        return SyntaxFactory.TokenList(tokens);
+    }
+
+    /// <summary>
+    /// Reduces indexer and accessor <c>protected internal</c> to
+    /// <c>protected</c> when the override is emitted in another assembly.
+    /// </summary>
+    internal static IndexerDeclarationSyntax ReduceIndexerOverrideAccessibility(
+        IndexerDeclarationSyntax indexer,
+        IPropertySymbol symbol,
+        INamedTypeSymbol target)
+    {
+        var updated = indexer.WithModifiers(
+            ReduceCrossAssemblyOverrideAccessibility(indexer.Modifiers, symbol, target));
+
+        if (updated.AccessorList == null)
+            return updated;
+
+        var accessors = new List<AccessorDeclarationSyntax>();
+        foreach (var accessor in updated.AccessorList.Accessors)
+        {
+            var accessorSymbol = accessor.Kind() switch
+            {
+                SyntaxKind.GetAccessorDeclaration => (ISymbol?)symbol.GetMethod,
+                SyntaxKind.SetAccessorDeclaration or SyntaxKind.InitAccessorDeclaration => symbol.SetMethod,
+                _ => null
+            };
+
+            accessors.Add(accessorSymbol == null
+                ? accessor
+                : accessor.WithModifiers(
+                    ReduceCrossAssemblyOverrideAccessibility(accessor.Modifiers, accessorSymbol, target)));
+        }
+
+        return updated.WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
     }
 
     private static MethodDeclarationSyntax EnsureMethodBody(MethodDeclarationSyntax method)
