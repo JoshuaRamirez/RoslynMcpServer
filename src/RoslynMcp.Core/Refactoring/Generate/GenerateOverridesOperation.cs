@@ -583,7 +583,11 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
     /// <summary>
     /// Removes matched override declarations from every partial that holds
     /// them. Match by span/kind, not SyntaxNode reference — same seam as
-    /// constructor / Equals / ToString replaceExisting.
+    /// constructor / Equals / ToString replaceExisting. Field-like events
+    /// (<c>override event EventHandler Changed;</c>) declare as a
+    /// <see cref="VariableDeclaratorSyntax"/>; those are removed via the
+    /// same event-field path as implement_abstract / implement_interface
+    /// (drop only the selected declarator from a multi-variable field).
     /// </summary>
     private static async Task<Solution> RemoveExistingOverridesAcrossPartialsAsync(
         Solution solution,
@@ -592,32 +596,44 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         CancellationToken cancellationToken)
     {
         var membersByTreeAndPart = new Dictionary<SyntaxTree, Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>>();
+        var eventDeclaratorsByTreeAndPart = new Dictionary<SyntaxTree, Dictionary<int, HashSet<(int FieldStart, int DeclaratorStart)>>>();
 
         foreach (var existing in existingOverrides)
         {
             foreach (var reference in existing.DeclaringSyntaxReferences)
             {
                 var syntax = await reference.GetSyntaxAsync(cancellationToken);
+                if (TryGetEventFieldDeclarator(syntax, out var eventField, out var declarator)
+                    && eventField.Parent is TypeDeclarationSyntax eventPart)
+                {
+                    if (eventField.Declaration.Variables.Count > 1)
+                    {
+                        AddKeyed(eventDeclaratorsByTreeAndPart, syntax.SyntaxTree, eventPart.SpanStart,
+                            (eventField.SpanStart, declarator.SpanStart));
+                    }
+                    else
+                    {
+                        AddKeyed(membersByTreeAndPart, syntax.SyntaxTree, eventPart.SpanStart,
+                            (eventField.SpanStart, eventField.Span.End, eventField.Kind()));
+                    }
+
+                    continue;
+                }
+
                 if (syntax.Parent is not TypeDeclarationSyntax part)
                     continue;
 
-                if (!membersByTreeAndPart.TryGetValue(syntax.SyntaxTree, out var byPart))
-                {
-                    byPart = new Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>();
-                    membersByTreeAndPart[syntax.SyntaxTree] = byPart;
-                }
-
-                if (!byPart.TryGetValue(part.SpanStart, out var keys))
-                {
-                    keys = new HashSet<(int Start, int End, SyntaxKind Kind)>();
-                    byPart[part.SpanStart] = keys;
-                }
-
-                keys.Add((syntax.SpanStart, syntax.Span.End, syntax.Kind()));
+                AddKeyed(membersByTreeAndPart, syntax.SyntaxTree, part.SpanStart,
+                    (syntax.SpanStart, syntax.Span.End, syntax.Kind()));
             }
         }
 
-        foreach (var (tree, byPart) in membersByTreeAndPart)
+        var trees = membersByTreeAndPart.Keys
+            .Concat(eventDeclaratorsByTreeAndPart.Keys)
+            .Distinct()
+            .ToList();
+
+        foreach (var tree in trees)
         {
             var document = solution.GetDocument(tree)
                 ?? throw new RefactoringException(
@@ -626,6 +642,9 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
             var root = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
+            membersByTreeAndPart.TryGetValue(tree, out var membersByPart);
+            eventDeclaratorsByTreeAndPart.TryGetValue(tree, out var eventDeclaratorsByPart);
+
             var replacements = new Dictionary<TypeDeclarationSyntax, TypeDeclarationSyntax>();
             foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
             {
@@ -633,12 +652,44 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
                     continue;
                 if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax part)
                     continue;
-                if (!byPart.TryGetValue(part.SpanStart, out var keys) || keys.Count == 0)
+
+                HashSet<(int Start, int End, SyntaxKind Kind)>? keys = null;
+                HashSet<(int FieldStart, int DeclaratorStart)>? eventKeys = null;
+                if (membersByPart != null)
+                    membersByPart.TryGetValue(part.SpanStart, out keys);
+                if (eventDeclaratorsByPart != null)
+                    eventDeclaratorsByPart.TryGetValue(part.SpanStart, out eventKeys);
+
+                if ((keys == null || keys.Count == 0) && (eventKeys == null || eventKeys.Count == 0))
                     continue;
 
-                var remainingMembers = part.Members
-                    .Where(m => !keys.Contains((m.SpanStart, m.Span.End, m.Kind())))
-                    .ToArray();
+                var remainingMembers = new List<MemberDeclarationSyntax>();
+                foreach (var member in part.Members)
+                {
+                    if (member is EventFieldDeclarationSyntax eventField
+                        && eventKeys != null
+                        && eventKeys.Count > 0)
+                    {
+                        var remainingVars = eventField.Declaration.Variables
+                            .Where(v => !eventKeys.Contains((eventField.SpanStart, v.SpanStart)))
+                            .ToList();
+                        if (remainingVars.Count != eventField.Declaration.Variables.Count)
+                        {
+                            if (remainingVars.Count == 0)
+                                continue;
+
+                            remainingMembers.Add(eventField.WithDeclaration(
+                                eventField.Declaration.WithVariables(SyntaxFactory.SeparatedList(remainingVars))));
+                            continue;
+                        }
+                    }
+
+                    if (keys != null && keys.Contains((member.SpanStart, member.Span.End, member.Kind())))
+                        continue;
+
+                    remainingMembers.Add(member);
+                }
+
                 replacements[part] = part.WithMembers(SyntaxFactory.List(remainingMembers));
             }
 
@@ -650,6 +701,45 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         }
 
         return solution;
+    }
+
+    private static void AddKeyed<T>(
+        Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,
+        SyntaxTree tree,
+        int partSpanStart,
+        T key)
+    {
+        if (!map.TryGetValue(tree, out var byPart))
+        {
+            byPart = new Dictionary<int, HashSet<T>>();
+            map[tree] = byPart;
+        }
+
+        if (!byPart.TryGetValue(partSpanStart, out var keys))
+        {
+            keys = new HashSet<T>();
+            byPart[partSpanStart] = keys;
+        }
+
+        keys.Add(key);
+    }
+
+    private static bool TryGetEventFieldDeclarator(
+        SyntaxNode syntax,
+        out EventFieldDeclarationSyntax eventField,
+        out VariableDeclaratorSyntax declarator)
+    {
+        if (syntax is VariableDeclaratorSyntax variable
+            && variable.Parent?.Parent is EventFieldDeclarationSyntax field)
+        {
+            eventField = field;
+            declarator = variable;
+            return true;
+        }
+
+        eventField = null!;
+        declarator = null!;
+        return false;
     }
 
     private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName, int preferredSpanStart)

@@ -1465,6 +1465,89 @@ public class GenerateOverridesOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateOverrides_ReplaceExistingTrue_FieldLikeEvent_IsReplaced()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual event System.EventHandler Changed;
+            }
+
+            public class Dog : Animal
+            {
+                public override event System.EventHandler Changed;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Changed" },
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class Dog", StringComparison.Ordinal)..];
+        Assert.DoesNotContain("public override event System.EventHandler Changed;", derived);
+        Assert.Contains("public override event System.EventHandler Changed", derived);
+        var evt = ExtractMember(updated, "public override event System.EventHandler Changed");
+        Assert.Contains("add", evt);
+        Assert.Contains("remove", evt);
+        Assert.Equal(1, CountOccurrences(derived, "event System.EventHandler Changed"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ReplaceExistingTrue_MultiVariableEventField_LeavesUnrelated()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual event System.EventHandler Changed;
+                public virtual event System.EventHandler Resized;
+            }
+
+            public class Dog : Animal
+            {
+                public override event System.EventHandler Changed, Resized;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Changed" },
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class Dog", StringComparison.Ordinal)..];
+        Assert.DoesNotContain("Changed, Resized", updated);
+        Assert.Contains("public override event System.EventHandler Resized;", derived);
+        Assert.Contains("public override event System.EventHandler Changed", derived);
+        var evt = ExtractMember(updated, "public override event System.EventHandler Changed");
+        Assert.Contains("add", evt);
+        Assert.Contains("remove", evt);
+        Assert.DoesNotContain("public override event System.EventHandler Changed;", derived);
+        Assert.Equal(1, CountOccurrences(derived, "event System.EventHandler Changed"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
     public async Task GenerateOverrides_Event_Preview_WritesNothing_AndDescribesGeneration()
     {
         await using var workspace = await TempWorkspace.CreateAsync(MissingVirtualEventSource, "Dog.cs");
