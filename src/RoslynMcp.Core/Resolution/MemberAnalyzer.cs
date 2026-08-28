@@ -45,16 +45,18 @@ public static class MemberAnalyzer
     }
 
     /// <summary>
-    /// Gets abstract methods, properties, and indexers inherited from base types
-    /// that the selected type has not yet implemented.
+    /// Gets abstract methods, properties, indexers, and events inherited from
+    /// base types that the selected type has not yet implemented.
     /// </summary>
     /// <param name="type">The type to analyze.</param>
-    /// <returns>Unimplemented inherited abstract members (methods, properties, and indexers).</returns>
+    /// <returns>Unimplemented inherited abstract members (methods, properties, indexers, and events).</returns>
     public static IEnumerable<ISymbol> GetUnimplementedAbstractMembers(INamedTypeSymbol type)
     {
         var declared = new HashSet<string>(
             type.GetMembers()
-                .Where(m => m is IMethodSymbol { MethodKind: MethodKind.Ordinary } or IPropertySymbol)
+                .Where(m => m is IMethodSymbol { MethodKind: MethodKind.Ordinary }
+                    or IPropertySymbol
+                    or IEventSymbol { ExplicitInterfaceImplementations.Length: 0 })
                 .Select(GetMemberSignature));
 
         var current = type.BaseType;
@@ -80,6 +82,11 @@ public static class MemberAnalyzer
                         signature = GetMemberSignature(property);
                         isAbstract = property.IsAbstract;
                         isConcreteOverride = property.IsOverride && !property.IsAbstract;
+                        break;
+                    case IEventSymbol evt:
+                        signature = GetMemberSignature(evt);
+                        isAbstract = evt.IsAbstract;
+                        isConcreteOverride = evt.IsOverride && !evt.IsAbstract;
                         break;
                 }
 
