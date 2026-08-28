@@ -447,7 +447,14 @@ public static class SyntaxGenerationHelper
             _ => null
         };
 
-    private static BlockSyntax CreateDefaultReturnBody(ITypeSymbol returnType)
+    /// <summary>
+    /// Creates a default-return method / getter body: an empty block for
+    /// <c>void</c>, <c>return null;</c> for reference types, and
+    /// <c>return default(T);</c> for value types and type parameters.
+    /// </summary>
+    /// <param name="returnType">The method or accessor return type.</param>
+    /// <returns>A block containing the default-return (or empty for void).</returns>
+    public static BlockSyntax CreateDefaultReturnBody(ITypeSymbol returnType)
     {
         if (returnType.SpecialType == SpecialType.System_Void)
         {

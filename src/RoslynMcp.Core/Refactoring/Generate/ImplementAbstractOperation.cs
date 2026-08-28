@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -13,8 +14,14 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
 /// Generates implementation stubs for unimplemented abstract members inherited
-/// by a selected class. Placeholder bodies are
+/// by a selected class. When <see cref="ImplementAbstractParams.ThrowNotImplemented"/>
+/// is true (the default), placeholder bodies are
 /// <c>throw new global::System.NotImplementedException();</c>.
+/// When false, methods and getters use
+/// <see cref="SyntaxGenerationHelper.CreateDefaultReturnBody"/> and
+/// setters / init setters use empty blocks, except <c>ref</c> /
+/// <c>ref readonly</c> methods and getters which still throw
+/// (a default return is not a valid ref return).
 /// </summary>
 public sealed class ImplementAbstractOperation : RefactoringOperationBase<ImplementAbstractParams>
 {
@@ -134,7 +141,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                 $"Type '{typeSymbol.Name}' has no unimplemented abstract members.");
         }
 
-        var implementations = GenerateImplementations(unimplemented);
+        var implementations = GenerateImplementations(unimplemented, @params.ThrowNotImplemented);
 
         if (@params.Preview)
             return CreatePreviewResult(operationId, @params, unimplemented, implementations);
@@ -173,7 +180,9 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         }
     }
 
-    private static List<MemberDeclarationSyntax> GenerateImplementations(List<ISymbol> members)
+    private static List<MemberDeclarationSyntax> GenerateImplementations(
+        List<ISymbol> members,
+        bool throwNotImplemented)
     {
         var implementations = new List<MemberDeclarationSyntax>();
 
@@ -181,9 +190,9 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         {
             MemberDeclarationSyntax? impl = member switch
             {
-                IMethodSymbol method => CreateMethodStub(method),
-                IPropertySymbol { IsIndexer: true } indexer => CreateIndexerStub(indexer),
-                IPropertySymbol property => CreatePropertyStub(property),
+                IMethodSymbol method => CreateMethodStub(method, throwNotImplemented),
+                IPropertySymbol { IsIndexer: true } indexer => CreateIndexerStub(indexer, throwNotImplemented),
+                IPropertySymbol property => CreatePropertyStub(property, throwNotImplemented),
                 _ => null
             };
 
@@ -195,18 +204,27 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     }
 
     /// <summary>
-    /// Creates an override method stub with a
-    /// <c>throw new global::System.NotImplementedException();</c> body.
+    /// Creates an override method stub. When <paramref name="throwNotImplemented"/>
+    /// is true, the body is
+    /// <c>throw new global::System.NotImplementedException();</c>;
+    /// otherwise it uses <see cref="SyntaxGenerationHelper.CreateDefaultReturnBody"/>.
+    /// <c>ref</c> / <c>ref readonly</c> methods always throw — a default
+    /// return is not a valid ref return (CS8156).
     /// </summary>
-    internal static MethodDeclarationSyntax CreateMethodStub(IMethodSymbol method)
+    internal static MethodDeclarationSyntax CreateMethodStub(
+        IMethodSymbol method,
+        bool throwNotImplemented = true)
     {
         var parameters = method.Parameters.Select(CreateParameter);
+        var body = RequiresThrowBody(method, throwNotImplemented)
+            ? CreateThrowNotImplementedBody()
+            : SyntaxGenerationHelper.CreateDefaultReturnBody(method.ReturnType);
         var methodDecl = SyntaxFactory.MethodDeclaration(
                 CreateMemberType(method.ReturnType, method.ReturnsByRef, method.ReturnsByRefReadonly),
                 method.Name)
             .WithModifiers(CreateOverrideModifiers(method.DeclaredAccessibility))
             .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(parameters)))
-            .WithBody(CreateThrowNotImplementedBody());
+            .WithBody(body);
 
         if (method.TypeParameters.Length > 0)
         {
@@ -219,36 +237,45 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     }
 
     /// <summary>
-    /// Creates an override property stub whose accessors throw
-    /// <c>new global::System.NotImplementedException()</c>.
+    /// Creates an override property stub. When <paramref name="throwNotImplemented"/>
+    /// is true, accessors throw
+    /// <c>new global::System.NotImplementedException()</c>;
+    /// otherwise getters use a default-return body and setters / init setters
+    /// use an empty block. <c>ref</c> / <c>ref readonly</c> getters always throw.
     /// Preserves init setters, accessor-specific accessibility, and required.
     /// </summary>
-    internal static PropertyDeclarationSyntax CreatePropertyStub(IPropertySymbol property)
+    internal static PropertyDeclarationSyntax CreatePropertyStub(
+        IPropertySymbol property,
+        bool throwNotImplemented = true)
     {
         return SyntaxFactory.PropertyDeclaration(
                 CreateMemberType(property.Type, property.ReturnsByRef, property.ReturnsByRefReadonly),
                 property.Name)
             .WithModifiers(CreateOverrideModifiers(property.DeclaredAccessibility, property.IsRequired))
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(property))))
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(property, throwNotImplemented))))
             .NormalizeWhitespace();
     }
 
     /// <summary>
-    /// Creates an override indexer stub whose accessors throw
-    /// <c>new global::System.NotImplementedException()</c>.
+    /// Creates an override indexer stub. Accessor bodies follow the same
+    /// <paramref name="throwNotImplemented"/> rules as properties.
     /// </summary>
-    internal static IndexerDeclarationSyntax CreateIndexerStub(IPropertySymbol indexer)
+    internal static IndexerDeclarationSyntax CreateIndexerStub(
+        IPropertySymbol indexer,
+        bool throwNotImplemented = true)
     {
         var parameters = indexer.Parameters.Select(CreateParameter);
         return SyntaxFactory.IndexerDeclaration(
                 CreateMemberType(indexer.Type, indexer.ReturnsByRef, indexer.ReturnsByRefReadonly))
             .WithModifiers(CreateOverrideModifiers(indexer.DeclaredAccessibility, indexer.IsRequired))
             .WithParameterList(SyntaxFactory.BracketedParameterList(SyntaxFactory.SeparatedList(parameters)))
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(indexer))))
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(indexer, throwNotImplemented))))
             .NormalizeWhitespace();
     }
 
-    private static List<AccessorDeclarationSyntax> CreateAccessors(IPropertySymbol property)
+    private static List<AccessorDeclarationSyntax> CreateAccessors(
+        IPropertySymbol property,
+        bool throwNotImplemented)
     {
         var accessors = new List<AccessorDeclarationSyntax>();
 
@@ -257,7 +284,8 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             accessors.Add(CreateAccessor(
                 property.GetMethod,
                 property.DeclaredAccessibility,
-                SyntaxKind.GetAccessorDeclaration));
+                SyntaxKind.GetAccessorDeclaration,
+                throwNotImplemented));
         }
 
         if (property.SetMethod != null)
@@ -265,7 +293,11 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             var kind = property.SetMethod.IsInitOnly
                 ? SyntaxKind.InitAccessorDeclaration
                 : SyntaxKind.SetAccessorDeclaration;
-            accessors.Add(CreateAccessor(property.SetMethod, property.DeclaredAccessibility, kind));
+            accessors.Add(CreateAccessor(
+                property.SetMethod,
+                property.DeclaredAccessibility,
+                kind,
+                throwNotImplemented));
         }
 
         return accessors;
@@ -274,10 +306,27 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     private static AccessorDeclarationSyntax CreateAccessor(
         IMethodSymbol accessor,
         Accessibility propertyAccessibility,
-        SyntaxKind kind)
+        SyntaxKind kind,
+        bool throwNotImplemented)
     {
+        BlockSyntax body;
+        if (kind == SyntaxKind.GetAccessorDeclaration
+            ? RequiresThrowBody(accessor, throwNotImplemented)
+            : throwNotImplemented)
+        {
+            body = CreateThrowNotImplementedBody();
+        }
+        else if (kind == SyntaxKind.GetAccessorDeclaration)
+        {
+            body = SyntaxGenerationHelper.CreateDefaultReturnBody(accessor.ReturnType);
+        }
+        else
+        {
+            body = SyntaxFactory.Block();
+        }
+
         var declaration = SyntaxFactory.AccessorDeclaration(kind)
-            .WithBody(CreateThrowNotImplementedBody());
+            .WithBody(body);
 
         var modifiers = CreateAccessorModifiers(accessor.DeclaredAccessibility, propertyAccessibility);
         if (modifiers.Count > 0)
@@ -285,6 +334,9 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
 
         return declaration;
     }
+
+    private static bool RequiresThrowBody(IMethodSymbol method, bool throwNotImplemented)
+        => throwNotImplemented || method.ReturnsByRef || method.ReturnsByRefReadonly;
 
     private static SyntaxTokenList CreateAccessorModifiers(
         Accessibility accessorAccessibility,
@@ -415,6 +467,9 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         var memberNames = string.Join(", ", members.Select(m => m.Name));
         var implCode = string.Join("\n\n",
             implementations.Select(i => i.NormalizeWhitespace().ToFullString()));
+        var throwNote = @params.ThrowNotImplemented
+            ? "stubs will throw NotImplementedException"
+            : "stubs will not throw";
 
         var pendingChanges = new List<PendingChange>
         {
@@ -422,7 +477,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             {
                 File = @params.SourceFile,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Implement abstract members on '{@params.TypeName}': {memberNames}",
+                Description = $"Implement abstract members on '{@params.TypeName}': {memberNames} ({throwNote})",
                 BeforeSnippet = $"// End of type '{@params.TypeName}'",
                 AfterSnippet = implCode
             }

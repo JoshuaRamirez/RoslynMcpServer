@@ -239,7 +239,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 | `generate_method_stub` | Generate a method from an undefined call site, inferring the signature from usage. Placeholder body is `throw new NotImplementedException();`. | `sourceFile`, `line`, `column`, `methodName`, `returnType`, `visibility`, `generateAsync` |
 | `generate_overrides` | Generate override methods for base class virtual/abstract members (`replaceExisting`: default false skips members this type already overrides; true also replaces those existing overrides — match methods by name + parameter types + `RefKind`, properties by name; two same-name existing overrides with no exact signature match fail with `OverrideExists`; `new` hiders / explicit interface implementations / non-override methods are never replaced). | `sourceFile`, `typeName`, `members`, `callBase`, `replaceExisting` |
 | `implement_interface` | Generate interface member implementations for a type. | `sourceFile`, `typeName`, `interfaceName`, `explicitImplementation`, `members` |
-| `implement_abstract` | Generate implementation stubs for unimplemented abstract members inherited by a selected class. Placeholder body is `throw new NotImplementedException();`. | `sourceFile`, `typeName`, `members` |
+| `implement_abstract` | Generate implementation stubs for unimplemented abstract members inherited by a selected class (`throwNotImplemented`: default true emits `throw new NotImplementedException();`; false uses default-return / empty setter bodies; `ref` / `ref readonly` methods and getters still throw). | `sourceFile`, `typeName`, `members`, `throwNotImplemented` |
 
 ### Convert
 

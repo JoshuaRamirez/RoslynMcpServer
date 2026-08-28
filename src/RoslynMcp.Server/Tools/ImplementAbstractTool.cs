@@ -33,7 +33,7 @@ public sealed class ImplementAbstractTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Generate implementation stubs for unimplemented abstract members inherited by a selected class. Placeholder body is throw new NotImplementedException();";
+        "Generate implementation stubs for unimplemented abstract members inherited by a selected class. Placeholder body is throw new NotImplementedException() when throwNotImplemented is true (the default); otherwise default-return / empty setter bodies.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -62,6 +62,12 @@ public sealed class ImplementAbstractTool : IToolHandler
                 type = "array",
                 items = new { type = "string" },
                 description = "Names of specific abstract members to implement. If not specified, implements all missing members."
+            },
+            throwNotImplemented = new
+            {
+                type = "boolean",
+                description = "Throw NotImplementedException in method, property, and indexer stub bodies",
+                @default = true
             },
             preview = new
             {
@@ -99,6 +105,7 @@ public sealed class ImplementAbstractTool : IToolHandler
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
                 Members = args.Members,
+                ThrowNotImplemented = args.ThrowNotImplemented ?? true,
                 Preview = args.Preview ?? false
             };
 
@@ -130,6 +137,7 @@ public sealed class ImplementAbstractTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
         public List<string>? Members { get; init; }
+        public bool? ThrowNotImplemented { get; init; }
         public bool? Preview { get; init; }
     }
 }

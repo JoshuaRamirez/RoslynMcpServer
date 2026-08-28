@@ -241,7 +241,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ImplementInterfaceOperation, ImplementInterfaceParams>(
             "implement-interface", "Generate implementation stubs for an interface");
         r.RegisterRefactoring<ImplementAbstractOperation, ImplementAbstractParams>(
-            "implement-abstract", "Generate implementation stubs for unimplemented abstract members inherited by a class");
+            "implement-abstract", "Generate implementation stubs for unimplemented abstract members inherited by a class; throwNotImplemented (default true) throws NotImplementedException in stub bodies, false uses default-return / empty setter bodies");
         r.RegisterRefactoring<AddNullChecksOperation, AddNullChecksParams>(
             "add-null-checks", "Add null checks to method parameters");
 
