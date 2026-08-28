@@ -72,6 +72,25 @@ public sealed class GenerateConstructorParams
     public string? Visibility { get; init; }
 
     /// <summary>
+    /// When true, generate a single-parameter copy constructor whose
+    /// parameter type is the target type and whose body assigns each
+    /// selected member from that parameter (<c>this.Name = other.Name;</c>).
+    /// When false (default / omitted), keep today's one-parameter-per-member
+    /// constructor. Member selection still uses <see cref="Members"/>,
+    /// <see cref="IncludeProperties"/>, and <see cref="IncludeInheritedMembers"/>.
+    /// <see cref="AddNullChecks"/> null-checks the single copy parameter on
+    /// reference types (class / record class) and is skipped on structs /
+    /// record structs. Derived records whose base is also a record emit
+    /// <c>: base(other)</c>; ordinary classes do not. Unsealed records
+    /// require <c>public</c> or <c>protected</c> visibility (CS8878).
+    /// Copy mode skips properties without an accessible getter.
+    /// The copy-constructor signature for
+    /// <c>ConstructorExists</c> / <see cref="ReplaceExisting"/> is exactly
+    /// one by-value parameter of the target type.
+    /// </summary>
+    public bool CopyConstructor { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }

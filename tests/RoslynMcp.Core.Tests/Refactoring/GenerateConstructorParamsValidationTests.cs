@@ -131,6 +131,18 @@ public class GenerateConstructorParamsValidationTests
     }
 
     [Fact]
+    public void CopyConstructor_DefaultsToFalse()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass"
+        };
+
+        Assert.False(@params.CopyConstructor);
+    }
+
+    [Fact]
     public void ValidateParams_InvalidVisibility_ThrowsInvalidVisibility()
     {
         var @params = new GenerateConstructorParams

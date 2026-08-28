@@ -227,7 +227,7 @@ public sealed class ToolRegistry
 
         // ── Refactoring: Generate (9) ─────────────────────────────────
         r.RegisterRefactoring<GenerateConstructorOperation, GenerateConstructorParams>(
-            "generate-constructor", "Generate a constructor from fields/properties; includeProperties (default true) includes settable properties; false uses instance fields only unless members names a property; includeInheritedMembers (default false) also collects accessible instance fields/settable properties declared on base types; replaceExisting (default false) replaces an existing constructor with the exact same signature instead of failing; visibility (default public) sets constructor accessibility");
+            "generate-constructor", "Generate a constructor from fields/properties; includeProperties (default true) includes settable properties; false uses instance fields only unless members names a property; includeInheritedMembers (default false) also collects accessible instance fields/settable properties declared on base types; replaceExisting (default false) replaces an existing constructor with the exact same signature instead of failing; visibility (default public) sets constructor accessibility; copyConstructor (default false) generates a single-parameter same-type copy constructor instead of one parameter per member");
         r.RegisterRefactoring<GeneratePropertyOperation, GeneratePropertyParams>(
             "generate-property", "Generate a property on a type (auto, init-only, or backing-field)");
         r.RegisterRefactoring<GenerateMethodStubOperation, GenerateMethodStubParams>(
