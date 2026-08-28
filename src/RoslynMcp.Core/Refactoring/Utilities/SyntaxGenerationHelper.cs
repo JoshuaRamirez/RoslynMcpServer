@@ -63,11 +63,12 @@ public static class SyntaxGenerationHelper
         else
         {
             // Implicit implementation or override. Overrides must keep the
-            // inherited accessibility (CS0507); interface members are public.
+            // inherited accessibility (CS0507); interface members are public
+            // and must not use override (CS0115).
             var modifiers = new List<SyntaxToken>();
             modifiers.AddRange(AccessibilityModifierTokens(method.DeclaredAccessibility));
 
-            if (method.IsAbstract || method.IsVirtual || method.IsOverride)
+            if (NeedsOverrideModifier(method))
             {
                 modifiers.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword));
             }
@@ -116,10 +117,11 @@ public static class SyntaxGenerationHelper
         else
         {
             // Overrides must keep the inherited accessibility (CS0507).
+            // Interface members are public and must not use override (CS0115).
             var modifiers = new List<SyntaxToken>();
             modifiers.AddRange(AccessibilityModifierTokens(property.DeclaredAccessibility));
 
-            if (property.IsAbstract || property.IsVirtual || property.IsOverride)
+            if (NeedsOverrideModifier(property))
             {
                 modifiers.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword));
             }
@@ -144,7 +146,7 @@ public static class SyntaxGenerationHelper
         bool throwNotImplemented = true,
         bool callBase = false)
     {
-        var indexerType = SyntaxFactory.ParseTypeName(indexer.Type.ToDisplayString());
+        var indexerType = CreateMemberType(indexer.Type, indexer.ReturnsByRef, indexer.ReturnsByRefReadonly);
         var parameters = indexer.Parameters.Select(CreateParameter);
         var accessors = CreatePropertyAccessors(indexer, throwNotImplemented, callBase);
 
@@ -163,7 +165,7 @@ public static class SyntaxGenerationHelper
             var modifiers = new List<SyntaxToken>();
             modifiers.AddRange(AccessibilityModifierTokens(indexer.DeclaredAccessibility));
 
-            if (indexer.IsAbstract || indexer.IsVirtual || indexer.IsOverride)
+            if (NeedsOverrideModifier(indexer))
             {
                 modifiers.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword));
             }
@@ -373,6 +375,43 @@ public static class SyntaxGenerationHelper
             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
     }
 
+    /// <summary>
+    /// Interface members are abstract but must be implemented without
+    /// <c>override</c> (CS0115). Abstract-class / virtual / override
+    /// members still need <c>override</c>.
+    /// </summary>
+    private static bool NeedsOverrideModifier(ISymbol member) =>
+        member.ContainingType?.TypeKind != TypeKind.Interface
+        && (member.IsAbstract || member.IsVirtual || member.IsOverride);
+
+    /// <summary>
+    /// True when a getter must throw: the flag is on, or the indexer /
+    /// property returns <c>ref</c> / <c>ref readonly</c> (CS8156).
+    /// </summary>
+    private static bool RequiresThrowBody(IPropertySymbol property, bool throwNotImplemented) =>
+        throwNotImplemented || property.ReturnsByRef || property.ReturnsByRefReadonly;
+
+    private static TypeSyntax CreateMemberType(ITypeSymbol type, bool returnsByRef, bool returnsByRefReadonly)
+    {
+        var inner = SyntaxFactory.ParseTypeName(type.ToDisplayString());
+        if (returnsByRefReadonly)
+        {
+            return SyntaxFactory.RefType(
+                SyntaxFactory.Token(SyntaxKind.RefKeyword).WithTrailingTrivia(SyntaxFactory.Space),
+                SyntaxFactory.Token(SyntaxKind.ReadOnlyKeyword).WithTrailingTrivia(SyntaxFactory.Space),
+                inner);
+        }
+
+        if (returnsByRef)
+        {
+            return SyntaxFactory.RefType(
+                SyntaxFactory.Token(SyntaxKind.RefKeyword).WithTrailingTrivia(SyntaxFactory.Space),
+                inner);
+        }
+
+        return inner;
+    }
+
     private static List<AccessorDeclarationSyntax> CreatePropertyAccessors(
         IPropertySymbol property,
         bool throwNotImplemented,
@@ -385,7 +424,7 @@ public static class SyntaxGenerationHelper
         {
             var getBody = useBase
                 ? CreateBasePropertyGetBody(property)
-                : throwNotImplemented
+                : RequiresThrowBody(property, throwNotImplemented)
                     ? CreateThrowNotImplementedBody()
                     : CreateDefaultReturnBody(property.Type);
             accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)

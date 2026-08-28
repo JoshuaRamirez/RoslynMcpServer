@@ -331,6 +331,115 @@ public class ImplementInterfaceOperationTests
     }
 
     [SkippableFact]
+    public async Task ImplementInterface_Indexer_Implicit_IsPublicWithoutOverride_AndCompiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(IndexerOnlySource);
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup",
+            InterfaceName = "ILookup"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Lookup"));
+        Assert.Contains(indexer.Modifiers, t => t.IsKind(SyntaxKind.PublicKeyword));
+        Assert.DoesNotContain(indexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.Contains("public string this[int i]", updated);
+        Assert.DoesNotContain("override", ExtractMemberText(indexer));
+        AssertCompiles(updated);
+    }
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ImplementInterface_RefIndexer_KeepsRef_AndThrowsEvenWhenThrowNotImplementedFalse(
+        bool throwNotImplemented)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface ICell
+            {
+                ref int this[int i] { get; }
+            }
+
+            public class Cell : ICell
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Cell",
+            InterfaceName = "ICell",
+            ThrowNotImplemented = throwNotImplemented
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Cell"));
+        Assert.IsType<RefTypeSyntax>(indexer.Type);
+        Assert.False(((RefTypeSyntax)indexer.Type).ReadOnlyKeyword.IsKind(SyntaxKind.ReadOnlyKeyword));
+        Assert.Contains("public ref int this[int i]", updated);
+        Assert.DoesNotContain(indexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.Contains("throw new NotImplementedException()", ExtractAccessor(indexer, SyntaxKind.GetAccessorDeclaration));
+        Assert.DoesNotContain("return default", updated);
+        Assert.DoesNotContain("return null", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ImplementInterface_RefReadonlyIndexer_KeepsRefReadonly_AndThrowsEvenWhenThrowNotImplementedFalse(
+        bool throwNotImplemented)
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IOrigin
+            {
+                ref readonly int this[int i] { get; }
+            }
+
+            public class Origin : IOrigin
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Origin",
+            InterfaceName = "IOrigin",
+            ThrowNotImplemented = throwNotImplemented
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = Assert.Single(FindIndexers(updated, "Origin"));
+        Assert.IsType<RefTypeSyntax>(indexer.Type);
+        Assert.True(((RefTypeSyntax)indexer.Type).ReadOnlyKeyword.IsKind(SyntaxKind.ReadOnlyKeyword));
+        Assert.Contains("public ref readonly int this[int i]", updated);
+        Assert.DoesNotContain(indexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.Contains("throw new NotImplementedException()", ExtractAccessor(indexer, SyntaxKind.GetAccessorDeclaration));
+        Assert.DoesNotContain("return default", updated);
+        Assert.DoesNotContain("return null", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
     public async Task ImplementInterface_Indexer_ExplicitImplementation()
     {
         await using var workspace = await TempWorkspace.CreateAsync(IndexerOnlySource);
@@ -611,6 +720,30 @@ public class ImplementInterfaceOperationTests
         var accessor = indexer.AccessorList?.Accessors.FirstOrDefault(a => a.Kind() == kind);
         Assert.NotNull(accessor);
         return accessor!.ToFullString();
+    }
+
+    private static string ExtractMemberText(MemberDeclarationSyntax member) =>
+        NormalizeNewlines(member.NormalizeWhitespace().ToFullString());
+
+    private static void AssertCompiles(string source)
+    {
+        var compilation = CSharpCompilation.Create(
+                "ImplementInterfaceCompileTest",
+                new[]
+                {
+                    CSharpSyntaxTree.ParseText("global using System;"),
+                    CSharpSyntaxTree.ParseText(source)
+                },
+                new[]
+                {
+                    MetadataReference.CreateFromFile(typeof(object).Assembly.Location)
+                },
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, "Generated implement_interface stubs did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
     }
 
     private sealed class TempWorkspace : IAsyncDisposable

@@ -93,8 +93,12 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                 $"Interface '{@params.InterfaceName}' not found.");
         }
 
-        // Get unimplemented members
-        var unimplementedMembers = MemberAnalyzer.GetUnimplementedMembers(typeSymbol, interfaceSymbol).ToList();
+        // Get unimplemented members. Skip property/event accessors — those
+        // are implemented as part of the property / indexer / event stub
+        // (emitting get_Item / set_Item as ordinary methods is CS0111).
+        var unimplementedMembers = MemberAnalyzer.GetUnimplementedMembers(typeSymbol, interfaceSymbol)
+            .Where(IsImplementableInterfaceMember)
+            .ToList();
 
         // Filter to requested members if specified. Indexers match metadata
         // name ("Item"), Roslyn name ("this[]"), and conventional display
@@ -183,7 +187,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         {
             MemberDeclarationSyntax? impl = member switch
             {
-                IMethodSymbol method => SyntaxGenerationHelper.CreateMethodStub(
+                IMethodSymbol { MethodKind: MethodKind.Ordinary } method => SyntaxGenerationHelper.CreateMethodStub(
                     method,
                     explicitImplementation,
                     callBase: false,
@@ -226,6 +230,13 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
 
         return typeDeclaration.WithMembers(SyntaxFactory.List(members));
     }
+
+    private static bool IsImplementableInterfaceMember(ISymbol member) => member switch
+    {
+        IMethodSymbol method => method.MethodKind == MethodKind.Ordinary,
+        IPropertySymbol or IEventSymbol => true,
+        _ => false
+    };
 
     private static bool MatchesRequestedMember(ISymbol member, HashSet<string> requested)
     {
