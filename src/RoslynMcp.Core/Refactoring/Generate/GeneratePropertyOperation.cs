@@ -13,6 +13,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// <summary>
 /// Generates a property on a selected type: auto-property <c>{ get; set; }</c>,
 /// init-only <c>{ get; init; }</c>, or a backing-field form when a field is the target.
+/// Honors <c>replaceExisting</c> to remove an existing property of the same
+/// name (including across partials) before inserting a freshly generated one.
 /// </summary>
 public sealed class GeneratePropertyOperation : RefactoringOperationBase<GeneratePropertyParams>
 {
@@ -144,7 +146,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
 
         var propertyName = ResolvePropertyName(@params, backingField);
         var propertyType = ResolvePropertyType(@params, backingField);
-        ValidateNoNameClash(typeSymbol, propertyName);
+        var existingProperty = ResolvePropertyToReplace(typeSymbol, propertyName, @params.ReplaceExisting);
         ValidateAutoPropertyAccessors(typeSymbol, @params.InitOnly, hasBackingField: backingField != null);
 
         var visibility = string.IsNullOrWhiteSpace(@params.Visibility) ? "public" : @params.Visibility.Trim();
@@ -155,8 +157,35 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         if (ShouldBeStatic(typeSymbol, backingField))
             property = AddStaticModifier(property);
 
+        var replacing = existingProperty != null;
         if (@params.Preview)
-            return CreatePreviewResult(operationId, @params, propertyName, property);
+        {
+            return await CreatePreviewResultAsync(
+                operationId,
+                @params,
+                propertyName,
+                property,
+                existingProperty,
+                document.Project.Solution,
+                cancellationToken);
+        }
+
+        var solution = document.Project.Solution;
+        if (replacing)
+        {
+            solution = await RemoveExistingPropertiesAcrossPartialsAsync(
+                solution, typeSymbol, existingProperty!, cancellationToken);
+            document = solution.GetDocument(document.Id)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate the document for type '{@params.TypeName}'.");
+            root = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+            hostTypeDecl = FindTypeDeclaration(root, @params.TypeName, hostTypeDecl.SpanStart)
+                ?? throw new RefactoringException(
+                    ErrorCodes.SymbolNotFound,
+                    $"No type named '{@params.TypeName}' found in the source file.");
+        }
 
         var newTypeDecl = InsertProperty(hostTypeDecl, property);
         var newRoot = root.ReplaceNode(hostTypeDecl, newTypeDecl);
@@ -272,16 +301,76 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         return property.WithModifiers(modifiers.Insert(insertIndex, staticToken)).NormalizeWhitespace();
     }
 
-    internal static void ValidateNoNameClash(INamedTypeSymbol typeSymbol, string propertyName)
+    /// <summary>
+    /// Rejects a name clash, or returns the single existing property that
+    /// <c>replaceExisting</c> will remove. Fields, methods, indexers, and
+    /// implicit members are never replaced. Two same-named properties with
+    /// no single target fail before any write.
+    /// </summary>
+    internal static IPropertySymbol? ResolvePropertyToReplace(
+        INamedTypeSymbol typeSymbol,
+        string propertyName,
+        bool replaceExisting)
     {
-        var existing = typeSymbol.GetMembers(propertyName)
-            .FirstOrDefault(m => !m.IsImplicitlyDeclared);
-        if (existing != null)
+        // GetMembers(name) misses explicit interface properties whose
+        // metadata name is "IFoo.Name". Scan all members and match by
+        // Name plus explicit-interface implemented names.
+        var existing = typeSymbol.GetMembers()
+            .Where(m => !m.IsImplicitlyDeclared && MemberNameMatches(m, propertyName))
+            .ToList();
+
+        var properties = existing
+            .OfType<IPropertySymbol>()
+            .Where(p => !p.IsIndexer)
+            .ToList();
+
+        if (properties.Count >= 2)
+        {
+            throw new RefactoringException(
+                ErrorCodes.NameCollision,
+                $"Multiple properties named '{propertyName}' exist on '{typeSymbol.Name}'; replaceExisting cannot choose a target.");
+        }
+
+        if (properties.Count == 1 && existing.Count == 1 && replaceExisting)
+        {
+            if (!HasPropertyDeclaration(properties[0]))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.NameCollision,
+                    $"A member named '{propertyName}' already exists on '{typeSymbol.Name}'.");
+            }
+
+            return properties[0];
+        }
+
+        if (existing.Count > 0)
         {
             throw new RefactoringException(
                 ErrorCodes.NameCollision,
                 $"A member named '{propertyName}' already exists on '{typeSymbol.Name}'.");
         }
+
+        return null;
+    }
+
+    internal static bool HasPropertyDeclaration(IPropertySymbol property) =>
+        property.DeclaringSyntaxReferences.Any(reference => reference.GetSyntax() is PropertyDeclarationSyntax);
+
+    internal static bool MemberNameMatches(ISymbol member, string propertyName)
+    {
+        if (string.Equals(member.Name, propertyName, StringComparison.Ordinal))
+            return true;
+
+        return member switch
+        {
+            IPropertySymbol property => property.ExplicitInterfaceImplementations
+                .Any(impl => string.Equals(impl.Name, propertyName, StringComparison.Ordinal)),
+            IMethodSymbol method => method.ExplicitInterfaceImplementations
+                .Any(impl => string.Equals(impl.Name, propertyName, StringComparison.Ordinal)),
+            IEventSymbol @event => @event.ExplicitInterfaceImplementations
+                .Any(impl => string.Equals(impl.Name, propertyName, StringComparison.Ordinal)),
+            _ => false
+        };
     }
 
     private static IFieldSymbol ResolveBackingField(INamedTypeSymbol typeSymbol, string fieldName)
@@ -457,12 +546,113 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         return typeDeclaration.WithMembers(SyntaxFactory.List(members));
     }
 
-    private static RefactoringResult CreatePreviewResult(
+    /// <summary>
+    /// Removes the matched property declaration from every partial that holds
+    /// it. Match by span/kind, not SyntaxNode reference — same seam as
+    /// constructor / Equals / ToString / overrides replaceExisting.
+    /// Uses <see cref="SyntaxRemoveOptions.KeepExteriorTrivia"/> and
+    /// <see cref="SyntaxRemoveOptions.KeepDirectives"/> so a leading
+    /// <c>#if</c> / <c>#region</c> on the removed property does not orphan
+    /// a following <c>#endif</c> / <c>#endregion</c>.
+    /// </summary>
+    private static async Task<Solution> RemoveExistingPropertiesAcrossPartialsAsync(
+        Solution solution,
+        INamedTypeSymbol typeSymbol,
+        IPropertySymbol property,
+        CancellationToken cancellationToken)
+    {
+        var membersByTreeAndPart = new Dictionary<SyntaxTree, Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>>();
+
+        foreach (var reference in property.DeclaringSyntaxReferences)
+        {
+            var syntax = await reference.GetSyntaxAsync(cancellationToken);
+            if (syntax is not PropertyDeclarationSyntax)
+                continue;
+            if (syntax.Parent is not TypeDeclarationSyntax part)
+                continue;
+
+            if (!membersByTreeAndPart.TryGetValue(syntax.SyntaxTree, out var byPart))
+            {
+                byPart = new Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>();
+                membersByTreeAndPart[syntax.SyntaxTree] = byPart;
+            }
+
+            if (!byPart.TryGetValue(part.SpanStart, out var keys))
+            {
+                keys = new HashSet<(int Start, int End, SyntaxKind Kind)>();
+                byPart[part.SpanStart] = keys;
+            }
+
+            keys.Add((syntax.SpanStart, syntax.Span.End, syntax.Kind()));
+        }
+
+        foreach (var (tree, byPart) in membersByTreeAndPart)
+        {
+            var document = solution.GetDocument(tree)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
+            var treeRoot = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+
+            var toRemove = new List<MemberDeclarationSyntax>();
+            foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
+            {
+                if (reference.SyntaxTree != tree)
+                    continue;
+                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax part)
+                    continue;
+                if (!byPart.TryGetValue(part.SpanStart, out var keys) || keys.Count == 0)
+                    continue;
+
+                foreach (var member in part.Members)
+                {
+                    if (keys.Contains((member.SpanStart, member.Span.End, member.Kind())))
+                        toRemove.Add(member);
+                }
+            }
+
+            if (toRemove.Count == 0)
+                continue;
+
+            // KeepDirectives / KeepExteriorTrivia so a leading #if / #region on
+            // the removed property does not orphan a following #endif / #endregion.
+            var newRoot = treeRoot.RemoveNodes(
+                    toRemove,
+                    SyntaxRemoveOptions.KeepExteriorTrivia | SyntaxRemoveOptions.KeepDirectives)
+                ?? treeRoot;
+            solution = solution.WithDocumentSyntaxRoot(document.Id, newRoot);
+        }
+
+        return solution;
+    }
+
+    private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName, int preferredSpanStart)
+    {
+        var matches = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == typeName)
+            .ToList();
+        return matches.FirstOrDefault(t => t.SpanStart == preferredSpanStart) ?? matches.FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Creates a preview result with the generated property code.
+    /// When replacing a property that lives in another partial, also
+    /// includes a Modify pending change per distinct declaring file with
+    /// that property as <c>BeforeSnippet</c> — same as constructor
+    /// replaceExisting preview.
+    /// </summary>
+    private static async Task<RefactoringResult> CreatePreviewResultAsync(
         Guid operationId,
         GeneratePropertyParams @params,
         string propertyName,
-        PropertyDeclarationSyntax property)
+        PropertyDeclarationSyntax property,
+        IPropertySymbol? existingProperty,
+        Solution solution,
+        CancellationToken cancellationToken)
     {
+        var replacing = existingProperty != null;
+        var verb = replacing ? "Replace" : "Generate";
         var afterSnippet = property.NormalizeWhitespace().ToFullString();
         var pendingChanges = new List<PendingChange>
         {
@@ -470,11 +660,45 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
             {
                 File = @params.SourceFile,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Generate property '{propertyName}' on {@params.TypeName}",
-                BeforeSnippet = $"// Type '{@params.TypeName}' (no property '{propertyName}')",
+                Description = $"{verb} property '{propertyName}' on {@params.TypeName}",
+                BeforeSnippet = replacing
+                    ? $"// Type '{@params.TypeName}' (replacing existing property '{propertyName}')"
+                    : $"// Type '{@params.TypeName}' (no property '{propertyName}')",
                 AfterSnippet = afterSnippet
             }
         };
+
+        if (existingProperty != null)
+        {
+            var sourcePath = PathResolver.NormalizePath(@params.SourceFile);
+            var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var reference in existingProperty.DeclaringSyntaxReferences)
+            {
+                var syntax = await reference.GetSyntaxAsync(cancellationToken);
+                if (syntax is not PropertyDeclarationSyntax existingProp)
+                    continue;
+
+                var declaringDocument = solution.GetDocument(syntax.SyntaxTree);
+                var filePath = declaringDocument?.FilePath ?? syntax.SyntaxTree.FilePath;
+                if (string.IsNullOrWhiteSpace(filePath))
+                    continue;
+
+                var normalized = PathResolver.NormalizePath(filePath);
+                if (!seenFiles.Add(normalized))
+                    continue;
+                if (string.Equals(normalized, sourcePath, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                pendingChanges.Add(new PendingChange
+                {
+                    File = filePath,
+                    ChangeType = ChangeKind.Modify,
+                    Description = $"Remove existing property '{propertyName}' from {@params.TypeName}",
+                    BeforeSnippet = existingProp.NormalizeWhitespace().ToFullString(),
+                    AfterSnippet = "// property removed"
+                });
+            }
+        }
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }

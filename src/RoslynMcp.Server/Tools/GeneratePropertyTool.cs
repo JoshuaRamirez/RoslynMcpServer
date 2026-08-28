@@ -33,7 +33,7 @@ public sealed class GeneratePropertyTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Generate a property on a C# type. Creates an auto-property { get; set; }, an init-only property { get; init; }, or a backing-field property { get => field; set => field = value; } when a field is the target.";
+        "Generate a property on a C# type. Creates an auto-property { get; set; }, an init-only property { get; init; }, or a backing-field property { get => field; set => field = value; } when a field is the target. replaceExisting (default false) replaces an existing property of the same name instead of failing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -84,6 +84,12 @@ public sealed class GeneratePropertyTool : IToolHandler
                 description = "Generate an init-only setter ({ get; init; })",
                 @default = false
             },
+            replaceExisting = new
+            {
+                type = "boolean",
+                description = "Replace an existing property of the same name instead of failing. Fields and methods of the same name are left alone. Default false.",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -124,6 +130,7 @@ public sealed class GeneratePropertyTool : IToolHandler
                 FieldName = args.FieldName,
                 Visibility = args.Visibility,
                 InitOnly = args.InitOnly ?? false,
+                ReplaceExisting = args.ReplaceExisting ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -159,6 +166,7 @@ public sealed class GeneratePropertyTool : IToolHandler
         public string? FieldName { get; init; }
         public string? Visibility { get; init; }
         public bool? InitOnly { get; init; }
+        public bool? ReplaceExisting { get; init; }
         public bool? Preview { get; init; }
     }
 }

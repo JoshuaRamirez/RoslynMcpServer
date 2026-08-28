@@ -44,6 +44,20 @@ public sealed class GeneratePropertyParams
     public bool InitOnly { get; init; }
 
     /// <summary>
+    /// When true, remove an existing property declaration that matches
+    /// <see cref="PropertyName"/> (including on other partials of the same
+    /// type) before inserting a freshly generated property. Auto / init-only
+    /// / backing-field form still follows <see cref="FieldName"/> and
+    /// <see cref="InitOnly"/>. Fields and methods of the same name are never
+    /// removed. Two same-named properties with no single target fail with
+    /// <c>NameCollision</c> — this flag does not guess. Record / primary
+    /// constructor properties (no <c>PropertyDeclarationSyntax</c>) are not
+    /// replaced.
+    /// Default: false (fail if a member with the target name already exists).
+    /// </summary>
+    public bool ReplaceExisting { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }
