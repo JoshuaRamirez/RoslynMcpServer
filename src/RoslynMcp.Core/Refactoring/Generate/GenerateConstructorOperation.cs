@@ -19,8 +19,11 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// (settable properties, not the readable-property equality collector),
 /// <c>replaceExisting</c> to remove an existing non-implicit constructor
 /// with the exact same signature (count, types, and RefKind) before generating
-/// a fresh one, and <c>visibility</c> for the generated constructor's
-/// accessibility (omitted / public keeps today's public constructor).
+/// a fresh one, <c>visibility</c> for the generated constructor's
+/// accessibility (omitted / public keeps today's public constructor),
+/// and <c>copyConstructor</c> to emit a single same-type parameter whose
+/// body assigns each selected member from that parameter instead of one
+/// parameter per member.
 /// Structs and record structs reject <c>protected</c> /
 /// <c>protected internal</c> / <c>private protected</c> (CS0666) before any
 /// generate, replace, or preview write. Primary constructors are not replaced.
@@ -36,6 +39,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     {
         "protected", "protected internal", "private protected"
     };
+
+    private static readonly string[] CopyParameterNameCandidates = ["other", "source", "original"];
 
     /// <summary>
     /// Creates a new generate constructor operation.
@@ -141,8 +146,12 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         // for a non-primary constructor; optional-param / required-param ambiguity still throws
         // — do not guess an overload. Primary constructors cannot be removed (their declaring
         // syntax is the type parameter list), so they stay ConstructorExists even when replacing.
-        var parameterTypes = members.Select(m => GetMemberType(m)).ToList();
+        // Copy constructors compare against exactly one by-value parameter of the target type.
+        var parameterTypes = @params.CopyConstructor
+            ? new List<ITypeSymbol> { typeSymbol }
+            : members.Select(GetMemberType).ToList();
         var newParamCount = parameterTypes.Count;
+        var copyParameterName = @params.CopyConstructor ? ChooseCopyParameterName(typeSymbol) : null;
         IMethodSymbol? exactMatch = null;
 
         foreach (var ctor in typeSymbol.Constructors.Where(c => !c.IsImplicitlyDeclared))
@@ -188,14 +197,21 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         // Generate the constructor. Visibility is always the requested
         // accessibility (default public) — never copied from a replaced ctor.
-        var constructor = GenerateConstructor(members, typeDeclaration, @params.AddNullChecks, visibility);
+        var constructor = @params.CopyConstructor
+            ? GenerateCopyConstructor(
+                members,
+                typeDeclaration,
+                copyParameterName!,
+                @params.AddNullChecks && typeSymbol.IsReferenceType,
+                visibility)
+            : GenerateConstructor(members, typeDeclaration, @params.AddNullChecks, visibility);
         var replacing = exactMatch != null;
 
         // If preview mode, return without applying (but include generated constructor code)
         if (@params.Preview)
         {
             return await CreatePreviewResultAsync(
-                operationId, @params, members, constructor, exactMatch, document.Project.Solution, cancellationToken);
+                operationId, @params, members, constructor, exactMatch, document.Project.Solution, copyParameterName, cancellationToken);
         }
 
         var solution = document.Project.Solution;
@@ -586,27 +602,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             // - Non-nullable value types (e.g., int, bool) - cannot be null
             // - Nullable-annotated reference types (e.g., string?) - null is expected
             if (addNullChecks && ShouldGenerateNullCheck(memberType))
-            {
-                var nullCheck = SyntaxFactory.IfStatement(
-                    SyntaxFactory.BinaryExpression(
-                        SyntaxKind.EqualsExpression,
-                        SyntaxFactory.IdentifierName(paramName),
-                        SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression)),
-                    SyntaxFactory.ThrowStatement(
-                        SyntaxFactory.ObjectCreationExpression(
-                            SyntaxFactory.IdentifierName("ArgumentNullException"))
-                        .WithArgumentList(SyntaxFactory.ArgumentList(
-                            SyntaxFactory.SingletonSeparatedList(
-                                SyntaxFactory.Argument(
-                                    SyntaxFactory.InvocationExpression(
-                                        SyntaxFactory.IdentifierName("nameof"))
-                                    .WithArgumentList(SyntaxFactory.ArgumentList(
-                                        SyntaxFactory.SingletonSeparatedList(
-                                            SyntaxFactory.Argument(
-                                                SyntaxFactory.IdentifierName(paramName)))))))))));
-
-                statements.Add(nullCheck);
-            }
+                statements.Add(CreateArgumentNullCheck(paramName));
 
             // Assignment statement
             ExpressionSyntax left;
@@ -640,6 +636,121 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             .NormalizeWhitespace();
 
         return constructor;
+    }
+
+    /// <summary>
+    /// Single-parameter copy constructor: <c>TypeName(TypeName other)</c> with
+    /// <c>this.Member = other.Member;</c> for each selected member. Parameter
+    /// name is the first of <c>other</c> / <c>source</c> / <c>original</c>
+    /// that does not collide with a member or type parameter on the type.
+    /// Null-check the copy parameter only when requested and the target is a
+    /// reference type — structs / record structs skip it.
+    /// </summary>
+    private static ConstructorDeclarationSyntax GenerateCopyConstructor(
+        List<ISymbol> members,
+        TypeDeclarationSyntax typeDeclaration,
+        string parameterName,
+        bool addNullCheckOnParameter,
+        string visibility)
+    {
+        var selfTypeName = GetSelfTypeName(typeDeclaration);
+        var parameter = SyntaxFactory.Parameter(SyntaxFactory.Identifier(parameterName))
+            .WithType(SyntaxFactory.ParseTypeName(selfTypeName).WithTrailingTrivia(SyntaxFactory.Space));
+
+        var statements = new List<StatementSyntax>();
+
+        if (addNullCheckOnParameter)
+            statements.Add(CreateArgumentNullCheck(parameterName));
+
+        foreach (var member in members)
+        {
+            var left = SyntaxFactory.MemberAccessExpression(
+                SyntaxKind.SimpleMemberAccessExpression,
+                SyntaxFactory.ThisExpression(),
+                SyntaxFactory.IdentifierName(member.Name));
+            var right = SyntaxFactory.MemberAccessExpression(
+                SyntaxKind.SimpleMemberAccessExpression,
+                SyntaxFactory.IdentifierName(parameterName),
+                SyntaxFactory.IdentifierName(member.Name));
+
+            statements.Add(SyntaxFactory.ExpressionStatement(
+                SyntaxFactory.AssignmentExpression(
+                    SyntaxKind.SimpleAssignmentExpression,
+                    left,
+                    right)));
+        }
+
+        return SyntaxFactory.ConstructorDeclaration(typeDeclaration.Identifier)
+            .WithModifiers(SyntaxFactory.TokenList(ParseVisibilityTokens(visibility)))
+            .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SingletonSeparatedList(parameter)))
+            .WithBody(SyntaxFactory.Block(statements))
+            .NormalizeWhitespace();
+    }
+
+    /// <summary>
+    /// Prefer <c>other</c>, then <c>source</c>, then <c>original</c> — first
+    /// identifier that is not already a member or type parameter on the type.
+    /// If all three collide, append a numeric suffix to <c>other</c>.
+    /// </summary>
+    private static string ChooseCopyParameterName(INamedTypeSymbol typeSymbol)
+    {
+        var taken = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var member in typeSymbol.GetMembers())
+        {
+            if (member.IsImplicitlyDeclared)
+                continue;
+            taken.Add(member.Name);
+        }
+
+        foreach (var typeParameter in typeSymbol.TypeParameters)
+            taken.Add(typeParameter.Name);
+
+        foreach (var candidate in CopyParameterNameCandidates)
+        {
+            if (!taken.Contains(candidate))
+                return candidate;
+        }
+
+        var suffix = 1;
+        while (taken.Contains($"other{suffix}"))
+            suffix++;
+        return $"other{suffix}";
+    }
+
+    /// <summary>
+    /// Same constructed self-type spelling as generate_equals_hashcode
+    /// (<c>Widget</c>, <c>Box&lt;T&gt;</c>).
+    /// </summary>
+    private static string GetSelfTypeName(TypeDeclarationSyntax typeDecl)
+    {
+        var identifier = typeDecl.Identifier.Text;
+        if (typeDecl.TypeParameterList == null || typeDecl.TypeParameterList.Parameters.Count == 0)
+            return identifier;
+
+        var arguments = string.Join(", ", typeDecl.TypeParameterList.Parameters.Select(p => p.Identifier.Text));
+        return $"{identifier}<{arguments}>";
+    }
+
+    private static IfStatementSyntax CreateArgumentNullCheck(string paramName)
+    {
+        return SyntaxFactory.IfStatement(
+            SyntaxFactory.BinaryExpression(
+                SyntaxKind.EqualsExpression,
+                SyntaxFactory.IdentifierName(paramName),
+                SyntaxFactory.LiteralExpression(SyntaxKind.NullLiteralExpression)),
+            SyntaxFactory.ThrowStatement(
+                SyntaxFactory.ObjectCreationExpression(
+                    SyntaxFactory.IdentifierName("ArgumentNullException"))
+                .WithArgumentList(SyntaxFactory.ArgumentList(
+                    SyntaxFactory.SingletonSeparatedList(
+                        SyntaxFactory.Argument(
+                            SyntaxFactory.InvocationExpression(
+                                SyntaxFactory.IdentifierName("nameof"))
+                            .WithArgumentList(SyntaxFactory.ArgumentList(
+                                SyntaxFactory.SingletonSeparatedList(
+                                    SyntaxFactory.Argument(
+                                        SyntaxFactory.IdentifierName(paramName)))))))))));
     }
 
     /// <summary>
@@ -822,6 +933,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         ConstructorDeclarationSyntax constructor,
         IMethodSymbol? exactMatch,
         Solution solution,
+        string? copyParameterName,
         CancellationToken cancellationToken)
     {
         var replacing = exactMatch != null;
@@ -829,6 +941,9 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         var inherited = @params.IncludeInheritedMembers ? " including inherited members" : "";
         var visibility = ResolveVisibility(@params.Visibility);
         var verb = replacing ? "Replace" : "Generate";
+        var mode = @params.CopyConstructor
+            ? $"copy constructor from '{copyParameterName}'"
+            : "constructor";
 
         // Show the generated constructor as the "after" snippet
         var afterSnippet = constructor.NormalizeWhitespace().ToFullString();
@@ -839,7 +954,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             {
                 File = @params.SourceFile,
                 ChangeType = Contracts.Enums.ChangeKind.Modify,
-                Description = $"{verb} constructor{inherited} for {@params.TypeName} initializing: {memberNames} ({visibility})",
+                Description = $"{verb} {mode}{inherited} for {@params.TypeName} initializing: {memberNames} ({visibility})",
                 BeforeSnippet = replacing
                     ? $"// Type '{@params.TypeName}' (replacing existing constructor)"
                     : $"// Type '{@params.TypeName}' (no constructor with these parameters)",

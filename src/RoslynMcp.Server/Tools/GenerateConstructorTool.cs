@@ -92,6 +92,12 @@ public sealed class GenerateConstructorTool : IToolHandler
                 description = "Accessibility of the generated constructor. Valid values: public, private, protected, internal, protected internal, private protected. Structs and record structs reject the three protected forms",
                 @default = "public"
             },
+            copyConstructor = new
+            {
+                type = "boolean",
+                description = "Generate a single-parameter copy constructor of the target type that assigns each selected member from that parameter, instead of one parameter per member",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -135,6 +141,7 @@ public sealed class GenerateConstructorTool : IToolHandler
                 AddNullChecks = args.AddNullChecks ?? false,
                 ReplaceExisting = args.ReplaceExisting ?? false,
                 Visibility = args.Visibility,
+                CopyConstructor = args.CopyConstructor ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -171,6 +178,7 @@ public sealed class GenerateConstructorTool : IToolHandler
         public bool? AddNullChecks { get; init; }
         public bool? ReplaceExisting { get; init; }
         public string? Visibility { get; init; }
+        public bool? CopyConstructor { get; init; }
         public bool? Preview { get; init; }
     }
 }
