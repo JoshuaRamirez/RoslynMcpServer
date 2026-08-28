@@ -465,9 +465,97 @@ public class GenerateOverridesOperationTests
         Assert.NotEmpty(result.PendingChanges);
         Assert.Contains("Generate overrides for:", result.PendingChanges[0].Description);
         Assert.Contains("Label", result.PendingChanges[0].Description);
-        Assert.Contains("property accessors will call base", result.PendingChanges[0].Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("; property accessors will call base", result.PendingChanges[0].Description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("non-abstract", result.PendingChanges[0].Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("return base.Label;", result.PendingChanges[0].AfterSnippet);
         Assert.Contains("base.Label = value;", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_Preview_CallBaseTrue_MixedAbstractAndVirtualProperties_QualifiesBaseNote_WritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Animal
+            {
+                public abstract string Title { get; set; }
+
+                public virtual string Label { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Title", "Label" },
+            CallBase = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        var description = result.PendingChanges[0].Description;
+        Assert.Contains("Title", description);
+        Assert.Contains("Label", description);
+        Assert.Contains("non-abstract property accessors will call base", description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("; property accessors will call base", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("return base.Label;", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("throw new NotImplementedException()", result.PendingChanges[0].AfterSnippet);
+        Assert.DoesNotContain("base.Title", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_Preview_CallBaseTrue_AllAbstractProperties_DescribesNoBaseAccessors_WritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Animal
+            {
+                public abstract string Title { get; set; }
+
+                public abstract string Label { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Title", "Label" },
+            CallBase = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        var description = result.PendingChanges![0].Description;
+        Assert.Contains("; property accessors will not call base", description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("non-abstract", description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("base.Label", result.PendingChanges[0].AfterSnippet);
+        Assert.DoesNotContain("base.Title", result.PendingChanges[0].AfterSnippet);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 

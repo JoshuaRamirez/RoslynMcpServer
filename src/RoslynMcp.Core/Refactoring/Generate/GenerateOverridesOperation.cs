@@ -684,10 +684,14 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
             .ToList();
         if (properties.Count > 0)
         {
-            var willCallBase = callBase && properties.Any(p => !p.IsAbstract);
-            description += willCallBase
-                ? "; property accessors will call base"
-                : "; property accessors will not call base";
+            var anyNonAbstract = properties.Any(p => !p.IsAbstract);
+            var anyAbstract = properties.Any(p => p.IsAbstract);
+            if (!callBase || !anyNonAbstract)
+                description += "; property accessors will not call base";
+            else if (anyAbstract)
+                description += "; non-abstract property accessors will call base";
+            else
+                description += "; property accessors will call base";
         }
 
         return description;
