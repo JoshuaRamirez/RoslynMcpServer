@@ -284,6 +284,11 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                     if (propertyTarget != null)
                         yield return propertyTarget;
                     break;
+                case IEventSymbol evt:
+                    var eventTarget = GetImplementedAbstractEvent(evt);
+                    if (eventTarget != null)
+                        yield return eventTarget;
+                    break;
             }
         }
     }
@@ -313,6 +318,21 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             if (!current.IsAbstract)
                 return null;
             current = current.OverriddenProperty;
+        }
+
+        return null;
+    }
+
+    private static IEventSymbol? GetImplementedAbstractEvent(IEventSymbol evt)
+    {
+        var current = evt.OverriddenEvent;
+        while (current != null)
+        {
+            if (current.IsAbstract)
+                return current;
+            if (!current.IsAbstract)
+                return null;
+            current = current.OverriddenEvent;
         }
 
         return null;
@@ -549,6 +569,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     {
         IMethodSymbol method => method.MethodKind == MethodKind.Ordinary && method.IsAbstract,
         IPropertySymbol property => property.IsAbstract,
+        IEventSymbol evt => evt.IsAbstract,
         _ => false
     };
 
@@ -595,6 +616,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                 IMethodSymbol method => CreateMethodStub(method, throwNotImplemented),
                 IPropertySymbol { IsIndexer: true } indexer => CreateIndexerStub(indexer, throwNotImplemented),
                 IPropertySymbol property => CreatePropertyStub(property, throwNotImplemented),
+                IEventSymbol evt => CreateEventStub(evt),
                 _ => null
             };
 
@@ -672,6 +694,26 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             .WithModifiers(CreateOverrideModifiers(indexer.DeclaredAccessibility, indexer.IsRequired))
             .WithParameterList(SyntaxFactory.BracketedParameterList(SyntaxFactory.SeparatedList(parameters)))
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(indexer, throwNotImplemented))))
+            .NormalizeWhitespace();
+    }
+
+    /// <summary>
+    /// Creates an override event stub with empty add/remove accessors —
+    /// same body shape as <see cref="SyntaxGenerationHelper.CreateEventStub"/>,
+    /// plus <c>override</c> and the abstract member's accessibility.
+    /// </summary>
+    internal static EventDeclarationSyntax CreateEventStub(IEventSymbol evt)
+    {
+        var addAccessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.AddAccessorDeclaration)
+            .WithBody(SyntaxFactory.Block());
+        var removeAccessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.RemoveAccessorDeclaration)
+            .WithBody(SyntaxFactory.Block());
+
+        return SyntaxFactory.EventDeclaration(
+                SyntaxFactory.ParseTypeName(evt.Type.ToDisplayString()).WithTrailingTrivia(SyntaxFactory.Space),
+                evt.Name)
+            .WithModifiers(CreateOverrideModifiers(evt.DeclaredAccessibility))
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(new[] { addAccessor, removeAccessor })))
             .NormalizeWhitespace();
     }
 

@@ -1127,6 +1127,48 @@ public class ImplementAbstractOperationTests
     }
 
     [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_ReplacesEvent()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract event System.EventHandler Changed;
+            }
+
+            public class Circle : Shape
+            {
+                public override event System.EventHandler Changed
+                {
+                    add { /* old-event */ }
+                    remove { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override event System.EventHandler Changed", updated);
+        Assert.DoesNotContain("old-event", updated);
+        Assert.Contains("add", updated);
+        Assert.Contains("remove", updated);
+        Assert.Equal(1, CountOccurrences(
+            updated[updated.IndexOf("public class Circle", StringComparison.Ordinal)..],
+            "event System.EventHandler Changed"));
+    }
+
+    [SkippableFact]
     public async Task ImplementAbstract_ReplaceExistingTrue_OmittedMembers_ReplacesExisting_AndAddsMissing()
     {
         const string source = """
