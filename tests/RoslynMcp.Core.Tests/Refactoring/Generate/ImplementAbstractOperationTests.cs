@@ -338,6 +338,392 @@ public class ImplementAbstractOperationTests
         Assert.DoesNotContain("public override void Draw()", updated);
     }
 
+    [SkippableFact]
+    public async Task ImplementAbstract_Event_AddsOverrideStub()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MissingAbstractEventSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override event System.EventHandler Changed", updated);
+        var evt = ExtractMember(updated, "public override event System.EventHandler Changed");
+        Assert.Contains("add", evt);
+        Assert.Contains("remove", evt);
+        Assert.DoesNotContain("NotImplementedException", evt);
+        Assert.Equal(1, CountOccurrences(
+            updated[updated.IndexOf("public class Circle", StringComparison.Ordinal)..],
+            "event System.EventHandler Changed"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_OnlyEvents_Succeeds()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract event System.EventHandler Changed;
+                public abstract event System.EventHandler Resized;
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override event System.EventHandler Changed", updated);
+        Assert.Contains("public override event System.EventHandler Resized", updated);
+        Assert.DoesNotContain("NotImplementedException", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_MembersFilter_Event_ImplementsRequestedOnly()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract event System.EventHandler Changed;
+                public abstract event System.EventHandler Resized;
+                public abstract void Draw();
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            Members = new[] { "Changed" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override event System.EventHandler Changed", updated);
+        Assert.DoesNotContain("public override event System.EventHandler Resized", updated);
+        Assert.DoesNotContain("public override void Draw()", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_MembersFilter_UnknownEventName_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MissingAbstractEventSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Circle",
+                Members = new[] { "DoesNotExist" }
+            }));
+
+        Assert.Equal(ErrorCodes.NoUnimplementedAbstractMembers, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_Event_Preview_DoesNotWriteFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MissingAbstractEventSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Changed", result.PendingChanges[0].Description);
+        Assert.Contains("Changed", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("event", result.PendingChanges[0].AfterSnippet, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("NotImplementedException", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AlreadyImplementedEvent_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AlreadyImplementedEventSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Circle"
+            }));
+
+        Assert.Equal(ErrorCodes.NoUnimplementedAbstractMembers, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("old-event", before);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_NewHidingEvent_IsLeftAlone()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract event System.EventHandler Changed;
+                public abstract event System.EventHandler Resized;
+            }
+
+            public class Circle : Shape
+            {
+                public new event System.EventHandler Changed
+                {
+                    add { /* hid */ }
+                    remove { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("add { /* hid */ }", updated);
+        Assert.Contains("public new event System.EventHandler Changed", updated);
+        Assert.Contains("public override event System.EventHandler Resized", updated);
+        Assert.DoesNotContain("public override event System.EventHandler Changed", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_IntermediateConcreteEventOverride_HidesInheritedAbstract()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract event System.EventHandler Changed;
+            }
+
+            public class Intermediate : Shape
+            {
+                public override event System.EventHandler Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+
+            public class Circle : Intermediate
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Circle"
+            }));
+
+        Assert.Equal(ErrorCodes.NoUnimplementedAbstractMembers, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_IntermediateNewVirtualEventHider_DoesNotEmitOverride()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract event System.EventHandler Changed;
+                public abstract event System.EventHandler Resized;
+            }
+
+            public abstract class Intermediate : Shape
+            {
+                public new virtual event System.EventHandler Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+
+            public class Circle : Intermediate
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class Circle", StringComparison.Ordinal)..];
+        Assert.Contains("public override event System.EventHandler Resized", derived);
+        Assert.DoesNotContain("public override event System.EventHandler Changed", derived);
+        Assert.Contains("public new virtual event System.EventHandler Changed", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_IntermediateNewVirtualEventHider_OnlyHiddenEvent_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract event System.EventHandler Changed;
+            }
+
+            public abstract class Intermediate : Shape
+            {
+                public new virtual event System.EventHandler Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+
+            public class Circle : Intermediate
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Circle"
+            }));
+
+        Assert.Equal(ErrorCodes.NoUnimplementedAbstractMembers, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ExplicitInterfaceEvent_DoesNotCountAsImplementation()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface INotify
+            {
+                event System.EventHandler Changed;
+            }
+
+            public abstract class Shape
+            {
+                public abstract event System.EventHandler Changed;
+            }
+
+            public class Circle : Shape, INotify
+            {
+                event System.EventHandler INotify.Changed
+                {
+                    add { /* explicit */ }
+                    remove { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("event System.EventHandler INotify.Changed", updated);
+        Assert.Contains("/* explicit */", updated);
+        Assert.Contains("public override event System.EventHandler Changed", updated);
+        Assert.Equal(1, CountOccurrences(updated, "INotify.Changed"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ThrowNotImplemented_DoesNotApplyToEvents()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MissingAbstractEventSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ThrowNotImplemented = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var evt = ExtractMember(updated, "public override event System.EventHandler Changed");
+        Assert.Contains("add", evt);
+        Assert.Contains("remove", evt);
+        Assert.DoesNotContain("NotImplementedException", evt);
+        AssertCompiles(updated);
+    }
+
     #endregion
 
     #region ThrowNotImplemented
@@ -1842,6 +2228,37 @@ public class ImplementAbstractOperationTests
             public override void Draw()
             {
                 /* old-body */
+            }
+        }
+        """;
+
+    private const string MissingAbstractEventSource = """
+        namespace TestApp;
+
+        public abstract class Shape
+        {
+            public abstract event System.EventHandler Changed;
+        }
+
+        public class Circle : Shape
+        {
+        }
+        """;
+
+    private const string AlreadyImplementedEventSource = """
+        namespace TestApp;
+
+        public abstract class Shape
+        {
+            public abstract event System.EventHandler Changed;
+        }
+
+        public class Circle : Shape
+        {
+            public override event System.EventHandler Changed
+            {
+                add { /* old-event */ }
+                remove { }
             }
         }
         """;
