@@ -1272,6 +1272,140 @@ public class ImplementInterfaceOperationTests
         Assert.Equal(updated.Split("#region ").Length - 1, updated.Split("#endregion").Length - 1);
     }
 
+    [SkippableFact]
+    public async Task ImplementInterface_ReplaceExistingTrue_ExplicitSameSignature_DoesNotRemoveOtherInterface()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IA
+            {
+                void M();
+            }
+
+            public interface IB
+            {
+                void M();
+            }
+
+            public class Widget : IA, IB
+            {
+                void IA.M() { /* old-ia */ }
+                void IB.M() { /* old-ib */ }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            InterfaceName = "IA",
+            ExplicitImplementation = true,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var methods = FindType(updated, "Widget").Members.OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == "M")
+            .ToList();
+        Assert.Equal(2, methods.Count);
+        var ia = Assert.Single(methods, m => m.ExplicitInterfaceSpecifier?.Name.ToString().Contains("IA") == true);
+        var ib = Assert.Single(methods, m => m.ExplicitInterfaceSpecifier?.Name.ToString().Contains("IB") == true);
+        Assert.DoesNotContain("old-ia", updated);
+        Assert.Contains("old-ib", updated);
+        Assert.Contains("throw new NotImplementedException()", ExtractMemberText(ia));
+        Assert.Contains("old-ib", ExtractMemberText(ib));
+        Assert.Equal(1, methods.Count(m => m.ExplicitInterfaceSpecifier?.Name.ToString().Contains("IA") == true));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_ReplaceExistingTrue_GenericListOfT_ReplacesNotDuplicates()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWidget
+            {
+                void M<T>(System.Collections.Generic.List<T> value);
+            }
+
+            public class Widget : IWidget
+            {
+                public void M<T>(System.Collections.Generic.List<T> value) { /* old-generic */ }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            InterfaceName = "IWidget",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var methods = FindType(updated, "Widget").Members.OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == "M")
+            .ToList();
+        Assert.Single(methods);
+        Assert.DoesNotContain("old-generic", updated);
+        Assert.Contains("throw new NotImplementedException()", updated);
+        Assert.Contains("List<T>", ExtractMemberText(methods[0]));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_ReplaceExistingTrue_MultiVariableEventField_LeavesUnrelated()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWidget
+            {
+                event System.Action Changed;
+            }
+
+            public class Widget : IWidget
+            {
+                public event System.Action Changed, Unrelated;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            InterfaceName = "IWidget",
+            Members = new[] { "Changed" },
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var widget = FindType(updated, "Widget");
+        Assert.NotNull(FindEvent(updated, "Widget", "Changed"));
+        var unrelated = widget.Members.OfType<EventFieldDeclarationSyntax>()
+            .SelectMany(e => e.Declaration.Variables)
+            .FirstOrDefault(v => v.Identifier.Text == "Unrelated");
+        Assert.NotNull(unrelated);
+        Assert.DoesNotContain(
+            widget.Members.OfType<EventFieldDeclarationSyntax>()
+                .SelectMany(e => e.Declaration.Variables),
+            v => v.Identifier.Text == "Changed");
+        Assert.Equal(1, widget.Members.OfType<EventDeclarationSyntax>().Count(e => e.Identifier.Text == "Changed"));
+        Assert.DoesNotContain("Changed, Unrelated", updated);
+    }
+
     #endregion
 
     #region Reject Cases

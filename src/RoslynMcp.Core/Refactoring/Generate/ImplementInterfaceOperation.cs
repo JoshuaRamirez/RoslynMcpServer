@@ -317,6 +317,12 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                 continue;
             if (!NamesMatch(member, selected))
                 continue;
+            // Explicit IA.M and IB.M share an unqualified name + signature.
+            // Only the implementation that actually implements the selected
+            // interface member is an exact match — otherwise replacing IA.M
+            // can delete IB.M and emit a second IA.M.
+            if (IsExplicitImplementation(member) && !ExplicitlyImplementsSelected(member, selected))
+                continue;
 
             sameName.Add(member);
             if (SignaturesMatch(member, selected))
@@ -354,7 +360,12 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
 
     private static bool MatchesRequestedForm(ISymbol member, bool explicitImplementation)
     {
-        var isExplicit = member switch
+        var isExplicit = IsExplicitImplementation(member);
+        return explicitImplementation ? isExplicit : !isExplicit;
+    }
+
+    private static bool IsExplicitImplementation(ISymbol member) =>
+        member switch
         {
             IMethodSymbol method => method.ExplicitInterfaceImplementations.Length > 0
                 || method.MethodKind == MethodKind.ExplicitInterfaceImplementation,
@@ -363,8 +374,30 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             _ => false
         };
 
-        return explicitImplementation ? isExplicit : !isExplicit;
+    /// <summary>
+    /// True when <paramref name="existing"/> is an explicit implementation of
+    /// <paramref name="selected"/> (the interface member), not merely another
+    /// interface's same-signature member.
+    /// </summary>
+    private static bool ExplicitlyImplementsSelected(ISymbol existing, ISymbol selected)
+    {
+        foreach (var implemented in GetExplicitImplementations(existing))
+        {
+            if (SymbolEqualityComparer.Default.Equals(implemented, selected))
+                return true;
+        }
+
+        return false;
     }
+
+    private static IEnumerable<ISymbol> GetExplicitImplementations(ISymbol member) =>
+        member switch
+        {
+            IMethodSymbol method => method.ExplicitInterfaceImplementations,
+            IPropertySymbol property => property.ExplicitInterfaceImplementations,
+            IEventSymbol evt => evt.ExplicitInterfaceImplementations,
+            _ => []
+        };
 
     private static bool NamesMatch(ISymbol left, ISymbol right)
     {
@@ -447,10 +480,17 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
     /// Method type parameters are distinct symbols on the interface vs
     /// implementation (<c>IFoo.M&lt;T&gt;(T)</c> vs <c>C.M&lt;T&gt;(T)</c>),
     /// so <see cref="SymbolEqualityComparer.Default"/> misses an exact match.
-    /// Compare those by ordinal; keep concrete / named types as today.
+    /// Compare those by ordinal; recurse through constructed named types,
+    /// arrays, pointers, tuples, and nullable wrappers so
+    /// <c>List&lt;T&gt;</c> / <c>T[]</c> still match. Concrete / named types
+    /// that <see cref="SymbolEqualityComparer.Default"/> already equates stay
+    /// as today.
     /// </summary>
     private static bool ParameterTypesMatch(ITypeSymbol left, ITypeSymbol right)
     {
+        if (SymbolEqualityComparer.Default.Equals(left, right))
+            return true;
+
         if (left is ITypeParameterSymbol leftTp
             && leftTp.TypeParameterKind == TypeParameterKind.Method
             && right is ITypeParameterSymbol rightTp
@@ -459,7 +499,50 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             return leftTp.Ordinal == rightTp.Ordinal;
         }
 
-        return SymbolEqualityComparer.Default.Equals(left, right);
+        if (left is INamedTypeSymbol leftNamed && right is INamedTypeSymbol rightNamed)
+            return NamedTypesMatch(leftNamed, rightNamed);
+
+        if (left is IArrayTypeSymbol leftArray && right is IArrayTypeSymbol rightArray)
+        {
+            return leftArray.Rank == rightArray.Rank
+                && ParameterTypesMatch(leftArray.ElementType, rightArray.ElementType);
+        }
+
+        if (left is IPointerTypeSymbol leftPtr && right is IPointerTypeSymbol rightPtr)
+            return ParameterTypesMatch(leftPtr.PointedAtType, rightPtr.PointedAtType);
+
+        return false;
+    }
+
+    private static bool NamedTypesMatch(INamedTypeSymbol left, INamedTypeSymbol right)
+    {
+        if (!SymbolEqualityComparer.Default.Equals(left.OriginalDefinition, right.OriginalDefinition))
+            return false;
+
+        if (left.IsTupleType || right.IsTupleType)
+        {
+            if (left.TupleElements.Length != right.TupleElements.Length)
+                return false;
+
+            for (var i = 0; i < left.TupleElements.Length; i++)
+            {
+                if (!ParameterTypesMatch(left.TupleElements[i].Type, right.TupleElements[i].Type))
+                    return false;
+            }
+
+            return true;
+        }
+
+        if (left.TypeArguments.Length != right.TypeArguments.Length)
+            return false;
+
+        for (var i = 0; i < left.TypeArguments.Length; i++)
+        {
+            if (!ParameterTypesMatch(left.TypeArguments[i], right.TypeArguments[i]))
+                return false;
+        }
+
+        return true;
     }
 
     private static bool PropertySignaturesMatch(IPropertySymbol left, IPropertySymbol right)
@@ -475,7 +558,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         {
             if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
                 return false;
-            if (!SymbolEqualityComparer.Default.Equals(left.Parameters[i].Type, right.Parameters[i].Type))
+            if (!ParameterTypesMatch(left.Parameters[i].Type, right.Parameters[i].Type))
                 return false;
         }
 
@@ -590,35 +673,45 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         CancellationToken cancellationToken)
     {
         var membersByTreeAndPart = new Dictionary<SyntaxTree, Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>>();
+        var eventDeclaratorsByTreeAndPart = new Dictionary<SyntaxTree, Dictionary<int, HashSet<(int FieldStart, int DeclaratorStart)>>>();
 
         foreach (var existing in existingImplementations)
         {
             foreach (var reference in existing.DeclaringSyntaxReferences)
             {
                 var syntax = await reference.GetSyntaxAsync(cancellationToken);
+                if (TryGetEventFieldDeclarator(syntax, out var eventField, out var declarator)
+                    && eventField.Parent is TypeDeclarationSyntax eventPart)
+                {
+                    if (eventField.Declaration.Variables.Count > 1)
+                    {
+                        AddKeyed(eventDeclaratorsByTreeAndPart, syntax.SyntaxTree, eventPart.SpanStart,
+                            (eventField.SpanStart, declarator.SpanStart));
+                        continue;
+                    }
+
+                    AddKeyed(membersByTreeAndPart, syntax.SyntaxTree, eventPart.SpanStart,
+                        (eventField.SpanStart, eventField.Span.End, eventField.Kind()));
+                    continue;
+                }
+
                 var memberSyntax = AsRemovableMember(syntax);
                 if (memberSyntax == null)
                     continue;
                 if (memberSyntax.Parent is not TypeDeclarationSyntax part)
                     continue;
 
-                if (!membersByTreeAndPart.TryGetValue(syntax.SyntaxTree, out var byPart))
-                {
-                    byPart = new Dictionary<int, HashSet<(int Start, int End, SyntaxKind Kind)>>();
-                    membersByTreeAndPart[syntax.SyntaxTree] = byPart;
-                }
-
-                if (!byPart.TryGetValue(part.SpanStart, out var keys))
-                {
-                    keys = new HashSet<(int Start, int End, SyntaxKind Kind)>();
-                    byPart[part.SpanStart] = keys;
-                }
-
-                keys.Add((memberSyntax.SpanStart, memberSyntax.Span.End, memberSyntax.Kind()));
+                AddKeyed(membersByTreeAndPart, syntax.SyntaxTree, part.SpanStart,
+                    (memberSyntax.SpanStart, memberSyntax.Span.End, memberSyntax.Kind()));
             }
         }
 
-        foreach (var (tree, byPart) in membersByTreeAndPart)
+        var trees = membersByTreeAndPart.Keys
+            .Concat(eventDeclaratorsByTreeAndPart.Keys)
+            .Distinct()
+            .ToList();
+
+        foreach (var tree in trees)
         {
             var document = solution.GetDocument(tree)
                 ?? throw new RefactoringException(
@@ -627,36 +720,124 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             var treeRoot = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
+            membersByTreeAndPart.TryGetValue(tree, out var membersByPart);
+            eventDeclaratorsByTreeAndPart.TryGetValue(tree, out var eventDeclaratorsByPart);
+
             var toRemove = new List<MemberDeclarationSyntax>();
+            var eventFieldRewrites = new Dictionary<EventFieldDeclarationSyntax, EventFieldDeclarationSyntax>();
             foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
             {
                 if (reference.SyntaxTree != tree)
                     continue;
                 if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax part)
                     continue;
-                if (!byPart.TryGetValue(part.SpanStart, out var keys) || keys.Count == 0)
-                    continue;
+
+                HashSet<(int Start, int End, SyntaxKind Kind)>? memberKeys = null;
+                HashSet<(int FieldStart, int DeclaratorStart)>? eventDeclaratorKeys = null;
+                if (membersByPart != null)
+                    membersByPart.TryGetValue(part.SpanStart, out memberKeys);
+                if (eventDeclaratorsByPart != null)
+                    eventDeclaratorsByPart.TryGetValue(part.SpanStart, out eventDeclaratorKeys);
 
                 foreach (var member in part.Members)
                 {
-                    if (keys.Contains((member.SpanStart, member.Span.End, member.Kind())))
+                    if (member is EventFieldDeclarationSyntax eventField
+                        && eventDeclaratorKeys != null
+                        && eventDeclaratorKeys.Count > 0)
+                    {
+                        var remaining = eventField.Declaration.Variables
+                            .Where(v => !eventDeclaratorKeys.Contains((eventField.SpanStart, v.SpanStart)))
+                            .ToList();
+                        if (remaining.Count == eventField.Declaration.Variables.Count)
+                        {
+                            if (memberKeys != null
+                                && memberKeys.Contains((eventField.SpanStart, eventField.Span.End, eventField.Kind())))
+                            {
+                                toRemove.Add(eventField);
+                            }
+
+                            continue;
+                        }
+
+                        if (remaining.Count == 0)
+                        {
+                            toRemove.Add(eventField);
+                            continue;
+                        }
+
+                        eventFieldRewrites[eventField] = eventField.WithDeclaration(
+                            eventField.Declaration.WithVariables(SyntaxFactory.SeparatedList(remaining)));
+                        continue;
+                    }
+
+                    if (memberKeys != null
+                        && memberKeys.Contains((member.SpanStart, member.Span.End, member.Kind())))
+                    {
                         toRemove.Add(member);
+                    }
                 }
             }
 
-            if (toRemove.Count == 0)
+            SyntaxNode newRoot = treeRoot;
+            if (eventFieldRewrites.Count > 0)
+                newRoot = newRoot.ReplaceNodes(eventFieldRewrites.Keys, (original, _) => eventFieldRewrites[original]);
+
+            if (toRemove.Count > 0)
+            {
+                // KeepDirectives / KeepExteriorTrivia so a leading #if / #region on
+                // the removed member does not orphan a following #endif / #endregion.
+                newRoot = newRoot.RemoveNodes(
+                        toRemove,
+                        SyntaxRemoveOptions.KeepExteriorTrivia | SyntaxRemoveOptions.KeepDirectives)
+                    ?? newRoot;
+            }
+
+            if (eventFieldRewrites.Count == 0 && toRemove.Count == 0)
                 continue;
 
-            // KeepDirectives / KeepExteriorTrivia so a leading #if / #region on
-            // the removed member does not orphan a following #endif / #endregion.
-            var newRoot = treeRoot.RemoveNodes(
-                    toRemove,
-                    SyntaxRemoveOptions.KeepExteriorTrivia | SyntaxRemoveOptions.KeepDirectives)
-                ?? treeRoot;
             solution = solution.WithDocumentSyntaxRoot(document.Id, newRoot);
         }
 
         return solution;
+    }
+
+    private static void AddKeyed<T>(
+        Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,
+        SyntaxTree tree,
+        int partSpanStart,
+        T key)
+    {
+        if (!map.TryGetValue(tree, out var byPart))
+        {
+            byPart = new Dictionary<int, HashSet<T>>();
+            map[tree] = byPart;
+        }
+
+        if (!byPart.TryGetValue(partSpanStart, out var keys))
+        {
+            keys = new HashSet<T>();
+            byPart[partSpanStart] = keys;
+        }
+
+        keys.Add(key);
+    }
+
+    private static bool TryGetEventFieldDeclarator(
+        SyntaxNode syntax,
+        out EventFieldDeclarationSyntax eventField,
+        out VariableDeclaratorSyntax declarator)
+    {
+        if (syntax is VariableDeclaratorSyntax variable
+            && variable.Parent?.Parent is EventFieldDeclarationSyntax field)
+        {
+            eventField = field;
+            declarator = variable;
+            return true;
+        }
+
+        eventField = null!;
+        declarator = null!;
+        return false;
     }
 
     private static MemberDeclarationSyntax? AsRemovableMember(SyntaxNode syntax)
