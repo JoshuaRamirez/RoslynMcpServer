@@ -118,6 +118,10 @@ public class GenerateOverridesToolTests
         // Assert
         Assert.Equal("boolean", callBase.GetProperty("type").GetString());
         Assert.True(callBase.GetProperty("default").GetBoolean());
+        var description = callBase.GetProperty("description").GetString();
+        Assert.Contains("base.Method()", description);
+        Assert.Contains("base.Prop", description);
+        Assert.Contains("base[i]", description);
     }
 
     [Fact]
@@ -144,6 +148,14 @@ public class GenerateOverridesToolTests
     public void GetDefinition_Description_MentionsReplaceExisting()
     {
         Assert.Contains("replaceExisting", _tool.Description);
+    }
+
+    [Fact]
+    public void GetDefinition_Description_MentionsCallBaseForMethodsAndProperties()
+    {
+        Assert.Contains("callBase", _tool.Description);
+        Assert.Contains("base.Prop", _tool.Description);
+        Assert.Contains("base[i]", _tool.Description);
     }
 
     #endregion

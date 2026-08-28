@@ -93,42 +93,16 @@ public static class SyntaxGenerationHelper
     /// <param name="property">The property to implement.</param>
     /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
     /// <param name="throwNotImplemented">If true, throws NotImplementedException in accessors.</param>
+    /// <param name="callBase">If true, non-abstract accessors call <c>base.Prop</c>.</param>
     /// <returns>Property declaration syntax.</returns>
     public static PropertyDeclarationSyntax CreatePropertyStub(
         IPropertySymbol property,
         bool explicitInterface = false,
-        bool throwNotImplemented = true)
+        bool throwNotImplemented = true,
+        bool callBase = false)
     {
         var propertyType = SyntaxFactory.ParseTypeName(property.Type.ToDisplayString());
-        var accessors = new List<AccessorDeclarationSyntax>();
-
-        if (property.GetMethod != null)
-        {
-            var getAccessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration);
-            if (throwNotImplemented)
-            {
-                getAccessor = getAccessor.WithBody(CreateThrowNotImplementedBody());
-            }
-            else
-            {
-                getAccessor = getAccessor.WithBody(CreateDefaultReturnBody(property.Type));
-            }
-            accessors.Add(getAccessor);
-        }
-
-        if (property.SetMethod != null)
-        {
-            var setAccessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration);
-            if (throwNotImplemented)
-            {
-                setAccessor = setAccessor.WithBody(CreateThrowNotImplementedBody());
-            }
-            else
-            {
-                setAccessor = setAccessor.WithBody(SyntaxFactory.Block());
-            }
-            accessors.Add(setAccessor);
-        }
+        var accessors = CreatePropertyAccessors(property, throwNotImplemented, callBase);
 
         var propDecl = SyntaxFactory.PropertyDeclaration(propertyType, property.Name)
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
@@ -154,6 +128,50 @@ public static class SyntaxGenerationHelper
         }
 
         return propDecl.NormalizeWhitespace();
+    }
+
+    /// <summary>
+    /// Creates an indexer stub for interface implementation or override.
+    /// </summary>
+    /// <param name="indexer">The indexer to implement.</param>
+    /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
+    /// <param name="throwNotImplemented">If true, throws NotImplementedException in accessors.</param>
+    /// <param name="callBase">If true, non-abstract accessors call <c>base[i]</c>.</param>
+    /// <returns>Indexer declaration syntax.</returns>
+    public static IndexerDeclarationSyntax CreateIndexerStub(
+        IPropertySymbol indexer,
+        bool explicitInterface = false,
+        bool throwNotImplemented = true,
+        bool callBase = false)
+    {
+        var indexerType = SyntaxFactory.ParseTypeName(indexer.Type.ToDisplayString());
+        var parameters = indexer.Parameters.Select(CreateParameter);
+        var accessors = CreatePropertyAccessors(indexer, throwNotImplemented, callBase);
+
+        var indexerDecl = SyntaxFactory.IndexerDeclaration(indexerType)
+            .WithParameterList(SyntaxFactory.BracketedParameterList(SyntaxFactory.SeparatedList(parameters)))
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
+
+        if (explicitInterface && indexer.ContainingType != null)
+        {
+            indexerDecl = indexerDecl.WithExplicitInterfaceSpecifier(
+                SyntaxFactory.ExplicitInterfaceSpecifier(
+                    SyntaxFactory.ParseName(indexer.ContainingType.ToDisplayString())));
+        }
+        else
+        {
+            var modifiers = new List<SyntaxToken>();
+            modifiers.AddRange(AccessibilityModifierTokens(indexer.DeclaredAccessibility));
+
+            if (indexer.IsAbstract || indexer.IsVirtual || indexer.IsOverride)
+            {
+                modifiers.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword));
+            }
+
+            indexerDecl = indexerDecl.WithModifiers(SyntaxFactory.TokenList(modifiers));
+        }
+
+        return indexerDecl.NormalizeWhitespace();
     }
 
     /// <summary>
@@ -354,6 +372,66 @@ public static class SyntaxGenerationHelper
                 eventSymbol.Name)
             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
     }
+
+    private static List<AccessorDeclarationSyntax> CreatePropertyAccessors(
+        IPropertySymbol property,
+        bool throwNotImplemented,
+        bool callBase)
+    {
+        var accessors = new List<AccessorDeclarationSyntax>();
+        var useBase = callBase && !property.IsAbstract;
+
+        if (property.GetMethod != null)
+        {
+            var getBody = useBase
+                ? CreateBasePropertyGetBody(property)
+                : throwNotImplemented
+                    ? CreateThrowNotImplementedBody()
+                    : CreateDefaultReturnBody(property.Type);
+            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                .WithBody(getBody));
+        }
+
+        if (property.SetMethod != null)
+        {
+            var setBody = useBase
+                ? CreateBasePropertySetBody(property)
+                : throwNotImplemented
+                    ? CreateThrowNotImplementedBody()
+                    : SyntaxFactory.Block();
+            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+                .WithBody(setBody));
+        }
+
+        return accessors;
+    }
+
+    private static ExpressionSyntax CreateBasePropertyAccess(IPropertySymbol property)
+    {
+        if (property.IsIndexer)
+        {
+            var arguments = property.Parameters.Select(CreateBaseCallArgument);
+            return SyntaxFactory.ElementAccessExpression(
+                SyntaxFactory.BaseExpression(),
+                SyntaxFactory.BracketedArgumentList(SyntaxFactory.SeparatedList(arguments)));
+        }
+
+        return SyntaxFactory.MemberAccessExpression(
+            SyntaxKind.SimpleMemberAccessExpression,
+            SyntaxFactory.BaseExpression(),
+            SyntaxFactory.IdentifierName(property.Name));
+    }
+
+    private static BlockSyntax CreateBasePropertyGetBody(IPropertySymbol property) =>
+        SyntaxFactory.Block(SyntaxFactory.ReturnStatement(CreateBasePropertyAccess(property)));
+
+    private static BlockSyntax CreateBasePropertySetBody(IPropertySymbol property) =>
+        SyntaxFactory.Block(
+            SyntaxFactory.ExpressionStatement(
+                SyntaxFactory.AssignmentExpression(
+                    SyntaxKind.SimpleAssignmentExpression,
+                    CreateBasePropertyAccess(property),
+                    SyntaxFactory.IdentifierName("value"))));
 
     private static BlockSyntax CreateThrowNotImplementedBody()
     {

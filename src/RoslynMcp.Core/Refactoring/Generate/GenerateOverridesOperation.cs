@@ -14,12 +14,16 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
 /// Generates override methods for base class virtual/abstract members.
-/// Honors <c>replaceExisting</c> to include already-overridden members of
-/// this type, remove those override declarations (including across partials)
-/// by signature, and insert a standard generated override. <c>new</c> hiders,
-/// explicit interface implementations, non-override methods, and primary
-/// constructors are never replaced. Extra modifiers on the old override
-/// are not copied.
+/// Honors <c>callBase</c> (default true) for ordinary methods
+/// (<c>base.Method(...)</c>) and for non-abstract properties / indexers
+/// (<c>return base.Prop;</c> / <c>base.Prop = value;</c>,
+/// <c>return base[i];</c> / <c>base[i] = value;</c>). Abstract members
+/// still throw. Honors <c>replaceExisting</c> to include already-overridden
+/// members of this type, remove those override declarations (including
+/// across partials) by signature, and insert a standard generated override.
+/// <c>new</c> hiders, explicit interface implementations, non-override
+/// methods, and primary constructors are never replaced. Extra modifiers
+/// on the old override are not copied.
 /// </summary>
 public sealed class GenerateOverridesOperation : RefactoringOperationBase<GenerateOverridesParams>
 {
@@ -137,7 +141,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         // If preview mode, return without applying
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params, membersToGenerate, membersToReplace, overrides);
+            return CreatePreviewResult(operationId, @params, membersToGenerate, membersToReplace, overrides, membersToOverride);
         }
 
         var solution = document.Project.Solution;
@@ -511,10 +515,16 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
                     explicitInterface: false,
                     callBase: callBase && !method.IsAbstract,
                     throwNotImplemented: method.IsAbstract),
+                IPropertySymbol { IsIndexer: true } indexer => SyntaxGenerationHelper.CreateIndexerStub(
+                    indexer,
+                    explicitInterface: false,
+                    throwNotImplemented: indexer.IsAbstract,
+                    callBase: callBase && !indexer.IsAbstract),
                 IPropertySymbol property => SyntaxGenerationHelper.CreatePropertyStub(
                     property,
                     explicitInterface: false,
-                    throwNotImplemented: property.IsAbstract),
+                    throwNotImplemented: property.IsAbstract,
+                    callBase: callBase && !property.IsAbstract),
                 _ => null
             };
 
@@ -628,9 +638,10 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         GenerateOverridesParams @params,
         List<ISymbol> membersToGenerate,
         List<ISymbol> membersToReplace,
-        List<MemberDeclarationSyntax> overrides)
+        List<MemberDeclarationSyntax> overrides,
+        List<ISymbol> selectedMembers)
     {
-        var description = BuildPreviewDescription(membersToGenerate, membersToReplace);
+        var description = BuildPreviewDescription(membersToGenerate, membersToReplace, @params.CallBase, selectedMembers);
         var overrideCode = string.Join("\n\n",
             overrides.Select(o => o.NormalizeWhitespace().ToFullString()));
 
@@ -653,17 +664,36 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
 
     internal static string BuildPreviewDescription(
         IReadOnlyList<ISymbol> membersToGenerate,
-        IReadOnlyList<ISymbol> membersToReplace)
+        IReadOnlyList<ISymbol> membersToReplace,
+        bool callBase = true,
+        IReadOnlyList<ISymbol>? selectedMembers = null)
     {
         var generated = string.Join(", ", membersToGenerate.Select(m => m.Name));
         var replaced = string.Join(", ", membersToReplace.Select(m => m.Name));
 
+        string description;
         if (membersToReplace.Count == 0)
-            return $"Generate overrides for: {generated}";
+            description = $"Generate overrides for: {generated}";
+        else if (membersToGenerate.Count == 0)
+            description = $"Replace existing overrides: {replaced}";
+        else
+            description = $"Generate overrides for: {generated}; replace existing overrides: {replaced}";
 
-        if (membersToGenerate.Count == 0)
-            return $"Replace existing overrides: {replaced}";
+        var properties = (selectedMembers ?? membersToGenerate.Concat(membersToReplace))
+            .OfType<IPropertySymbol>()
+            .ToList();
+        if (properties.Count > 0)
+        {
+            var anyNonAbstract = properties.Any(p => !p.IsAbstract);
+            var anyAbstract = properties.Any(p => p.IsAbstract);
+            if (!callBase || !anyNonAbstract)
+                description += "; property accessors will not call base";
+            else if (anyAbstract)
+                description += "; non-abstract property accessors will call base";
+            else
+                description += "; property accessors will call base";
+        }
 
-        return $"Generate overrides for: {generated}; replace existing overrides: {replaced}";
+        return description;
     }
 }

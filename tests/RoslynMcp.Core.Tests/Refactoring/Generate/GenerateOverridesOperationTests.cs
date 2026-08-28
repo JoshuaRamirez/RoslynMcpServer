@@ -203,6 +203,179 @@ public class GenerateOverridesOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateOverrides_CallBaseTrue_VirtualProperty_EmitsBaseAccessors()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AnimalAndDogSource, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Label" },
+            CallBase = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var label = ExtractMember(updated, "public override string Label");
+        Assert.Contains("return base.Label;", label);
+        Assert.Contains("base.Label = value;", label);
+        Assert.DoesNotContain("throw new NotImplementedException()", label);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CallBaseOmitted_VirtualProperty_EmitsBaseAccessors()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AnimalAndDogSource, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Label" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var label = ExtractMember(updated, "public override string Label");
+        Assert.Contains("return base.Label;", label);
+        Assert.Contains("base.Label = value;", label);
+        Assert.DoesNotContain("throw new NotImplementedException()", label);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CallBaseTrue_VirtualPropertyGetOnly_EmitsBaseGetter()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual string Label { get { return "base"; } }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Label" },
+            CallBase = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var label = ExtractMember(updated, "public override string Label");
+        Assert.Contains("return base.Label;", label);
+        Assert.DoesNotContain("set", label);
+        Assert.DoesNotContain("base.Label = value;", label);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CallBaseFalse_VirtualProperty_HasNoBaseAccessors()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AnimalAndDogSource, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Label" },
+            CallBase = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var label = ExtractMember(updated, "public override string Label");
+        Assert.DoesNotContain("base.Label", label);
+        Assert.Contains("return null;", label);
+        Assert.DoesNotContain("throw new NotImplementedException()", label);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CallBaseTrue_AbstractProperty_StillThrows()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Animal
+            {
+                public abstract string Label { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Label" },
+            CallBase = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var label = ExtractMember(updated, "public override string Label");
+        Assert.Contains("throw new NotImplementedException()", label);
+        Assert.DoesNotContain("base.Label", label);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_CallBaseTrue_VirtualIndexer_EmitsBaseAccessors()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual string this[int i]
+                {
+                    get { return ""; }
+                    set { }
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "this[]" },
+            CallBase = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var indexer = ExtractMember(updated, "public override string this[int i]");
+        Assert.Contains("return base[i];", indexer);
+        Assert.Contains("base[i] = value;", indexer);
+        Assert.DoesNotContain("throw new NotImplementedException()", indexer);
+    }
+
+    [SkippableFact]
     public async Task GenerateOverrides_Members_OnlyNamedMembersAreGenerated()
     {
         await using var workspace = await TempWorkspace.CreateAsync(AnimalAndDogSource, "Dog.cs");
@@ -267,6 +440,145 @@ public class GenerateOverridesOperationTests
         Assert.Contains("Speak", result.PendingChanges[0].Description);
         Assert.DoesNotContain("replace existing", result.PendingChanges[0].Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("base.Speak()", result.PendingChanges[0].AfterSnippet);
+        Assert.DoesNotContain("property accessors", result.PendingChanges[0].Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_Preview_Property_DescribesBaseAccessors_WritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AnimalAndDogSource, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Label" },
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Generate overrides for:", result.PendingChanges[0].Description);
+        Assert.Contains("Label", result.PendingChanges[0].Description);
+        Assert.Contains("; property accessors will call base", result.PendingChanges[0].Description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("non-abstract", result.PendingChanges[0].Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("return base.Label;", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("base.Label = value;", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_Preview_CallBaseTrue_MixedAbstractAndVirtualProperties_QualifiesBaseNote_WritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Animal
+            {
+                public abstract string Title { get; set; }
+
+                public virtual string Label { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Title", "Label" },
+            CallBase = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        var description = result.PendingChanges[0].Description;
+        Assert.Contains("Title", description);
+        Assert.Contains("Label", description);
+        Assert.Contains("non-abstract property accessors will call base", description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("; property accessors will call base", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("return base.Label;", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("throw new NotImplementedException()", result.PendingChanges[0].AfterSnippet);
+        Assert.DoesNotContain("base.Title", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_Preview_CallBaseTrue_AllAbstractProperties_DescribesNoBaseAccessors_WritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Animal
+            {
+                public abstract string Title { get; set; }
+
+                public abstract string Label { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Title", "Label" },
+            CallBase = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        var description = result.PendingChanges![0].Description;
+        Assert.Contains("; property accessors will not call base", description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("non-abstract", description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("base.Label", result.PendingChanges[0].AfterSnippet);
+        Assert.DoesNotContain("base.Title", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_Preview_CallBaseFalse_Property_DescribesNoBaseAccessors_WritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AnimalAndDogSource, "Dog.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = new[] { "Label" },
+            CallBase = false,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains("property accessors will not call base", result.PendingChanges![0].Description, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("base.Label", result.PendingChanges[0].AfterSnippet);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
@@ -531,6 +843,9 @@ public class GenerateOverridesOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.DoesNotContain("old-label", updated);
         Assert.Equal(1, CountOccurrences(updated, "public override string Label"));
+        var label = ExtractMember(updated, "public override string Label");
+        Assert.Contains("return base.Label;", label);
+        Assert.Contains("base.Label = value;", label);
     }
 
     [SkippableFact]

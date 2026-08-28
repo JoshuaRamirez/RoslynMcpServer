@@ -307,6 +307,8 @@ public class HelpGeneratorTests
         Assert.Contains("--call-base", optionalSection);
         Assert.Contains("--members", optionalSection);
         Assert.Contains("replaceExisting", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("callBase", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("base.Prop", tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
