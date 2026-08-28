@@ -177,9 +177,11 @@ public static class SyntaxGenerationHelper
     }
 
     /// <summary>
-    /// Creates an event stub for interface implementation.
+    /// Creates an event stub for interface implementation or override
+    /// with empty add/remove accessors. Same body shape as
+    /// <c>ImplementAbstractOperation.CreateEventStub</c>.
     /// </summary>
-    /// <param name="eventSymbol">The event to implement.</param>
+    /// <param name="eventSymbol">The event to implement or override.</param>
     /// <param name="explicitInterface">If true, creates explicit interface implementation.</param>
     /// <returns>Event declaration syntax.</returns>
     public static EventDeclarationSyntax CreateEventStub(
@@ -205,8 +207,17 @@ public static class SyntaxGenerationHelper
         }
         else
         {
-            eventDecl = eventDecl.WithModifiers(
-                SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)));
+            // Overrides must keep the inherited accessibility (CS0507).
+            // Interface members are public and must not use override (CS0115).
+            var modifiers = new List<SyntaxToken>();
+            modifiers.AddRange(AccessibilityModifierTokens(eventSymbol.DeclaredAccessibility));
+
+            if (NeedsOverrideModifier(eventSymbol))
+            {
+                modifiers.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword));
+            }
+
+            eventDecl = eventDecl.WithModifiers(SyntaxFactory.TokenList(modifiers));
         }
 
         return eventDecl.NormalizeWhitespace();

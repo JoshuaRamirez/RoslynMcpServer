@@ -119,23 +119,65 @@ public static class MemberAnalyzer
     }
 
     /// <summary>
-    /// Gets virtual/abstract members from base classes that can be overridden.
+    /// Gets virtual/abstract/override (non-sealed) members from base classes
+    /// that can be overridden — ordinary methods, properties/indexers, and
+    /// events. Members this type already overrides are skipped. Intermediate
+    /// concrete event overrides and same-name event hiders (<c>new</c> /
+    /// <c>new virtual</c> / ordinary) occupy the signature so a misleading
+    /// override is not emitted for a distinct ancestor slot.
     /// </summary>
     /// <param name="type">The type to analyze.</param>
     /// <returns>Overridable members from base classes.</returns>
     public static IEnumerable<ISymbol> GetOverridableMembers(INamedTypeSymbol type)
     {
-        var baseType = type.BaseType;
         var alreadyOverridden = new HashSet<string>(
             type.GetMembers()
-                .Where(m => m is IMethodSymbol { IsOverride: true } or IPropertySymbol { IsOverride: true })
-                .Select(m => GetMemberSignature(m)));
+                .Where(m => m is IMethodSymbol { IsOverride: true }
+                    or IPropertySymbol { IsOverride: true }
+                    or IEventSymbol { IsOverride: true })
+                .Select(GetMemberSignature));
 
+        // Non-override events on this type (new / ordinary hiders) occupy
+        // the signature so a misleading override is not emitted. Explicit
+        // interface events do not count.
+        foreach (var member in type.GetMembers())
+        {
+            if (member is IEventSymbol { IsOverride: false, ExplicitInterfaceImplementations.Length: 0 } evt
+                && !evt.IsImplicitlyDeclared)
+            {
+                alreadyOverridden.Add(GetMemberSignature(evt));
+            }
+        }
+
+        var baseType = type.BaseType;
         while (baseType != null && baseType.SpecialType != SpecialType.System_Object)
         {
             foreach (var member in baseType.GetMembers())
             {
                 if (member.IsImplicitlyDeclared) continue;
+
+                if (member is IEventSymbol evt)
+                {
+                    var eventSignature = GetMemberSignature(evt);
+                    if (alreadyOverridden.Contains(eventSignature))
+                        continue;
+
+                    if (!IsOverridable(evt))
+                    {
+                        // Intermediate new / ordinary same-name event hiders
+                        // occupy this signature. An override emitted for an
+                        // ancestor virtual/abstract event would bind the
+                        // hider (or fail CS0115) rather than the ancestor slot.
+                        if (evt.ExplicitInterfaceImplementations.Length == 0)
+                            alreadyOverridden.Add(eventSignature);
+                        continue;
+                    }
+
+                    alreadyOverridden.Add(eventSignature);
+                    yield return evt;
+                    continue;
+                }
+
                 if (!IsOverridable(member)) continue;
 
                 var signature = GetMemberSignature(member);
@@ -237,6 +279,8 @@ public static class MemberAnalyzer
                                     method.MethodKind == MethodKind.Ordinary,
             IPropertySymbol prop => (prop.IsVirtual || prop.IsAbstract || prop.IsOverride) &&
                                     !prop.IsSealed,
+            IEventSymbol evt => (evt.IsVirtual || evt.IsAbstract || evt.IsOverride) &&
+                                !evt.IsSealed,
             _ => false
         };
     }
@@ -261,6 +305,7 @@ public static class MemberAnalyzer
             IPropertySymbol { IsIndexer: true } indexer =>
                 $"this[{string.Join(",", indexer.Parameters.Select(FormatParameterSignature))}]",
             IPropertySymbol prop => prop.Name,
+            IEventSymbol evt => evt.Name,
             _ => member.Name
         };
     }

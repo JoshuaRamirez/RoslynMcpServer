@@ -13,12 +13,13 @@ using RoslynMcp.Core.Workspace;
 namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
-/// Generates override methods for base class virtual/abstract members.
-/// Honors <c>callBase</c> (default true) for ordinary methods
-/// (<c>base.Method(...)</c>) and for non-abstract properties / indexers
-/// (<c>return base.Prop;</c> / <c>base.Prop = value;</c>,
+/// Generates override methods, properties/indexers, and events for base
+/// class virtual/abstract members. Honors <c>callBase</c> (default true)
+/// for ordinary methods (<c>base.Method(...)</c>) and for non-abstract
+/// properties / indexers (<c>return base.Prop;</c> / <c>base.Prop = value;</c>,
 /// <c>return base[i];</c> / <c>base[i] = value;</c>). Abstract members
-/// still throw. Honors <c>replaceExisting</c> to include already-overridden
+/// still throw. Events always use empty add/remove regardless of
+/// <c>callBase</c>. Honors <c>replaceExisting</c> to include already-overridden
 /// members of this type, remove those override declarations (including
 /// across partials) by signature, and insert a standard generated override.
 /// <c>new</c> hiders, explicit interface implementations, non-override
@@ -279,6 +280,10 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
                     if (property.OverriddenProperty != null && IsGeneratedOverrideTarget(property.OverriddenProperty))
                         yield return property.OverriddenProperty;
                     break;
+                case IEventSymbol evt when IsEligibleExistingEventOverride(evt):
+                    if (evt.OverriddenEvent != null && IsGeneratedOverrideTarget(evt.OverriddenEvent))
+                        yield return evt.OverriddenEvent;
+                    break;
             }
         }
     }
@@ -292,18 +297,23 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         property.IsOverride
         && property.ExplicitInterfaceImplementations.Length == 0;
 
+    private static bool IsEligibleExistingEventOverride(IEventSymbol evt) =>
+        evt.IsOverride
+        && evt.ExplicitInterfaceImplementations.Length == 0;
+
     private static bool IsEligibleExistingOverride(ISymbol member) =>
         member switch
         {
             IMethodSymbol method => IsEligibleExistingMethodOverride(method),
             IPropertySymbol property => IsEligibleExistingPropertyOverride(property),
+            IEventSymbol evt => IsEligibleExistingEventOverride(evt),
             _ => false
         };
 
     /// <summary>
     /// True when <paramref name="member"/> is a base member
     /// <c>generate_overrides</c> would emit: an overridable (unsealed
-    /// virtual/abstract/override) ordinary method or property from a
+    /// virtual/abstract/override) ordinary method, property, or event from a
     /// non-Object base, or Object ToString / Equals(object) / GetHashCode.
     /// </summary>
     private static bool IsGeneratedOverrideTarget(ISymbol member)
@@ -337,6 +347,18 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
             return (original.IsVirtual || original.IsAbstract || original.IsOverride) && !original.IsSealed;
         }
 
+        if (member is IEventSymbol evt)
+        {
+            var original = evt;
+            while (original.OverriddenEvent != null)
+                original = original.OverriddenEvent;
+
+            if (original.ContainingType?.SpecialType == SpecialType.System_Object)
+                return false;
+
+            return (original.IsVirtual || original.IsAbstract || original.IsOverride) && !original.IsSealed;
+        }
+
         return false;
     }
 
@@ -361,6 +383,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
             IMethodSymbol method => method.ExplicitInterfaceImplementations.Length > 0
                 || method.MethodKind == MethodKind.ExplicitInterfaceImplementation,
             IPropertySymbol property => property.ExplicitInterfaceImplementations.Length > 0,
+            IEventSymbol evt => evt.ExplicitInterfaceImplementations.Length > 0,
             _ => false
         };
 
@@ -435,6 +458,9 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
 
         if (left is IPropertySymbol leftProp && right is IPropertySymbol rightProp)
             return PropertySignaturesMatch(leftProp, rightProp);
+
+        if (left is IEventSymbol leftEvent && right is IEventSymbol rightEvent)
+            return string.Equals(leftEvent.Name, rightEvent.Name, StringComparison.Ordinal);
 
         return false;
     }
@@ -525,6 +551,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
                     explicitInterface: false,
                     throwNotImplemented: property.IsAbstract,
                     callBase: callBase && !property.IsAbstract),
+                IEventSymbol evt => SyntaxGenerationHelper.CreateEventStub(evt),
                 _ => null
             };
 
