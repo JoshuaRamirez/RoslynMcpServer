@@ -1022,6 +1022,76 @@ public class ImplementAbstractOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    [SkippableFact]
+    public async Task ImplementAbstract_ProtectedInternalProperty_ProtectedSetter_SameAssembly_KeepsBoth()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                protected internal abstract int Width { get; protected set; }
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("protected internal override int Width", updated);
+        Assert.Contains("protected set", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_CrossAssembly_ProtectedInternalProperty_ProtectedSetter_OmitsRedundantAccessor()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public abstract class Shape
+            {
+                protected internal abstract int Width { get; protected set; }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Circle : TestLib.Shape
+            {
+            }
+            """);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class Circle", StringComparison.Ordinal)..];
+        Assert.Contains("protected override int Width", derived);
+        Assert.DoesNotContain("protected internal override", derived);
+        Assert.DoesNotContain("protected set", derived);
+        var property = ExtractMember(updated, "protected override int Width");
+        Assert.Contains("get", property);
+        Assert.Contains("set", property);
+    }
+
     #endregion
 
     #region ThrowNotImplemented

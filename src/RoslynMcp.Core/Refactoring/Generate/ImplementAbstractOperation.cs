@@ -693,7 +693,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                 CreateMemberType(property.Type, property.ReturnsByRef, property.ReturnsByRefReadonly),
                 property.Name)
             .WithModifiers(CreateOverrideModifiers(property, emittingType, property.IsRequired))
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(property, throwNotImplemented))))
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(property, emittingType, throwNotImplemented))))
             .NormalizeWhitespace();
     }
 
@@ -711,7 +711,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                 CreateMemberType(indexer.Type, indexer.ReturnsByRef, indexer.ReturnsByRefReadonly))
             .WithModifiers(CreateOverrideModifiers(indexer, emittingType, indexer.IsRequired))
             .WithParameterList(SyntaxFactory.BracketedParameterList(SyntaxFactory.SeparatedList(parameters)))
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(indexer, throwNotImplemented))))
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(indexer, emittingType, throwNotImplemented))))
             .NormalizeWhitespace();
     }
 
@@ -739,15 +739,18 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
 
     private static List<AccessorDeclarationSyntax> CreateAccessors(
         IPropertySymbol property,
+        INamedTypeSymbol emittingType,
         bool throwNotImplemented)
     {
         var accessors = new List<AccessorDeclarationSyntax>();
+        var propertyAccessibility = SyntaxGenerationHelper.OverrideAccessibility(property, emittingType);
 
         if (property.GetMethod != null)
         {
             accessors.Add(CreateAccessor(
                 property.GetMethod,
-                property.DeclaredAccessibility,
+                propertyAccessibility,
+                emittingType,
                 SyntaxKind.GetAccessorDeclaration,
                 throwNotImplemented));
         }
@@ -759,7 +762,8 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                 : SyntaxKind.SetAccessorDeclaration;
             accessors.Add(CreateAccessor(
                 property.SetMethod,
-                property.DeclaredAccessibility,
+                propertyAccessibility,
+                emittingType,
                 kind,
                 throwNotImplemented));
         }
@@ -770,6 +774,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     private static AccessorDeclarationSyntax CreateAccessor(
         IMethodSymbol accessor,
         Accessibility propertyAccessibility,
+        INamedTypeSymbol emittingType,
         SyntaxKind kind,
         bool throwNotImplemented)
     {
@@ -792,7 +797,9 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         var declaration = SyntaxFactory.AccessorDeclaration(kind)
             .WithBody(body);
 
-        var modifiers = CreateAccessorModifiers(accessor.DeclaredAccessibility, propertyAccessibility);
+        var modifiers = CreateAccessorModifiers(
+            SyntaxGenerationHelper.OverrideAccessibility(accessor, emittingType),
+            propertyAccessibility);
         if (modifiers.Count > 0)
             declaration = declaration.WithModifiers(modifiers);
 
