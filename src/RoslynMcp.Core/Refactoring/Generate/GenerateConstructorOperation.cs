@@ -225,11 +225,12 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
     /// <summary>
     /// Collects instance fields and, when requested, settable properties declared
-    /// on <paramref name="declaringType"/>. When <paramref name="requireAccessible"/>
-    /// is true (inherited members), only members visible from
-    /// <paramref name="fromType"/> are added, hidden/overridden names are skipped,
-    /// and inherited readonly fields are omitted because a derived constructor
-    /// cannot assign them.
+    /// on <paramref name="declaringType"/>. Indexers are never collected — there
+    /// are no index arguments for a constructor assignment. When
+    /// <paramref name="requireAccessible"/> is true (inherited members), only
+    /// members visible from <paramref name="fromType"/> are added, hidden/overridden
+    /// names are skipped, and inherited readonly fields are omitted because a
+    /// derived constructor cannot assign them.
     /// </summary>
     private static void CollectDeclaredMembers(
         INamedTypeSymbol declaringType,
@@ -260,7 +261,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         {
             foreach (var prop in declaringType.GetMembers().OfType<IPropertySymbol>())
             {
-                if (prop.IsStatic || prop.IsReadOnly || prop.SetMethod == null || prop.IsImplicitlyDeclared)
+                if (prop.IsStatic || prop.IsReadOnly || prop.SetMethod == null || prop.IsImplicitlyDeclared || prop.IsIndexer)
                     continue;
                 if (requireAccessible && !IsAccessibleFrom(prop, fromType))
                     continue;

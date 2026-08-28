@@ -922,6 +922,160 @@ public class GenerateConstructorOperationTests
         Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    [SkippableFact]
+    public async Task GenerateConstructor_ThisTypeWritableIndexer_IsNotCollected()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                public string Name;
+
+                public string this[int index]
+                {
+                    get => Name;
+                    set { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Lookup"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Lookup");
+        Assert.Contains("this.Name = name", ctor);
+        AssertNoIndexerAssignment(ctor);
+        Assert.DoesNotContain("this[", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersTrue_SkipsBaseWritableIndexer()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Species;
+
+                public string this[int index]
+                {
+                    get => Species;
+                    set { }
+                }
+            }
+
+            public class Dog : Animal
+            {
+                public string Name;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("this.Name = name", ctor);
+        Assert.Contains("this.Species = species", ctor);
+        AssertNoIndexerAssignment(ctor);
+        Assert.DoesNotContain("this[", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_MembersNamesIndexer_DoesNotEmitIndexerAssignment()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                public string Name;
+
+                public string this[int index]
+                {
+                    get => Name;
+                    set { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        foreach (var indexerName in new[] { "this[]", "Item" })
+        {
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new GenerateConstructorParams
+                {
+                    SourceFile = workspace.SourcePath,
+                    TypeName = "Lookup",
+                    Members = new[] { indexerName }
+                }));
+
+            Assert.Equal(ErrorCodes.MemberNotFound, ex.ErrorCode);
+            Assert.Contains(indexerName, ex.Message);
+        }
+
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersTrue_MembersNamesBaseIndexer_DoesNotEmitIndexerAssignment()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Species;
+
+                public string this[int index]
+                {
+                    get => Species;
+                    set { }
+                }
+            }
+
+            public class Dog : Animal
+            {
+                public string Name;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                IncludeInheritedMembers = true,
+                Members = new[] { "this[]" }
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotFound, ex.ErrorCode);
+        Assert.Contains("this[]", ex.Message);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     #endregion
 
     #region Helper Methods
@@ -1045,6 +1199,14 @@ public class GenerateConstructorOperationTests
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+    private static void AssertNoIndexerAssignment(string ctor)
+    {
+        Assert.DoesNotContain("this[", ctor);
+        Assert.DoesNotContain("this[]", ctor);
+        Assert.DoesNotContain("Item", ctor);
+        Assert.DoesNotContain("item", ctor);
+    }
 
     private static int CountOccurrences(string text, string value)
     {
