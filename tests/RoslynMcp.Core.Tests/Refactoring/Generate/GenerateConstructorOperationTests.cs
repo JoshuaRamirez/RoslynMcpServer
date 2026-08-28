@@ -1409,6 +1409,16 @@ public class GenerateConstructorOperationTests
         Assert.True(result.Success);
         Assert.True(result.Preview);
         Assert.Contains("Replace constructor", result.PendingChanges![0].Description);
+        Assert.Equal(workspace.SourcePath, result.PendingChanges[0].File);
+        var otherChange = Assert.Single(
+            result.PendingChanges,
+            c => !string.Equals(c.File, workspace.SourcePath, StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(otherPath, otherChange.File);
+        Assert.Equal(RoslynMcp.Contracts.Enums.ChangeKind.Modify, otherChange.ChangeType);
+        Assert.Contains("Remove existing constructor", otherChange.Description);
+        Assert.Contains("public Widget(string id, string name)", otherChange.BeforeSnippet);
+        Assert.Contains("_id = \"old\"", otherChange.BeforeSnippet);
+        Assert.Contains("constructor removed", otherChange.AfterSnippet);
         Assert.Equal(beforeSelected, await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Equal(beforeOther, await File.ReadAllTextAsync(otherPath));
     }
@@ -1517,6 +1527,163 @@ public class GenerateConstructorOperationTests
         Assert.Equal(ErrorCodes.MemberNotFound, ex.ErrorCode);
         Assert.Contains("DoesNotExist", ex.Message);
         Assert.Equal(WidgetWithExactCtorSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ReplaceExistingTrue_ClassPrimaryConstructor_FailsWithConstructorExists()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget(string id)
+            {
+                public string _id = id;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                ReplaceExisting = true,
+                IncludeProperties = false
+            }));
+
+        Assert.Equal(ErrorCodes.ConstructorExists, ex.ErrorCode);
+        Assert.Contains("already exists", ex.Message);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("public Widget(string id)", await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ReplaceExistingTrue_RecordPrimaryConstructor_FailsWithConstructorExists()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record Widget(string id)
+            {
+                public string _id = id;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                ReplaceExisting = true,
+                IncludeProperties = false
+            }));
+
+        Assert.Equal(ErrorCodes.ConstructorExists, ex.ErrorCode);
+        Assert.Contains("already exists", ex.Message);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public record Widget(string id)", await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("this._id", await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ReplaceExistingTrue_ExistingRefCtor_DoesNotRemoveRefCtor()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public string Name;
+
+                public Widget(ref string name)
+                {
+                    Name = name;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public Widget(ref string name)", updated);
+        Assert.Contains("Name = name;", updated);
+        Assert.Contains("this.Name = name", updated);
+        Assert.Equal(2, CountOccurrences(updated, "public Widget("));
+        Assert.Equal(1, CountOccurrences(updated, "ref string name"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ReplaceExistingTrue_PartialOtherFile_Preview_IncludesOtherPartialBeforeSnippet()
+    {
+        const string fieldsPart = """
+            namespace TestApp;
+
+            public partial class Widget
+            {
+                public string _id;
+
+                public string Name { get; set; }
+            }
+            """;
+
+        const string ctorPart = """
+            namespace TestApp;
+
+            public partial class Widget
+            {
+                public Widget(string id, string name)
+                {
+                    _id = "old";
+                    Name = "old";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Widget.cs", fieldsPart),
+            ("Widget.Ctor.cs", ctorPart));
+        var otherPath = workspace.PathFor("Widget.Ctor.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var beforeSelected = await File.ReadAllTextAsync(workspace.SourcePath);
+        var beforeOther = await File.ReadAllTextAsync(otherPath);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            ReplaceExisting = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Equal(workspace.SourcePath, result.PendingChanges[0].File);
+        Assert.Contains("Replace constructor", result.PendingChanges[0].Description);
+        Assert.Contains("_id = id", result.PendingChanges[0].AfterSnippet);
+        var otherChange = result.PendingChanges[1];
+        Assert.Equal(otherPath, otherChange.File);
+        Assert.Contains("Remove existing constructor", otherChange.Description);
+        Assert.Contains("public Widget(string id, string name)", otherChange.BeforeSnippet);
+        Assert.Contains("_id = \"old\"", otherChange.BeforeSnippet);
+        Assert.Contains("Name = \"old\"", otherChange.BeforeSnippet);
+        Assert.Equal(beforeSelected, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(beforeOther, await File.ReadAllTextAsync(otherPath));
     }
 
     #endregion

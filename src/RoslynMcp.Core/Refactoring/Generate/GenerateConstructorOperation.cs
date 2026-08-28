@@ -18,7 +18,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// Honors <c>includeInheritedMembers</c> to append accessible base-type members
 /// (settable properties, not the readable-property equality collector),
 /// and <c>replaceExisting</c> to remove an existing non-implicit constructor
-/// with the exact same signature before generating a fresh one.
+/// with the exact same signature (count, types, and RefKind) before generating
+/// a fresh one. Primary constructors are not replaced.
 /// </summary>
 public sealed class GenerateConstructorOperation : RefactoringOperationBase<GenerateConstructorParams>
 {
@@ -103,8 +104,10 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         }
 
         // Check for existing constructor with same signature or ambiguous due to optional params.
-        // replaceExisting only lifts the exact-signature reject (same count/types in order);
-        // optional-param / required-param ambiguity still throws — do not guess an overload.
+        // replaceExisting only lifts the exact-signature reject (same count/types/RefKind in order)
+        // for a non-primary constructor; optional-param / required-param ambiguity still throws
+        // — do not guess an overload. Primary constructors cannot be removed (their declaring
+        // syntax is the type parameter list), so they stay ConstructorExists even when replacing.
         var parameterTypes = members.Select(m => GetMemberType(m)).ToList();
         var newParamCount = parameterTypes.Count;
         IMethodSymbol? exactMatch = null;
@@ -114,7 +117,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             // Exact signature match
             if (HasExactSignature(ctor, parameterTypes))
             {
-                if (@params.ReplaceExisting)
+                if (@params.ReplaceExisting && !IsPrimaryConstructor(ctor))
                 {
                     exactMatch = ctor;
                     continue;
@@ -128,13 +131,11 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             // Check for ambiguity with optional parameters
             // Case 1: New constructor could be called where existing has optional params
             var requiredParams = ctor.Parameters.TakeWhile(p => !p.IsOptional).ToList();
-            var requiredParamTypes = requiredParams.Select(p => p.Type).ToList();
 
             if (requiredParams.Count <= newParamCount && ctor.Parameters.Length >= newParamCount)
             {
-                // Check if first N types match (where N is new param count)
-                var ctorTypesSubset = ctor.Parameters.Take(newParamCount).Select(p => p.Type).ToList();
-                if (ctorTypesSubset.SequenceEqual(parameterTypes, SymbolEqualityComparer.Default))
+                // Check if first N types and RefKinds match (where N is new param count)
+                if (ParametersMatchGeneratedSignature(ctor.Parameters.Take(newParamCount), parameterTypes))
                 {
                     throw new RefactoringException(
                         ErrorCodes.ConstructorExists,
@@ -144,7 +145,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
             // Case 2: Existing constructor with fewer params could match if new constructor adds optionals
             if (requiredParams.Count == newParamCount &&
-                requiredParamTypes.SequenceEqual(parameterTypes, SymbolEqualityComparer.Default))
+                ParametersMatchGeneratedSignature(requiredParams, parameterTypes))
             {
                 throw new RefactoringException(
                     ErrorCodes.ConstructorExists,
@@ -159,7 +160,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         // If preview mode, return without applying (but include generated constructor code)
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params, members, constructor, replacing);
+            return await CreatePreviewResultAsync(
+                operationId, @params, members, constructor, exactMatch, document.Project.Solution, cancellationToken);
         }
 
         var solution = document.Project.Solution;
@@ -367,9 +369,63 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     private static bool SameAssembly(ISymbol member, INamedTypeSymbol fromType) =>
         SymbolEqualityComparer.Default.Equals(member.ContainingAssembly, fromType.ContainingAssembly);
 
+    /// <summary>
+    /// True when <paramref name="constructor"/> has the same parameter count, types
+    /// (in order, via <see cref="SymbolEqualityComparer"/>), and <see cref="RefKind"/>
+    /// as the constructor we would generate (all generated parameters are by-value).
+    /// <c>ref</c> / <c>out</c> / <c>in</c> overloads are distinct and must not be
+    /// treated as replaceable exact matches.
+    /// </summary>
     private static bool HasExactSignature(IMethodSymbol constructor, IReadOnlyList<ITypeSymbol> parameterTypes) =>
         constructor.Parameters.Length == parameterTypes.Count &&
-        constructor.Parameters.Select(p => p.Type).SequenceEqual(parameterTypes, SymbolEqualityComparer.Default);
+        ParametersMatchGeneratedSignature(constructor.Parameters, parameterTypes);
+
+    /// <summary>
+    /// Generated constructors are always by-value (<see cref="RefKind.None"/>).
+    /// Types and RefKinds must both match — <c>Widget(ref string)</c> is not
+    /// <c>Widget(string)</c>.
+    /// </summary>
+    private static bool ParametersMatchGeneratedSignature(
+        IEnumerable<IParameterSymbol> parameters,
+        IReadOnlyList<ITypeSymbol> expectedTypes)
+    {
+        var list = parameters as IReadOnlyList<IParameterSymbol> ?? parameters.ToList();
+        if (list.Count != expectedTypes.Count)
+            return false;
+
+        for (var i = 0; i < expectedTypes.Count; i++)
+        {
+            if (list[i].RefKind != RefKind.None)
+                return false;
+            if (!SymbolEqualityComparer.Default.Equals(list[i].Type, expectedTypes[i]))
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Primary constructors are declared as the type's parameter list, not a
+    /// <see cref="ConstructorDeclarationSyntax"/>. Removal would skip them and
+    /// still insert an explicit constructor (duplicate signatures).
+    /// </summary>
+    private static bool IsPrimaryConstructor(IMethodSymbol constructor)
+    {
+        foreach (var reference in constructor.DeclaringSyntaxReferences)
+        {
+            var syntax = reference.GetSyntax();
+            if (syntax is ConstructorDeclarationSyntax)
+                return false;
+            if (syntax is ParameterListSyntax)
+                return true;
+            if (syntax.Parent is ParameterListSyntax)
+                return true;
+            if (syntax is TypeDeclarationSyntax { ParameterList: not null })
+                return true;
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Removes the exact-signature constructor declaration from every partial
@@ -690,14 +746,20 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
     /// <summary>
     /// Creates a preview result with the generated constructor code.
+    /// When replacing a constructor that lives in another partial, also
+    /// includes a Modify pending change per affected file with that
+    /// constructor as <c>BeforeSnippet</c>.
     /// </summary>
-    private static RefactoringResult CreatePreviewResult(
+    private static async Task<RefactoringResult> CreatePreviewResultAsync(
         Guid operationId,
         GenerateConstructorParams @params,
         List<ISymbol> members,
         ConstructorDeclarationSyntax constructor,
-        bool replacing)
+        IMethodSymbol? exactMatch,
+        Solution solution,
+        CancellationToken cancellationToken)
     {
+        var replacing = exactMatch != null;
         var memberNames = string.Join(", ", members.Select(m => m.Name));
         var inherited = @params.IncludeInheritedMembers ? " including inherited members" : "";
         var verb = replacing ? "Replace" : "Generate";
@@ -718,6 +780,33 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 AfterSnippet = afterSnippet
             }
         };
+
+        if (exactMatch != null)
+        {
+            var sourcePath = PathResolver.NormalizePath(@params.SourceFile);
+            foreach (var reference in exactMatch.DeclaringSyntaxReferences)
+            {
+                var syntax = await reference.GetSyntaxAsync(cancellationToken);
+                if (syntax is not ConstructorDeclarationSyntax existingCtor)
+                    continue;
+
+                var document = solution.GetDocument(syntax.SyntaxTree);
+                var filePath = document?.FilePath ?? syntax.SyntaxTree.FilePath;
+                if (string.IsNullOrWhiteSpace(filePath))
+                    continue;
+                if (string.Equals(PathResolver.NormalizePath(filePath), sourcePath, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                pendingChanges.Add(new PendingChange
+                {
+                    File = filePath,
+                    ChangeType = Contracts.Enums.ChangeKind.Modify,
+                    Description = $"Remove existing constructor from {@params.TypeName}",
+                    BeforeSnippet = existingCtor.NormalizeWhitespace().ToFullString(),
+                    AfterSnippet = "// constructor removed"
+                });
+            }
+        }
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
