@@ -87,6 +87,7 @@ public class GenerateConstructorToolTests
         // Assert - Optional properties
         Assert.True(properties.TryGetProperty("members", out _));
         Assert.True(properties.TryGetProperty("includeProperties", out _));
+        Assert.True(properties.TryGetProperty("includeInheritedMembers", out _));
         Assert.True(properties.TryGetProperty("addNullChecks", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
     }
@@ -101,6 +102,18 @@ public class GenerateConstructorToolTests
 
         Assert.Equal("boolean", includeProperties.GetProperty("type").GetString());
         Assert.True(includeProperties.GetProperty("default").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_IncludeInheritedMembersProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var includeInheritedMembers = doc.RootElement.GetProperty("properties").GetProperty("includeInheritedMembers");
+
+        Assert.Equal("boolean", includeInheritedMembers.GetProperty("type").GetString());
+        Assert.False(includeInheritedMembers.GetProperty("default").GetBoolean());
     }
 
     [Fact]

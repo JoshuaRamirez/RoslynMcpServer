@@ -15,6 +15,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// keeps today's field + settable-property set; false uses instance fields only
 /// unless <c>members</c> names a property (named resolution still considers
 /// fields and settable properties).
+/// Honors <c>includeInheritedMembers</c> to append accessible base-type members
+/// (settable properties, not the readable-property equality collector).
 /// </summary>
 public sealed class GenerateConstructorOperation : RefactoringOperationBase<GenerateConstructorParams>
 {
@@ -88,7 +90,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         }
 
         // Get fields and properties to initialize
-        var members = GetMembersToInitialize(typeSymbol, @params.Members, @params.IncludeProperties);
+        var members = GetMembersToInitialize(
+            typeSymbol, @params.Members, @params.IncludeProperties, @params.IncludeInheritedMembers);
 
         if (members.Count == 0)
         {
@@ -179,30 +182,25 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     private static List<ISymbol> GetMembersToInitialize(
         INamedTypeSymbol typeSymbol,
         IReadOnlyList<string>? requestedMembers,
-        bool includeProperties)
+        bool includeProperties,
+        bool includeInheritedMembers)
     {
         var allMembers = new List<ISymbol>();
         var hasRequestedMembers = requestedMembers != null && requestedMembers.Count > 0;
 
-        // Get fields
-        var fields = typeSymbol.GetMembers()
-            .OfType<IFieldSymbol>()
-            .Where(f => !f.IsStatic && !f.IsConst && !f.IsImplicitlyDeclared)
-            .Cast<ISymbol>();
+        CollectDeclaredMembers(
+            typeSymbol, typeSymbol, allMembers, includeProperties, hasRequestedMembers, requireAccessible: false);
 
-        allMembers.AddRange(fields);
-
-        // Auto-collection includes settable properties only when includeProperties is true.
-        // A non-empty members list is authoritative and still resolves against settable
-        // properties even if includeProperties is false (same rule as equals/tostring).
-        if (includeProperties || hasRequestedMembers)
+        if (includeInheritedMembers)
         {
-            var properties = typeSymbol.GetMembers()
-                .OfType<IPropertySymbol>()
-                .Where(p => !p.IsStatic && !p.IsReadOnly && p.SetMethod != null && !p.IsImplicitlyDeclared)
-                .Cast<ISymbol>();
+            for (var baseType = typeSymbol.BaseType; baseType != null; baseType = baseType.BaseType)
+            {
+                if (IsObjectOrValueType(baseType))
+                    break;
 
-            allMembers.AddRange(properties);
+                CollectDeclaredMembers(
+                    baseType, typeSymbol, allMembers, includeProperties, hasRequestedMembers, requireAccessible: true);
+            }
         }
 
         if (hasRequestedMembers)
@@ -224,6 +222,122 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         return allMembers;
     }
+
+    /// <summary>
+    /// Collects instance fields and, when requested, settable properties declared
+    /// on <paramref name="declaringType"/>. When <paramref name="requireAccessible"/>
+    /// is true (inherited members), only members visible from
+    /// <paramref name="fromType"/> are added, hidden/overridden names are skipped,
+    /// and inherited readonly fields are omitted because a derived constructor
+    /// cannot assign them.
+    /// </summary>
+    private static void CollectDeclaredMembers(
+        INamedTypeSymbol declaringType,
+        INamedTypeSymbol fromType,
+        List<ISymbol> members,
+        bool includeProperties,
+        bool hasRequestedMembers,
+        bool requireAccessible)
+    {
+        foreach (var field in declaringType.GetMembers().OfType<IFieldSymbol>())
+        {
+            if (field.IsStatic || field.IsConst || field.IsImplicitlyDeclared)
+                continue;
+            // Inherited readonly fields cannot be assigned in a derived constructor (CS0191).
+            if (requireAccessible && field.IsReadOnly)
+                continue;
+            if (requireAccessible && !IsAccessibleFrom(field, fromType))
+                continue;
+            if (requireAccessible && IsHiddenFrom(field, fromType))
+                continue;
+            members.Add(field);
+        }
+
+        // Auto-collection includes settable properties only when includeProperties is true.
+        // A non-empty members list is authoritative and still resolves against settable
+        // properties even if includeProperties is false (same rule as equals/tostring).
+        if (includeProperties || hasRequestedMembers)
+        {
+            foreach (var prop in declaringType.GetMembers().OfType<IPropertySymbol>())
+            {
+                if (prop.IsStatic || prop.IsReadOnly || prop.SetMethod == null || prop.IsImplicitlyDeclared)
+                    continue;
+                if (requireAccessible && !IsAccessibleFrom(prop, fromType))
+                    continue;
+                if (requireAccessible && IsHiddenFrom(prop, fromType))
+                    continue;
+                members.Add(prop);
+            }
+        }
+    }
+
+    private static bool IsObjectOrValueType(INamedTypeSymbol type) =>
+        type.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
+
+    /// <summary>
+    /// True when a closer type hides or overrides <paramref name="member"/> so
+    /// <c>this.Name</c> would bind to that closer member (or fail to compile)
+    /// instead of the inherited one. Any non-implicit closer member with the
+    /// same name counts as a hider, including methods and nested types.
+    /// Implicit members (for example auto-property backing fields) are ignored.
+    /// </summary>
+    private static bool IsHiddenFrom(ISymbol member, INamedTypeSymbol fromType)
+    {
+        var declaring = member.ContainingType;
+        for (var current = fromType;
+             current != null && !SymbolEqualityComparer.Default.Equals(current, declaring);
+             current = current.BaseType)
+        {
+            foreach (var candidate in current.GetMembers(member.Name))
+            {
+                if (candidate.IsImplicitlyDeclared)
+                    continue;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="member"/> can be assigned as <c>this.Name</c> from
+    /// <paramref name="fromType"/> (public / protected / protected-internal;
+    /// internal and private-protected when the same assembly). For properties the
+    /// setter accessibility is used (constructor initialization, not read).
+    /// </summary>
+    private static bool IsAccessibleFrom(ISymbol member, INamedTypeSymbol fromType)
+    {
+        var accessibility = member.DeclaredAccessibility;
+        if (member is IPropertySymbol { SetMethod: { } setter })
+            accessibility = MoreRestrictive(accessibility, setter.DeclaredAccessibility);
+
+        return accessibility switch
+        {
+            Accessibility.Public => true,
+            Accessibility.Protected => true,
+            Accessibility.ProtectedOrInternal => true,
+            Accessibility.Internal => SameAssembly(member, fromType),
+            Accessibility.ProtectedAndInternal => SameAssembly(member, fromType),
+            _ => false
+        };
+    }
+
+    private static Accessibility MoreRestrictive(Accessibility left, Accessibility right) =>
+        AccessibilityRank(left) <= AccessibilityRank(right) ? left : right;
+
+    private static int AccessibilityRank(Accessibility accessibility) => accessibility switch
+    {
+        Accessibility.Private => 0,
+        Accessibility.ProtectedAndInternal => 1,
+        Accessibility.Internal => 2,
+        Accessibility.Protected => 3,
+        Accessibility.ProtectedOrInternal => 4,
+        Accessibility.Public => 5,
+        _ => 0
+    };
+
+    private static bool SameAssembly(ISymbol member, INamedTypeSymbol fromType) =>
+        SymbolEqualityComparer.Default.Equals(member.ContainingAssembly, fromType.ContainingAssembly);
 
     private static ITypeSymbol GetMemberType(ISymbol member)
     {
@@ -475,6 +589,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         ConstructorDeclarationSyntax constructor)
     {
         var memberNames = string.Join(", ", members.Select(m => m.Name));
+        var inherited = @params.IncludeInheritedMembers ? " including inherited members" : "";
 
         // Show the generated constructor as the "after" snippet
         var afterSnippet = constructor.NormalizeWhitespace().ToFullString();
@@ -485,7 +600,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             {
                 File = @params.SourceFile,
                 ChangeType = Contracts.Enums.ChangeKind.Modify,
-                Description = $"Generate constructor for {@params.TypeName} initializing: {memberNames}",
+                Description = $"Generate constructor{inherited} for {@params.TypeName} initializing: {memberNames}",
                 BeforeSnippet = $"// Type '{@params.TypeName}' (no constructor with these parameters)",
                 AfterSnippet = afterSnippet
             }

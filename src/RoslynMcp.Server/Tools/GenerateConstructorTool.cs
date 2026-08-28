@@ -60,13 +60,19 @@ public sealed class GenerateConstructorTool : IToolHandler
             {
                 type = "array",
                 items = new { type = "string" },
-                description = "Names of fields/properties to initialize. If not specified, uses instance fields and (when includeProperties is true) settable properties. Listed names still resolve against fields and settable properties even if includeProperties is false."
+                description = "Names of fields/properties to initialize. If not specified, uses instance fields and (when includeProperties is true) settable properties. When includeInheritedMembers is true, listed names also resolve against accessible inherited members. Listed names still resolve against fields and settable properties even if includeProperties is false."
             },
             includeProperties = new
             {
                 type = "boolean",
                 description = "Include settable instance properties as constructor parameters. When false, only instance fields are used unless members names a property",
                 @default = true
+            },
+            includeInheritedMembers = new
+            {
+                type = "boolean",
+                description = "Also collect accessible instance fields (and settable properties when includeProperties is true) declared on base types",
+                @default = false
             },
             addNullChecks = new
             {
@@ -113,6 +119,7 @@ public sealed class GenerateConstructorTool : IToolHandler
                 TypeName = args.TypeName,
                 Members = args.Members,
                 IncludeProperties = args.IncludeProperties ?? true,
+                IncludeInheritedMembers = args.IncludeInheritedMembers ?? false,
                 AddNullChecks = args.AddNullChecks ?? false,
                 Preview = args.Preview ?? false
             };
@@ -146,6 +153,7 @@ public sealed class GenerateConstructorTool : IToolHandler
         public string TypeName { get; init; } = "";
         public List<string>? Members { get; init; }
         public bool? IncludeProperties { get; init; }
+        public bool? IncludeInheritedMembers { get; init; }
         public bool? AddNullChecks { get; init; }
         public bool? Preview { get; init; }
     }

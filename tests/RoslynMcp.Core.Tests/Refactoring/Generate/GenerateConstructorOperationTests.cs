@@ -12,7 +12,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
 /// Unit tests for GenerateConstructorOperation semantic validation,
-/// plus operation-level tests for <c>includeProperties</c>.
+/// plus operation-level tests for <c>includeProperties</c> and
+/// <c>includeInheritedMembers</c>.
 /// Tests validate type-level constraints for constructor generation.
 /// </summary>
 public class GenerateConstructorOperationTests
@@ -544,6 +545,385 @@ public class GenerateConstructorOperationTests
 
     #endregion
 
+    #region includeInheritedMembers
+
+    private const string AnimalSource = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public string Species;
+
+            protected int Legs;
+
+            private string Secret;
+
+            public readonly string Immutable;
+
+            public string Nickname { get; set; }
+
+            public string ReadOnlyName { get; }
+        }
+        """;
+
+    private const string DogSource = """
+        namespace TestApp;
+
+        public class Dog : Animal
+        {
+            public string Name;
+        }
+        """;
+
+    private static Task<TempWorkspace> CreateDogOnAnimalAsync() =>
+        TempWorkspace.CreateAsync(("Dog.cs", DogSource), ("Animal.cs", AnimalSource));
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersOmitted_DoesNotInitializeBaseField()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog"
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("this.Name = name", ctor);
+        Assert.DoesNotContain("Species", ctor);
+        Assert.DoesNotContain("Legs", ctor);
+        Assert.DoesNotContain("Secret", ctor);
+        Assert.DoesNotContain("Nickname", ctor);
+        Assert.DoesNotContain("Immutable", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersFalse_DoesNotInitializeBaseField()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = false
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("this.Name = name", ctor);
+        Assert.DoesNotContain("Species", ctor);
+        Assert.DoesNotContain("Legs", ctor);
+        Assert.DoesNotContain("Nickname", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersTrue_IncludesPublicAndProtectedBaseFieldsAndSettableProperties()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("this.Name = name", ctor);
+        Assert.Contains("this.Species = species", ctor);
+        Assert.Contains("this.Legs = legs", ctor);
+        Assert.Contains("this.Nickname = nickname", ctor);
+        Assert.DoesNotContain("Secret", ctor);
+        Assert.DoesNotContain("Immutable", ctor);
+        Assert.DoesNotContain("ReadOnlyName", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersTrue_SkipsPrivateBaseField()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.DoesNotContain("Secret", ctor);
+        Assert.DoesNotContain("secret", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersTrue_IncludePropertiesFalse_SkipsInheritedProperties()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true,
+            IncludeProperties = false
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("this.Name = name", ctor);
+        Assert.Contains("this.Species = species", ctor);
+        Assert.Contains("this.Legs = legs", ctor);
+        Assert.DoesNotContain("Nickname", ctor);
+        Assert.DoesNotContain("nickname", ctor);
+        Assert.DoesNotContain("Secret", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersTrue_MembersNamesInheritedMember_IncludesIt()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true,
+            IncludeProperties = false,
+            Members = new[] { "Nickname" }
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("this.Nickname = nickname", ctor);
+        Assert.DoesNotContain("this.Name = name", ctor);
+        Assert.DoesNotContain("Species", ctor);
+        Assert.DoesNotContain("Legs", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersFalse_MembersNamesInheritedMember_NotFound()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                IncludeInheritedMembers = false,
+                Members = new[] { "Species" }
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotFound, ex.ErrorCode);
+        Assert.Contains("Species", ex.Message);
+        Assert.Equal(DogSource, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersTrue_ObjectOnlyBase_NoExtraMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget");
+        Assert.Contains("_id = id", ctor);
+        Assert.Contains("this.Name = name", ctor);
+        Assert.DoesNotContain("Equals", ctor);
+        Assert.DoesNotContain("GetHashCode", ctor);
+        Assert.DoesNotContain("GetType", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersTrue_Preview_DoesNotWriteFiles_AndDescribesInherited()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("inherited members", result.PendingChanges[0].Description);
+        Assert.Contains("Name", result.PendingChanges[0].Description);
+        Assert.Contains("Species", result.PendingChanges[0].Description);
+        var snippet = result.PendingChanges[0].AfterSnippet!;
+        Assert.Contains("this.Name = name", snippet);
+        Assert.Contains("this.Species = species", snippet);
+        Assert.Contains("this.Legs = legs", snippet);
+        Assert.Contains("this.Nickname = nickname", snippet);
+        Assert.DoesNotContain("Secret", snippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersTrue_Override_InitializesDerivedPropertyOnce()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class NamedBase
+            {
+                public virtual string Title { get; set; }
+            }
+
+            public class NamedOverride : NamedBase
+            {
+                public override string Title { get; set; }
+
+                public string Extra;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "NamedOverride.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "NamedOverride",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "NamedOverride");
+        Assert.Contains("this.Extra = extra", ctor);
+        Assert.Contains("this.Title = title", ctor);
+        Assert.Equal(1, CountOccurrences(ctor, "this.Title"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersTrue_CloserMethodHidesInheritedField()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Name;
+
+                public string Species;
+            }
+
+            public class Dog : Animal
+            {
+                public string Extra;
+
+                public string Name() => Extra;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("this.Extra = extra", ctor);
+        Assert.Contains("this.Species = species", ctor);
+        Assert.DoesNotContain("this.Name = name", ctor);
+        Assert.DoesNotContain("string name", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersTrue_AddNullChecks_AppliesToInheritedReferenceFields()
+    {
+        await using var workspace = await CreateDogOnAnimalAsync();
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            IncludeInheritedMembers = true,
+            AddNullChecks = true
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
+        Assert.Contains("nameof(name)", ctor);
+        Assert.Contains("nameof(species)", ctor);
+        Assert.Contains("nameof(nickname)", ctor);
+        Assert.DoesNotContain("nameof(legs)", ctor);
+        Assert.Contains("this.Legs = legs", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_IncludeInheritedMembersTrue_DuplicateInheritedSignature_StillRejected()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Species;
+            }
+
+            public class Dog : Animal
+            {
+                public string Name;
+
+                public Dog(string name, string species)
+                {
+                    Name = name;
+                    Species = species;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Dog.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                IncludeInheritedMembers = true,
+                IncludeProperties = false
+            }));
+
+        Assert.Equal(ErrorCodes.ConstructorExists, ex.ErrorCode);
+        Assert.Contains("already exists", ex.Message);
+        Assert.Equal(source, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Helper Methods
 
     private static void ValidateTypeForConstructor(INamedTypeSymbol typeSymbol)
@@ -665,6 +1045,19 @@ public class GenerateConstructorOperationTests
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
+    }
 
     private static string ExtractConstructor(string source, string typeName)
     {
