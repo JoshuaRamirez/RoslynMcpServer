@@ -363,11 +363,14 @@ public class HelpGeneratorTests
         Assert.Contains("--type-name", requiredSection);
         Assert.DoesNotContain("--throw-not-implemented", requiredSection);
         Assert.DoesNotContain("--members", requiredSection);
+        Assert.DoesNotContain("--replace-existing", requiredSection);
         Assert.DoesNotContain("--preview", requiredSection);
 
         Assert.Contains("--throw-not-implemented", optionalSection);
         Assert.Contains("--members", optionalSection);
+        Assert.Contains("--replace-existing", optionalSection);
         Assert.Contains("--preview", optionalSection);
         Assert.Contains("throwNotImplemented", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("replaceExisting", tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 }

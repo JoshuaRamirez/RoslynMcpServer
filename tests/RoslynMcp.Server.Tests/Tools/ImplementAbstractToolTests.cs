@@ -79,6 +79,7 @@ public class ImplementAbstractToolTests
         Assert.True(properties.TryGetProperty("typeName", out _));
         Assert.True(properties.TryGetProperty("members", out _));
         Assert.True(properties.TryGetProperty("throwNotImplemented", out _));
+        Assert.True(properties.TryGetProperty("replaceExisting", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
     }
 
@@ -93,6 +94,32 @@ public class ImplementAbstractToolTests
         Assert.Equal("boolean", throwNotImplemented.GetProperty("type").GetString());
         Assert.True(throwNotImplemented.GetProperty("default").GetBoolean());
         Assert.Contains("NotImplementedException", throwNotImplemented.GetProperty("description").GetString());
+    }
+
+    [Fact]
+    public void GetDefinition_ReplaceExistingProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var replaceExisting = doc.RootElement.GetProperty("properties").GetProperty("replaceExisting");
+        var required = doc.RootElement.GetProperty("required");
+
+        var requiredFields = new List<string>();
+        foreach (var item in required.EnumerateArray())
+            requiredFields.Add(item.GetString()!);
+
+        Assert.Equal("boolean", replaceExisting.GetProperty("type").GetString());
+        Assert.False(replaceExisting.GetProperty("default").GetBoolean());
+        Assert.DoesNotContain("replaceExisting", requiredFields);
+        var description = replaceExisting.GetProperty("description").GetString();
+        Assert.Contains("Replace already-implemented", description);
+    }
+
+    [Fact]
+    public void GetDefinition_Description_MentionsReplaceExisting()
+    {
+        Assert.Contains("replaceExisting", _tool.Description);
     }
 
     #endregion
