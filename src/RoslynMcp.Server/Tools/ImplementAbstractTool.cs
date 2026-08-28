@@ -33,7 +33,7 @@ public sealed class ImplementAbstractTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Generate implementation stubs for unimplemented abstract members inherited by a selected class. Placeholder body is throw new NotImplementedException() when throwNotImplemented is true (the default); otherwise default-return / empty setter bodies.";
+        "Generate implementation stubs for unimplemented abstract members inherited by a selected class. throwNotImplemented (default true) throws NotImplementedException in stub bodies; replaceExisting (default false) replaces already-implemented abstract members instead of failing; preview returns computed changes without applying.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -61,13 +61,19 @@ public sealed class ImplementAbstractTool : IToolHandler
             {
                 type = "array",
                 items = new { type = "string" },
-                description = "Names of specific abstract members to implement. If not specified, implements all missing members."
+                description = "Names of specific abstract members to implement. If not specified, implements all missing members (and, when replaceExisting is true, replaces existing implementable abstract members)."
             },
             throwNotImplemented = new
             {
                 type = "boolean",
                 description = "Throw NotImplementedException in method, property, and indexer stub bodies",
                 @default = true
+            },
+            replaceExisting = new
+            {
+                type = "boolean",
+                description = "Replace already-implemented abstract members with freshly generated stubs instead of failing. Default false.",
+                @default = false
             },
             preview = new
             {
@@ -106,6 +112,7 @@ public sealed class ImplementAbstractTool : IToolHandler
                 TypeName = args.TypeName,
                 Members = args.Members,
                 ThrowNotImplemented = args.ThrowNotImplemented ?? true,
+                ReplaceExisting = args.ReplaceExisting ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -138,6 +145,7 @@ public sealed class ImplementAbstractTool : IToolHandler
         public string TypeName { get; init; } = "";
         public List<string>? Members { get; init; }
         public bool? ThrowNotImplemented { get; init; }
+        public bool? ReplaceExisting { get; init; }
         public bool? Preview { get; init; }
     }
 }

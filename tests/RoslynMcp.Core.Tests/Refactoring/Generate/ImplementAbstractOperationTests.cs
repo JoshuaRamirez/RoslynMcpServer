@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
+using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
@@ -79,6 +80,20 @@ public class ImplementAbstractOperationTests
         };
 
         Assert.True(@params.ThrowNotImplemented);
+        Assert.False(@params.ReplaceExisting);
+        Assert.False(@params.Preview);
+    }
+
+    [Fact]
+    public void ReplaceExisting_DefaultsToFalse()
+    {
+        var @params = new ImplementAbstractParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Widget"
+        };
+
+        Assert.False(@params.ReplaceExisting);
     }
 
     #endregion
@@ -933,6 +948,678 @@ public class ImplementAbstractOperationTests
 
     #endregion
 
+    #region replaceExisting false / omitted
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingOmitted_AlreadyFullyImplemented_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AlreadyImplementedMethodSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Circle"
+            }));
+
+        Assert.Equal(ErrorCodes.NoUnimplementedAbstractMembers, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("old-body", before);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingFalse_AlreadyFullyImplemented_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AlreadyImplementedMethodSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Circle",
+                ReplaceExisting = false
+            }));
+
+        Assert.Equal(ErrorCodes.NoUnimplementedAbstractMembers, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingFalse_AlreadyImplementedMember_GeneratesRemaining()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+                public abstract void Resize();
+            }
+
+            public class Circle : Shape
+            {
+                public override void Draw()
+                {
+                    /* old-body */
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ReplaceExisting = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("old-body", updated);
+        Assert.Contains("public override void Resize()", updated);
+        Assert.Equal(1, CountOccurrences(updated, "public override void Draw()"));
+    }
+
+    #endregion
+
+    #region replaceExisting true
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_ReplacesMethod()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AlreadyImplementedMethodSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override void Draw()", updated);
+        Assert.DoesNotContain("old-body", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+        Assert.Equal(1, CountOccurrences(updated, "public override void Draw()"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_ReplacesProperty()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract int Area { get; set; }
+            }
+
+            public class Circle : Shape
+            {
+                public override int Area { get; set; } = 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override int Area", updated);
+        Assert.DoesNotContain("= 42", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+        Assert.Equal(1, CountOccurrences(updated, "public override int Area"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_ReplacesIndexer()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Lookup
+            {
+                public abstract string this[int i] { get; set; }
+            }
+
+            public class FastLookup : Lookup
+            {
+                public override string this[int i]
+                {
+                    get => "old";
+                    set { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "FastLookup",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override string this[int i]", updated);
+        Assert.DoesNotContain("old", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+        Assert.Equal(1, CountOccurrences(updated, "this[int i]"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_OmittedMembers_ReplacesExisting_AndAddsMissing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+                public abstract void Resize();
+            }
+
+            public class Circle : Shape
+            {
+                public override void Draw()
+                {
+                    /* old-body */
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("old-body", updated);
+        Assert.Contains("public override void Draw()", updated);
+        Assert.Contains("public override void Resize()", updated);
+        Assert.Equal(1, CountOccurrences(updated, "public override void Draw()"));
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_NamedMembers_OnlyReplacesThose()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+                public abstract void Resize();
+            }
+
+            public class Circle : Shape
+            {
+                public override void Draw()
+                {
+                    /* old-body */
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            Members = new[] { "Draw" },
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("old-body", updated);
+        Assert.Contains("public override void Draw()", updated);
+        Assert.DoesNotContain("public override void Resize()", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_ThrowNotImplementedTrue_ReplacesWithThrow()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AlreadyImplementedMethodSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ThrowNotImplemented = true,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("old-body", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_ThrowNotImplementedFalse_ReplacesWithDefaultReturn()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract int Size();
+            }
+
+            public class Circle : Shape
+            {
+                public override int Size() => 99;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ThrowNotImplemented = false,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("=> 99", updated);
+        Assert.DoesNotContain("NotImplementedException", updated);
+        Assert.Contains("return default(int);", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_PartialOtherFile_RemovesThere_InsertsOnTarget()
+    {
+        const string typePart = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+            }
+
+            public partial class Circle : Shape
+            {
+            }
+            """;
+
+        const string implPart = """
+            namespace TestApp;
+
+            public partial class Circle
+            {
+                public override void Draw()
+                {
+                    /* old-partial */
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Circle.cs", typePart),
+            ("Circle.Impl.cs", implPart));
+        var otherPath = workspace.PathFor("Circle.Impl.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var selected = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var other = NormalizeNewlines(await File.ReadAllTextAsync(otherPath));
+        Assert.Contains("public override void Draw()", selected);
+        Assert.Contains("throw new global::System.NotImplementedException();", selected);
+        Assert.DoesNotContain("old-partial", selected);
+        Assert.DoesNotContain("void Draw(", other);
+        Assert.DoesNotContain("old-partial", other);
+        Assert.Equal(1, CountOccurrences(selected, "public override void Draw()"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_Preview_WritesNothing_AndMentionsReplacement()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AlreadyImplementedMethodSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ReplaceExisting = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("replace existing", result.PendingChanges[0].Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Draw", result.PendingChanges[0].Description);
+        Assert.Contains("stubs will throw NotImplementedException", result.PendingChanges[0].Description);
+        Assert.Contains("replacing existing abstract members", result.PendingChanges[0].BeforeSnippet);
+        Assert.Contains("throw new global::System.NotImplementedException()", result.PendingChanges[0].AfterSnippet);
+        Assert.DoesNotContain("old-body", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_PartialOtherFile_Preview_DoesNotWriteFiles()
+    {
+        const string typePart = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+            }
+
+            public partial class Circle : Shape
+            {
+            }
+            """;
+
+        const string implPart = """
+            namespace TestApp;
+
+            public partial class Circle
+            {
+                public override void Draw()
+                {
+                    /* old-partial */
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Circle.cs", typePart),
+            ("Circle.Impl.cs", implPart));
+        var otherPath = workspace.PathFor("Circle.Impl.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var beforeSelected = await File.ReadAllTextAsync(workspace.SourcePath);
+        var beforeOther = await File.ReadAllTextAsync(otherPath);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ReplaceExisting = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Equal(workspace.SourcePath, result.PendingChanges[0].File);
+        Assert.Contains("replace existing", result.PendingChanges[0].Description, StringComparison.OrdinalIgnoreCase);
+        var otherChange = result.PendingChanges[1];
+        Assert.Equal(otherPath, otherChange.File);
+        Assert.Equal(ChangeKind.Modify, otherChange.ChangeType);
+        Assert.Contains("Remove existing method 'Draw'", otherChange.Description);
+        Assert.Contains("old-partial", otherChange.BeforeSnippet);
+        Assert.Equal("// method removed", otherChange.AfterSnippet);
+        Assert.Equal(beforeSelected, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(beforeOther, await File.ReadAllTextAsync(otherPath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_AmbiguousSameName_NameCollision_WritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Handler
+            {
+                public abstract void Handle(int x);
+                public abstract void Handle(string s);
+                public abstract void Handle(object o);
+            }
+
+            public class DefaultHandler : Handler
+            {
+                public override void Handle(int x) { }
+
+                public override void Handle(string s) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "DefaultHandler",
+                ReplaceExisting = true
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Equal("3003", ex.ErrorCode);
+        Assert.Contains("Handle", ex.Message);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_UnknownMemberFilter_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AlreadyImplementedMethodSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Circle",
+                Members = new[] { "DoesNotExist" },
+                ReplaceExisting = true
+            }));
+
+        Assert.Equal(ErrorCodes.NoUnimplementedAbstractMembers, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_NewHidingMethod_IsNotReplaced()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+                public abstract void Resize();
+            }
+
+            public class Circle : Shape
+            {
+                public new void Draw() { /* hid */ }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public new void Draw() { /* hid */ }", updated);
+        Assert.Contains("public override void Resize()", updated);
+        Assert.DoesNotContain("public override void Draw()", updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_ExplicitInterfaceImplementation_IsNotReplaced()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IDrawable
+            {
+                void Draw();
+            }
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+            }
+
+            public class Circle : Shape, IDrawable
+            {
+                void IDrawable.Draw() { /* explicit */ }
+
+                public override void Draw() { /* old-body */ }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("void IDrawable.Draw() { /* explicit */ }", updated);
+        Assert.DoesNotContain("old-body", updated);
+        Assert.Contains("public override void Draw()", updated);
+        Assert.Contains("throw new global::System.NotImplementedException();", updated);
+        Assert.Equal(1, CountOccurrences(updated, "public override void Draw()"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_IfDirective_PreservesDirectives()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+            }
+
+            public class Circle : Shape
+            {
+            #if DEBUG
+                public override void Draw() { /* old-if */ }
+            #endif
+
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("#if DEBUG", updated);
+        Assert.Contains("#endif", updated);
+        Assert.Contains("void Draw()", updated);
+        Assert.Contains("public int Age { get; set; }", updated);
+        Assert.DoesNotContain("old-if", updated);
+        Assert.Equal(updated.Split("#if ").Length - 1, updated.Split("#endif").Length - 1);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ReplaceExistingTrue_RegionDirective_PreservesDirectives()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+            }
+
+            public class Circle : Shape
+            {
+            #region Work
+                public override void Draw() { /* old-region */ }
+            #endregion
+
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("#region Work", updated);
+        Assert.Contains("#endregion", updated);
+        Assert.Contains("void Draw()", updated);
+        Assert.Contains("public int Age { get; set; }", updated);
+        Assert.DoesNotContain("old-region", updated);
+        Assert.Equal(updated.Split("#region ").Length - 1, updated.Split("#endregion").Length - 1);
+    }
+
+    #endregion
+
     #region Reject Cases
 
     [SkippableFact]
@@ -1099,6 +1786,23 @@ public class ImplementAbstractOperationTests
 
     #region Helpers
 
+    private const string AlreadyImplementedMethodSource = """
+        namespace TestApp;
+
+        public abstract class Shape
+        {
+            public abstract void Draw();
+        }
+
+        public class Circle : Shape
+        {
+            public override void Draw()
+            {
+                /* old-body */
+            }
+        }
+        """;
+
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpImplementAbstractMissing.cs");
 
@@ -1186,7 +1890,12 @@ public class ImplementAbstractOperationTests
         public required string SourcePath { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public string PathFor(string fileName) => Path.Combine(DirectoryPath, fileName);
+
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1194,17 +1903,25 @@ public class ImplementAbstractOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
-
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <DefineConstants>$(DefineConstants);DEBUG</DefineConstants>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            string? sourcePath = null;
+            foreach (var (fileName, source) in files)
+            {
+                var path = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(path, source);
+                sourcePath ??= path;
+            }
+
+            sourcePath ??= Path.Combine(directory, "Types.cs");
 
             try
             {
