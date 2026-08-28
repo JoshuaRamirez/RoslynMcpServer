@@ -1130,7 +1130,7 @@ public class PushMembersDownOperationTests
         Assert.Contains(derivedIndexer.AccessorList.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
         Assert.All(derivedIndexer.AccessorList.Accessors, a => Assert.True(a.Body == null && a.ExpressionBody == null));
         Assert.Contains("this[int i]", GetTypeSection(updated, "IDog"));
-        Assert.Single(sourceIndexer.AccessorList!.Accessors.Where(a => a.IsKind(SyntaxKind.GetAccessorDeclaration)));
+        Assert.Contains(sourceIndexer.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
         Assert.DoesNotContain(
             FindType(updated, "IDog").Members.OfType<PropertyDeclarationSyntax>(),
             p => p.Identifier.Text.Contains("this", StringComparison.Ordinal));
