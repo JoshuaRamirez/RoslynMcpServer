@@ -23,11 +23,9 @@ public static class SyntaxGenerationHelper
         bool callBase = false,
         bool throwNotImplemented = true)
     {
-        // Build parameter list
-        var parameters = method.Parameters.Select(p =>
-            SyntaxFactory.Parameter(SyntaxFactory.Identifier(p.Name))
-                .WithType(SyntaxFactory.ParseTypeName(p.Type.ToDisplayString())
-                    .WithTrailingTrivia(SyntaxFactory.Space)));
+        // Build parameter list, preserving each parameter's RefKind so a
+        // regenerated override of M(ref/out/in/ref readonly T) still overrides.
+        var parameters = method.Parameters.Select(CreateParameter);
 
         var parameterList = SyntaxFactory.ParameterList(
             SyntaxFactory.SeparatedList(parameters));
@@ -64,8 +62,10 @@ public static class SyntaxGenerationHelper
         }
         else
         {
-            // Implicit implementation or override
-            var modifiers = new List<SyntaxToken> { SyntaxFactory.Token(SyntaxKind.PublicKeyword) };
+            // Implicit implementation or override. Overrides must keep the
+            // inherited accessibility (CS0507); interface members are public.
+            var modifiers = new List<SyntaxToken>();
+            modifiers.AddRange(AccessibilityModifierTokens(method.DeclaredAccessibility));
 
             if (method.IsAbstract || method.IsVirtual || method.IsOverride)
             {
@@ -141,7 +141,9 @@ public static class SyntaxGenerationHelper
         }
         else
         {
-            var modifiers = new List<SyntaxToken> { SyntaxFactory.Token(SyntaxKind.PublicKeyword) };
+            // Overrides must keep the inherited accessibility (CS0507).
+            var modifiers = new List<SyntaxToken>();
+            modifiers.AddRange(AccessibilityModifierTokens(property.DeclaredAccessibility));
 
             if (property.IsAbstract || property.IsVirtual || property.IsOverride)
             {
@@ -362,10 +364,50 @@ public static class SyntaxGenerationHelper
                 .WithArgumentList(SyntaxFactory.ArgumentList())));
     }
 
+    private static ParameterSyntax CreateParameter(IParameterSymbol parameter)
+    {
+        var syntax = SyntaxFactory.Parameter(SyntaxFactory.Identifier(parameter.Name))
+            .WithType(SyntaxFactory.ParseTypeName(parameter.Type.ToDisplayString())
+                .WithTrailingTrivia(SyntaxFactory.Space));
+
+        var modifiers = RefKindParameterModifiers(parameter.RefKind);
+        return modifiers.Count == 0 ? syntax : syntax.WithModifiers(modifiers);
+    }
+
+    private static SyntaxTokenList RefKindParameterModifiers(RefKind refKind) =>
+        refKind switch
+        {
+            RefKind.Ref => SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.RefKeyword)),
+            RefKind.Out => SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.OutKeyword)),
+            RefKind.In => SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.InKeyword)),
+            RefKind.RefReadOnlyParameter => SyntaxFactory.TokenList(
+                SyntaxFactory.Token(SyntaxKind.RefKeyword),
+                SyntaxFactory.Token(SyntaxKind.ReadOnlyKeyword)),
+            _ => default
+        };
+
+    private static IEnumerable<SyntaxToken> AccessibilityModifierTokens(Accessibility accessibility) =>
+        accessibility switch
+        {
+            Accessibility.Private => new[] { SyntaxFactory.Token(SyntaxKind.PrivateKeyword) },
+            Accessibility.Protected => new[] { SyntaxFactory.Token(SyntaxKind.ProtectedKeyword) },
+            Accessibility.Internal => new[] { SyntaxFactory.Token(SyntaxKind.InternalKeyword) },
+            Accessibility.ProtectedOrInternal => new[]
+            {
+                SyntaxFactory.Token(SyntaxKind.ProtectedKeyword),
+                SyntaxFactory.Token(SyntaxKind.InternalKeyword)
+            },
+            Accessibility.ProtectedAndInternal => new[]
+            {
+                SyntaxFactory.Token(SyntaxKind.PrivateKeyword),
+                SyntaxFactory.Token(SyntaxKind.ProtectedKeyword)
+            },
+            _ => new[] { SyntaxFactory.Token(SyntaxKind.PublicKeyword) }
+        };
+
     private static BlockSyntax CreateBaseCallBody(IMethodSymbol method)
     {
-        var arguments = method.Parameters.Select(p =>
-            SyntaxFactory.Argument(SyntaxFactory.IdentifierName(p.Name)));
+        var arguments = method.Parameters.Select(CreateBaseCallArgument);
 
         var baseCall = SyntaxFactory.InvocationExpression(
             SyntaxFactory.MemberAccessExpression(
@@ -381,6 +423,29 @@ public static class SyntaxGenerationHelper
 
         return SyntaxFactory.Block(SyntaxFactory.ReturnStatement(baseCall));
     }
+
+    private static ArgumentSyntax CreateBaseCallArgument(IParameterSymbol parameter)
+    {
+        var argument = SyntaxFactory.Argument(SyntaxFactory.IdentifierName(parameter.Name));
+        var keyword = RefKindArgumentKeyword(parameter.RefKind);
+        return keyword.HasValue
+            ? argument.WithRefKindKeyword(keyword.Value)
+            : argument;
+    }
+
+    /// <summary>
+    /// Call-site ref-kind keyword. <c>ref readonly</c> parameters are passed
+    /// with <c>in</c> (the valid argument modifier).
+    /// </summary>
+    private static SyntaxToken? RefKindArgumentKeyword(RefKind refKind) =>
+        refKind switch
+        {
+            RefKind.Ref => SyntaxFactory.Token(SyntaxKind.RefKeyword),
+            RefKind.Out => SyntaxFactory.Token(SyntaxKind.OutKeyword),
+            RefKind.In => SyntaxFactory.Token(SyntaxKind.InKeyword),
+            RefKind.RefReadOnlyParameter => SyntaxFactory.Token(SyntaxKind.InKeyword),
+            _ => null
+        };
 
     private static BlockSyntax CreateDefaultReturnBody(ITypeSymbol returnType)
     {
