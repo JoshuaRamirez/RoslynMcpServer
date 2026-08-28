@@ -1360,7 +1360,9 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             sourceDecl is ClassDeclarationSyntax &&
             !sourceDecl.Modifiers.Any(SyntaxKind.AbstractKeyword))
         {
-            updated = updated.AddModifiers(SyntaxFactory.Token(SyntaxKind.AbstractKeyword));
+            updated = updated.AddModifiers(
+                SyntaxFactory.Token(SyntaxKind.AbstractKeyword)
+                    .WithTrailingTrivia(SyntaxFactory.Space));
         }
 
         return updated;

@@ -1089,6 +1089,8 @@ public class PushMembersDownOperationTests
         Assert.Null(animalIndexer.ExpressionBody);
         Assert.All(animalIndexer.AccessorList!.Accessors, a => Assert.True(a.Body == null && a.ExpressionBody == null));
         Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.Contains("abstract class", updated);
+        Assert.DoesNotContain("abstractclass", updated);
         Assert.Contains("this[int i]", GetTypeSection(updated, "Animal"));
         Assert.Contains("this[int i]", GetTypeSection(updated, "Dog"));
         AssertCompiles(updated);
