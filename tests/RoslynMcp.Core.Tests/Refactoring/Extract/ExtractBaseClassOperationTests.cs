@@ -347,6 +347,353 @@ public class ExtractBaseClassOperationTests
         Assert.False(File.Exists(Path.GetFullPath(Path.Combine(workspace.DirectoryPath, "Person.cs"))));
     }
 
+    #region Events
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_FieldLikeEvent_MovesEventOntoBase()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public event System.EventHandler Changed;
+
+                public void Work() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Changed" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var person = GetClassSection(updated, "Person");
+        var employee = GetClassSection(updated, "Employee");
+
+        Assert.Contains("class Person", updated);
+        AssertInheritsFrom(updated, "Employee", "Person");
+        Assert.Contains("public event System.EventHandler Changed", person);
+        Assert.DoesNotContain("event System.EventHandler Changed", employee);
+        Assert.Contains("public void Work()", employee);
+        Assert.DoesNotContain("abstract event", updated);
+        Assert.DoesNotContain("public abstract class Person", updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_AccessorStyleEvent_MovesEventOntoBase()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public event System.EventHandler Changed
+                {
+                    add { }
+                    remove { }
+                }
+
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Changed" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var person = GetClassSection(updated, "Person");
+        var employee = GetClassSection(updated, "Employee");
+
+        Assert.Contains("class Person", updated);
+        AssertInheritsFrom(updated, "Employee", "Person");
+        Assert.Contains("public event System.EventHandler Changed", person);
+        Assert.Contains("add", person);
+        Assert.Contains("remove", person);
+        Assert.DoesNotContain("event System.EventHandler Changed", employee);
+        Assert.Contains("public string Name { get; set; }", employee);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MultiVariableEventField_LeavesUnrelatedDeclarator()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public event System.EventHandler Changed, Other;
+
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Changed" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var person = GetClassSection(updated, "Person");
+        var employee = GetClassSection(updated, "Employee");
+
+        AssertInheritsFrom(updated, "Employee", "Person");
+        Assert.Contains("public event System.EventHandler Changed", person);
+        Assert.DoesNotContain("Other", person);
+        Assert.DoesNotContain("Changed, Other", updated);
+        Assert.Contains("public event System.EventHandler Other", employee);
+        Assert.DoesNotContain("event System.EventHandler Changed", employee);
+        Assert.Contains("public int Age { get; set; }", employee);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MultiVariableEventField_SecondDeclarator_LeavesFirst()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public event System.EventHandler Changed, Other;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Other" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var person = GetClassSection(updated, "Person");
+        var employee = GetClassSection(updated, "Employee");
+
+        AssertInheritsFrom(updated, "Employee", "Person");
+        Assert.Contains("public event System.EventHandler Other", person);
+        Assert.DoesNotContain("Changed", person);
+        Assert.Contains("public event System.EventHandler Changed", employee);
+        Assert.DoesNotContain("event System.EventHandler Other", employee);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_PrivateEvent_BecomesProtectedOnBase()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                private event System.EventHandler Changed;
+
+                public void Work() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Changed" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var person = GetClassSection(updated, "Person");
+        var employee = GetClassSection(updated, "Employee");
+
+        AssertInheritsFrom(updated, "Employee", "Person");
+        Assert.Contains("protected event System.EventHandler Changed", person);
+        Assert.DoesNotContain("private event", person);
+        Assert.DoesNotContain("event System.EventHandler Changed", employee);
+        Assert.Contains("public void Work()", employee);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_PrivateAccessorStyleEvent_BecomesProtectedOnBase()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                private event System.EventHandler Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Changed" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var person = GetClassSection(updated, "Person");
+
+        AssertInheritsFrom(updated, "Employee", "Person");
+        Assert.Contains("protected event System.EventHandler Changed", person);
+        Assert.DoesNotContain("private event", person);
+        Assert.Contains("add", person);
+        Assert.Contains("remove", person);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_Event_Preview_WritesNothing_AndDescribesEvent()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public event System.EventHandler Changed;
+
+                public void Work() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Changed" },
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Changed", result.PendingChanges[0].Description);
+        Assert.Contains("event", result.PendingChanges[0].AfterSnippet, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Changed", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.False(File.Exists(Path.GetFullPath(Path.Combine(workspace.DirectoryPath, "Person.cs"))));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_MarksClassOnly_DoesNotInventAbstractEvent()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public event System.EventHandler Changed;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Changed" },
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var person = GetClassSection(updated, "Person");
+
+        Assert.Contains("abstract class Person", updated);
+        Assert.Contains("public event System.EventHandler Changed", person);
+        Assert.DoesNotContain("abstract event", updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_Event_LeavesMethodsPropertiesAndFieldsOnDerived()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public string Name { get; set; }
+                public int Age;
+                public event System.EventHandler Changed;
+                public void Work() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Changed" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var person = GetClassSection(updated, "Person");
+        var employee = GetClassSection(updated, "Employee");
+
+        Assert.Contains("public event System.EventHandler Changed", person);
+        Assert.DoesNotContain("Name", person);
+        Assert.DoesNotContain("Age", person);
+        Assert.DoesNotContain("Work", person);
+        Assert.Contains("public string Name { get; set; }", employee);
+        Assert.Contains("public int Age", employee);
+        Assert.Contains("public void Work()", employee);
+        Assert.DoesNotContain("event System.EventHandler Changed", employee);
+    }
+
+    #endregion
+
     [Fact]
     public void AddExplicitCompileItemIfNeeded_SdkDefaults_Unchanged()
     {
@@ -436,6 +783,15 @@ public class ExtractBaseClassOperationTests
     {
         var compact = new string(source.Where(c => !char.IsWhiteSpace(c)).ToArray());
         Assert.Contains($"class{typeName}:{baseClassName}", compact);
+    }
+
+    private static string GetClassSection(string source, string className)
+    {
+        var marker = $"class {className}";
+        var start = source.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Class '{className}' not found in:\n{source}");
+        var next = source.IndexOf("class ", start + marker.Length, StringComparison.Ordinal);
+        return next < 0 ? source[start..] : source[start..next];
     }
 
     private sealed class TempWorkspace : IAsyncDisposable

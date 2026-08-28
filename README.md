@@ -202,7 +202,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 | `extract_variable` | Extract an expression to a local variable. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `variableName`, `useVar`, `replaceAll` |
 | `extract_constant` | Extract a literal value to a named constant. | `sourceFile`, `startLine`, `startColumn`, `endLine`, `endColumn`, `constantName`, `visibility`, `replaceAll` |
 | `extract_interface` | Extract an interface from a class's public members. | `sourceFile`, `typeName`, `interfaceName`, `members`, `targetFile`, `separateFile` |
-| `extract_base_class` | Extract members to a new base class. | `sourceFile`, `typeName`, `baseClassName`, `members`, `targetFile`, `separateFile`, `makeAbstract` |
+| `extract_base_class` | Extract members (methods, properties, fields, and events) to a new base class. Field-like and accessor-style events move by name; a multi-variable event field moves only the selected declarator. Private events become protected on the new base. `makeAbstract` still only marks the new class abstract. | `sourceFile`, `typeName`, `baseClassName`, `members`, `targetFile`, `separateFile`, `makeAbstract` |
 | `pull_members_up` | Move selected members from a derived type onto an existing base class or interface. | `sourceFile`, `typeName`, `members`, `targetBaseType`, `makeAbstract` |
 | `push_members_down` | Move selected members from a base type down onto derived types. | `sourceFile`, `typeName`, `members`, `targetDerivedTypes`, `leaveAbstract` |
 | `use_base_type` | Replace derived-type references with a compatible base type or interface. | `sourceFile`, `typeName`, `targetBaseType` |
