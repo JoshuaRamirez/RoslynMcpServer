@@ -91,6 +91,12 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
         var leaveAbstract = @params.LeaveAbstract && sourceSymbol.TypeKind != TypeKind.Interface;
         ValidateMembersForPush(members, sourceSymbol, targets, leaveAbstract);
+        if (leaveAbstract)
+        {
+            var allDerived = await GetDerivedTypes(sourceSymbol, targetNames: null, cancellationToken);
+            ValidateLeaveAbstractCoversConcreteDerived(sourceSymbol, allDerived, targets);
+        }
+
         await ValidateNoBreakingReferencesAsync(
             members, sourceSymbol, targets, leaveAbstract, cancellationToken);
 
@@ -392,6 +398,25 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
     }
 
+    private static void ValidateLeaveAbstractCoversConcreteDerived(
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> allDerived,
+        IReadOnlyList<INamedTypeSymbol> targets)
+    {
+        foreach (var derived in allDerived)
+        {
+            if (derived.IsAbstract)
+                continue;
+
+            if (WillHaveMemberAfterPush(derived, targets))
+                continue;
+
+            throw new RefactoringException(
+                ErrorCodes.MemberNotMoveable,
+                $"Cannot leave members abstract on '{source.Name}': derived type '{derived.Name}' would not receive an override.");
+        }
+    }
+
     private async Task ValidateNoBreakingReferencesAsync(
         IReadOnlyList<PushableMember> members,
         INamedTypeSymbol source,
@@ -399,8 +424,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         bool leaveAbstract,
         CancellationToken cancellationToken)
     {
-        if (leaveAbstract || source.TypeKind == TypeKind.Interface)
+        if (source.TypeKind == TypeKind.Interface)
             return;
+
+        if (leaveAbstract)
+        {
+            await ValidateEventsNotRaisedBySourceAsync(members, source, cancellationToken);
+            return;
+        }
 
         foreach (var member in members)
         {
@@ -484,6 +515,116 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         return false;
     }
 
+    private async Task ValidateEventsNotRaisedBySourceAsync(
+        IReadOnlyList<PushableMember> members,
+        INamedTypeSymbol source,
+        CancellationToken cancellationToken)
+    {
+        foreach (var member in members)
+        {
+            if (member.Symbol is not IEventSymbol)
+                continue;
+
+            var references = await SymbolFinder.FindReferencesAsync(
+                member.Symbol, Context.Solution, cancellationToken);
+
+            foreach (var referenced in references)
+            {
+                foreach (var location in referenced.Locations)
+                {
+                    if (location.IsImplicit || location.Location.SourceTree == null)
+                        continue;
+
+                    if (member.Syntax.SyntaxTree == location.Location.SourceTree &&
+                        member.Syntax.Span.Contains(location.Location.SourceSpan))
+                    {
+                        continue;
+                    }
+
+                    var document = location.Document;
+                    var root = await document.GetSyntaxRootAsync(cancellationToken);
+                    var model = await document.GetSemanticModelAsync(cancellationToken);
+                    if (root == null || model == null)
+                        continue;
+
+                    var node = root.FindNode(location.Location.SourceSpan);
+                    if (!IsDeclaredIn(model.GetEnclosingSymbol(node.SpanStart), source))
+                        continue;
+
+                    if (!IsEventRaise(node))
+                        continue;
+
+                    throw new RefactoringException(
+                        ErrorCodes.MemberNotMoveable,
+                        $"Event '{member.Name}' cannot be left as abstract on '{source.Name}' because it is raised in that type.");
+                }
+            }
+        }
+    }
+
+    private static bool IsDeclaredIn(ISymbol? symbol, INamedTypeSymbol source)
+    {
+        for (var type = symbol as INamedTypeSymbol ?? symbol?.ContainingType;
+             type != null;
+             type = type.ContainingType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(type, source) ||
+                SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, source.OriginalDefinition))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsEventRaise(SyntaxNode node)
+    {
+        if (IsInAddOrRemoveAssignment(node))
+            return false;
+
+        for (var current = node; current != null && current is not MemberDeclarationSyntax; current = current.Parent)
+        {
+            switch (current)
+            {
+                case InvocationExpressionSyntax invocation when InvocationRaisesEvent(invocation):
+                    return true;
+                case ConditionalAccessExpressionSyntax conditional when IsInvokeWhenNotNull(conditional.WhenNotNull):
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsInAddOrRemoveAssignment(SyntaxNode node)
+    {
+        for (var current = node; current != null; current = current.Parent)
+        {
+            if (current is AssignmentExpressionSyntax assignment)
+            {
+                return assignment.IsKind(SyntaxKind.AddAssignmentExpression) ||
+                       assignment.IsKind(SyntaxKind.SubtractAssignmentExpression);
+            }
+        }
+
+        return false;
+    }
+
+    private static bool InvocationRaisesEvent(InvocationExpressionSyntax invocation)
+    {
+        return invocation.Expression switch
+        {
+            SimpleNameSyntax => true,
+            MemberAccessExpressionSyntax access => access.Name.Identifier.Text == "Invoke",
+            MemberBindingExpressionSyntax binding => binding.Name.Identifier.Text == "Invoke",
+            _ => false
+        };
+    }
+
+    private static bool IsInvokeWhenNotNull(ExpressionSyntax whenNotNull) =>
+        whenNotNull is InvocationExpressionSyntax invocation && InvocationRaisesEvent(invocation);
+
     /// <summary>
     /// Returns whether <paramref name="member"/> can be copied onto <paramref name="target"/>.
     /// </summary>
@@ -498,8 +639,13 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         return true;
     }
 
-    private static bool CanBeAbstract(ISymbol member) =>
-        !member.IsStatic && member is IMethodSymbol or IPropertySymbol;
+    private static bool CanBeAbstract(ISymbol member) => member switch
+    {
+        IMethodSymbol method => !method.IsStatic,
+        IPropertySymbol property => !property.IsStatic,
+        IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
+        _ => false
+    };
 
     private static bool IsRequiredByAbstractBase(ISymbol member)
     {
@@ -790,10 +936,38 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => ToAbstractProperty(property),
+            EventDeclarationSyntax eventDecl when CanMakeEventAbstract(eventDecl) => ToAbstractEvent(eventDecl),
+            EventFieldDeclarationSyntax eventField when CanMakeEventAbstract(eventField) => ToAbstractEvent(eventField),
             _ => throw new RefactoringException(
                 ErrorCodes.MemberNotMoveable,
-                "Only methods and properties can be left as abstract members.")
+                "Only methods, properties, and events can be left as abstract members.")
         };
+    }
+
+    private static bool CanMakeEventAbstract(EventDeclarationSyntax eventDecl) =>
+        !eventDecl.Modifiers.Any(SyntaxKind.StaticKeyword) &&
+        eventDecl.ExplicitInterfaceSpecifier == null;
+
+    private static bool CanMakeEventAbstract(EventFieldDeclarationSyntax eventField) =>
+        !eventField.Modifiers.Any(SyntaxKind.StaticKeyword);
+
+    private static EventDeclarationSyntax ToAbstractEvent(EventDeclarationSyntax eventDecl)
+    {
+        return eventDecl
+            .WithModifiers(ToAbstractModifiers(eventDecl.Modifiers))
+            .WithAccessorList(null)
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
+            .NormalizeWhitespace();
+    }
+
+    private static EventDeclarationSyntax ToAbstractEvent(EventFieldDeclarationSyntax eventField)
+    {
+        var variable = eventField.Declaration.Variables.First();
+        return SyntaxFactory.EventDeclaration(eventField.Declaration.Type, variable.Identifier)
+            .WithAttributeLists(eventField.AttributeLists)
+            .WithModifiers(ToAbstractModifiers(eventField.Modifiers))
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
+            .NormalizeWhitespace();
     }
 
     private static PropertyDeclarationSyntax ToAbstractProperty(PropertyDeclarationSyntax property)
@@ -830,6 +1004,10 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             MethodDeclarationSyntax method => EnsureMethodBody(method.WithModifiers(ToOverrideModifiers(method.Modifiers)))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => property.WithModifiers(ToOverrideModifiers(property.Modifiers))
+                .NormalizeWhitespace(),
+            EventDeclarationSyntax eventDecl => eventDecl.WithModifiers(ToOverrideModifiers(eventDecl.Modifiers))
+                .NormalizeWhitespace(),
+            EventFieldDeclarationSyntax eventField => eventField.WithModifiers(ToOverrideModifiers(eventField.Modifiers))
                 .NormalizeWhitespace(),
             _ => member.NormalizeWhitespace()
         };
@@ -894,6 +1072,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     private static SyntaxTokenList ToAbstractModifiers(SyntaxTokenList modifiers)
     {
+        var keepOverride = modifiers.Any(SyntaxKind.OverrideKeyword);
         var tokens = StripModifierKinds(
                 modifiers,
                 SyntaxKind.PrivateKeyword,
@@ -908,6 +1087,12 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
 
         tokens.Add(SyntaxFactory.Token(SyntaxKind.AbstractKeyword));
+        if (keepOverride)
+        {
+            tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword)
+                .WithTrailingTrivia(SyntaxFactory.ElasticSpace));
+        }
+
         return SyntaxFactory.TokenList(tokens);
     }
 
@@ -926,7 +1111,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (modifiers.Any(SyntaxKind.PrivateKeyword) || !HasAccessibility(tokens))
             tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
 
-        tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword));
+        tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword)
+            .WithTrailingTrivia(SyntaxFactory.ElasticSpace));
         return SyntaxFactory.TokenList(tokens);
     }
 
@@ -972,11 +1158,20 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             if (TryKeepRemainingDeclarators(member, pushedNames, out var remaining))
             {
                 newMembers.Add(remaining);
+                if (leaveAbstract)
+                {
+                    foreach (var pushed in members.Where(m => m.Syntax == member))
+                        newMembers.Add(ConvertToAbstract(IsolateMemberSyntax(member, pushed.Name)));
+                }
+
                 continue;
             }
 
             if (leaveAbstract)
-                newMembers.Add(ConvertToAbstract(member));
+            {
+                foreach (var pushed in members.Where(m => m.Syntax == member))
+                    newMembers.Add(ConvertToAbstract(IsolateMemberSyntax(member, pushed.Name)));
+            }
         }
 
         var updated = sourceDecl.WithMembers(SyntaxFactory.List(newMembers));

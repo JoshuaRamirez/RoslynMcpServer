@@ -590,6 +590,374 @@ public class PushMembersDownOperationTests
         Assert.Equal(1, CountOccurrences(dog, "Untouched"));
     }
 
+    [SkippableFact]
+    public async Task PushMembersDown_FieldLikeEvent_MovesEventOntoDerived()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public event System.EventHandler Changed;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Changed"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.DoesNotContain("event System.EventHandler Changed", animal);
+        Assert.Contains("public event System.EventHandler Changed", dog);
+        Assert.DoesNotContain("override", dog);
+        Assert.DoesNotContain("abstract", text);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AccessorStyleEvent_MovesEventOntoDerived()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public event System.EventHandler Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Changed"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.DoesNotContain("event System.EventHandler Changed", animal);
+        Assert.Contains("public event System.EventHandler Changed", dog);
+        Assert.Contains("add", dog);
+        Assert.Contains("remove", dog);
+        Assert.DoesNotContain("override", dog);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_MultiVariableEventField_LeavesUnrelatedDeclarator()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public event System.EventHandler Changed, Other;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Changed"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("public event System.EventHandler Other", animal);
+        Assert.DoesNotContain("Changed", animal);
+        Assert.DoesNotContain("Changed, Other", text);
+        Assert.Contains("public event System.EventHandler Changed", dog);
+        Assert.DoesNotContain("Other", dog);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_FieldLikeEventKeepsAbstractOnBase()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public event System.EventHandler Changed;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Changed"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("abstract", text);
+        Assert.Contains("abstract event System.EventHandler Changed", animal);
+        Assert.Contains("override event System.EventHandler Changed", dog);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_AccessorStyleEventKeepsAbstractOnBase()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public event System.EventHandler Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Changed"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("abstract event System.EventHandler Changed", animal);
+        Assert.DoesNotContain("add", animal);
+        Assert.Contains("override event System.EventHandler Changed", dog);
+        Assert.Contains("add", dog);
+        Assert.Contains("remove", dog);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_MultiVariableEventField_LeavesUnrelatedAndOverridesSelected()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public event System.EventHandler Changed, Other;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Changed"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("abstract event System.EventHandler Changed", animal);
+        Assert.Contains("public event System.EventHandler Other", animal);
+        Assert.DoesNotContain("Changed, Other", text);
+        Assert.Contains("override event System.EventHandler Changed", dog);
+        Assert.DoesNotContain("Other", dog);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_OverrideEvent_PreservesAbstractOverride()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Creature
+            {
+                public abstract event System.EventHandler Changed;
+            }
+
+            public class Animal : Creature
+            {
+                public override event System.EventHandler Changed;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Changed"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("abstract override event System.EventHandler Changed", animal);
+        Assert.Contains("override event System.EventHandler Changed", dog);
+        Assert.DoesNotContain("new ", animal);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_Event_Preview_WritesNothing_AndDescribesEvent()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public event System.EventHandler Changed;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Changed"],
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => c.Description != null && c.Description.Contains("Changed"));
+        Assert.Contains(result.PendingChanges, c =>
+            c.AfterSnippet != null &&
+            c.AfterSnippet.Contains("event", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet.Contains("Changed"));
+
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(original, after);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_Event_LeavesMethodsPropertiesAndFieldsOnBase()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public string Name { get; set; } = "";
+                public int Age;
+                public event System.EventHandler Changed;
+
+                public int Speak()
+                {
+                    return 1;
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Changed"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("public string Name { get; set; }", animal);
+        Assert.Contains("public int Age", animal);
+        Assert.Contains("public int Speak()", animal);
+        Assert.DoesNotContain("event System.EventHandler Changed", animal);
+        Assert.Contains("public event System.EventHandler Changed", dog);
+        Assert.DoesNotContain("Name", dog);
+        Assert.DoesNotContain("Age", dog);
+        Assert.DoesNotContain("Speak", dog);
+    }
+
     #endregion
 
     #region P0 Rejects
@@ -969,6 +1337,149 @@ public class PushMembersDownOperationTests
                 SourceFile = workspace.SourcePath,
                 TypeName = "Animal",
                 Members = ["Speak"],
+                LeaveAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_StaticEvent_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public static event System.EventHandler Changed;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Changed"],
+                LeaveAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_ExplicitInterfaceEvent_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface INotify
+            {
+                event System.EventHandler Changed;
+            }
+
+            public class Animal : INotify
+            {
+                event System.EventHandler INotify.Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Changed"],
+                LeaveAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_EventRaisedInSource_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public event System.EventHandler Changed;
+
+                public void Speak()
+                {
+                    Changed?.Invoke(this, System.EventArgs.Empty);
+                }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Changed"],
+                LeaveAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_NamedSubsetOmitsConcreteDerived_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public event System.EventHandler Changed;
+            }
+
+            public class Dog : Animal
+            {
+            }
+
+            public class Cat : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Changed"],
+                TargetDerivedTypes = ["Dog"],
                 LeaveAbstract = true
             }));
 
