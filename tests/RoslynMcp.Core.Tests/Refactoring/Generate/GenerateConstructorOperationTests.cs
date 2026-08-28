@@ -2440,8 +2440,10 @@ public class GenerateConstructorOperationTests
         Assert.True(result.Success);
         var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
         Assert.Contains("public Dog(Dog other) : base(other)", ctor);
-        Assert.Contains("this.Species = other.Species", ctor);
         Assert.Contains("this.Name = other.Name", ctor);
+        // Species is declared on the positional base and is copied by : base(other),
+        // not reassigned in the derived constructor when includeInheritedMembers is false.
+        Assert.DoesNotContain("this.Species", ctor);
     }
 
     [SkippableFact]
