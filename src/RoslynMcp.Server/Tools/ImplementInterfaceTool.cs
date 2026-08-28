@@ -32,7 +32,7 @@ public sealed class ImplementInterfaceTool : IToolHandler
     public string Name => "implement_interface";
 
     /// <inheritdoc />
-    public string Description => "Generate interface member implementations for a type.";
+    public string Description => "Generate interface member implementations for a type. throwNotImplemented (default true) throws NotImplementedException in stub bodies; replaceExisting (default false) replaces already-implemented interface members instead of failing; preview returns computed changes without applying.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -71,13 +71,19 @@ public sealed class ImplementInterfaceTool : IToolHandler
             {
                 type = "array",
                 items = new { type = "string" },
-                description = "Names of specific members to implement. If not specified, implements all missing members."
+                description = "Names of specific members to implement. If not specified, implements all missing members (and, when replaceExisting is true, replaces existing implementable members)."
             },
             throwNotImplemented = new
             {
                 type = "boolean",
                 description = "Throw NotImplementedException in method bodies",
                 @default = true
+            },
+            replaceExisting = new
+            {
+                type = "boolean",
+                description = "Replace already-implemented interface members with freshly generated stubs instead of failing. Default false.",
+                @default = false
             },
             preview = new
             {
@@ -118,6 +124,7 @@ public sealed class ImplementInterfaceTool : IToolHandler
                 ExplicitImplementation = args.ExplicitImplementation ?? false,
                 Members = args.Members,
                 ThrowNotImplemented = args.ThrowNotImplemented ?? true,
+                ReplaceExisting = args.ReplaceExisting ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -152,6 +159,7 @@ public sealed class ImplementInterfaceTool : IToolHandler
         public bool? ExplicitImplementation { get; init; }
         public List<string>? Members { get; init; }
         public bool? ThrowNotImplemented { get; init; }
+        public bool? ReplaceExisting { get; init; }
         public bool? Preview { get; init; }
     }
 }
