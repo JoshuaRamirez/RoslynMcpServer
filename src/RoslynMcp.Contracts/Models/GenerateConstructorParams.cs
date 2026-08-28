@@ -66,7 +66,8 @@ public sealed class GenerateConstructorParams
     /// <c>protected internal</c>, <c>private protected</c>.
     /// When <see cref="ReplaceExisting"/> replaces an exact-signature
     /// constructor, the new constructor uses this visibility rather than
-    /// copying the old constructor's accessibility.
+    /// copying the old constructor's accessibility. Structs and record
+    /// structs reject the three protected forms (CS0666).
     /// </summary>
     public string? Visibility { get; init; }
 

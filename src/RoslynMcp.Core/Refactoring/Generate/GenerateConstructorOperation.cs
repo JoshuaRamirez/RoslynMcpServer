@@ -21,13 +21,20 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// with the exact same signature (count, types, and RefKind) before generating
 /// a fresh one, and <c>visibility</c> for the generated constructor's
 /// accessibility (omitted / public keeps today's public constructor).
-/// Primary constructors are not replaced.
+/// Structs and record structs reject <c>protected</c> /
+/// <c>protected internal</c> / <c>private protected</c> (CS0666) before any
+/// generate, replace, or preview write. Primary constructors are not replaced.
 /// </summary>
 public sealed class GenerateConstructorOperation : RefactoringOperationBase<GenerateConstructorParams>
 {
     private static readonly HashSet<string> ValidVisibilities = new(StringComparer.OrdinalIgnoreCase)
     {
         "public", "private", "protected", "internal", "protected internal", "private protected"
+    };
+
+    private static readonly HashSet<string> ProtectedVisibilities = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "protected", "protected internal", "private protected"
     };
 
     /// <summary>
@@ -108,6 +115,16 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 "Cannot add constructor to static class.");
         }
 
+        // C# forbids protected members on structs / record structs (CS0666).
+        // Reject before member collection, generation, replaceExisting, or preview.
+        var visibility = ResolveVisibility(@params.Visibility);
+        if (typeSymbol.TypeKind == TypeKind.Struct && ProtectedVisibilities.Contains(visibility))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidVisibility,
+                $"Cannot generate a {visibility} constructor on struct '{@params.TypeName}'. C# does not allow protected members on structs (CS0666).");
+        }
+
         // Get fields and properties to initialize
         var members = GetMembersToInitialize(
             typeSymbol, @params.Members, @params.IncludeProperties, @params.IncludeInheritedMembers);
@@ -171,7 +188,6 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         // Generate the constructor. Visibility is always the requested
         // accessibility (default public) — never copied from a replaced ctor.
-        var visibility = ResolveVisibility(@params.Visibility);
         var constructor = GenerateConstructor(members, typeDeclaration, @params.AddNullChecks, visibility);
         var replacing = exactMatch != null;
 

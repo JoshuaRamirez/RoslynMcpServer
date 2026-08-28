@@ -1883,6 +1883,175 @@ public class GenerateConstructorOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    private const string PointStructSource = """
+        namespace TestApp;
+
+        public struct Point
+        {
+            public int X;
+
+            public int Y;
+        }
+        """;
+
+    private const string PointStructWithCtorSource = """
+        namespace TestApp;
+
+        public struct Point
+        {
+            public int X;
+
+            public int Y;
+
+            public Point(int x, int y)
+            {
+                X = 0;
+                Y = 0;
+            }
+        }
+        """;
+
+    private const string PointRecordStructSource = """
+        namespace TestApp;
+
+        public record struct Point
+        {
+            public int X;
+
+            public int Y;
+        }
+        """;
+
+    [SkippableTheory]
+    [InlineData("protected")]
+    [InlineData("protected internal")]
+    [InlineData("private protected")]
+    public async Task GenerateConstructor_Struct_ProtectedVisibility_FailsWithInvalidVisibility_AndWritesNothing(
+        string visibility)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointStructSource, "Point.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Point",
+                Visibility = visibility
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.Contains("struct", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CS0666", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_RecordStruct_Protected_FailsWithInvalidVisibility_AndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointRecordStructSource, "Point.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Point",
+                Visibility = "protected"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.Contains("struct", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData(null, "public")]
+    [InlineData("public", "public")]
+    [InlineData("internal", "internal")]
+    [InlineData("private", "private")]
+    public async Task GenerateConstructor_Struct_NonProtectedVisibility_Succeeds(string? visibility, string expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointStructSource, "Point.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Point",
+            Visibility = visibility
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(
+            NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Point", expected);
+        Assert.StartsWith($"{expected} Point(", ctor);
+        Assert.Contains("this.X = x", ctor);
+        Assert.Contains("this.Y = y", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_Class_Protected_StillSucceeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetWithFieldAndPropertySource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Visibility = "protected"
+        });
+
+        Assert.True(result.Success);
+        var ctor = ExtractConstructor(
+            NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Widget", "protected");
+        Assert.StartsWith("protected Widget(", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_Struct_Protected_Preview_FailsAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointStructSource, "Point.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Point",
+                Visibility = "protected",
+                Preview = true
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_Struct_Protected_ReplaceExisting_FailsAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PointStructWithCtorSource, "Point.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Point",
+                Visibility = "protected internal",
+                ReplaceExisting = true
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public Point(int x, int y)", before);
+    }
+
     #endregion
 
     #region Helper Methods

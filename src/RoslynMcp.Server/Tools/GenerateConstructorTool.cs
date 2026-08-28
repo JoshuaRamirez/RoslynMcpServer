@@ -89,7 +89,7 @@ public sealed class GenerateConstructorTool : IToolHandler
             visibility = new
             {
                 type = "string",
-                description = "Accessibility of the generated constructor. Valid values: public, private, protected, internal, protected internal, private protected",
+                description = "Accessibility of the generated constructor. Valid values: public, private, protected, internal, protected internal, private protected. Structs and record structs reject the three protected forms",
                 @default = "public"
             },
             preview = new
