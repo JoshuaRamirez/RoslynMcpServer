@@ -813,7 +813,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     private static EventDeclarationSyntax ToAbstractEvent(EventDeclarationSyntax eventDecl)
     {
         return eventDecl
-            .WithModifiers(ToAbstractModifiers(eventDecl.Modifiers))
+            .WithModifiers(ToAbstractEventModifiers(eventDecl.Modifiers))
             .WithAccessorList(null)
             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
             .NormalizeWhitespace();
@@ -824,9 +824,27 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         var variable = eventField.Declaration.Variables.First();
         return SyntaxFactory.EventDeclaration(eventField.Declaration.Type, variable.Identifier)
             .WithAttributeLists(eventField.AttributeLists)
-            .WithModifiers(ToAbstractModifiers(eventField.Modifiers))
+            .WithModifiers(ToAbstractEventModifiers(eventField.Modifiers))
             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
             .NormalizeWhitespace();
+    }
+
+    private static SyntaxTokenList ToAbstractEventModifiers(SyntaxTokenList modifiers)
+    {
+        var tokens = ToAbstractModifiers(modifiers);
+        if (!modifiers.Any(SyntaxKind.OverrideKeyword) || tokens.Any(SyntaxKind.OverrideKeyword))
+            return tokens;
+
+        var list = tokens.ToList();
+        var abstractIndex = list.FindIndex(token => token.IsKind(SyntaxKind.AbstractKeyword));
+        var overrideToken = SyntaxFactory.Token(SyntaxKind.OverrideKeyword)
+            .WithTrailingTrivia(SyntaxFactory.ElasticSpace);
+        if (abstractIndex >= 0)
+            list.Insert(abstractIndex + 1, overrideToken);
+        else
+            list.Add(overrideToken);
+
+        return SyntaxFactory.TokenList(list);
     }
 
     private static PropertyDeclarationSyntax ToAbstractProperty(PropertyDeclarationSyntax property)

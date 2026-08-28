@@ -827,6 +827,48 @@ public class PushMembersDownOperationTests
     }
 
     [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_OverrideEvent_PreservesAbstractOverride()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Creature
+            {
+                public abstract event System.EventHandler Changed;
+            }
+
+            public class Animal : Creature
+            {
+                public override event System.EventHandler Changed;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Changed"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("abstract override event System.EventHandler Changed", animal);
+        Assert.Contains("override event System.EventHandler Changed", dog);
+        Assert.DoesNotContain("new ", animal);
+    }
+
+    [SkippableFact]
     public async Task PushMembersDown_Event_Preview_WritesNothing_AndDescribesEvent()
     {
         const string source = """
