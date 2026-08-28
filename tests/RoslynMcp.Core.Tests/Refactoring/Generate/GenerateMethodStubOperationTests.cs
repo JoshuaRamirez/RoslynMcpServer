@@ -771,9 +771,9 @@ public class GenerateMethodStubOperationTests
 
             public class Widget
             {
-                public void Run()
+                public async Task Run()
                 {
-                    string value = Compute();
+                    string value = await Compute();
                 }
             }
             """;
