@@ -80,6 +80,12 @@ public sealed class GenerateConstructorTool : IToolHandler
                 description = "Add null checks for reference type parameters",
                 @default = false
             },
+            replaceExisting = new
+            {
+                type = "boolean",
+                description = "Replace an existing constructor with the exact same signature instead of failing. Optional-parameter / required-parameter ambiguity still fails",
+                @default = false
+            },
             preview = new
             {
                 type = "boolean",
@@ -121,6 +127,7 @@ public sealed class GenerateConstructorTool : IToolHandler
                 IncludeProperties = args.IncludeProperties ?? true,
                 IncludeInheritedMembers = args.IncludeInheritedMembers ?? false,
                 AddNullChecks = args.AddNullChecks ?? false,
+                ReplaceExisting = args.ReplaceExisting ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -155,6 +162,7 @@ public sealed class GenerateConstructorTool : IToolHandler
         public bool? IncludeProperties { get; init; }
         public bool? IncludeInheritedMembers { get; init; }
         public bool? AddNullChecks { get; init; }
+        public bool? ReplaceExisting { get; init; }
         public bool? Preview { get; init; }
     }
 }

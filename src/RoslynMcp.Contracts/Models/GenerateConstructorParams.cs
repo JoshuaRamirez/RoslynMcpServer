@@ -49,6 +49,17 @@ public sealed class GenerateConstructorParams
     public bool AddNullChecks { get; init; }
 
     /// <summary>
+    /// When true, remove an existing non-implicit constructor with the exact
+    /// same signature (same parameter count and types in order) before
+    /// generating a fresh constructor — including when that constructor lives
+    /// on another partial of the same type. Optional-parameter / required-
+    /// parameter ambiguity without an exact match still fails with
+    /// <c>ConstructorExists</c>; this flag does not guess which overload to
+    /// replace. Default: false (fail if an exact-signature constructor exists).
+    /// </summary>
+    public bool ReplaceExisting { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }
