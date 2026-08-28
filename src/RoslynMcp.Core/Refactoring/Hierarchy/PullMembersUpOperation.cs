@@ -79,7 +79,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         ValidateTarget(target);
 
         var members = FindMembersToPull(derivedDecl, @params.Members, semanticModel, cancellationToken);
-        ValidateMembersForPull(members, derivedSymbol, target, semanticModel);
+        ValidateMembersForPull(members, derivedSymbol, target, semanticModel, @params.MakeAbstract);
 
         var pulledNames = members.Select(m => m.Name).ToList();
         var targetMembers = members
@@ -298,12 +298,24 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         IReadOnlyList<PullableMember> members,
         INamedTypeSymbol derived,
         INamedTypeSymbol target,
-        SemanticModel semanticModel)
+        SemanticModel semanticModel,
+        bool makeAbstract)
     {
         var pulledNames = members.Select(m => m.Name).ToHashSet();
 
         foreach (var member in members)
         {
+            if (makeAbstract &&
+                target.TypeKind != TypeKind.Interface &&
+                !CanPullAsAbstract(member.Symbol))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MemberNotMoveable,
+                    member.Symbol is IEventSymbol
+                        ? $"Event '{member.Name}' cannot be pulled up as an abstract member."
+                        : "Only methods, properties, and events can be pulled up as abstract members.");
+            }
+
             if (HasConflict(target, member.Symbol))
             {
                 throw new RefactoringException(
@@ -384,6 +396,14 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         };
     }
 
+    private static bool CanPullAsAbstract(ISymbol symbol) => symbol switch
+    {
+        IMethodSymbol method => method.MethodKind == MethodKind.Ordinary,
+        IPropertySymbol => true,
+        IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
+        _ => false
+    };
+
     private static string? FindDerivedOnlyDependency(
         PullableMember member,
         INamedTypeSymbol derived,
@@ -392,6 +412,9 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
     {
         foreach (var identifier in member.Syntax.DescendantNodes().OfType<IdentifierNameSyntax>())
         {
+            if (IsUnselectedEventDeclaratorIdentifier(member, identifier))
+                continue;
+
             var referenced = semanticModel.GetSymbolInfo(identifier).Symbol;
             if (referenced == null)
                 continue;
@@ -429,6 +452,20 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         }
 
         return null;
+    }
+
+    private static bool IsUnselectedEventDeclaratorIdentifier(
+        PullableMember member,
+        IdentifierNameSyntax identifier)
+    {
+        if (member.Syntax is not EventFieldDeclarationSyntax eventField)
+            return false;
+
+        if (eventField.Declaration.Variables.Count <= 1)
+            return false;
+
+        var declarator = identifier.FirstAncestorOrSelf<VariableDeclaratorSyntax>();
+        return declarator != null && declarator.Identifier.Text != member.Name;
     }
 
     private static MemberDeclarationSyntax ConvertForTarget(
@@ -527,13 +564,20 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => ToAbstractProperty(property),
-            EventDeclarationSyntax eventDecl => ToAbstractEvent(eventDecl),
-            EventFieldDeclarationSyntax eventField => ToAbstractEvent(eventField),
+            EventDeclarationSyntax eventDecl when CanMakeEventAbstract(eventDecl) => ToAbstractEvent(eventDecl),
+            EventFieldDeclarationSyntax eventField when CanMakeEventAbstract(eventField) => ToAbstractEvent(eventField),
             _ => throw new RefactoringException(
                 ErrorCodes.MemberNotMoveable,
                 "Only methods, properties, and events can be pulled up as abstract members.")
         };
     }
+
+    private static bool CanMakeEventAbstract(EventDeclarationSyntax eventDecl) =>
+        !eventDecl.Modifiers.Any(SyntaxKind.StaticKeyword) &&
+        eventDecl.ExplicitInterfaceSpecifier == null;
+
+    private static bool CanMakeEventAbstract(EventFieldDeclarationSyntax eventField) =>
+        !eventField.Modifiers.Any(SyntaxKind.StaticKeyword);
 
     private static EventDeclarationSyntax ToAbstractEvent(EventDeclarationSyntax eventDecl)
     {

@@ -638,6 +638,117 @@ public class PullMembersUpOperationTests
     }
 
     [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_StaticEvent_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public static event System.EventHandler Changed;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PullMembersUpParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                Members = ["Changed"],
+                MakeAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_ExplicitInterfaceEvent_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface INotify
+            {
+                event System.EventHandler Changed;
+            }
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal, INotify
+            {
+                event System.EventHandler INotify.Changed
+                {
+                    add { }
+                    remove { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PullMembersUpParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                Members = ["Changed"],
+                MakeAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MultiVariableEventField_IgnoresUnrelatedDeclaratorDependency()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                public event System.Action Selected, Other = DerivedHandler;
+
+                private static void DerivedHandler() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Selected"]
+        });
+
+        Assert.True(result.Success);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("event System.Action Selected", animal);
+        Assert.DoesNotContain("Other", animal);
+        Assert.Contains("Other", dog);
+        Assert.Contains("DerivedHandler", dog);
+        Assert.DoesNotContain("Selected", dog);
+    }
+
+    [SkippableFact]
     public async Task PullMembersUp_EventToInterface_AddsSignatureAndKeepsImplementation()
     {
         const string source = """
