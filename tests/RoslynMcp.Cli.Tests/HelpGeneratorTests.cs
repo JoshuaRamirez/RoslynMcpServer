@@ -235,7 +235,9 @@ public class HelpGeneratorTests
         Assert.Contains("--source-file", requiredSection);
         Assert.Contains("--type-name", requiredSection);
         Assert.DoesNotContain("--include-properties", requiredSection);
+        Assert.DoesNotContain("--include-inherited-members", requiredSection);
 
         Assert.Contains("--include-properties", optionalSection);
+        Assert.Contains("--include-inherited-members", optionalSection);
     }
 }

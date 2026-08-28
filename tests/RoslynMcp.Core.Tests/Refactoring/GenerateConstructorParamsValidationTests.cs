@@ -94,6 +94,18 @@ public class GenerateConstructorParamsValidationTests
     }
 
     [Fact]
+    public void IncludeInheritedMembers_DefaultsToFalse()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass"
+        };
+
+        Assert.False(@params.IncludeInheritedMembers);
+    }
+
+    [Fact]
     public void ValidateParams_NullMembers_AcceptsNull()
     {
         var @params = new GenerateConstructorParams

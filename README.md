@@ -234,7 +234,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `generate_constructor` | Generate a constructor that initializes fields and/or properties of a type (`includeProperties`: default true includes settable properties, false uses instance fields only unless `members` names a property). | `sourceFile`, `typeName`, `members`, `includeProperties`, `addNullChecks` |
+| `generate_constructor` | Generate a constructor that initializes fields and/or properties of a type (`includeProperties`: default true includes settable properties, false uses instance fields only unless `members` names a property; `includeInheritedMembers`: default false keeps this-type-only collection, true also collects accessible instance fields and, when `includeProperties` is true, settable properties declared on base types). | `sourceFile`, `typeName`, `members`, `includeProperties`, `includeInheritedMembers`, `addNullChecks` |
 | `generate_property` | Generate a property on a type: auto-property `{ get; set; }`, init-only `{ get; init; }`, or a backing-field form when a field is the target. | `sourceFile`, `typeName`, `propertyName`, `propertyType`, `fieldName`, `visibility`, `initOnly` |
 | `generate_method_stub` | Generate a method from an undefined call site, inferring the signature from usage. Placeholder body is `throw new NotImplementedException();`. | `sourceFile`, `line`, `column`, `methodName`, `returnType`, `visibility`, `generateAsync` |
 | `generate_overrides` | Generate override methods for base class virtual/abstract members. | `sourceFile`, `typeName`, `members`, `callBase` |
