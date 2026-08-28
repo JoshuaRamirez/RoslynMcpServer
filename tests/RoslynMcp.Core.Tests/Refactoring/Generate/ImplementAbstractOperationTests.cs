@@ -724,6 +724,374 @@ public class ImplementAbstractOperationTests
         AssertCompiles(updated);
     }
 
+    [SkippableFact]
+    public async Task ImplementAbstract_ProtectedEvent_SameAssembly_KeepsProtected()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                protected abstract event System.EventHandler Changed;
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("protected override event System.EventHandler Changed", updated);
+        Assert.DoesNotContain("public override event System.EventHandler Changed", updated);
+        Assert.DoesNotContain("protected internal override", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ProtectedInternalEvent_SameAssembly_KeepsProtectedInternal()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                protected internal abstract event System.EventHandler Changed;
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("protected internal override event System.EventHandler Changed", updated);
+        Assert.DoesNotContain("protected override event System.EventHandler Changed", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_InternalEvent_SameAssembly_KeepsInternal()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                internal abstract event System.EventHandler Changed;
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("internal override event System.EventHandler Changed", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_CrossAssembly_ProtectedInternalEvent_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public abstract class Shape
+            {
+                protected internal abstract event System.EventHandler Changed;
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Circle : TestLib.Shape
+            {
+            }
+            """);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class Circle", StringComparison.Ordinal)..];
+        Assert.Contains("protected override event System.EventHandler Changed", derived);
+        Assert.DoesNotContain("protected internal override", derived);
+        Assert.DoesNotContain("public override event", derived);
+        var evt = ExtractMember(updated, "protected override event System.EventHandler Changed");
+        Assert.Contains("add", evt);
+        Assert.Contains("remove", evt);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_CrossAssembly_ProtectedInternalEvent_Preview_DoesNotWriteFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public abstract class Shape
+            {
+                protected internal abstract event System.EventHandler Changed;
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Circle : TestLib.Shape
+            {
+            }
+            """);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Changed", result.PendingChanges[0].Description);
+        Assert.Contains("protected override event", result.PendingChanges[0].AfterSnippet);
+        Assert.DoesNotContain("protected internal override", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_CrossAssembly_InternalEvent_IsNotSelected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public abstract class Shape
+            {
+                internal abstract event System.EventHandler Hidden;
+                public abstract event System.EventHandler Changed;
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Circle : TestLib.Shape
+            {
+            }
+            """);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var namedHidden = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Circle",
+                Members = new[] { "Hidden" }
+            }));
+
+        Assert.Equal(ErrorCodes.NoUnimplementedAbstractMembers, namedHidden.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override event System.EventHandler Changed", updated);
+        Assert.DoesNotContain("Hidden", updated[updated.IndexOf("public class Circle", StringComparison.Ordinal)..]);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_CrossAssembly_PrivateProtectedEvent_IsNotSelected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public abstract class Shape
+            {
+                private protected abstract event System.EventHandler Hidden;
+                public abstract void Draw();
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Circle : TestLib.Shape
+            {
+            }
+            """);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var namedHidden = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Circle",
+                Members = new[] { "Hidden" }
+            }));
+
+        Assert.Equal(ErrorCodes.NoUnimplementedAbstractMembers, namedHidden.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override void Draw()", updated);
+        Assert.DoesNotContain("Hidden", updated[updated.IndexOf("public class Circle", StringComparison.Ordinal)..]);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_CrossAssembly_OnlyInaccessibleEvent_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public abstract class Shape
+            {
+                internal abstract event System.EventHandler Hidden;
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Circle : TestLib.Shape
+            {
+            }
+            """);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Circle"
+            }));
+
+        Assert.Equal(ErrorCodes.NoUnimplementedAbstractMembers, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ProtectedInternalProperty_ProtectedSetter_SameAssembly_KeepsBoth()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                protected internal abstract int Width { get; protected set; }
+            }
+
+            public class Circle : Shape
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("protected internal override int Width", updated);
+        Assert.Contains("protected set", updated);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_CrossAssembly_ProtectedInternalProperty_ProtectedSetter_OmitsRedundantAccessor()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public abstract class Shape
+            {
+                protected internal abstract int Width { get; protected set; }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Circle : TestLib.Shape
+            {
+            }
+            """);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Circle"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class Circle", StringComparison.Ordinal)..];
+        Assert.Contains("protected override int Width", derived);
+        Assert.DoesNotContain("protected internal override", derived);
+        Assert.DoesNotContain("protected set", derived);
+        var property = ExtractMember(updated, "protected override int Width");
+        Assert.Contains("get", property);
+        Assert.Contains("set", property);
+    }
+
     #endregion
 
     #region ThrowNotImplemented
@@ -2382,7 +2750,75 @@ public class ImplementAbstractOperationTests
             }
 
             sourcePath ??= Path.Combine(directory, "Types.cs");
+            return await LoadAsync(directory, projectPath, sourcePath);
+        }
 
+        /// <summary>
+        /// Lib project referenced by App. <see cref="SourcePath"/> is App/Circle.cs.
+        /// </summary>
+        public static async Task<TempWorkspace> CreateReferencedLibraryAsync(string librarySource, string appSource)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpImplementAbstractXP_" + Guid.NewGuid().ToString("N"));
+            var libDir = Path.Combine(directory, "Lib");
+            var appDir = Path.Combine(directory, "App");
+            Directory.CreateDirectory(libDir);
+            Directory.CreateDirectory(appDir);
+
+            var libProject = Path.Combine(libDir, "Lib.csproj");
+            var appProject = Path.Combine(appDir, "App.csproj");
+            var libSource = Path.Combine(libDir, "Shape.cs");
+            var appSourcePath = Path.Combine(appDir, "Circle.cs");
+
+            await File.WriteAllTextAsync(libProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(appProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="..\Lib\Lib.csproj" />
+                  </ItemGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(libSource, librarySource);
+            await File.WriteAllTextAsync(appSourcePath, appSource);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            await File.WriteAllTextAsync(solutionPath, """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lib", "Lib\Lib.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\App.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            return await LoadAsync(directory, solutionPath, appSourcePath);
+        }
+
+        private static async Task<TempWorkspace> LoadAsync(string directory, string projectPath, string sourcePath)
+        {
             try
             {
                 var provider = new MSBuildWorkspaceProvider();

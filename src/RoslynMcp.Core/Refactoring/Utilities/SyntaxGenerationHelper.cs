@@ -408,7 +408,7 @@ public static class SyntaxGenerationHelper
     /// Cross-assembly <c>protected internal</c> becomes <c>protected</c>
     /// (CS0507). Other accessibilities are unchanged.
     /// </summary>
-    private static Accessibility OverrideAccessibility(ISymbol member, INamedTypeSymbol? emittingType)
+    internal static Accessibility OverrideAccessibility(ISymbol member, INamedTypeSymbol? emittingType)
     {
         var accessibility = member.DeclaredAccessibility;
         if (emittingType == null)

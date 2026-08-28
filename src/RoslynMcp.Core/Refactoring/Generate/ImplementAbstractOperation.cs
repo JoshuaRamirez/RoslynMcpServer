@@ -156,7 +156,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         var membersToReplace = eligibleMembers.Where(m => replacements.ContainsKey(m)).ToList();
         var membersToGenerate = eligibleMembers.Where(m => !replacements.ContainsKey(m)).ToList();
 
-        var implementations = GenerateImplementations(eligibleMembers, @params.ThrowNotImplemented);
+        var implementations = GenerateImplementations(eligibleMembers, @params.ThrowNotImplemented, typeSymbol);
 
         if (@params.Preview)
         {
@@ -238,7 +238,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
 
         foreach (var member in MemberAnalyzer.GetUnimplementedAbstractMembers(typeSymbol))
         {
-            if (IsImplementableAbstractMember(member))
+            if (IsImplementableAbstractMember(member, typeSymbol))
                 AddUnique(result, member);
         }
 
@@ -565,13 +565,27 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         return true;
     }
 
-    internal static bool IsImplementableAbstractMember(ISymbol member) => member switch
+    /// <summary>
+    /// Abstract methods, properties/indexers, and events that are visible
+    /// for override from <paramref name="fromType"/>. Public / protected /
+    /// protected-internal always; <c>internal</c> / <c>private protected</c>
+    /// only in the same assembly — same gate as
+    /// <see cref="MemberAnalyzer.IsAccessibleFrom"/> /
+    /// <c>generate_overrides</c>.
+    /// </summary>
+    internal static bool IsImplementableAbstractMember(ISymbol member, INamedTypeSymbol fromType)
     {
-        IMethodSymbol method => method.MethodKind == MethodKind.Ordinary && method.IsAbstract,
-        IPropertySymbol property => property.IsAbstract,
-        IEventSymbol evt => evt.IsAbstract,
-        _ => false
-    };
+        if (!MemberAnalyzer.IsAccessibleFrom(member, fromType))
+            return false;
+
+        return member switch
+        {
+            IMethodSymbol method => method.MethodKind == MethodKind.Ordinary && method.IsAbstract,
+            IPropertySymbol property => property.IsAbstract,
+            IEventSymbol evt => evt.IsAbstract,
+            _ => false
+        };
+    }
 
     internal static bool MatchesRequestedMember(ISymbol member, HashSet<string> requested)
     {
@@ -605,7 +619,8 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
 
     private static List<MemberDeclarationSyntax> GenerateImplementations(
         List<ISymbol> members,
-        bool throwNotImplemented)
+        bool throwNotImplemented,
+        INamedTypeSymbol emittingType)
     {
         var implementations = new List<MemberDeclarationSyntax>();
 
@@ -613,10 +628,10 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         {
             MemberDeclarationSyntax? impl = member switch
             {
-                IMethodSymbol method => CreateMethodStub(method, throwNotImplemented),
-                IPropertySymbol { IsIndexer: true } indexer => CreateIndexerStub(indexer, throwNotImplemented),
-                IPropertySymbol property => CreatePropertyStub(property, throwNotImplemented),
-                IEventSymbol evt => CreateEventStub(evt),
+                IMethodSymbol method => CreateMethodStub(method, emittingType, throwNotImplemented),
+                IPropertySymbol { IsIndexer: true } indexer => CreateIndexerStub(indexer, emittingType, throwNotImplemented),
+                IPropertySymbol property => CreatePropertyStub(property, emittingType, throwNotImplemented),
+                IEventSymbol evt => CreateEventStub(evt, emittingType),
                 _ => null
             };
 
@@ -637,6 +652,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// </summary>
     internal static MethodDeclarationSyntax CreateMethodStub(
         IMethodSymbol method,
+        INamedTypeSymbol emittingType,
         bool throwNotImplemented = true)
     {
         var parameters = method.Parameters.Select(CreateParameter);
@@ -646,7 +662,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         var methodDecl = SyntaxFactory.MethodDeclaration(
                 CreateMemberType(method.ReturnType, method.ReturnsByRef, method.ReturnsByRefReadonly),
                 method.Name)
-            .WithModifiers(CreateOverrideModifiers(method.DeclaredAccessibility))
+            .WithModifiers(CreateOverrideModifiers(method, emittingType))
             .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(parameters)))
             .WithBody(body);
 
@@ -670,13 +686,14 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// </summary>
     internal static PropertyDeclarationSyntax CreatePropertyStub(
         IPropertySymbol property,
+        INamedTypeSymbol emittingType,
         bool throwNotImplemented = true)
     {
         return SyntaxFactory.PropertyDeclaration(
                 CreateMemberType(property.Type, property.ReturnsByRef, property.ReturnsByRefReadonly),
                 property.Name)
-            .WithModifiers(CreateOverrideModifiers(property.DeclaredAccessibility, property.IsRequired))
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(property, throwNotImplemented))))
+            .WithModifiers(CreateOverrideModifiers(property, emittingType, property.IsRequired))
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(property, emittingType, throwNotImplemented))))
             .NormalizeWhitespace();
     }
 
@@ -686,14 +703,15 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// </summary>
     internal static IndexerDeclarationSyntax CreateIndexerStub(
         IPropertySymbol indexer,
+        INamedTypeSymbol emittingType,
         bool throwNotImplemented = true)
     {
         var parameters = indexer.Parameters.Select(CreateParameter);
         return SyntaxFactory.IndexerDeclaration(
                 CreateMemberType(indexer.Type, indexer.ReturnsByRef, indexer.ReturnsByRefReadonly))
-            .WithModifiers(CreateOverrideModifiers(indexer.DeclaredAccessibility, indexer.IsRequired))
+            .WithModifiers(CreateOverrideModifiers(indexer, emittingType, indexer.IsRequired))
             .WithParameterList(SyntaxFactory.BracketedParameterList(SyntaxFactory.SeparatedList(parameters)))
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(indexer, throwNotImplemented))))
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(CreateAccessors(indexer, emittingType, throwNotImplemented))))
             .NormalizeWhitespace();
     }
 
@@ -701,8 +719,10 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// Creates an override event stub with empty add/remove accessors —
     /// same body shape as <see cref="SyntaxGenerationHelper.CreateEventStub"/>,
     /// plus <c>override</c> and the abstract member's accessibility.
+    /// Cross-assembly <c>protected internal</c> is emitted as
+    /// <c>protected</c> (CS0507).
     /// </summary>
-    internal static EventDeclarationSyntax CreateEventStub(IEventSymbol evt)
+    internal static EventDeclarationSyntax CreateEventStub(IEventSymbol evt, INamedTypeSymbol emittingType)
     {
         var addAccessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.AddAccessorDeclaration)
             .WithBody(SyntaxFactory.Block());
@@ -712,22 +732,25 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         return SyntaxFactory.EventDeclaration(
                 SyntaxFactory.ParseTypeName(evt.Type.ToDisplayString()).WithTrailingTrivia(SyntaxFactory.Space),
                 evt.Name)
-            .WithModifiers(CreateOverrideModifiers(evt.DeclaredAccessibility))
+            .WithModifiers(CreateOverrideModifiers(evt, emittingType))
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(new[] { addAccessor, removeAccessor })))
             .NormalizeWhitespace();
     }
 
     private static List<AccessorDeclarationSyntax> CreateAccessors(
         IPropertySymbol property,
+        INamedTypeSymbol emittingType,
         bool throwNotImplemented)
     {
         var accessors = new List<AccessorDeclarationSyntax>();
+        var propertyAccessibility = SyntaxGenerationHelper.OverrideAccessibility(property, emittingType);
 
         if (property.GetMethod != null)
         {
             accessors.Add(CreateAccessor(
                 property.GetMethod,
-                property.DeclaredAccessibility,
+                propertyAccessibility,
+                emittingType,
                 SyntaxKind.GetAccessorDeclaration,
                 throwNotImplemented));
         }
@@ -739,7 +762,8 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                 : SyntaxKind.SetAccessorDeclaration;
             accessors.Add(CreateAccessor(
                 property.SetMethod,
-                property.DeclaredAccessibility,
+                propertyAccessibility,
+                emittingType,
                 kind,
                 throwNotImplemented));
         }
@@ -750,6 +774,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     private static AccessorDeclarationSyntax CreateAccessor(
         IMethodSymbol accessor,
         Accessibility propertyAccessibility,
+        INamedTypeSymbol emittingType,
         SyntaxKind kind,
         bool throwNotImplemented)
     {
@@ -772,7 +797,9 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         var declaration = SyntaxFactory.AccessorDeclaration(kind)
             .WithBody(body);
 
-        var modifiers = CreateAccessorModifiers(accessor.DeclaredAccessibility, propertyAccessibility);
+        var modifiers = CreateAccessorModifiers(
+            SyntaxGenerationHelper.OverrideAccessibility(accessor, emittingType),
+            propertyAccessibility);
         if (modifiers.Count > 0)
             declaration = declaration.WithModifiers(modifiers);
 
@@ -847,10 +874,19 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             SyntaxFactory.Token(refKeyword).WithTrailingTrivia(SyntaxFactory.Space)));
     }
 
-    private static SyntaxTokenList CreateOverrideModifiers(Accessibility accessibility, bool isRequired = false)
+    /// <summary>
+    /// Override modifiers using the inherited accessibility, reduced for
+    /// CS0507 when <paramref name="member"/> is <c>protected internal</c>
+    /// and lives in another assembly.
+    /// </summary>
+    private static SyntaxTokenList CreateOverrideModifiers(
+        ISymbol member,
+        INamedTypeSymbol emittingType,
+        bool isRequired = false)
     {
         var tokens = new List<SyntaxToken>();
-        tokens.AddRange(ParseAccessibility(accessibility));
+        tokens.AddRange(ParseAccessibility(
+            SyntaxGenerationHelper.OverrideAccessibility(member, emittingType)));
         tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword).WithTrailingTrivia(SyntaxFactory.Space));
         if (isRequired)
             tokens.Add(SyntaxFactory.Token(SyntaxKind.RequiredKeyword).WithTrailingTrivia(SyntaxFactory.Space));
