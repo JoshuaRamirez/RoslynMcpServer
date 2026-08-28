@@ -30,6 +30,10 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// accessible copy constructor of the base type. Unsealed record
 /// copy constructors reject visibilities other than public / protected
 /// (CS8878). Copy mode skips setter-only / unreadable properties.
+/// <c>callBase</c> (non-copy only) emits <c>: base(...)</c> on an
+/// ordinary class when an accessible immediate-base constructor's
+/// parameter types are a prefix of the generated parameters.
+/// Records, record structs, and structs ignore <c>callBase</c>.
 /// Structs and record structs reject <c>protected</c> /
 /// <c>protected internal</c> / <c>private protected</c> (CS0666) before any
 /// generate, replace, or preview write. Primary constructors are not replaced.
@@ -93,6 +97,13 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             throw new RefactoringException(
                 ErrorCodes.ClassBaseCopyRequiresCopyConstructor,
                 "classBaseCopy requires copyConstructor to be true.");
+        }
+
+        if (@params.CallBase && @params.CopyConstructor)
+        {
+            throw new RefactoringException(
+                ErrorCodes.CallBaseConflictsWithCopyConstructor,
+                "callBase cannot be combined with copyConstructor. Use classBaseCopy for copy-mode class chaining.");
         }
 
         if (!File.Exists(@params.SourceFile))
@@ -178,6 +189,14 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 "No members found to initialize in constructor.");
         }
 
+        // callBase prefix-matching uses generated parameter order. Inherited
+        // members are typically the ones passed to the base constructor, so
+        // they come first when includeInheritedMembers collected any.
+        // Skip the reorder when callBase is a no-op (record / struct /
+        // object or non-class base) so the documented ignore stays order-neutral.
+        if (@params.CallBase && !@params.CopyConstructor && IsEligibleOrdinaryClassForCallBase(typeSymbol))
+            members = OrderMembersForCallBase(members, typeSymbol);
+
         // Check for existing constructor with same signature or ambiguous due to optional params.
         // replaceExisting only lifts the exact-signature reject (same count/types/RefKind in order)
         // for a non-primary constructor; optional-param / required-param ambiguity still throws
@@ -240,9 +259,17 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             && @params.ClassBaseCopy
             && TryGetClassBaseCopyInitializer(typeSymbol);
 
+        // Non-copy : base(...) is opt-in via callBase. Copy mode is rejected
+        // above. Records / structs / record structs / object bases are no-ops.
+        var callBase = @params.CallBase && !@params.CopyConstructor
+            ? ResolveCallBaseInitializer(typeSymbol, members)
+            : CallBaseResolution.None;
+
         var bodyMembers = addClassBaseCopy
             ? members.Where(m => SymbolEqualityComparer.Default.Equals(m.ContainingType, typeSymbol)).ToList()
-            : members;
+            : callBase.PassedThroughCount > 0
+                ? members.Skip(callBase.PassedThroughCount).ToList()
+                : members;
 
         // Generate the constructor. Visibility is always the requested
         // accessibility (default public) — never copied from a replaced ctor.
@@ -255,14 +282,14 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 @params.AddNullChecks && typeSymbol.IsReferenceType,
                 visibility,
                 addClassBaseCopy)
-            : GenerateConstructor(members, typeDeclaration, @params.AddNullChecks, visibility);
+            : GenerateConstructor(members, bodyMembers, typeDeclaration, @params.AddNullChecks, visibility, callBase.Initializer);
         var replacing = exactMatch != null;
 
         // If preview mode, return without applying (but include generated constructor code)
         if (@params.Preview)
         {
             return await CreatePreviewResultAsync(
-                operationId, @params, bodyMembers, constructor, exactMatch, document.Project.Solution, copyParameterName, addClassBaseCopy, cancellationToken);
+                operationId, @params, bodyMembers, constructor, exactMatch, document.Project.Solution, copyParameterName, addClassBaseCopy, callBase, cancellationToken);
         }
 
         var solution = document.Project.Solution;
@@ -373,6 +400,31 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         }
 
         return allMembers;
+    }
+
+    /// <summary>
+    /// Puts inherited members ahead of this-type members so <c>callBase</c>
+    /// can prefix-match the immediate base constructor. Relative order
+    /// within each group is unchanged. A no-op when nothing inherited
+    /// was collected.
+    /// </summary>
+    private static List<ISymbol> OrderMembersForCallBase(List<ISymbol> members, INamedTypeSymbol typeSymbol)
+    {
+        var inherited = new List<ISymbol>();
+        var declared = new List<ISymbol>();
+        foreach (var member in members)
+        {
+            if (SymbolEqualityComparer.Default.Equals(member.ContainingType, typeSymbol))
+                declared.Add(member);
+            else
+                inherited.Add(member);
+        }
+
+        if (inherited.Count == 0)
+            return members;
+
+        inherited.AddRange(declared);
+        return inherited;
     }
 
     /// <summary>
@@ -671,14 +723,17 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         string.IsNullOrWhiteSpace(visibility) ? "public" : visibility.Trim();
 
     private static ConstructorDeclarationSyntax GenerateConstructor(
-        List<ISymbol> members,
+        List<ISymbol> parameterMembers,
+        List<ISymbol> bodyMembers,
         TypeDeclarationSyntax typeDeclaration,
         bool addNullChecks,
-        string visibility)
+        string visibility,
+        ConstructorInitializerSyntax? initializer)
     {
-        // Build parameters
+        // Build parameters from every selected member, including those
+        // passed through to : base(...) (they stay on the derived signature).
         var parameters = new List<ParameterSyntax>();
-        foreach (var member in members)
+        foreach (var member in parameterMembers)
         {
             var type = GetMemberType(member);
             var paramName = ToCamelCase(member.Name);
@@ -689,23 +744,30 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             parameters.Add(parameter);
         }
 
-        // Build body statements
+        // Build body statements. Null-check every generated parameter
+        // (including those forwarded to : base(...)) before assignments.
+        // Assignments skip members whose parameters were passed through.
         var statements = new List<StatementSyntax>();
 
-        foreach (var member in members)
+        if (addNullChecks)
+        {
+            foreach (var member in parameterMembers)
+            {
+                var memberType = GetMemberType(member);
+                // Null checks are generated for:
+                // - Reference types that are not nullable (e.g., string, not string?)
+                // - Nullable<T> value types (e.g., int?) since they can hold null
+                // Null checks are NOT generated for:
+                // - Non-nullable value types (e.g., int, bool) - cannot be null
+                // - Nullable-annotated reference types (e.g., string?) - null is expected
+                if (ShouldGenerateNullCheck(memberType))
+                    statements.Add(CreateArgumentNullCheck(ToCamelCase(member.Name)));
+            }
+        }
+
+        foreach (var member in bodyMembers)
         {
             var paramName = ToCamelCase(member.Name);
-            var memberType = GetMemberType(member);
-
-            // Add null check if requested and type can be null.
-            // Null checks are generated for:
-            // - Reference types that are not nullable (e.g., string, not string?)
-            // - Nullable<T> value types (e.g., int?) since they can hold null
-            // Null checks are NOT generated for:
-            // - Non-nullable value types (e.g., int, bool) - cannot be null
-            // - Nullable-annotated reference types (e.g., string?) - null is expected
-            if (addNullChecks && ShouldGenerateNullCheck(memberType))
-                statements.Add(CreateArgumentNullCheck(paramName));
 
             // Assignment statement
             ExpressionSyntax left;
@@ -735,10 +797,12 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         var constructor = SyntaxFactory.ConstructorDeclaration(typeDeclaration.Identifier)
             .WithModifiers(SyntaxFactory.TokenList(ParseVisibilityTokens(visibility)))
             .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(parameters)))
-            .WithBody(SyntaxFactory.Block(statements))
-            .NormalizeWhitespace();
+            .WithBody(SyntaxFactory.Block(statements));
 
-        return constructor;
+        if (initializer != null)
+            constructor = constructor.WithInitializer(initializer);
+
+        return constructor.NormalizeWhitespace();
     }
 
     /// <summary>
@@ -905,6 +969,151 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             Accessibility.ProtectedAndInternal => SameAssembly(constructor, fromType),
             _ => false
         };
+
+    /// <summary>
+    /// Result of resolving a non-copy <c>callBase</c> initializer.
+    /// <see cref="None"/> means the flag was a no-op (record / struct /
+    /// object / non-class base) and generation should continue without
+    /// <c>: base(...)</c>.
+    /// </summary>
+    private readonly record struct CallBaseResolution(
+        ConstructorInitializerSyntax? Initializer,
+        int PassedThroughCount,
+        IMethodSymbol? BaseConstructor,
+        bool Applied)
+    {
+        public static CallBaseResolution None { get; } = new(null, 0, null, false);
+    }
+
+    /// <summary>
+    /// Resolves <c>: base(...)</c> for non-copy <c>callBase</c> on an ordinary
+    /// class. Records, structs, record structs, <c>object</c> bases, and
+    /// struct/record bases are no-ops (no initializer, no failure).
+    /// Accessible instance constructors whose parameter types in order
+    /// (by-value, same <see cref="RefKind"/>) are a prefix of the generated
+    /// constructor's parameter types are candidates. The longest prefix
+    /// wins; same-length ties prefer case-insensitive parameter-name
+    /// matches; a remaining tie is <see cref="ErrorCodes.AmbiguousBaseConstructor"/>.
+    /// No accessible match and no accessible parameterless constructor is
+    /// <see cref="ErrorCodes.NoMatchingBaseConstructor"/>.
+    /// </summary>
+    /// <summary>
+    /// True when non-copy <c>callBase</c> may emit <c>: base(...)</c>:
+    /// an ordinary class (not a record / struct / record struct) whose
+    /// immediate base is a class other than <c>object</c> / <c>ValueType</c>
+    /// and is not itself a record or struct.
+    /// </summary>
+    private static bool IsEligibleOrdinaryClassForCallBase(INamedTypeSymbol typeSymbol)
+    {
+        if (typeSymbol.IsRecord || typeSymbol.TypeKind != TypeKind.Class)
+            return false;
+
+        var baseType = typeSymbol.BaseType;
+        if (baseType == null || IsObjectOrValueType(baseType))
+            return false;
+        if (baseType.IsRecord || baseType.TypeKind != TypeKind.Class)
+            return false;
+
+        return true;
+    }
+
+    private static CallBaseResolution ResolveCallBaseInitializer(
+        INamedTypeSymbol typeSymbol,
+        IReadOnlyList<ISymbol> members)
+    {
+        if (!IsEligibleOrdinaryClassForCallBase(typeSymbol))
+            return CallBaseResolution.None;
+
+        var baseType = typeSymbol.BaseType!;
+        var generatedTypes = members.Select(GetMemberType).ToList();
+        var generatedNames = members.Select(m => ToCamelCase(m.Name)).ToList();
+
+        var candidates = new List<IMethodSymbol>();
+        foreach (var constructor in baseType.InstanceConstructors)
+        {
+            if (!IsConstructorAccessibleFrom(constructor, typeSymbol))
+                continue;
+            if (!IsByValueTypePrefix(constructor, generatedTypes))
+                continue;
+            candidates.Add(constructor);
+        }
+
+        if (candidates.Count == 0)
+        {
+            throw new RefactoringException(
+                ErrorCodes.NoMatchingBaseConstructor,
+                $"No accessible constructor on base type '{baseType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)}' matches the generated constructor parameter types, and the base has no accessible parameterless constructor.");
+        }
+
+        var selected = SelectCallBaseCandidate(candidates, generatedNames, baseType);
+        var count = selected.Parameters.Length;
+        var arguments = generatedNames.Take(count)
+            .Select(name => SyntaxFactory.Argument(SyntaxFactory.IdentifierName(name)));
+        var initializer = SyntaxFactory.ConstructorInitializer(
+            SyntaxKind.BaseConstructorInitializer,
+            SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList(arguments)));
+
+        return new CallBaseResolution(initializer, count, selected, true);
+    }
+
+    /// <summary>
+    /// Prefer the longest matching prefix. If two candidates share that
+    /// length, prefer the one whose parameter names match the generated
+    /// names (case-insensitive). If still tied, reject — do not guess.
+    /// </summary>
+    private static IMethodSymbol SelectCallBaseCandidate(
+        List<IMethodSymbol> candidates,
+        IReadOnlyList<string> generatedNames,
+        INamedTypeSymbol baseType)
+    {
+        var maxLength = candidates.Max(c => c.Parameters.Length);
+        var longest = candidates.Where(c => c.Parameters.Length == maxLength).ToList();
+        if (longest.Count == 1)
+            return longest[0];
+
+        var namedMatches = longest
+            .Where(c => ConstructorParameterNamesMatch(c, generatedNames))
+            .ToList();
+        if (namedMatches.Count == 1)
+            return namedMatches[0];
+
+        throw new RefactoringException(
+            ErrorCodes.AmbiguousBaseConstructor,
+            $"Multiple accessible constructors on base type '{baseType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)}' match the generated constructor parameter types; cannot choose a : base(...) initializer.");
+    }
+
+    /// <summary>
+    /// True when every constructor parameter is by-value and its type equals
+    /// the corresponding generated parameter type — i.e. the constructor's
+    /// full parameter list is a prefix of <paramref name="generatedTypes"/>.
+    /// </summary>
+    private static bool IsByValueTypePrefix(IMethodSymbol constructor, IReadOnlyList<ITypeSymbol> generatedTypes)
+    {
+        if (constructor.Parameters.Length > generatedTypes.Count)
+            return false;
+
+        for (var i = 0; i < constructor.Parameters.Length; i++)
+        {
+            var parameter = constructor.Parameters[i];
+            if (parameter.RefKind != RefKind.None)
+                return false;
+            if (!SymbolEqualityComparer.Default.Equals(parameter.Type, generatedTypes[i]))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool ConstructorParameterNamesMatch(IMethodSymbol constructor, IReadOnlyList<string> generatedNames)
+    {
+        for (var i = 0; i < constructor.Parameters.Length; i++)
+        {
+            if (!string.Equals(constructor.Parameters[i].Name, generatedNames[i], StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        return true;
+    }
 
     /// <summary>
     /// Prefer <c>other</c>, then <c>source</c>, then <c>original</c> — first
@@ -1154,6 +1363,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         Solution solution,
         string? copyParameterName,
         bool addClassBaseCopy,
+        CallBaseResolution callBase,
         CancellationToken cancellationToken)
     {
         var replacing = exactMatch != null;
@@ -1169,6 +1379,11 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             : addClassBaseCopy
                 ? $" with class : base({copyParameterName}) initializer"
                 : " (no class base-copy initializer was added)";
+        var callBaseNote = !@params.CallBase
+            ? ""
+            : callBase.Applied && callBase.BaseConstructor != null
+                ? $" with callBase : base({FormatCallBaseArguments(callBase)}) initializer ({FormatBaseConstructor(callBase.BaseConstructor)})"
+                : " (no callBase initializer was added)";
 
         // Show the generated constructor as the "after" snippet
         var afterSnippet = constructor.NormalizeWhitespace().ToFullString();
@@ -1179,7 +1394,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             {
                 File = @params.SourceFile,
                 ChangeType = Contracts.Enums.ChangeKind.Modify,
-                Description = $"{verb} {mode}{inherited} for {@params.TypeName} initializing: {memberNames} ({visibility}){classBaseCopyNote}",
+                Description = $"{verb} {mode}{inherited} for {@params.TypeName} initializing: {memberNames} ({visibility}){classBaseCopyNote}{callBaseNote}",
                 BeforeSnippet = replacing
                     ? $"// Type '{@params.TypeName}' (replacing existing constructor)"
                     : $"// Type '{@params.TypeName}' (no constructor with these parameters)",
@@ -1215,5 +1430,23 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         }
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
+    }
+
+    private static string FormatCallBaseArguments(CallBaseResolution callBase)
+    {
+        if (callBase.BaseConstructor == null || callBase.PassedThroughCount == 0)
+            return "";
+
+        var names = callBase.Initializer?.ArgumentList.Arguments
+            .Select(a => a.Expression.ToString()) ?? [];
+        return string.Join(", ", names);
+    }
+
+    private static string FormatBaseConstructor(IMethodSymbol constructor)
+    {
+        var typeName = constructor.ContainingType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+        var parameters = string.Join(", ", constructor.Parameters.Select(p =>
+            p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)));
+        return $"{typeName}({parameters})";
     }
 }
