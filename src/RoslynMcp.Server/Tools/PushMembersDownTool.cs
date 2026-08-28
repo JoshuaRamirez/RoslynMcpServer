@@ -60,7 +60,7 @@ public sealed class PushMembersDownTool : IToolHandler
             {
                 type = "array",
                 items = new { type = "string" },
-                description = "Names of members to move to derived types"
+                description = "Names of members to move to derived types. Indexers match Item, this[], and this[int i]."
             },
             targetDerivedTypes = new
             {

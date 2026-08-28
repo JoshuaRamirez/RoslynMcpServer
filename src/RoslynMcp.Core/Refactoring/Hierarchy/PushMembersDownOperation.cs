@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Generate;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Hierarchy;
@@ -268,10 +269,40 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         CancellationToken cancellationToken)
     {
         var requested = new HashSet<string>(memberNames.Where(n => !string.IsNullOrWhiteSpace(n)));
+        var unmatched = new HashSet<string>(requested);
         var found = new List<PushableMember>();
 
         foreach (var (name, symbol, syntax) in EnumerateDeclaredMembers(typeDeclaration, semanticModel, cancellationToken))
         {
+            if (symbol is IPropertySymbol { IsIndexer: true } indexer)
+            {
+                // Indexers match metadata name (Item), Roslyn name (this[]),
+                // and conventional display (this[int i]) — same identity
+                // forms as implement_interface / extract_interface /
+                // extract_base_class / pull_members_up.
+                if (!ImplementInterfaceOperation.MatchesRequestedMember(indexer, requested))
+                    continue;
+
+                if (!IsSupportedMember(indexer))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.MemberNotMoveable,
+                        $"Member '{indexer.Name}' cannot be pushed down.");
+                }
+
+                found.Add(new PushableMember(indexer.Name, indexer, syntax));
+                foreach (var request in unmatched.ToList())
+                {
+                    if (ImplementInterfaceOperation.MatchesRequestedMember(
+                            indexer, new HashSet<string> { request }))
+                    {
+                        unmatched.Remove(request);
+                    }
+                }
+
+                continue;
+            }
+
             if (!requested.Contains(name))
                 continue;
 
@@ -290,14 +321,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             }
 
             found.Add(new PushableMember(name, symbol, syntax));
-            requested.Remove(name);
+            unmatched.Remove(name);
         }
 
-        if (requested.Count > 0)
+        if (unmatched.Count > 0)
         {
             throw new RefactoringException(
                 ErrorCodes.MemberNotFound,
-                $"Members not found: {string.Join(", ", requested)}");
+                $"Members not found: {string.Join(", ", unmatched)}");
         }
 
         return found;
@@ -317,6 +348,9 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                     break;
                 case PropertyDeclarationSyntax property:
                     yield return (property.Identifier.Text, semanticModel.GetDeclaredSymbol(property, cancellationToken), property);
+                    break;
+                case IndexerDeclarationSyntax indexer:
+                    yield return ("this[]", semanticModel.GetDeclaredSymbol(indexer, cancellationToken), indexer);
                     break;
                 case FieldDeclarationSyntax field:
                     foreach (var variable in field.Declaration.Variables)
@@ -642,10 +676,26 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     private static bool CanBeAbstract(ISymbol member) => member switch
     {
         IMethodSymbol method => !method.IsStatic,
-        IPropertySymbol property => !property.IsStatic,
+        IPropertySymbol property => !property.IsStatic && (!property.IsIndexer || CanPushIndexerAsAbstract(property)),
         IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
         _ => false
     };
+
+    private static bool CanPushIndexerAsAbstract(IPropertySymbol indexer)
+    {
+        if (indexer.IsStatic || indexer.ExplicitInterfaceImplementations.Length > 0)
+            return false;
+
+        // A wholly private indexer is lifted to protected; implicit
+        // accessors follow. An explicit private accessor on a more
+        // visible indexer cannot become abstract (CS0621) and cannot
+        // stay on the override if the base drops it (CS0546).
+        if (indexer.DeclaredAccessibility == Accessibility.Private)
+            return true;
+
+        return indexer.GetMethod?.DeclaredAccessibility != Accessibility.Private
+            && indexer.SetMethod?.DeclaredAccessibility != Accessibility.Private;
+    }
 
     private static bool IsRequiredByAbstractBase(ISymbol member)
     {
@@ -672,6 +722,13 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     private static bool ImplementsInterfaceMember(ISymbol member, INamedTypeSymbol source)
     {
+        // Explicit-interface indexers use a qualified name (IFoo.this[]),
+        // so GetMembers(member.Name) on the interface would miss them.
+        // Removing IFoo.this[...] from the source is CS0535; copying it
+        // onto a derived type that does not re-list IFoo is CS0540.
+        if (member is IPropertySymbol { IsIndexer: true, ExplicitInterfaceImplementations.Length: > 0 })
+            return true;
+
         foreach (var iface in source.AllInterfaces)
         {
             foreach (var ifaceMember in iface.GetMembers(member.Name))
@@ -699,6 +756,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 continue;
             }
 
+            if (member is IPropertySymbol { IsIndexer: true } indexer
+                && existing is IPropertySymbol { IsIndexer: true } existingIndexer)
+            {
+                if (IndexerSignaturesMatch(indexer, existingIndexer))
+                    return true;
+                continue;
+            }
+
             return true;
         }
 
@@ -711,6 +776,22 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return false;
 
         if (left.TypeParameters.Length != right.TypeParameters.Length)
+            return false;
+
+        for (var i = 0; i < left.Parameters.Length; i++)
+        {
+            if (!SymbolEqualityComparer.Default.Equals(left.Parameters[i].Type, right.Parameters[i].Type))
+                return false;
+            if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool IndexerSignaturesMatch(IPropertySymbol left, IPropertySymbol right)
+    {
+        if (left.Parameters.Length != right.Parameters.Length)
             return false;
 
         for (var i = 0; i < left.Parameters.Length; i++)
@@ -868,6 +949,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => ToInterfaceProperty(property),
+            IndexerDeclarationSyntax indexer => ToInterfaceIndexer(indexer),
             EventDeclarationSyntax eventDecl when eventDecl.AccessorList != null => eventDecl
                 .WithModifiers(SyntaxFactory.TokenList())
                 .NormalizeWhitespace(),
@@ -925,6 +1007,55 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             .NormalizeWhitespace();
     }
 
+    private static IndexerDeclarationSyntax ToInterfaceIndexer(IndexerDeclarationSyntax indexer)
+    {
+        var accessors = new List<AccessorDeclarationSyntax>();
+        if (indexer.AccessorList != null)
+        {
+            foreach (var accessor in indexer.AccessorList.Accessors)
+            {
+                // Same public-accessor gate as extract_interface
+                // CreateInterfaceIndexer / pull_members_up: a private /
+                // protected / internal setter must not become a public
+                // interface set;.
+                if (HasNonPublicAccessibility(accessor))
+                    continue;
+
+                accessors.Add(accessor
+                    .WithModifiers(SyntaxFactory.TokenList())
+                    .WithBody(null)
+                    .WithExpressionBody(null)
+                    .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
+            }
+        }
+        else
+        {
+            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
+        }
+
+        if (accessors.Count == 0)
+        {
+            throw new RefactoringException(
+                ErrorCodes.MemberNotInterfaceCompatible,
+                "Indexer cannot be pushed to an interface because it has no public accessors.");
+        }
+
+        return indexer
+            .WithModifiers(SyntaxFactory.TokenList())
+            .WithExplicitInterfaceSpecifier(null)
+            .WithExpressionBody(null)
+            .WithSemicolonToken(default)
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
+            .NormalizeWhitespace();
+    }
+
+    private static bool HasNonPublicAccessibility(AccessorDeclarationSyntax accessor) =>
+        accessor.Modifiers.Any(token =>
+            token.IsKind(SyntaxKind.PrivateKeyword)
+            || token.IsKind(SyntaxKind.ProtectedKeyword)
+            || token.IsKind(SyntaxKind.InternalKeyword));
+
     private static MemberDeclarationSyntax ConvertToAbstract(MemberDeclarationSyntax member)
     {
         return member switch
@@ -936,13 +1067,25 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => ToAbstractProperty(property),
+            IndexerDeclarationSyntax indexer when CanMakeIndexerAbstract(indexer) => ToAbstractIndexer(indexer),
             EventDeclarationSyntax eventDecl when CanMakeEventAbstract(eventDecl) => ToAbstractEvent(eventDecl),
             EventFieldDeclarationSyntax eventField when CanMakeEventAbstract(eventField) => ToAbstractEvent(eventField),
             _ => throw new RefactoringException(
                 ErrorCodes.MemberNotMoveable,
-                "Only methods, properties, and events can be left as abstract members.")
+                "Only methods, properties, indexers, and events can be left as abstract members.")
         };
     }
+
+    private static bool CanMakeIndexerAbstract(IndexerDeclarationSyntax indexer) =>
+        !indexer.Modifiers.Any(SyntaxKind.StaticKeyword) &&
+        indexer.ExplicitInterfaceSpecifier == null &&
+        (indexer.AccessorList == null
+            || indexer.AccessorList.Accessors.All(accessor => !IsPrivateOnlyAccessor(accessor)));
+
+    private static bool IsPrivateOnlyAccessor(AccessorDeclarationSyntax accessor) =>
+        accessor.Modifiers.Any(SyntaxKind.PrivateKeyword)
+        && !accessor.Modifiers.Any(SyntaxKind.ProtectedKeyword)
+        && !accessor.Modifiers.Any(SyntaxKind.InternalKeyword);
 
     private static bool CanMakeEventAbstract(EventDeclarationSyntax eventDecl) =>
         !eventDecl.Modifiers.Any(SyntaxKind.StaticKeyword) &&
@@ -997,6 +1140,33 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             .NormalizeWhitespace();
     }
 
+    private static IndexerDeclarationSyntax ToAbstractIndexer(IndexerDeclarationSyntax indexer)
+    {
+        var accessors = new List<AccessorDeclarationSyntax>();
+        if (indexer.AccessorList != null)
+        {
+            foreach (var accessor in indexer.AccessorList.Accessors)
+            {
+                accessors.Add(accessor
+                    .WithBody(null)
+                    .WithExpressionBody(null)
+                    .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
+            }
+        }
+        else
+        {
+            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
+        }
+
+        return indexer
+            .WithModifiers(ToAbstractModifiers(indexer.Modifiers))
+            .WithExpressionBody(null)
+            .WithSemicolonToken(default)
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
+            .NormalizeWhitespace();
+    }
+
     private static MemberDeclarationSyntax AddOverrideModifier(MemberDeclarationSyntax member)
     {
         return member switch
@@ -1004,6 +1174,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             MethodDeclarationSyntax method => EnsureMethodBody(method.WithModifiers(ToOverrideModifiers(method.Modifiers)))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => property.WithModifiers(ToOverrideModifiers(property.Modifiers))
+                .NormalizeWhitespace(),
+            IndexerDeclarationSyntax indexer => indexer.WithModifiers(ToOverrideModifiers(indexer.Modifiers))
                 .NormalizeWhitespace(),
             EventDeclarationSyntax eventDecl => eventDecl.WithModifiers(ToOverrideModifiers(eventDecl.Modifiers))
                 .NormalizeWhitespace(),
@@ -1048,6 +1220,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                     SyntaxKind.NewKeyword,
                     SyntaxKind.SealedKeyword)),
                     property.Modifiers.Any(SyntaxKind.AbstractKeyword))
+                .NormalizeWhitespace(),
+            IndexerDeclarationSyntax indexer =>
+                WithVirtualIfAbstract(indexer.WithModifiers(StripModifiers(
+                    indexer.Modifiers,
+                    SyntaxKind.AbstractKeyword,
+                    SyntaxKind.NewKeyword,
+                    SyntaxKind.SealedKeyword)),
+                    indexer.Modifiers.Any(SyntaxKind.AbstractKeyword))
                 .NormalizeWhitespace(),
             FieldDeclarationSyntax field => field.NormalizeWhitespace(),
             EventFieldDeclarationSyntax eventField => eventField.NormalizeWhitespace(),
