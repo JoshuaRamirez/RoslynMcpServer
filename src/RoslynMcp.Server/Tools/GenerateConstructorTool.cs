@@ -101,7 +101,7 @@ public sealed class GenerateConstructorTool : IToolHandler
             classBaseCopy = new
             {
                 type = "boolean",
-                description = "When copyConstructor is true, emit : base(<copyParameter>) on an ordinary class whose immediate base has an accessible copy constructor of the base type. Requires copyConstructor. Records, structs, and record structs ignore this flag",
+                description = "When copyConstructor is true, emit : base((Base)<copyParameter>) on an ordinary class whose immediate base has an accessible copy constructor of the base type. Requires copyConstructor. Records, structs, and record structs ignore this flag",
                 @default = false
             },
             preview = new

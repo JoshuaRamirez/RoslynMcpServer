@@ -2910,10 +2910,62 @@ public class GenerateConstructorOperationTests
 
         Assert.True(result.Success);
         var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
-        Assert.Contains("public Dog(Dog other) : base(other)", ctor);
+        Assert.Contains("public Dog(Dog other) : base((Animal)other)", ctor);
+        Assert.DoesNotContain(": base(other)", ctor);
         Assert.Contains("this.Name = other.Name", ctor);
         Assert.DoesNotContain("this.Species", ctor);
         Assert.DoesNotContain("Species = other.Species", ctor);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ClassBaseCopyTrue_AmbiguousBaseOverloads_CastsToBaseType_AndCompiles()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IFoo
+            {
+            }
+
+            public class Base
+            {
+                public Base()
+                {
+                }
+
+                public Base(Base other)
+                {
+                }
+
+                public Base(IFoo foo)
+                {
+                }
+            }
+
+            public class Derived : Base, IFoo
+            {
+                public int N;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Derived.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Derived",
+            CopyConstructor = true,
+            ClassBaseCopy = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var ctor = ExtractConstructor(updated, "Derived");
+        Assert.Contains("public Derived(Derived other) : base((Base)other)", ctor);
+        Assert.DoesNotContain(": base(other)", ctor);
+        Assert.Contains("this.N = other.N", ctor);
+        AssertGeneratedSourceCompiles(updated);
     }
 
     [SkippableFact]
@@ -2933,7 +2985,8 @@ public class GenerateConstructorOperationTests
 
         Assert.True(result.Success);
         var ctor = ExtractConstructor(NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)), "Dog");
-        Assert.Contains("public Dog(Dog other) : base(other)", ctor);
+        Assert.Contains("public Dog(Dog other) : base((Animal)other)", ctor);
+        Assert.DoesNotContain(": base(other)", ctor);
         Assert.Contains("this.Name = other.Name", ctor);
         Assert.DoesNotContain("this.Species", ctor);
         Assert.DoesNotContain("Species = other.Species", ctor);
@@ -3199,7 +3252,8 @@ public class GenerateConstructorOperationTests
         Assert.Contains("copy constructor", result.PendingChanges[0].Description);
         Assert.Contains("class : base(other) initializer", result.PendingChanges[0].Description);
         var snippet = result.PendingChanges[0].AfterSnippet!;
-        Assert.Contains("public Dog(Dog other) : base(other)", snippet);
+        Assert.Contains("public Dog(Dog other) : base((Animal)other)", snippet);
+        Assert.DoesNotContain(": base(other)", snippet);
         Assert.Contains("this.Name = other.Name", snippet);
         Assert.DoesNotContain("this.Species", snippet);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
@@ -3388,6 +3442,28 @@ public class GenerateConstructorOperationTests
         }
 
         return count;
+    }
+
+    private static void AssertGeneratedSourceCompiles(string source)
+    {
+        var references = new List<MetadataReference>
+        {
+            MetadataReference.CreateFromFile(typeof(object).Assembly.Location)
+        };
+        var runtime = Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, "System.Runtime.dll");
+        if (File.Exists(runtime))
+            references.Add(MetadataReference.CreateFromFile(runtime));
+
+        var compilation = CSharpCompilation.Create(
+            "ClassBaseCopyCompileTest",
+            new[] { CSharpSyntaxTree.ParseText(source) },
+            references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .Select(d => d.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, "Generated constructor did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
     }
 
     private static string ExtractConstructor(string source, string typeName, string visibility = "public")

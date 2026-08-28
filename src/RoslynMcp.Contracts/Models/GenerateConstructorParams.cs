@@ -94,7 +94,7 @@ public sealed class GenerateConstructorParams
     /// <summary>
     /// When true with <see cref="CopyConstructor"/>, an ordinary class
     /// whose immediate base is a class other than <c>object</c> emits
-    /// <c>: base(&lt;copyParameter&gt;)</c> if that base has an accessible
+    /// <c>: base((Base)&lt;copyParameter&gt;)</c> if that base has an accessible
     /// instance constructor with exactly one by-value parameter of the
     /// <em>base</em> type. Inherited assignable members are then not
     /// reassigned in the derived body. Records, record structs, and structs

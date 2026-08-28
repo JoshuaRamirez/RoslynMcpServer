@@ -25,7 +25,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// body assigns each selected member from that parameter instead of one
 /// parameter per member. Derived records whose base is also a record get
 /// <c>: base(other)</c> (CS8868). Ordinary classes do not unless
-/// <c>classBaseCopy</c> is also true and the immediate base has an
+/// <c>classBaseCopy</c> is also true; then they emit
+/// <c>: base((Base)other)</c> when the immediate base has an
 /// accessible copy constructor of the base type. Unsealed record
 /// copy constructors reject visibilities other than public / protected
 /// (CS8878). Copy mode skips setter-only / unreadable properties.
@@ -231,9 +232,10 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             }
         }
 
-        // Class : base(other) is opt-in. Records already chain (CS8868) and
-        // ignore classBaseCopy. Only an ordinary class whose immediate base
-        // has an accessible Base(Base) copy constructor gets the initializer.
+        // Class : base((Base)other) is opt-in. Records already chain (CS8868)
+        // and ignore classBaseCopy. Only an ordinary class whose immediate
+        // base has an accessible Base(Base) copy constructor gets the
+        // initializer; the argument is cast to the base type so that ctor wins.
         var addClassBaseCopy = @params.CopyConstructor
             && @params.ClassBaseCopy
             && TryGetClassBaseCopyInitializer(typeSymbol);
@@ -747,8 +749,9 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     /// Null-check the copy parameter only when requested and the target is a
     /// reference type — structs / record structs skip it.
     /// Derived records whose base is also a record get
-    /// <c>: base(other)</c> (CS8868). Ordinary classes get that initializer
-    /// only when <paramref name="addClassBaseCopy"/> is true.
+    /// <c>: base(other)</c> (CS8868). Ordinary classes get
+    /// <c>: base((Base)other)</c> only when <paramref name="addClassBaseCopy"/>
+    /// is true.
     /// </summary>
     private static ConstructorDeclarationSyntax GenerateCopyConstructor(
         List<ISymbol> members,
@@ -791,7 +794,9 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SingletonSeparatedList(parameter)))
             .WithBody(SyntaxFactory.Block(statements));
 
-        // Record language rule (CS8868), or opt-in class : base(other).
+        // Record language rule (CS8868) keeps : base(other). Class base-copy
+        // casts to the immediate base type so Base(Base) wins over Base(IFoo)
+        // / a more-specific inaccessible Base(Derived).
         if (RequiresRecordBaseCopyInitializer(typeSymbol) || addClassBaseCopy)
         {
             constructor = constructor.WithInitializer(
@@ -799,7 +804,9 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                     SyntaxKind.BaseConstructorInitializer,
                     SyntaxFactory.ArgumentList(
                         SyntaxFactory.SingletonSeparatedList(
-                            SyntaxFactory.Argument(SyntaxFactory.IdentifierName(parameterName))))));
+                            SyntaxFactory.Argument(
+                                CreateBaseCopyInitializerArgument(
+                                    typeSymbol, parameterName, addClassBaseCopy))))));
         }
 
         return constructor.NormalizeWhitespace();
@@ -820,6 +827,27 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             return false;
 
         return baseType.IsRecord;
+    }
+
+    /// <summary>
+    /// Record copy constructors pass the copy parameter through unchanged
+    /// (<c>: base(other)</c>, CS8868). Class <c>classBaseCopy</c> casts to
+    /// the immediate base type (<c>: base((Base)other)</c>) so the call
+    /// binds to the validated <c>Base(Base)</c> constructor.
+    /// </summary>
+    private static ExpressionSyntax CreateBaseCopyInitializerArgument(
+        INamedTypeSymbol typeSymbol,
+        string parameterName,
+        bool addClassBaseCopy)
+    {
+        var parameter = SyntaxFactory.IdentifierName(parameterName);
+        if (!addClassBaseCopy || typeSymbol.BaseType == null)
+            return parameter;
+
+        var baseTypeName = typeSymbol.BaseType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+        return SyntaxFactory.CastExpression(
+            SyntaxFactory.ParseTypeName(baseTypeName),
+            parameter);
     }
 
     /// <summary>
