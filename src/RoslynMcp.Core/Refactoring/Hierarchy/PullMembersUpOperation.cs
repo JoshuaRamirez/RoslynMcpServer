@@ -752,7 +752,8 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         if (modifiers.Any(SyntaxKind.PrivateKeyword) || !HasAccessibility(tokens))
             tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
 
-        tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword));
+        tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword)
+            .WithTrailingTrivia(SyntaxFactory.ElasticSpace));
         return SyntaxFactory.TokenList(tokens);
     }
 
