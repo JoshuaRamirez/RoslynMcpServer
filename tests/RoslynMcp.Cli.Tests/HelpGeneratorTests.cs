@@ -592,6 +592,37 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_ConvertProperty_ShowsColumn()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("convert-property")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("convert-property", help);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.Contains("--direction", requiredSection);
+        Assert.DoesNotContain("--column", requiredSection);
+        Assert.DoesNotContain("--property-name", requiredSection);
+        Assert.DoesNotContain("--line", requiredSection);
+        Assert.DoesNotContain("--preview", requiredSection);
+
+        Assert.Contains("--column", optionalSection);
+        Assert.Contains("--property-name", optionalSection);
+        Assert.Contains("--line", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ConvertToPatternMatching_ShowsColumn()
     {
         var registry = ToolRegistry.BuildDefault();

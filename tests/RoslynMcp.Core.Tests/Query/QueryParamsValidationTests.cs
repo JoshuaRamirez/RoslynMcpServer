@@ -750,6 +750,21 @@ public class QueryParamsValidationTests
     }
 
     [Fact]
+    public void ConvertProperty_InvalidColumn_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateConvertPropertyParams(new ConvertPropertyParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                PropertyName = "Foo",
+                Column = 0,
+                Direction = "ToFullProperty"
+            }));
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
     public void ConvertProperty_ValidParams_PassesValidation()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -840,28 +855,8 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
     }
 
-    private static void ValidateConvertPropertyParams(ConvertPropertyParams p)
-    {
-        if (string.IsNullOrWhiteSpace(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-        if (string.IsNullOrWhiteSpace(p.Direction))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "direction is required.");
-        if (!PathResolver.IsAbsolutePath(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-        if (!PathResolver.IsValidCSharpFilePath(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-        if (!p.Line.HasValue && string.IsNullOrWhiteSpace(p.PropertyName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Either propertyName or line must be provided.");
-        if (p.Line.HasValue && p.Line.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
-        if (!Enum.TryParse<RoslynMcp.Contracts.Enums.ConversionDirection>(p.Direction, ignoreCase: true, out var dir) ||
-            (dir != RoslynMcp.Contracts.Enums.ConversionDirection.ToAutoProperty && dir != RoslynMcp.Contracts.Enums.ConversionDirection.ToFullProperty))
-        {
-            throw new RefactoringException(ErrorCodes.CannotConvert, "direction must be 'ToAutoProperty' or 'ToFullProperty'.");
-        }
-        if (!File.Exists(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
-    }
+    private static void ValidateConvertPropertyParams(ConvertPropertyParams p) =>
+        ConvertPropertyOperation.Validate(p);
 
     private static void ValidateIntroduceParameterParams(IntroduceParameterParams p)
     {

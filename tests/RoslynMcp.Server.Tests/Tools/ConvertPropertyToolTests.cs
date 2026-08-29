@@ -73,6 +73,32 @@ public class ConvertPropertyToolTests
         Assert.Contains("direction", requiredFields);
     }
 
+    [Fact]
+    public void GetDefinition_HasProperties_ForColumnAndPreview()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("column", out _));
+        Assert.True(properties.TryGetProperty("line", out _));
+        Assert.True(properties.TryGetProperty("propertyName", out _));
+        Assert.True(properties.TryGetProperty("preview", out _));
+        Assert.False(RequiredFieldsContains(doc, "column"));
+    }
+
+    private static bool RequiredFieldsContains(JsonDocument doc, string name)
+    {
+        foreach (var item in doc.RootElement.GetProperty("required").EnumerateArray())
+        {
+            if (item.GetString() == name)
+                return true;
+        }
+
+        return false;
+    }
+
     #endregion
 
     #region ExecuteAsync Argument Validation Tests

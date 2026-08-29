@@ -221,7 +221,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<SimplifyNameOperation, SimplifyNameParams>(
             "simplify-name", "Remove redundant namespace qualifications from type references; scope is file (default) or location (requires line)");
         r.RegisterRefactoring<ConvertPropertyOperation, ConvertPropertyParams>(
-            "convert-property", "Convert between auto-property and full property");
+            "convert-property", "Convert between auto-property and full property; column (optional) picks the smallest property whose identifier or declaration span covers that column on the given line");
         r.RegisterRefactoring<ConvertForeachLinqOperation, ConvertForeachLinqParams>(
             "convert-foreach-linq", "Convert foreach loops with Add patterns to LINQ; preferQuerySyntax (default false) keeps method syntax, true emits query syntax (from … where … select) for filter/project/ToList; Any/All/FirstOrDefault/Count keep method syntax; column disambiguates two foreach statements on one line");
         r.RegisterRefactoring<ConvertAnonymousToClassOperation, ConvertAnonymousToClassParams>(
