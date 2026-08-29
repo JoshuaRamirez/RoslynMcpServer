@@ -62,6 +62,11 @@ public sealed class AddNullChecksTool : IToolHandler
                 description = "1-based line number for disambiguation when multiple overloads exist",
                 minimum = 1
             },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set, selects the smallest method or constructor whose identifier or declaration span covers that column. Omitted keeps today's MethodName and optional Line start-line pick."
+            },
             style = new
             {
                 type = "string",
@@ -106,6 +111,7 @@ public sealed class AddNullChecksTool : IToolHandler
                 SourceFile = args.SourceFile,
                 MethodName = args.MethodName,
                 Line = args.Line,
+                Column = args.Column,
                 Style = args.Style,
                 Preview = args.Preview ?? false
             };
@@ -138,6 +144,7 @@ public sealed class AddNullChecksTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string MethodName { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public string? Style { get; init; }
         public bool? Preview { get; init; }
     }
