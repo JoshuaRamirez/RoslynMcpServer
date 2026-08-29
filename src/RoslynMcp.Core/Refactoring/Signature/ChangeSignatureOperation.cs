@@ -24,7 +24,13 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(ChangeSignatureParams @params)
+    protected override void ValidateParams(ChangeSignatureParams @params) => Validate(@params);
+
+    /// <summary>
+    /// Validates change-signature parameters. Internal so tests can
+    /// exercise input rules without loading a workspace.
+    /// </summary>
+    internal static void Validate(ChangeSignatureParams @params)
     {
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
@@ -40,6 +46,9 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
 
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -83,28 +92,34 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 $"Method '{@params.MethodName}' not found.");
         }
 
-        MethodDeclarationSyntax methodDecl;
-        if (methodDeclarations.Count > 1)
+        // Line is required when more than one method matches, even if
+        // column is set. Column without Line is not a source position:
+        // FindMethod would substitute each candidate's own start line and
+        // could silently pick the shortest equally-aligned overload.
+        // When both are set, pick by identifier/declaration span and do
+        // not require the declaration to start on `line` (continuation-
+        // line identifier).
+        if (methodDeclarations.Count > 1 && !@params.Line.HasValue)
         {
-            if (!@params.Line.HasValue)
-            {
-                var lines = methodDeclarations
-                    .Select(m => m.GetLocation().GetLineSpan().StartLinePosition.Line + 1)
-                    .ToList();
-                throw new RefactoringException(
-                    ErrorCodes.SymbolAmbiguous,
-                    $"Multiple methods named '{@params.MethodName}' found. Provide line number. Options: {string.Join(", ", lines)}");
-            }
-
-            methodDecl = methodDeclarations.FirstOrDefault(m =>
-                m.GetLocation().GetLineSpan().StartLinePosition.Line + 1 == @params.Line.Value)
-                ?? throw new RefactoringException(
-                    ErrorCodes.MethodNotFound,
-                    $"Method '{@params.MethodName}' not found at line {@params.Line}.");
+            var lines = methodDeclarations
+                .Select(m => m.GetLocation().GetLineSpan().StartLinePosition.Line + 1)
+                .ToList();
+            throw new RefactoringException(
+                ErrorCodes.SymbolAmbiguous,
+                $"Multiple methods named '{@params.MethodName}' found. Provide line number. Options: {string.Join(", ", lines)}");
         }
-        else
+
+        var methodDecl = FindMethod(root, @params.MethodName, @params.Line, @params.Column);
+        if (methodDecl == null)
         {
-            methodDecl = methodDeclarations[0];
+            var location = @params.Column.HasValue
+                ? @params.Line.HasValue
+                    ? $"'{@params.MethodName}' at line {@params.Line}, column {@params.Column.Value}"
+                    : $"'{@params.MethodName}' at column {@params.Column.Value}"
+                : $"'{@params.MethodName}' at line {@params.Line}";
+            throw new RefactoringException(
+                ErrorCodes.MethodNotFound,
+                $"Method {location} not found.");
         }
 
         var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken);
@@ -185,6 +200,84 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             },
             callSites.Count,
             0);
+    }
+
+    /// <summary>
+    /// Finds a method. Omitted <paramref name="column"/> keeps today's
+    /// first-match (MethodName; Line when more than one match, start-line
+    /// filter). When set, picks the smallest method whose identifier or
+    /// declaration span covers that 1-based column. Do not require the
+    /// declaration to start on <paramref name="line"/> when column is set
+    /// — a split signature may put the identifier on a continuation line.
+    /// </summary>
+    internal static MethodDeclarationSyntax? FindMethod(
+        SyntaxNode root,
+        string methodName,
+        int? line,
+        int? column)
+    {
+        var methods = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == methodName)
+            .ToList();
+
+        if (column.HasValue)
+        {
+            // When column is set, do not require the declaration to start
+            // on `line` — a split signature's identifier may live on a
+            // continuation line whose declaration span still covers that
+            // column.
+            return methods
+                .Where(m => MethodCoversColumn(m, line ?? StartLine(m), column.Value))
+                .OrderBy(m => IdentifierCoversColumn(m, line ?? StartLine(m), column.Value) ? 0 : 1)
+                .ThenBy(m => m.Span.Length)
+                .FirstOrDefault();
+        }
+
+        // Omitted column keeps today's MethodName + Line pick: a single
+        // name match is used as-is (Line is only for disambiguation).
+        // More than one match uses the first whose declaration starts on
+        // `line`.
+        if (methods.Count <= 1)
+            return methods.FirstOrDefault();
+
+        if (!line.HasValue)
+            return methods.FirstOrDefault();
+
+        return methods.FirstOrDefault(m => StartLine(m) == line.Value);
+    }
+
+    private static int StartLine(MethodDeclarationSyntax method) =>
+        method.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+    private static bool MethodCoversColumn(MethodDeclarationSyntax method, int line, int column) =>
+        IdentifierCoversColumn(method, line, column) ||
+        SpanCoversColumn(method.GetLocation().GetLineSpan(), line, column);
+
+    private static bool IdentifierCoversColumn(MethodDeclarationSyntax method, int line, int column) =>
+        SpanCoversColumn(method.Identifier.GetLocation().GetLineSpan(), line, column);
+
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character of an adjacent method also
+    /// match the previous declaration.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == startLine && column < startCol)
+            return false;
+        if (line == endLine && column >= endCol)
+            return false;
+        return true;
     }
 
     private static List<NewParameter> BuildNewParameterList(
