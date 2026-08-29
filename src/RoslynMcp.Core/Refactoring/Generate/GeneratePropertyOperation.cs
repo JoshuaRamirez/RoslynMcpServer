@@ -16,6 +16,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// init-only <c>{ get; init; }</c>, or a backing-field form when a field is the target.
 /// Honors optional <c>line</c> to disambiguate same-named types in one
 /// file (identifier preferred, then smallest containing type).
+/// Selection uses <c>BaseTypeDeclarationSyntax</c> so an earlier same-named
+/// enum/delegate still reaches <c>InvalidSymbolKind</c>.
 /// Honors <c>replaceExisting</c> to remove an existing property of the same
 /// name (including across partials) before inserting a freshly generated one.
 /// </summary>
@@ -117,15 +119,11 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
         // Optional line disambiguates same-named types. Omitted keeps
-        // today's FirstOrDefault pick (including when several types share
-        // the name). Enums / delegates are not TypeDeclarationSyntax —
-        // fall back so today's InvalidSymbolKind reject still fires.
-        BaseTypeDeclarationSyntax? typeDecl = FindTypeDeclaration(root, @params.TypeName, @params.Line);
-        if (typeDecl == null)
-        {
-            typeDecl = root.DescendantNodes().OfType<BaseTypeDeclarationSyntax>()
-                .FirstOrDefault(t => t.Identifier.Text == @params.TypeName);
-        }
+        // today's BaseTypeDeclarationSyntax FirstOrDefault pick
+        // (including enum/delegate). Line set includes those
+        // unsupported candidates so a covering enum still reaches
+        // InvalidSymbolKind instead of retargeting a later class.
+        var typeDecl = FindTypeDeclaration(root, @params.TypeName, @params.Line);
 
         if (typeDecl == null)
         {
@@ -701,13 +699,16 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
 
     /// <summary>
     /// Finds a type by <paramref name="typeName"/>. Omitted <paramref name="line"/>
-    /// keeps today's <c>FirstOrDefault</c> pick, including when several
-    /// same-named types exist (nested vs outer, or two namespaces). When set,
-    /// picks the type whose identifier or declaration span covers that 1-based
-    /// line (same exclusive-end coverage as
+    /// keeps today's <c>BaseTypeDeclarationSyntax</c> <c>FirstOrDefault</c>
+    /// pick, including when several same-named types exist (nested vs outer,
+    /// two namespaces, or an earlier enum/delegate). When set, picks the
+    /// type whose identifier or declaration span covers that 1-based line
+    /// (same exclusive-end coverage as
     /// <c>GenerateConstructorOperation.SpanCoversLine</c>). Prefer the identifier
-    /// hit, then the smallest containing type. Nested types participate
-    /// (<c>DescendantNodes</c>). Do not require the declaration to start on
+    /// hit, then the smallest containing type. Nested types and unsupported
+    /// <c>BaseTypeDeclarationSyntax</c> candidates (enum / delegate) participate
+    /// so a covering enum still reaches <c>InvalidSymbolKind</c> rather than
+    /// retargeting a later class. Do not require the declaration to start on
     /// <paramref name="line"/> — a split declaration may put the identifier
     /// on a continuation line. If nothing covers this line, keep today's
     /// first-match rather than inventing a not-found. After
@@ -715,13 +716,13 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
     /// the selected type from the per-execution syntax annotation — do not
     /// reuse a pre-rewrite SpanStart or line.
     /// </summary>
-    internal static TypeDeclarationSyntax? FindTypeDeclaration(
+    internal static BaseTypeDeclarationSyntax? FindTypeDeclaration(
         SyntaxNode root,
         string typeName,
         int? line)
     {
         var candidates = root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
+            .OfType<BaseTypeDeclarationSyntax>()
             .Where(t => t.Identifier.Text == typeName)
             .ToList();
 
@@ -735,9 +736,10 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         // type's identifier may live on a continuation line whose
         // declaration span still covers that line. Prefer the identifier
         // hit, then the smallest containing type (nested over outer).
-        // Do not silently pick the first when a covering node exists
-        // elsewhere — scan every candidate. If nothing covers this line,
-        // keep today's first-match rather than inventing a not-found.
+        // Include enum/delegate candidates. Do not silently pick the
+        // first when a covering node exists elsewhere — scan every
+        // candidate. If nothing covers this line, keep today's
+        // first-match rather than inventing a not-found.
         return candidates
             .Where(t => TypeCoversLine(t, line.Value))
             .OrderBy(t => IdentifierCoversLine(t, line.Value) ? 0 : 1)
@@ -746,11 +748,11 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
             ?? candidates.FirstOrDefault();
     }
 
-    private static bool TypeCoversLine(TypeDeclarationSyntax type, int line) =>
+    private static bool TypeCoversLine(BaseTypeDeclarationSyntax type, int line) =>
         IdentifierCoversLine(type, line) ||
         SpanCoversLine(type.GetLocation().GetLineSpan(), line);
 
-    private static bool IdentifierCoversLine(TypeDeclarationSyntax type, int line) =>
+    private static bool IdentifierCoversLine(BaseTypeDeclarationSyntax type, int line) =>
         SpanCoversLine(type.Identifier.GetLocation().GetLineSpan(), line);
 
     /// <summary>

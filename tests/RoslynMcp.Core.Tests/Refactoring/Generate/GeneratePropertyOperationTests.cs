@@ -456,6 +456,129 @@ public class GeneratePropertyOperationTests
         Assert.False(found.Parent is TypeDeclarationSyntax);
     }
 
+    private const string EnumFirstThenSameNamedClassSource = """
+        namespace Other
+        {
+            public /* widget-enum */ enum Widget
+            {
+                Ready
+            }
+        }
+
+        namespace TestApp
+        {
+            public /* widget-class */ class Widget
+            {
+            }
+        }
+        """;
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_EnumFirstPicksEnum()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = GeneratePropertyOperation.FindTypeDeclaration(root, "Widget", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnEnumIdentifier_PicksEnum()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = GeneratePropertyOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(EnumFirstThenSameNamedClassSource, "widget-enum"));
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnClassIdentifier_PicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = GeneratePropertyOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(EnumFirstThenSameNamedClassSource, "widget-class"));
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_OmittedLine_EnumFirstThenSameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("public string Name", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_LineOnEnumIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                Line = FindLine(EnumFirstThenSameNamedClassSource, "widget-enum"),
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("public string Name", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_LineOnClassIdentifier_SameNamedEnum_GeneratesOnClass()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(EnumFirstThenSameNamedClassSource, "widget-class"),
+            PropertyName = "Name",
+            PropertyType = "string"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Widget");
+        Assert.Single(types);
+        Assert.True(TypeHasProperty(types[0], "Name"));
+        Assert.Contains("public string Name { get; set; }", updated);
+        Assert.Contains("enum Widget", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public string Name", updated[..updated.IndexOf("class Widget", StringComparison.Ordinal)]);
+    }
+
     [Fact]
     public void SpanCoversLine_TreatsEndAsExclusive()
     {
