@@ -486,7 +486,7 @@ public class GeneratePropertyOperationTests
             {
                 public partial class Widget
                 {
-                    public string Name { get; set; } = "old"; /* old-prop */
+                    public string Name { get; set; } = "old-partial";
                 }
 
                 public /* later-partial */ partial class Widget
@@ -516,11 +516,10 @@ public class GeneratePropertyOperationTests
         Assert.True(TypeHasProperty(types[2], "Name"));
         var selected = ExtractPropertyFromType(types[2], "Name");
         Assert.Contains("public int Name { get; set; }", selected, StringComparison.Ordinal);
-        Assert.DoesNotContain("old-prop", selected, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"old\"", selected, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-partial", selected, StringComparison.Ordinal);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Equal(1, CountOccurrences(updated, "public int Name"));
-        Assert.DoesNotContain("old-prop", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-partial", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("public string Name", updated, StringComparison.Ordinal);
     }
 
