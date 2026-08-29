@@ -120,16 +120,14 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         }
 
         // Find members to extract
-        var membersToExtract = FindMembersToExtract(
+        var (membersToExtract, extractedSymbols) = FindMembersToExtract(
             typeDeclaration,
             @params.Members,
             semanticModel,
             @params.MakeAbstract);
 
         if (@params.MakeAbstract)
-            ValidateAbstractMembers(membersToExtract, semanticModel);
-
-        var extractedSymbols = BuildExtractedSymbolMap(membersToExtract, semanticModel);
+            ValidateAbstractMembers(extractedSymbols);
 
         // Generate base class
         var baseClass = GenerateBaseClass(
@@ -283,7 +281,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             0);
     }
 
-    private static List<MemberDeclarationSyntax> FindMembersToExtract(
+    private static (List<MemberDeclarationSyntax> Members, Dictionary<string, ISymbol> Symbols) FindMembersToExtract(
         ClassDeclarationSyntax typeDeclaration,
         IReadOnlyList<string> memberNames,
         SemanticModel semanticModel,
@@ -292,6 +290,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         var requestedSet = new HashSet<string>(memberNames);
         var unmatched = new HashSet<string>(memberNames);
         var result = new List<MemberDeclarationSyntax>();
+        var symbols = new Dictionary<string, ISymbol>(StringComparer.Ordinal);
 
         foreach (var member in typeDeclaration.Members)
         {
@@ -304,7 +303,11 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                     continue;
 
                 foreach (var variable in selected)
+                {
                     unmatched.Remove(variable.Identifier.Text);
+                    if (semanticModel.GetDeclaredSymbol(variable) is ISymbol eventSymbol)
+                        symbols[variable.Identifier.Text] = eventSymbol;
+                }
 
                 result.Add(eventField.WithDeclaration(
                     eventField.Declaration.WithVariables(SyntaxFactory.SeparatedList(selected))));
@@ -336,6 +339,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 if (ImplementInterfaceOperation.MatchesRequestedMember(indexer, requestedSet))
                 {
                     result.Add(member);
+                    symbols[GetIndexerRemovalKey(indexerDecl)] = indexer;
                     foreach (var requested in unmatched.ToList())
                     {
                         if (ImplementInterfaceOperation.MatchesRequestedMember(
@@ -354,6 +358,8 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             {
                 result.Add(member);
                 unmatched.Remove(name);
+                if (semanticModel.GetDeclaredSymbol(member) is ISymbol symbol)
+                    symbols[name] = symbol;
             }
         }
 
@@ -364,7 +370,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 $"Members not found: {string.Join(", ", unmatched)}");
         }
 
-        return result;
+        return (result, symbols);
     }
 
     private static string? GetMemberName(MemberDeclarationSyntax member)
@@ -507,29 +513,14 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         return result;
     }
 
-    private static void ValidateAbstractMembers(
-        List<MemberDeclarationSyntax> members,
-        SemanticModel semanticModel)
+    private static void ValidateAbstractMembers(IReadOnlyDictionary<string, ISymbol> extractedSymbols)
     {
-        foreach (var member in members)
+        foreach (var (name, symbol) in extractedSymbols)
         {
-            if (member is FieldDeclarationSyntax)
+            if (symbol is IFieldSymbol)
                 continue;
 
-            if (member is EventFieldDeclarationSyntax eventField)
-            {
-                foreach (var variable in eventField.Declaration.Variables)
-                {
-                    if (semanticModel.GetDeclaredSymbol(variable) is ISymbol eventSymbol)
-                        ThrowIfCannotBeAbstract(eventSymbol, variable.Identifier.Text);
-                }
-
-                continue;
-            }
-
-            var name = GetMemberName(member) ?? "member";
-            if (semanticModel.GetDeclaredSymbol(member) is ISymbol symbol)
-                ThrowIfCannotBeAbstract(symbol, name);
+            ThrowIfCannotBeAbstract(symbol, name);
         }
     }
 
@@ -549,39 +540,6 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 IMethodSymbol => $"Method '{name}' cannot be extracted as an abstract member.",
                 _ => $"Member '{name}' cannot be extracted as an abstract member."
             });
-    }
-
-    private static Dictionary<string, ISymbol> BuildExtractedSymbolMap(
-        List<MemberDeclarationSyntax> members,
-        SemanticModel semanticModel)
-    {
-        var map = new Dictionary<string, ISymbol>(StringComparer.Ordinal);
-        foreach (var member in members)
-        {
-            if (member is EventFieldDeclarationSyntax eventField)
-            {
-                foreach (var variable in eventField.Declaration.Variables)
-                {
-                    if (semanticModel.GetDeclaredSymbol(variable) is ISymbol eventSymbol)
-                        map[variable.Identifier.Text] = eventSymbol;
-                }
-
-                continue;
-            }
-
-            if (member is IndexerDeclarationSyntax indexer
-                && semanticModel.GetDeclaredSymbol(indexer) is ISymbol indexerSymbol)
-            {
-                map[GetIndexerRemovalKey(indexer)] = indexerSymbol;
-                continue;
-            }
-
-            var name = GetMemberName(member);
-            if (name != null && semanticModel.GetDeclaredSymbol(member) is ISymbol symbol)
-                map[name] = symbol;
-        }
-
-        return map;
     }
 
     private static ISymbol RequireExtractedSymbol(
