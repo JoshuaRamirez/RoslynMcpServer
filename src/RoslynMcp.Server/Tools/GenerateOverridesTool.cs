@@ -32,7 +32,7 @@ public sealed class GenerateOverridesTool : IToolHandler
     public string Name => "generate_overrides";
 
     /// <inheritdoc />
-    public string Description => "Generate override methods, properties/indexers, and events for base class virtual/abstract members. callBase (default true) emits base.Method() / base.Prop / base[i] for non-abstract virtuals (events always use empty add/remove); replaceExisting (default false) replaces already-overridden members instead of skipping them.";
+    public string Description => "Generate override methods, properties/indexers, and events for base class virtual/abstract members. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. callBase (default true) emits base.Method() / base.Prop / base[i] for non-abstract virtuals (events always use empty add/remove); replaceExisting (default false) replaces already-overridden members instead of skipping them.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,6 +55,12 @@ public sealed class GenerateOverridesTool : IToolHandler
             {
                 type = "string",
                 description = "Name of the type to generate overrides for"
+            },
+            line = new
+            {
+                type = "integer",
+                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                minimum = 1
             },
             members = new
             {
@@ -109,6 +115,7 @@ public sealed class GenerateOverridesTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
+                Line = args.Line,
                 Members = args.Members,
                 CallBase = args.CallBase ?? true,
                 ReplaceExisting = args.ReplaceExisting ?? false,
@@ -142,6 +149,7 @@ public sealed class GenerateOverridesTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
+        public int? Line { get; init; }
         public List<string>? Members { get; init; }
         public bool? CallBase { get; init; }
         public bool? ReplaceExisting { get; init; }
