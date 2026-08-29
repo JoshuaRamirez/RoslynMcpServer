@@ -364,32 +364,29 @@ public class AddNullChecksOperationTests
         const string source = """
             class C
             {
-                public void Process(string name, string extra) { }
-
                 public void
                 Process(string name) { }
+
+                public void Process(string name, string extra) { }
             }
             """;
 
         var tree = CSharpSyntaxTree.ParseText(source);
         var root = tree.GetRoot();
-        var split = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
-            .First(m => m.Identifier.Text == "Process" && m.ParameterList.Parameters.Count == 1);
-        var startLine = split.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
-        var identifierLine = split.Identifier.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        var startLine = FindLine(source, "public void");
+        var identifierLine = FindLine(source, "Process(string name) { }");
         Assert.NotEqual(startLine, identifierLine);
 
         // Omitted column keeps today's start-line filter, then silent
-        // First() when line misses. Neither Process starts on the
-        // identifier line, so omitted column picks the first candidate
-        // (two-parameter). Column on the continuation identifier still
-        // selects the split method.
+        // First() when line misses. The split signature does not start
+        // on the identifier line. Column on the continuation identifier
+        // still selects the split method.
         var byStartLineOnly = AddNullChecksOperation.FindMethod(root, "Process", identifierLine, column: null);
         var byColumn = AddNullChecksOperation.FindMethod(
             root, "Process", identifierLine, ColumnOf(source, "Process(string name) { }"));
 
         Assert.NotNull(byStartLineOnly);
-        Assert.Equal(2, ((MethodDeclarationSyntax)byStartLineOnly).ParameterList.Parameters.Count);
+        Assert.Single(((MethodDeclarationSyntax)byStartLineOnly).ParameterList.Parameters);
         Assert.NotNull(byColumn);
         Assert.Single(((MethodDeclarationSyntax)byColumn).ParameterList.Parameters);
     }
@@ -572,8 +569,14 @@ public class AddNullChecksOperationTests
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpAddNullChecksMissing.cs");
 
+    private static string NormalizeNewlines(string text) =>
+        text.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+
     private static int FindLine(string source, string snippet)
     {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
         var index = source.IndexOf(snippet, StringComparison.Ordinal);
         if (index < 0)
             throw new InvalidOperationException($"Snippet not found: {snippet}");
@@ -590,6 +593,8 @@ public class AddNullChecksOperationTests
 
     private static int ColumnOf(string source, string snippet)
     {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
         var index = source.IndexOf(snippet, StringComparison.Ordinal);
         if (index < 0)
             throw new InvalidOperationException($"Snippet not found: {snippet}");
