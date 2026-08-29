@@ -11,7 +11,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring;
 
 /// <summary>
-/// Operation-level tests for <see cref="ConvertToAsyncOperation"/> (UC-CV1 updateCallers).
+/// Operation-level tests for <see cref="ConvertToAsyncOperation"/> (UC-CV1 column).
 /// </summary>
 public class ConvertToAsyncOperationTests
 {
@@ -37,6 +37,17 @@ public class ConvertToAsyncOperationTests
             {
                 Process();
             }
+        }
+        """;
+
+    private const string SameLineOverloadsSource = """
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class Worker
+        {
+            public void Process() { Task.Delay(1); } public void Process(int n) { Task.Delay(n); }
         }
         """;
 
@@ -429,6 +440,317 @@ public class ConvertToAsyncOperationTests
 
     #endregion
 
+    #region Input Validation
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                MethodName = "Process",
+                Column = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                MethodName = "Process",
+                Column = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+    }
+
+    #endregion
+
+    #region P0 omitted column converts the same method as today
+
+    [SkippableFact]
+    public async Task ConvertToAsync_OmittedColumn_ConvertsTheNamedMethod()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WorkerSource);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            RenameToAsync = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("async Task Process()", updated);
+        Assert.Contains("await Task.Delay(1)", updated);
+        Assert.Contains("public async Task CallerAsync()", updated);
+        Assert.Contains("public void CallerSync()", updated);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_OmittedColumn_SameLineOverloads_ConvertsFirstStartLineMatch()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public void Process() { Task.Delay(1); }");
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            Line = line,
+            RenameToAsync = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("async Task Process()", updated);
+        Assert.Contains("public void Process(int n)", updated);
+        Assert.DoesNotContain("async Task Process(int n)", updated);
+    }
+
+    #endregion
+
+    #region P0 column picks the intended method when two share a line
+
+    [SkippableFact]
+    public async Task ConvertToAsync_Column_SelectsSecondOverloadOnSameLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public void Process() { Task.Delay(1); }");
+        var secondColumn = ColumnOf(SameLineOverloadsSource, "Process(int n)");
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            Line = line,
+            Column = secondColumn,
+            RenameToAsync = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public void Process() { Task.Delay(1); }", updated);
+        Assert.Contains("async Task Process(int n)", updated);
+        Assert.DoesNotContain("public void Process(int n)", updated);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_Column_SelectsFirstOverloadOnSameLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public void Process() { Task.Delay(1); }");
+        var firstColumn = ColumnOf(SameLineOverloadsSource, "Process() { Task.Delay(1); }");
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            Line = line,
+            Column = firstColumn,
+            RenameToAsync = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("async Task Process()", updated);
+        Assert.Contains("public void Process(int n)", updated);
+        Assert.DoesNotContain("async Task Process(int n)", updated);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_ColumnOnContinuationLine_ConvertsThatMethod()
+    {
+        const string source = """
+            using System.Threading.Tasks;
+
+            namespace TestApp;
+
+            public class Split
+            {
+                public void
+                Process() { Task.Delay(1); }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            Line = FindLine(source, "Process()"),
+            Column = ColumnOf(source, "Process()"),
+            RenameToAsync = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("async Task", updated);
+        Assert.Contains("await Task.Delay(1)", updated);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AdjacentMethods_ColumnOnSecondDoesNotRewriteFirst()
+    {
+        const string source = """
+            using System.Threading.Tasks;
+
+            namespace TestApp;
+
+            public class Adjacent
+            {
+                public void A(){Task.Delay(1);}public void Process(){Task.Delay(2);}
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            Line = FindLine(source, "public void A()"),
+            Column = ColumnOf(source, "Process()"),
+            RenameToAsync = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public void A(){Task.Delay(1);}", updated);
+        Assert.Contains("async Task Process()", updated);
+        Assert.DoesNotContain("async Task A()", updated);
+    }
+
+    [Fact]
+    public void FindMethod_ColumnPicksIdentifierCoverage()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineOverloadsSource);
+        var root = tree.GetRoot();
+        var line = FindLine(SameLineOverloadsSource, "public void Process() { Task.Delay(1); }");
+        var first = ConvertToAsyncOperation.FindMethod(
+            root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process() { Task.Delay(1); }"));
+        var second = ConvertToAsyncOperation.FindMethod(
+            root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int n)"));
+        var omitted = ConvertToAsyncOperation.FindMethod(root, "Process", line, column: null);
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.NotNull(omitted);
+        Assert.Empty(first.ParameterList.Parameters);
+        Assert.Single(second.ParameterList.Parameters);
+        Assert.Empty(omitted.ParameterList.Parameters);
+    }
+
+    [Fact]
+    public void FindMethod_ColumnOnContinuationLine_PicksMethod()
+    {
+        const string source = """
+            class C
+            {
+                public void
+                Process() { Task.Delay(1); }
+
+                public void Process(int n) { Task.Delay(n); }
+            }
+            """;
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var startLine = FindLine(source, "public void");
+        var identifierLine = FindLine(source, "Process() { Task.Delay(1); }");
+        Assert.NotEqual(startLine, identifierLine);
+
+        // Omitted column keeps today's start-line filter when more than one
+        // match exists — the split signature does not start on the identifier
+        // line. Column still selects it.
+        var byStartLineOnly = ConvertToAsyncOperation.FindMethod(root, "Process", identifierLine, column: null);
+        var byColumn = ConvertToAsyncOperation.FindMethod(
+            root, "Process", identifierLine, ColumnOf(source, "Process() { Task.Delay(1); }"));
+
+        Assert.Null(byStartLineOnly);
+        Assert.NotNull(byColumn);
+        Assert.Empty(byColumn.ParameterList.Parameters);
+    }
+
+    [Fact]
+    public void FindMethod_AdjacentMethods_ExclusiveEndDoesNotStealNextMethod()
+    {
+        const string source = """
+            class C
+            {
+                public void A(){Task.Delay(1);}public void Process(){Task.Delay(2);}
+            }
+            """;
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var line = FindLine(source, "public void A()");
+        var secondStart = ColumnOf(source, "public void Process()");
+        var secondId = ColumnOf(source, "Process()");
+
+        var atSecondStart = ConvertToAsyncOperation.FindMethod(root, "Process", line, secondStart);
+        var atSecondId = ConvertToAsyncOperation.FindMethod(root, "Process", line, secondId);
+        var atFirstId = ConvertToAsyncOperation.FindMethod(root, "A", line, ColumnOf(source, "A()"));
+        var firstAtSecondStart = ConvertToAsyncOperation.FindMethod(root, "A", line, secondStart);
+
+        Assert.NotNull(atSecondStart);
+        Assert.NotNull(atSecondId);
+        Assert.NotNull(atFirstId);
+        Assert.Equal("Process", atSecondStart.Identifier.Text);
+        Assert.Equal("Process", atSecondId.Identifier.Text);
+        Assert.Equal("A", atFirstId.Identifier.Text);
+        Assert.Null(firstAtSecondStart);
+    }
+
+    #endregion
+
+    #region P0 preview describes the rewrite and writes nothing
+
+    [SkippableFact]
+    public async Task ConvertToAsync_Preview_Column_DescribesRewriteAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public void Process() { Task.Delay(1); }");
+        var secondColumn = ColumnOf(SameLineOverloadsSource, "Process(int n)");
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            Line = line,
+            Column = secondColumn,
+            RenameToAsync = false,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change =>
+            change.Description.Contains("Convert 'Process' to async", StringComparison.Ordinal) &&
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("async", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Existing convert-to-async behavior
 
     [SkippableFact]
@@ -531,6 +853,50 @@ public class ConvertToAsyncOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("async Task Process(int n)", updated);
         Assert.Contains("public void Process()", updated);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_ColumnWithoutLine_SameIndentFooOverloads_ThrowsSymbolAmbiguous()
+    {
+        const string source = """
+            using System.Threading.Tasks;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Foo()
+                {
+                    Task.Delay(1);
+                }
+
+                public void Foo(int n)
+                {
+                    Task.Delay(n);
+                }
+            }
+            """;
+
+        var column = ColumnOf(source, "Foo()");
+        Assert.Equal(column, ColumnOf(source, "Foo(int n)"));
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToAsyncParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Foo",
+                Column = column,
+                RenameToAsync = false
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("async Task Foo", NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
     }
 
     #endregion
@@ -656,6 +1022,9 @@ public class ConvertToAsyncOperationTests
         return method.ToFullString();
     }
 
+    private static string AbsoluteTestPath() =>
+        Path.Combine(Path.GetTempPath(), "RoslynMcpConvertToAsyncMissing.cs");
+
     private static int FindLine(string source, string snippet)
     {
         var index = source.IndexOf(snippet, StringComparison.Ordinal);
@@ -670,6 +1039,16 @@ public class ConvertToAsyncOperationTests
         }
 
         return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
     }
 
     private sealed class TempWorkspace : IAsyncDisposable

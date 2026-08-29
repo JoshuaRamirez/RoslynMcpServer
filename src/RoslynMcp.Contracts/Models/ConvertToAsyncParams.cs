@@ -21,6 +21,15 @@ public sealed class ConvertToAsyncParams
     public int? Line { get; init; }
 
     /// <summary>
+    /// 1-based column for disambiguation when more than one matching method
+    /// shares a line, or when the identifier lives on a continuation line
+    /// of a split signature. Optional. When set, selects the method whose
+    /// identifier or declaration span covers that column. Omitted keeps
+    /// today's MethodName + Line pick.
+    /// </summary>
+    public int? Column { get; init; }
+
+    /// <summary>
     /// Rename method by adding Async suffix. Default: true.
     /// </summary>
     public bool RenameToAsync { get; init; } = true;
