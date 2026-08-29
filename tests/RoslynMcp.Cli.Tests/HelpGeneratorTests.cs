@@ -410,6 +410,37 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_EncapsulateField_ShowsUpdateReferences()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("encapsulate-field")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("encapsulate-field", help);
+        Assert.Contains("updateReferences", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.Contains("--field-name", requiredSection);
+        Assert.DoesNotContain("--update-references", requiredSection);
+        Assert.DoesNotContain("--property-name", requiredSection);
+        Assert.DoesNotContain("--read-only", requiredSection);
+        Assert.DoesNotContain("--preview", requiredSection);
+
+        Assert.Contains("--update-references", optionalSection);
+        Assert.Contains("--property-name", optionalSection);
+        Assert.Contains("--read-only", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ConvertToAsync_ShowsUpdateCallersAndRenameToAsync()
     {
         var registry = ToolRegistry.BuildDefault();

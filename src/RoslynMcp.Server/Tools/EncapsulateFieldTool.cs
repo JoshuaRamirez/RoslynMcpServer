@@ -32,7 +32,8 @@ public sealed class EncapsulateFieldTool : IToolHandler
     public string Name => "encapsulate_field";
 
     /// <inheritdoc />
-    public string Description => "Convert a field to a property with backing field.";
+    public string Description =>
+        "Convert a field to a property with backing field. updateReferences (default true) rewrites external references to the new property; false still encapsulates (private field + property) but leaves external callers on the field. Same-class references stay on the field. Preview describes whether references will be updated and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -67,10 +68,16 @@ public sealed class EncapsulateFieldTool : IToolHandler
                 description = "Create read-only property (getter only)",
                 @default = false
             },
+            updateReferences = new
+            {
+                type = "boolean",
+                description = "Update external references to use the new property. Default true keeps today's rewrite. False still encapsulates (private field + property) but leaves external callers on the field.",
+                @default = true
+            },
             preview = new
             {
                 type = "boolean",
-                description = "Return computed changes without applying",
+                description = "Return computed changes without applying. Describes whether references will be updated and writes nothing.",
                 @default = false
             }
         },
@@ -104,6 +111,7 @@ public sealed class EncapsulateFieldTool : IToolHandler
                 FieldName = args.FieldName,
                 PropertyName = args.PropertyName,
                 ReadOnly = args.ReadOnly ?? false,
+                UpdateReferences = args.UpdateReferences ?? true,
                 Preview = args.Preview ?? false
             };
 
@@ -136,6 +144,7 @@ public sealed class EncapsulateFieldTool : IToolHandler
         public string FieldName { get; init; } = "";
         public string? PropertyName { get; init; }
         public bool? ReadOnly { get; init; }
+        public bool? UpdateReferences { get; init; }
         public bool? Preview { get; init; }
     }
 }

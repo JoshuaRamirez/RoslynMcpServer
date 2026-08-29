@@ -203,7 +203,7 @@ public sealed class ToolRegistry
 
         // ── Refactoring: Encapsulate (1) ──────────────────────────────
         r.RegisterRefactoring<EncapsulateFieldOperation, EncapsulateFieldParams>(
-            "encapsulate-field", "Encapsulate a field into a property");
+            "encapsulate-field", "Encapsulate a field into a property; updateReferences (default true) rewrites external references to the new property, false leaves external callers on the field");
 
         // ── Refactoring: Convert (13) ─────────────────────────────────
         r.RegisterRefactoring<ConvertToAsyncOperation, ConvertToAsyncParams>(

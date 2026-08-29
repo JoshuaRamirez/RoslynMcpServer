@@ -200,25 +200,30 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
         var newSolution = document.WithSyntaxRoot(newRoot).Project.Solution;
 
-        // Update external references to use property
-        foreach (var reference in externalReferences)
+        // Update external references to use property (UC-EF1 updateReferences; default true)
+        if (@params.UpdateReferences)
         {
-            var refDoc = newSolution.GetDocument(reference.Document.Id);
-            if (refDoc == null) continue;
-
-            var refRoot = await refDoc.GetSyntaxRootAsync(cancellationToken);
-            if (refRoot == null) continue;
-
-            var refNode = refRoot.FindNode(reference.Location.SourceSpan);
-            if (refNode is IdentifierNameSyntax identifier &&
-                identifier.Identifier.Text == @params.FieldName)
+            foreach (var reference in externalReferences)
             {
-                var newIdentifier = SyntaxFactory.IdentifierName(propertyName)
-                    .WithTriviaFrom(identifier);
-                var newRefRoot = refRoot.ReplaceNode(identifier, newIdentifier);
-                newSolution = refDoc.WithSyntaxRoot(newRefRoot).Project.Solution;
+                var refDoc = newSolution.GetDocument(reference.Document.Id);
+                if (refDoc == null) continue;
+
+                var refRoot = await refDoc.GetSyntaxRootAsync(cancellationToken);
+                if (refRoot == null) continue;
+
+                var refNode = refRoot.FindNode(reference.Location.SourceSpan);
+                if (refNode is IdentifierNameSyntax identifier &&
+                    identifier.Identifier.Text == @params.FieldName)
+                {
+                    var newIdentifier = SyntaxFactory.IdentifierName(propertyName)
+                        .WithTriviaFrom(identifier);
+                    var newRefRoot = refRoot.ReplaceNode(identifier, newIdentifier);
+                    newSolution = refDoc.WithSyntaxRoot(newRefRoot).Project.Solution;
+                }
             }
         }
+
+        var referencesUpdated = @params.UpdateReferences ? externalReferences.Count : 0;
 
         // Commit changes
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
@@ -237,7 +242,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
                 FullyQualifiedName = $"{fieldSymbol.ContainingType.ToDisplayString()}.{propertyName}",
                 Kind = Contracts.Enums.SymbolKind.Property
             },
-            externalReferences.Count,
+            referencesUpdated,
             0);
     }
 
@@ -297,13 +302,25 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             {
                 File = @params.SourceFile,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Encapsulate field '{@params.FieldName}' as property '{propertyName}' ({externalRefCount} external references to update)",
+                Description = DescribeReferenceUpdates(@params.FieldName, propertyName, @params.UpdateReferences, externalRefCount),
                 BeforeSnippet = $"{field.DeclaredAccessibility.ToString().ToLower()} {field.Type.ToDisplayString()} {@params.FieldName};",
                 AfterSnippet = $"private {field.Type.ToDisplayString()} {@params.FieldName};\n\n{property.NormalizeWhitespace()}"
             }
         };
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
+    }
+
+    internal static string DescribeReferenceUpdates(
+        string fieldName,
+        string propertyName,
+        bool updateReferences,
+        int externalRefCount)
+    {
+        var referenceClause = updateReferences
+            ? $"{externalRefCount} external references to update"
+            : "external references will not be updated";
+        return $"Encapsulate field '{fieldName}' as property '{propertyName}' ({referenceClause})";
     }
 
     private static bool IsValidIdentifier(string name)

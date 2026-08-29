@@ -33,6 +33,7 @@ public class EncapsulateFieldToolTests
     {
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
+        Assert.Contains("updateReferences", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -88,7 +89,32 @@ public class EncapsulateFieldToolTests
         // Assert - Optional properties
         Assert.True(properties.TryGetProperty("propertyName", out _));
         Assert.True(properties.TryGetProperty("readOnly", out _));
+        Assert.True(properties.TryGetProperty("updateReferences", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+        Assert.False(RequiredFieldsContains(doc, "updateReferences"));
+    }
+
+    private static bool RequiredFieldsContains(JsonDocument doc, string name)
+    {
+        foreach (var item in doc.RootElement.GetProperty("required").EnumerateArray())
+        {
+            if (item.GetString() == name)
+                return true;
+        }
+
+        return false;
+    }
+
+    [Fact]
+    public void GetDefinition_UpdateReferencesProperty_DefaultsToTrue()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var updateReferences = doc.RootElement.GetProperty("properties").GetProperty("updateReferences");
+
+        Assert.Equal("boolean", updateReferences.GetProperty("type").GetString());
+        Assert.True(updateReferences.GetProperty("default").GetBoolean());
     }
 
     [Fact]

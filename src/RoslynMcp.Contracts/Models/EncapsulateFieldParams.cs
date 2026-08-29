@@ -26,6 +26,12 @@ public sealed class EncapsulateFieldParams
     public bool ReadOnly { get; init; }
 
     /// <summary>
+    /// Update external references to use the new property. Default: true
+    /// (rewrite external callers; same-class references stay on the field).
+    /// </summary>
+    public bool UpdateReferences { get; init; } = true;
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }
