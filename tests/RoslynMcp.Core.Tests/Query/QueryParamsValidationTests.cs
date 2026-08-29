@@ -699,6 +699,20 @@ public class QueryParamsValidationTests
     }
 
     [Fact]
+    public void ConvertExpressionBody_InvalidColumn_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateConvertExpressionBodyParams(new ConvertExpressionBodyParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                MemberName = "Foo",
+                Column = 0,
+                Direction = "ToBlockBody"
+            }));
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+    }
+
+    [Fact]
     public void ConvertExpressionBody_ValidParams_PassesValidation()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -814,6 +828,8 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Either memberName or line must be provided.");
         if (p.Line.HasValue && p.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
+        if (p.Column.HasValue && p.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
         if (!Enum.TryParse<RoslynMcp.Contracts.Enums.ConversionDirection>(p.Direction, ignoreCase: true, out var dir) ||
             (dir != RoslynMcp.Contracts.Enums.ConversionDirection.ToExpressionBody && dir != RoslynMcp.Contracts.Enums.ConversionDirection.ToBlockBody))
         {
