@@ -17,6 +17,9 @@ namespace RoslynMcp.Core.Refactoring.Convert;
 /// </summary>
 public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertToAsyncParams>
 {
+    private static readonly SyntaxAnnotation AwaitableCallAnnotation = new("convert-to-async-awaitable");
+    private static readonly SyntaxAnnotation SelfCallAnnotation = new("convert-to-async-self-call");
+
     internal const string SyncCallerSkipReason =
         "Caller is not async; skipped await wrap to keep the method compiling.";
 
@@ -162,29 +165,32 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
                 plan);
         }
 
-        // Build new method
-        var newMethod = methodDecl
+        // Annotate body invocations before changing the signature. WithIdentifier /
+        // AddModifiers shift spans, so the rewriter cannot match original TextSpans.
+        var annotatedCalls = new Dictionary<InvocationExpressionSyntax, List<SyntaxAnnotation>>();
+        foreach (var call in awaitableCalls)
+            AddAnnotation(annotatedCalls, call, AwaitableCallAnnotation);
+        foreach (var site in callSites.Where(site => site.IsInsideConvertedMethod && site.Invocation != null))
+            AddAnnotation(annotatedCalls, site.Invocation!, SelfCallAnnotation);
+
+        var methodToRewrite = methodDecl;
+        if (annotatedCalls.Count > 0)
+        {
+            methodToRewrite = methodDecl.ReplaceNodes(
+                annotatedCalls.Keys,
+                (original, _) => original.WithAdditionalAnnotations(annotatedCalls[original]));
+        }
+
+        methodToRewrite = (MethodDeclarationSyntax)new AnnotatedCallRewriter(
+            @params.MethodName,
+            newMethodName,
+            awaitSelfCalls: @params.UpdateCallers).Visit(methodToRewrite)!;
+
+        var newMethod = methodToRewrite
             .WithIdentifier(SyntaxFactory.Identifier(newMethodName))
             .WithReturnType(SyntaxGenerationHelper.ToAsyncReturnType(methodSymbol.ReturnType)
                 .WithTrailingTrivia(SyntaxFactory.Space))
             .AddModifiers(SyntaxFactory.Token(SyntaxKind.AsyncKeyword).WithTrailingTrivia(SyntaxFactory.Space));
-
-        // Add await to awaitable calls
-        var rewriter = new AsyncRewriter(awaitableCalls, semanticModel);
-        newMethod = (MethodDeclarationSyntax)rewriter.Visit(newMethod)!;
-
-        var selfCallSpans = callSites
-            .Where(site => site.IsInsideConvertedMethod && site.Invocation != null)
-            .Select(site => site.Invocation!.Span)
-            .ToHashSet();
-        if (selfCallSpans.Count > 0 && (needsRename || @params.UpdateCallers))
-        {
-            newMethod = (MethodDeclarationSyntax)new SelfCallRewriter(
-                selfCallSpans,
-                @params.MethodName,
-                newMethodName,
-                awaitSelfCalls: @params.UpdateCallers).Visit(newMethod)!;
-        }
 
         var newSolution = document.Project.Solution;
         var sourceReplaced = false;
@@ -592,48 +598,28 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
 
     private sealed record NodeReplacement(SyntaxNode Original, SyntaxNode Replacement);
 
-    private sealed class AsyncRewriter : CSharpSyntaxRewriter
+    private static void AddAnnotation(
+        Dictionary<InvocationExpressionSyntax, List<SyntaxAnnotation>> map,
+        InvocationExpressionSyntax invocation,
+        SyntaxAnnotation annotation)
     {
-        private readonly HashSet<InvocationExpressionSyntax> _awaitableCalls;
-        private readonly SemanticModel _semanticModel;
-
-        public AsyncRewriter(List<InvocationExpressionSyntax> awaitableCalls, SemanticModel semanticModel)
+        if (!map.TryGetValue(invocation, out var annotations))
         {
-            _awaitableCalls = new HashSet<InvocationExpressionSyntax>(awaitableCalls);
-            _semanticModel = semanticModel;
+            annotations = [];
+            map[invocation] = annotations;
         }
 
-        public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
-        {
-            var visited = (InvocationExpressionSyntax)base.VisitInvocationExpression(node)!;
-
-            // Check if this invocation should be awaited
-            // We need to find the original node in our set
-            if (_awaitableCalls.Any(c => c.Span == node.Span))
-            {
-                // Wrap in await expression
-                return SyntaxFactory.AwaitExpression(visited)
-                    .WithTriviaFrom(visited);
-            }
-
-            return visited;
-        }
+        annotations.Add(annotation);
     }
 
-    private sealed class SelfCallRewriter : CSharpSyntaxRewriter
+    private sealed class AnnotatedCallRewriter : CSharpSyntaxRewriter
     {
-        private readonly HashSet<TextSpan> _selfCallSpans;
         private readonly string _oldName;
         private readonly string _newName;
         private readonly bool _awaitSelfCalls;
 
-        public SelfCallRewriter(
-            HashSet<TextSpan> selfCallSpans,
-            string oldName,
-            string newName,
-            bool awaitSelfCalls)
+        public AnnotatedCallRewriter(string oldName, string newName, bool awaitSelfCalls)
         {
-            _selfCallSpans = selfCallSpans;
             _oldName = oldName;
             _newName = newName;
             _awaitSelfCalls = awaitSelfCalls;
@@ -642,18 +628,23 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
         {
             var visited = (InvocationExpressionSyntax)base.VisitInvocationExpression(node)!;
-            if (!_selfCallSpans.Contains(node.Span))
-                return visited;
+            var isAwaitable = node.HasAnnotation(AwaitableCallAnnotation);
+            var isSelfCall = node.HasAnnotation(SelfCallAnnotation);
 
-            if (_oldName != _newName)
+            if (isSelfCall && _oldName != _newName)
             {
                 var name = FindNameNode(visited, _oldName);
                 if (name != null)
                     visited = visited.ReplaceNode(name, WithMethodName(name, _newName));
             }
 
-            if (_awaitSelfCalls && !IsAlreadyAwaited(node))
-                return WrapWithAwait(visited);
+            if (isAwaitable || (isSelfCall && _awaitSelfCalls && !IsAlreadyAwaited(node)))
+            {
+                return SyntaxFactory.AwaitExpression(
+                    SyntaxFactory.Token(SyntaxKind.AwaitKeyword).WithTrailingTrivia(SyntaxFactory.Space),
+                    visited.WithoutLeadingTrivia())
+                    .WithLeadingTrivia(visited.GetLeadingTrivia());
+            }
 
             return visited;
         }

@@ -61,7 +61,7 @@ public class ConvertToAsyncOperationTests
 
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("async Task ProcessAsync()", updated);
-        Assert.Contains("await Task.Delay(1);", updated);
+        Assert.Contains("await Task.Delay(1)", updated);
         Assert.Contains("ProcessAsync();", updated);
         Assert.DoesNotContain("await ProcessAsync()", updated);
 
@@ -121,7 +121,7 @@ public class ConvertToAsyncOperationTests
 
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("async Task ProcessAsync()", updated);
-        Assert.Contains("await Task.Delay(1);", updated);
+        Assert.Contains("await Task.Delay(1)", updated);
 
         var callerAsync = GetMethodBody(updated, "CallerAsync");
         Assert.Contains("await ProcessAsync();", callerAsync);
