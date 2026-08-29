@@ -8,7 +8,6 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Refactoring.Generate;
-using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Hierarchy;
@@ -1245,17 +1244,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         SyntaxTokenList modifiers,
         ISymbol member,
         INamedTypeSymbol target)
-    {
-        if (SyntaxGenerationHelper.OverrideAccessibility(member, target) != Accessibility.Protected)
-            return modifiers;
-        if (!modifiers.Any(SyntaxKind.InternalKeyword))
-            return modifiers;
-
-        var tokens = modifiers.Where(token => !token.IsKind(SyntaxKind.InternalKeyword)).ToList();
-        if (!HasAccessibility(tokens))
-            tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
-        return SyntaxFactory.TokenList(tokens);
-    }
+        => OverrideAccessibilityReducer.ReduceCrossAssemblyOverrideAccessibility(
+            modifiers, member, target);
 
     /// <summary>
     /// Reduces member and accessor <c>protected internal</c> to
@@ -1267,19 +1257,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         ISymbol symbol,
         INamedTypeSymbol target)
         where T : MemberDeclarationSyntax
-    {
-        var updated = (T)member.WithModifiers(
-            ReduceCrossAssemblyOverrideAccessibility(member.Modifiers, symbol, target));
-
-        if (updated is BasePropertyDeclarationSyntax propertyDecl &&
-            symbol is IPropertySymbol property)
-        {
-            return (T)(MemberDeclarationSyntax)ReduceAccessorOverrideAccessibility(
-                propertyDecl, property, target);
-        }
-
-        return updated;
-    }
+        => OverrideAccessibilityReducer.ReduceOverrideAccessibility(member, symbol, target);
 
     /// <summary>
     /// Reduces indexer and accessor <c>protected internal</c> to
@@ -1289,52 +1267,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         IndexerDeclarationSyntax indexer,
         IPropertySymbol symbol,
         INamedTypeSymbol target)
-        => ReduceOverrideAccessibility(indexer, symbol, target);
-
-    /// <summary>
-    /// Reduces accessor <c>protected internal</c> and drops an accessor
-    /// modifier that matches the (possibly CS0507-reduced) property
-    /// accessibility (CS0273).
-    /// </summary>
-    private static BasePropertyDeclarationSyntax ReduceAccessorOverrideAccessibility(
-        BasePropertyDeclarationSyntax member,
-        IPropertySymbol symbol,
-        INamedTypeSymbol target)
-    {
-        if (member.AccessorList == null)
-            return member;
-
-        var propertyAccessibility = SyntaxGenerationHelper.OverrideAccessibility(symbol, target);
-        var accessors = new List<AccessorDeclarationSyntax>();
-        foreach (var accessor in member.AccessorList.Accessors)
-        {
-            var accessorSymbol = accessor.Kind() switch
-            {
-                SyntaxKind.GetAccessorDeclaration => (ISymbol?)symbol.GetMethod,
-                SyntaxKind.SetAccessorDeclaration or SyntaxKind.InitAccessorDeclaration => symbol.SetMethod,
-                _ => null
-            };
-
-            if (accessorSymbol == null)
-            {
-                accessors.Add(accessor);
-                continue;
-            }
-
-            var accessorAccessibility = SyntaxGenerationHelper.OverrideAccessibility(accessorSymbol, target);
-            if (accessorAccessibility == Accessibility.NotApplicable
-                || accessorAccessibility == propertyAccessibility)
-            {
-                accessors.Add(accessor.WithModifiers(default));
-                continue;
-            }
-
-            accessors.Add(accessor.WithModifiers(
-                ReduceCrossAssemblyOverrideAccessibility(accessor.Modifiers, accessorSymbol, target)));
-        }
-
-        return member.WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
-    }
+        => OverrideAccessibilityReducer.ReduceIndexerOverrideAccessibility(
+            indexer, symbol, target);
 
     private static MethodDeclarationSyntax EnsureMethodBody(MethodDeclarationSyntax method)
     {

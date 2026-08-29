@@ -2062,6 +2062,480 @@ public class PullMembersUpOperationTests
 
     #endregion
 
+    #region CS0507 makeAbstract overrides
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_SameAssembly_KeepsProtectedInternalMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                protected internal virtual void Speak() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Speak"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("protected internal override void Speak()", GetTypeSection(updated, "Dog"));
+        Assert.DoesNotContain("protected override void Speak()", GetTypeSection(updated, "Dog"));
+        Assert.Contains("protected internal abstract void Speak()", GetTypeSection(updated, "Animal"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_SameAssembly_KeepsProtectedInternalProperty()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                protected internal int Width { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Width"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var dog = GetTypeSection(updated, "Dog");
+        Assert.Contains("protected internal override int Width", dog);
+        Assert.DoesNotContain("protected override int Width", dog);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_SameAssembly_KeepsProtectedInternalEvent()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                protected internal virtual event System.EventHandler Changed;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Changed"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var dog = GetTypeSection(updated, "Dog");
+        Assert.Contains("protected internal override event", dog);
+        Assert.DoesNotContain("protected override event", dog);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_SameAssembly_KeepsProtectedInternalIndexer()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                protected internal string this[int i]
+                {
+                    get => "";
+                    set { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["this[]"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var dogIndexer = Assert.Single(FindIndexers(updated, "Dog"));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.Contains("protected internal override", GetTypeSection(updated, "Dog"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_SameAssembly_ProtectedInternalProperty_ProtectedSetter_KeepsBoth()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+            }
+
+            public class Dog : Animal
+            {
+                protected internal int Width { get; protected set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Members = ["Width"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var dog = GetTypeSection(updated, "Dog");
+        Assert.Contains("protected internal override int Width", dog);
+        Assert.Contains("protected set", dog);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_CrossAssembly_ProtectedInternalMethod_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+                protected internal virtual void Speak() { }
+            }
+            """);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.DerivedPath,
+            TypeName = "Dog",
+            Members = ["Speak"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        Assert.Contains("protected override void Speak()", GetTypeSection(derived, "Dog"));
+        Assert.DoesNotContain("protected internal override", derived);
+        var library = NormalizeNewlines(await File.ReadAllTextAsync(workspace.LibraryPath));
+        Assert.Contains("protected internal abstract void Speak()", GetTypeSection(library, "Animal"));
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_CrossAssembly_ProtectedInternalProperty_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+                protected internal int Width { get; set; }
+            }
+            """);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.DerivedPath,
+            TypeName = "Dog",
+            Members = ["Width"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        var dog = GetTypeSection(derived, "Dog");
+        Assert.Contains("protected override int Width", dog);
+        Assert.DoesNotContain("protected internal override", derived);
+        var property = FindProperty(derived, "Dog", "Width");
+        Assert.NotNull(property);
+        Assert.Contains(property!.Modifiers, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.DoesNotContain(property.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        Assert.Contains(property.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_CrossAssembly_ProtectedInternalEvent_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+                protected internal virtual event System.EventHandler Changed;
+            }
+            """);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.DerivedPath,
+            TypeName = "Dog",
+            Members = ["Changed"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        Assert.Contains("protected override event", GetTypeSection(derived, "Dog"));
+        Assert.DoesNotContain("protected internal override", derived);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_CrossAssembly_ProtectedInternalIndexer_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+                protected internal string this[int i]
+                {
+                    get => "";
+                    set { }
+                }
+            }
+            """);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.DerivedPath,
+            TypeName = "Dog",
+            Members = ["this[]"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        var dogIndexer = Assert.Single(FindIndexers(derived, "Dog"));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.DoesNotContain(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        Assert.Contains(dogIndexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.Contains("protected override", GetTypeSection(derived, "Dog"));
+        Assert.DoesNotContain("protected internal override", derived);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_CrossAssembly_ProtectedInternalProperty_ProtectedSetter_OmitsRedundantAccessor()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+                protected internal int Width { get; protected set; }
+            }
+            """);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.DerivedPath,
+            TypeName = "Dog",
+            Members = ["Width"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        var dog = GetTypeSection(derived, "Dog");
+        Assert.Contains("protected override int Width", dog);
+        Assert.DoesNotContain("protected internal override", derived);
+        Assert.DoesNotContain("protected set", derived);
+        var property = FindProperty(derived, "Dog", "Width");
+        Assert.NotNull(property);
+        Assert.Contains(property!.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        var setter = Assert.Single(property.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.Empty(setter.Modifiers);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_CrossAssembly_ProtectedInternalPropertySetter_EmitsProtectedSet()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+                public int Width
+                {
+                    get => 0;
+                    protected internal set { }
+                }
+            }
+            """);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.DerivedPath,
+            TypeName = "Dog",
+            Members = ["Width"],
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        var property = FindProperty(derived, "Dog", "Width");
+        Assert.NotNull(property);
+        Assert.Contains(property!.Modifiers, t => t.IsKind(SyntaxKind.PublicKeyword));
+        Assert.DoesNotContain(property.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        var setter = Assert.Single(property.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.Contains(setter.Modifiers, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.DoesNotContain(setter.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        Assert.DoesNotContain("protected internal set", derived);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_MakeAbstract_CrossAssembly_ProtectedInternalMethod_Preview_DoesNotWriteFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+                protected internal virtual void Speak() { }
+            }
+            """);
+        var operation = new PullMembersUpOperation(workspace.Context);
+        var beforeLib = await File.ReadAllTextAsync(workspace.LibraryPath);
+        var beforeDerived = await File.ReadAllTextAsync(workspace.DerivedPath);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.DerivedPath,
+            TypeName = "Dog",
+            Members = ["Speak"],
+            MakeAbstract = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c =>
+            c.AfterSnippet != null &&
+            c.AfterSnippet.Contains("protected override void Speak()") &&
+            !c.AfterSnippet.Contains("protected internal override"));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description != null && c.Description.Contains("Speak"));
+        Assert.Equal(beforeLib, await File.ReadAllTextAsync(workspace.LibraryPath));
+        Assert.Equal(beforeDerived, await File.ReadAllTextAsync(workspace.DerivedPath));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static string AbsoluteTestPath() =>
@@ -2157,6 +2631,8 @@ public class PullMembersUpOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public string LibraryPath { get; init; } = "";
+        public string DerivedPath { get; init; } = "";
         public required WorkspaceContext Context { get; init; }
 
         public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
@@ -2194,6 +2670,105 @@ public class PullMembersUpOperationTests
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
                     SourcePath = sourcePath,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Lib project referenced by App. <see cref="LibraryPath"/> is the
+        /// base type; <see cref="DerivedPath"/> / <see cref="SourcePath"/>
+        /// is the derived type that owns the members to pull.
+        /// </summary>
+        public static async Task<TempWorkspace> CreateReferencedLibraryAsync(string librarySource, string appSource)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpPullMembersUpXP_" + Guid.NewGuid().ToString("N"));
+            var libDir = Path.Combine(directory, "Lib");
+            var appDir = Path.Combine(directory, "App");
+            Directory.CreateDirectory(libDir);
+            Directory.CreateDirectory(appDir);
+
+            var libProject = Path.Combine(libDir, "Lib.csproj");
+            var appProject = Path.Combine(appDir, "App.csproj");
+            var libSource = Path.Combine(libDir, "Animal.cs");
+            var appSourcePath = Path.Combine(appDir, "Dog.cs");
+
+            await File.WriteAllTextAsync(libProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(appProject, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="..\Lib\Lib.csproj" />
+                  </ItemGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(libSource, librarySource);
+            await File.WriteAllTextAsync(appSourcePath, appSource);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            await File.WriteAllTextAsync(solutionPath, """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lib", "Lib\Lib.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\App.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                if (context.GetDocumentByPath(libSource) == null || context.GetDocumentByPath(appSourcePath) == null)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException("Workspace loaded but did not include Lib/App sources.");
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = solutionPath,
+                    SourcePath = appSourcePath,
+                    LibraryPath = libSource,
+                    DerivedPath = appSourcePath,
                     Context = context
                 };
             }
