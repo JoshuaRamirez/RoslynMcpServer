@@ -383,6 +383,58 @@ public class GenerateOverridesOperationTests
         Assert.False(GenerateOverridesOperation.SpanCoversLine(span, 0));
     }
 
+    [SkippableFact]
+    public async Task GenerateOverrides_LineOnLaterSameFilePartial_ReplaceExisting_InsertsOnSelectedPartial()
+    {
+        const string source = """
+            public class Animal
+            {
+                public virtual void Speak() { }
+            }
+
+            namespace Other
+            {
+                public class Widget : Animal
+                {
+                }
+            }
+
+            namespace TestApp
+            {
+                public partial class Widget : Animal
+                {
+                    public override string ToString() => "old";
+                }
+
+                public partial class Widget // later-partial
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(source, "later-partial"),
+            Members = new[] { "ToString" },
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(3, types.Count);
+        Assert.False(TypeHasOverride(types[0], "ToString"));
+        Assert.False(TypeHasOverride(types[1], "ToString"));
+        Assert.True(TypeHasOverride(types[2], "ToString"));
+        Assert.DoesNotContain("=> \"old\"", types[2].ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("base.ToString()", types[2].ToFullString(), StringComparison.Ordinal);
+        Assert.Equal(1, CountOverrideToString(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
     #endregion
 
     #region callBase / members / preview regressions

@@ -30,6 +30,14 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 public sealed class GenerateOverridesOperation : RefactoringOperationBase<GenerateOverridesParams>
 {
     /// <summary>
+    /// Marks the type declaration selected before
+    /// <see cref="RemoveExistingOverridesAcrossPartialsAsync"/> so the same
+    /// node can be recovered after a same-file earlier partial shrinks and
+    /// shifts both <c>SpanStart</c> and physical line.
+    /// </summary>
+    private static readonly SyntaxAnnotation TargetTypeAnnotation = new("generate-overrides-target-type");
+
+    /// <summary>
     /// Creates a new generate overrides operation.
     /// </summary>
     public GenerateOverridesOperation(WorkspaceContext context) : base(context)
@@ -150,6 +158,16 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         var solution = document.Project.Solution;
         if (replacements.Count > 0)
         {
+            // Annotate before the rewrite. Removing an override from an
+            // earlier same-file partial shifts both SpanStart and the
+            // physical line of a later selected partial — do not re-find
+            // with those stale values.
+            root = root.ReplaceNode(
+                typeDeclaration,
+                typeDeclaration.WithAdditionalAnnotations(TargetTypeAnnotation));
+            document = document.WithSyntaxRoot(root);
+            solution = document.Project.Solution;
+
             solution = await RemoveExistingOverridesAcrossPartialsAsync(
                 solution, typeSymbol, replacements.Values, cancellationToken);
             document = solution.GetDocument(document.Id)
@@ -158,7 +176,9 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
                     $"Could not locate the document for type '{@params.TypeName}'.");
             root = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
-            typeDeclaration = FindTypeDeclaration(root, @params.TypeName, @params.Line, typeDeclaration.SpanStart)
+            typeDeclaration = root.GetAnnotatedNodes(TargetTypeAnnotation)
+                .OfType<TypeDeclarationSyntax>()
+                .FirstOrDefault()
                 ?? throw new RefactoringException(
                     ErrorCodes.TypeNotFound,
                     $"Type '{@params.TypeName}' not found in file.");
@@ -643,10 +663,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
 
         foreach (var tree in trees)
         {
-            var document = solution.GetDocument(tree)
-                ?? throw new RefactoringException(
-                    ErrorCodes.DocumentNotEditable,
-                    $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
+            var document = GetDocumentForTree(solution, tree, typeSymbol.Name);
             var root = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
@@ -656,9 +673,16 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
             var replacements = new Dictionary<TypeDeclarationSyntax, TypeDeclarationSyntax>();
             foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
             {
-                if (reference.SyntaxTree != tree)
+                if (!SameSyntaxTree(reference.SyntaxTree, tree))
                     continue;
-                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax part)
+                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax originalPart)
+                    continue;
+                // The solution root may already carry a target-type
+                // annotation (new tree). Rematch by span — annotation does
+                // not change SpanStart — so ReplaceNodes sees nodes from
+                // this root and keeps the annotation on the selected type.
+                var part = RematchTypeDeclaration(root, originalPart);
+                if (part == null)
                     continue;
 
                 HashSet<(int Start, int End, SyntaxKind Kind)>? keys = null;
@@ -711,6 +735,37 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         return solution;
     }
 
+    private static Document GetDocumentForTree(Solution solution, SyntaxTree tree, string typeName)
+    {
+        var document = solution.GetDocument(tree);
+        if (document != null)
+            return document;
+
+        if (!string.IsNullOrEmpty(tree.FilePath))
+        {
+            foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
+            {
+                document = solution.GetDocument(id);
+                if (document != null)
+                    return document;
+            }
+        }
+
+        throw new RefactoringException(
+            ErrorCodes.DocumentNotEditable,
+            $"Could not locate a declaring document for type '{typeName}'.");
+    }
+
+    private static bool SameSyntaxTree(SyntaxTree left, SyntaxTree right) =>
+        left == right
+        || (!string.IsNullOrEmpty(left.FilePath)
+            && string.Equals(left.FilePath, right.FilePath, StringComparison.OrdinalIgnoreCase));
+
+    private static TypeDeclarationSyntax? RematchTypeDeclaration(SyntaxNode root, TypeDeclarationSyntax original) =>
+        root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
+
     private static void AddKeyed<T>(
         Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,
         SyntaxTree tree,
@@ -761,14 +816,15 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
     /// (<c>DescendantNodes</c>). Do not require the declaration to start on
     /// <paramref name="line"/> — a split declaration may put the identifier
     /// on a continuation line. If nothing covers this line, keep today's
-    /// first-match rather than inventing a not-found. After a rewrite,
-    /// <paramref name="preferredSpanStart"/> still prefers the same type.
+    /// first-match rather than inventing a not-found. After
+    /// <see cref="RemoveExistingOverridesAcrossPartialsAsync"/>, recover the
+    /// selected type from <see cref="TargetTypeAnnotation"/> — do not reuse
+    /// a pre-rewrite SpanStart or line.
     /// </summary>
     internal static TypeDeclarationSyntax? FindTypeDeclaration(
         SyntaxNode root,
         string typeName,
-        int? line,
-        int? preferredSpanStart = null)
+        int? line)
     {
         var candidates = root.DescendantNodes()
             .OfType<TypeDeclarationSyntax>()
@@ -777,13 +833,6 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
 
         if (candidates.Count == 0)
             return null;
-
-        if (preferredSpanStart.HasValue)
-        {
-            var preferred = candidates.FirstOrDefault(t => t.SpanStart == preferredSpanStart.Value);
-            if (preferred != null)
-                return preferred;
-        }
 
         if (!line.HasValue)
             return candidates.FirstOrDefault();
