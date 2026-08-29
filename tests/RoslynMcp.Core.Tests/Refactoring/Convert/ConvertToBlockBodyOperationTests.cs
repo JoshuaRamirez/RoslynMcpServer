@@ -1,4 +1,6 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -14,6 +16,24 @@ namespace RoslynMcp.Core.Tests.Refactoring;
 /// </summary>
 public class ConvertToBlockBodyOperationTests
 {
+    private const string SameLineExpressionSource = """
+        namespace TestApp;
+
+        public class Pair
+        {
+            public int Foo() => 1; public int Bar() => 2;
+        }
+        """;
+
+    private const string ContinuationExpressionSource = """
+        namespace TestApp;
+
+        public class Split
+        {
+            public int
+            Foo() => 1;
+        }
+        """;
     #region Input Validation
 
     [Fact]
@@ -78,6 +98,21 @@ public class ConvertToBlockBodyOperationTests
             }));
 
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToBlockBodyOperation.Validate(new ConvertToBlockBodyParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                MemberName = "Foo",
+                Column = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
     }
 
     #endregion
@@ -422,6 +457,217 @@ public class ConvertToBlockBodyOperationTests
 
     #endregion
 
+    #region P0 omitted column keeps today's memberName + line pick
+
+    [SkippableFact]
+    public async Task Convert_OmittedColumn_KeepsMemberNameAndLinePick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineExpressionSource);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            MemberName = "Foo",
+            Line = FindLine(SameLineExpressionSource, "public int Foo()")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("public int Foo() => 1;", updated, StringComparison.Ordinal);
+        Assert.Contains("public int Bar() => 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return 1;", updated, StringComparison.Ordinal);
+    }
+
+    #endregion
+
+    #region P0 column picks the intended member when two share a line
+
+    [SkippableFact]
+    public async Task Convert_Column_SelectsSecondMemberOnSameLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineExpressionSource);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+        var line = FindLine(SameLineExpressionSource, "public int Foo()");
+        var secondColumn = ColumnOf(SameLineExpressionSource, "Bar()");
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = secondColumn
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public int Foo() => 1;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public int Bar() => 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return 2;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Convert_ColumnOnContinuationLine_ConvertsThatMember()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ContinuationExpressionSource);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(ContinuationExpressionSource, "Foo()"),
+            Column = ColumnOf(ContinuationExpressionSource, "Foo()")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return 1;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("=>", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Convert_Preview_Column_WritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineExpressionSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(SameLineExpressionSource, "public int Foo()"),
+            Column = ColumnOf(SameLineExpressionSource, "Bar()"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change => change.Description.Contains("Bar", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void FindMember_OmittedColumn_PicksSmallestContainingNode()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineExpressionSource);
+        var root = tree.GetRoot();
+        var line = FindLine(SameLineExpressionSource, "public int Foo()");
+        var omitted = ConvertToBlockBodyOperation.FindMember(root, "Foo", line, column: null);
+        var byNameAndLine = ConvertToBlockBodyOperation.FindMember(root, "Bar", line, column: null);
+
+        Assert.NotNull(omitted);
+        Assert.NotNull(byNameAndLine);
+        Assert.Equal("Foo", ((MethodDeclarationSyntax)omitted).Identifier.Text);
+        Assert.Equal("Bar", ((MethodDeclarationSyntax)byNameAndLine).Identifier.Text);
+    }
+
+    [Fact]
+    public void FindMember_ColumnPicksIdentifierCoverage()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineExpressionSource);
+        var root = tree.GetRoot();
+        var line = FindLine(SameLineExpressionSource, "public int Foo()");
+        var first = ConvertToBlockBodyOperation.FindMember(root, null, line, ColumnOf(SameLineExpressionSource, "Foo()"));
+        var second = ConvertToBlockBodyOperation.FindMember(root, null, line, ColumnOf(SameLineExpressionSource, "Bar()"));
+        var omitted = ConvertToBlockBodyOperation.FindMember(root, null, line, column: null);
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.NotNull(omitted);
+        Assert.Equal("Foo", ((MethodDeclarationSyntax)first).Identifier.Text);
+        Assert.Equal("Bar", ((MethodDeclarationSyntax)second).Identifier.Text);
+        Assert.Equal("Foo", ((MethodDeclarationSyntax)omitted).Identifier.Text);
+    }
+
+    [Fact]
+    public void FindMember_ColumnOnContinuationLine_PicksMember()
+    {
+        var tree = CSharpSyntaxTree.ParseText(ContinuationExpressionSource);
+        var root = tree.GetRoot();
+        var startLine = FindLine(ContinuationExpressionSource, "public int");
+        var identifierLine = FindLine(ContinuationExpressionSource, "Foo()");
+        Assert.NotEqual(startLine, identifierLine);
+
+        // Omitted column keeps today's ContainsLine + smallest node, so the
+        // continuation line still finds the declaration without column.
+        var byLineOnly = ConvertToBlockBodyOperation.FindMember(root, null, identifierLine, column: null);
+        var byColumn = ConvertToBlockBodyOperation.FindMember(
+            root, null, identifierLine, ColumnOf(ContinuationExpressionSource, "Foo()"));
+
+        Assert.NotNull(byLineOnly);
+        Assert.Equal("Foo", ((MethodDeclarationSyntax)byLineOnly).Identifier.Text);
+        Assert.NotNull(byColumn);
+        Assert.Equal("Foo", ((MethodDeclarationSyntax)byColumn).Identifier.Text);
+    }
+
+    [Fact]
+    public void FindMember_AdjacentMembers_ExclusiveEndDoesNotStealNextMember()
+    {
+        const string source = """
+            class C
+            {
+                public int A()=>1;public int Longer()=>2;
+            }
+            """;
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var line = FindLine(source, "public int A()");
+        var secondStart = ColumnOf(source, "public int Longer()");
+        var secondId = ColumnOf(source, "Longer()");
+
+        var atSecondStart = ConvertToBlockBodyOperation.FindMember(root, null, line, secondStart);
+        var atSecondId = ConvertToBlockBodyOperation.FindMember(root, null, line, secondId);
+
+        Assert.NotNull(atSecondStart);
+        Assert.NotNull(atSecondId);
+        Assert.Equal("Longer", ((MethodDeclarationSyntax)atSecondStart).Identifier.Text);
+        Assert.Equal("Longer", ((MethodDeclarationSyntax)atSecondId).Identifier.Text);
+    }
+
+    [Fact]
+    public void FindMember_ColumnWithoutLine_SameIndentSameName_KeepsFirstMatch()
+    {
+        const string source = """
+            class C
+            {
+                public int Foo() => 1000;
+                public int Foo(int n) => n;
+            }
+            """;
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var column = ColumnOf(source, "Foo()");
+        Assert.Equal(column, ColumnOf(source, "Foo(int n)"));
+
+        var found = ConvertToBlockBodyOperation.FindMember(root, "Foo", line: null, column);
+
+        Assert.NotNull(found);
+        var method = Assert.IsType<MethodDeclarationSyntax>(found);
+        Assert.Empty(method.ParameterList.Parameters);
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class C { public int A()=>1;public int B()=>2; }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var method = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "A");
+        var span = method.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(ConvertToBlockBodyOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(ConvertToBlockBodyOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(ConvertToBlockBodyOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(ConvertToBlockBodyOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    #endregion
+
     #region P0 Preview
 
     [SkippableFact]
@@ -577,6 +823,14 @@ public class ConvertToBlockBodyOperationTests
         }
 
         return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"Snippet not found: {snippet}");
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
     }
 
     private sealed class TempWorkspace : IAsyncDisposable

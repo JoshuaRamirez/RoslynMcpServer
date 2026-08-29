@@ -47,6 +47,9 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
 
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
+
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
@@ -91,12 +94,15 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         if (root == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var member = FindMember(root, @params.MemberName, @params.Line);
+        var member = FindMember(root, @params.MemberName, @params.Line, @params.Column);
         if (member == null)
         {
+            var location = @params.Column.HasValue
+                ? $"{@params.MemberName ?? $"at line {@params.Line}"}, column {@params.Column.Value}"
+                : @params.MemberName ?? $"at line {@params.Line}";
             throw new RefactoringException(
                 ErrorCodes.SymbolNotFound,
-                $"Member '{@params.MemberName ?? $"at line {@params.Line}"}' not found.");
+                $"Member '{location}' not found.");
         }
 
         if (!IsConvertibleKind(member))
@@ -146,7 +152,16 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             0);
     }
 
-    private static SyntaxNode? FindMember(SyntaxNode root, string? memberName, int? line)
+    /// <summary>
+    /// Finds a convertible member. When <paramref name="column"/> is omitted,
+    /// keeps today's pick (memberName and/or line; smallest containing node).
+    /// When set with <paramref name="line"/>, picks the member whose
+    /// identifier or declaration span covers that 1-based column. Column
+    /// without line cannot disambiguate same-indent same-name members
+    /// across lines — keep today's first-match rather than substituting
+    /// each candidate's own start line.
+    /// </summary>
+    internal static SyntaxNode? FindMember(SyntaxNode root, string? memberName, int? line, int? column)
     {
         var candidates = root.DescendantNodes()
             .Where(node => node is MemberDeclarationSyntax or LocalFunctionStatementSyntax)
@@ -157,6 +172,25 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         if (!string.IsNullOrWhiteSpace(memberName))
             filtered = filtered.Where(node => GetMemberName(node) == memberName);
 
+        // Column without line is not a source position: substituting each
+        // candidate's own start line would match every equally-aligned
+        // same-name member and could silently pick the shortest. Keep
+        // today's FirstOrDefault after the memberName filter.
+        if (column.HasValue && !line.HasValue)
+            return filtered.FirstOrDefault();
+
+        if (column.HasValue)
+        {
+            // Do not require the declaration to start on `line` — a split
+            // signature's identifier may live on a continuation line whose
+            // declaration span still covers that column.
+            return filtered
+                .Where(node => MemberCoversColumn(node, line!.Value, column.Value))
+                .OrderBy(node => IdentifierCoversColumn(node, line!.Value, column.Value) ? 0 : 1)
+                .ThenBy(node => node.Span.Length)
+                .FirstOrDefault();
+        }
+
         if (line.HasValue)
         {
             filtered = filtered.Where(node => ContainsLine(node, line.Value));
@@ -164,6 +198,56 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         }
 
         return filtered.FirstOrDefault();
+    }
+
+    private static bool MemberCoversColumn(SyntaxNode member, int line, int column) =>
+        IdentifierCoversColumn(member, line, column) ||
+        SpanCoversColumn(member.GetLocation().GetLineSpan(), line, column);
+
+    private static bool IdentifierCoversColumn(SyntaxNode member, int line, int column)
+    {
+        var token = GetIdentifierToken(member);
+        return token != default && SpanCoversColumn(token.GetLocation().GetLineSpan(), line, column);
+    }
+
+    private static SyntaxToken GetIdentifierToken(SyntaxNode member) => member switch
+    {
+        MethodDeclarationSyntax method => method.Identifier,
+        PropertyDeclarationSyntax property => property.Identifier,
+        IndexerDeclarationSyntax indexer => indexer.ThisKeyword,
+        OperatorDeclarationSyntax op => op.OperatorToken,
+        ConversionOperatorDeclarationSyntax conversion => conversion.Type.GetFirstToken(),
+        ConstructorDeclarationSyntax constructor => constructor.Identifier,
+        DestructorDeclarationSyntax destructor => destructor.Identifier,
+        LocalFunctionStatementSyntax localFunction => localFunction.Identifier,
+        EventDeclarationSyntax @event => @event.Identifier,
+        FieldDeclarationSyntax field => field.Declaration.Variables.FirstOrDefault()?.Identifier ?? default,
+        EventFieldDeclarationSyntax eventField => eventField.Declaration.Variables.FirstOrDefault()?.Identifier ?? default,
+        TypeDeclarationSyntax type => type.Identifier,
+        _ => default
+    };
+
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character of an adjacent member also
+    /// match the previous declaration.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == startLine && column < startCol)
+            return false;
+        if (line == endLine && column >= endCol)
+            return false;
+        return true;
     }
 
     private static bool ContainsLine(SyntaxNode node, int line)
