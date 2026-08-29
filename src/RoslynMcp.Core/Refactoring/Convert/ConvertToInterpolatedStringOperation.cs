@@ -109,7 +109,8 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
             if (firstFormat != null)
                 return firstFormat;
 
-            return concats.FirstOrDefault(binary => StartsOnLine(binary, line));
+            var firstConcat = concats.FirstOrDefault(binary => StartsOnLine(binary, line));
+            return firstConcat == null ? null : OuterConcatenation(firstConcat);
         }
 
         var formatAtColumn = formats
@@ -119,10 +120,33 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         if (formatAtColumn != null)
             return formatAtColumn;
 
-        return concats
+        // Prefer the outer matching concatenation. Shortest-span pick would
+        // return an inner binary of a 3+ operand chain; flattening that inner
+        // node and then replacing the walked-up outer silently drops later
+        // operands. Adjacent independent concatenations still do not share a
+        // span, so column continues to distinguish them.
+        var concatAtColumn = concats
             .Where(binary => SpanCoversColumn(binary.GetLocation().GetLineSpan(), line, column.Value))
-            .OrderBy(binary => binary.Span.Length)
+            .OrderByDescending(binary => binary.Span.Length)
             .FirstOrDefault();
+        return concatAtColumn == null ? null : OuterConcatenation(concatAtColumn);
+    }
+
+    /// <summary>
+    /// Walks to the outermost <c>+</c> concatenation that contains
+    /// <paramref name="concat"/>. Adjacent independent concatenations are
+    /// siblings, not ancestors, so this does not collapse two statements.
+    /// </summary>
+    internal static BinaryExpressionSyntax OuterConcatenation(BinaryExpressionSyntax concat)
+    {
+        var outer = concat;
+        while (outer.Parent is BinaryExpressionSyntax parentBinary &&
+               parentBinary.IsKind(SyntaxKind.AddExpression))
+        {
+            outer = parentBinary;
+        }
+
+        return outer;
     }
 
     private static bool StartsOnLine(SyntaxNode node, int line) =>
@@ -296,8 +320,10 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         BinaryExpressionSyntax concat, ConvertToInterpolatedStringParams @params,
         CancellationToken cancellationToken)
     {
-        // Flatten the concatenation tree
-        var parts = FlattenConcatenation(concat);
+        // Flatten the outermost concatenation so a column (or omitted first
+        // match) on an inner operand of a 3+ chain still keeps later parts.
+        var outerConcat = OuterConcatenation(concat);
+        var parts = FlattenConcatenation(outerConcat);
 
         var contents = new List<InterpolatedStringContentSyntax>();
         foreach (var part in parts)
@@ -321,14 +347,6 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         var interpolatedString = SyntaxFactory.InterpolatedStringExpression(
             SyntaxFactory.Token(SyntaxKind.InterpolatedStringStartToken),
             SyntaxFactory.List(contents));
-
-        // Find the outermost concatenation expression
-        var outerConcat = concat;
-        while (outerConcat.Parent is BinaryExpressionSyntax parentBinary &&
-               parentBinary.IsKind(SyntaxKind.AddExpression))
-        {
-            outerConcat = parentBinary;
-        }
 
         var before = outerConcat.NormalizeWhitespace().ToFullString();
         var after = interpolatedString.NormalizeWhitespace().ToFullString();

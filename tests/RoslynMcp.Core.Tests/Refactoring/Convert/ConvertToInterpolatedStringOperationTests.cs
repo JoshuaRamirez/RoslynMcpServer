@@ -39,6 +39,31 @@ public class ConvertToInterpolatedStringOperationTests
         }
         """;
 
+    private const string TripleConcatSource = """
+        namespace TestApp;
+
+        public class Greeter
+        {
+            public string Hello(string name, string suffix)
+            {
+                return "Hello " + name + suffix;
+            }
+        }
+        """;
+
+    private const string AdjacentTripleAndPairSource = """
+        namespace TestApp;
+
+        public class Pair
+        {
+            public string Both(string name, string suffix, string other)
+            {
+                var a = "Hello " + name + suffix; var b = "Bye " + other;
+                return a + b;
+            }
+        }
+        """;
+
     private const string SameLineFormatSource = """
         namespace TestApp;
 
@@ -172,6 +197,65 @@ public class ConvertToInterpolatedStringOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.DoesNotContain("\"Hello \" + name", updated, StringComparison.Ordinal);
         Assert.Contains("$\"Hello {name}\"", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_TripleConcat_OmittedColumn_KeepsAllOperands()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(TripleConcatSource);
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(TripleConcatSource, "\"Hello \" + name + suffix")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertKeepsTripleConcatOperands(updated);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_TripleConcat_ColumnOnInnerOperand_KeepsAllOperands()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(TripleConcatSource);
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(TripleConcatSource, "\"Hello \" + name + suffix"),
+            Column = ColumnOf(TripleConcatSource, "name + suffix")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertKeepsTripleConcatOperands(updated);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_TripleConcat_ColumnOnSecondAdjacentChain_DoesNotRewriteFirst()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AdjacentTripleAndPairSource);
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(AdjacentTripleAndPairSource, "\"Hello \" + name + suffix"),
+            Column = ColumnOf(AdjacentTripleAndPairSource, "\"Bye \" + other")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("\"Hello \" + name + suffix", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"Bye \" + other", updated, StringComparison.Ordinal);
+        Assert.Contains("{other}", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("{suffix}", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
     }
 
@@ -341,6 +425,27 @@ public class ConvertToInterpolatedStringOperationTests
     }
 
     [Fact]
+    public void FindConvertibleExpression_ColumnOnInnerOperand_ReturnsOuterConcatenation()
+    {
+        var (root, model) = Compile(TripleConcatSource);
+        var line = FindLine(TripleConcatSource, "\"Hello \" + name + suffix");
+        var innerColumn = ColumnOf(TripleConcatSource, "name + suffix");
+        var found = ConvertToInterpolatedStringOperation.FindConvertibleExpression(
+            root, model, line, innerColumn);
+        var omitted = ConvertToInterpolatedStringOperation.FindConvertibleExpression(
+            root, model, line, column: null);
+
+        Assert.NotNull(found);
+        Assert.NotNull(omitted);
+        Assert.Contains("suffix", found.ToString(), StringComparison.Ordinal);
+        Assert.Contains("suffix", omitted.ToString(), StringComparison.Ordinal);
+        Assert.IsType<BinaryExpressionSyntax>(found);
+        Assert.Equal(
+            ConvertToInterpolatedStringOperation.OuterConcatenation((BinaryExpressionSyntax)found),
+            found);
+    }
+
+    [Fact]
     public void FindConvertibleExpression_AdjacentExpressions_ExclusiveEndDoesNotStealNext()
     {
         var (root, model) = Compile(AdjacentFormatSource);
@@ -412,6 +517,15 @@ public class ConvertToInterpolatedStringOperationTests
     #endregion
 
     #region Helpers
+
+    private static void AssertKeepsTripleConcatOperands(string updated)
+    {
+        Assert.DoesNotContain("\"Hello \" + name + suffix", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"Hello \" + name;", updated, StringComparison.Ordinal);
+        Assert.Contains("{name}", updated, StringComparison.Ordinal);
+        Assert.Contains("{suffix}", updated, StringComparison.Ordinal);
+        Assert.Contains("$\"Hello {name}{suffix}\"", updated, StringComparison.Ordinal);
+    }
 
     private static (SyntaxNode Root, SemanticModel Model) Compile(string source)
     {
