@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
@@ -12,7 +13,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
 /// Unit tests for GenerateConstructorOperation semantic validation,
-/// plus operation-level tests for <c>includeProperties</c>,
+/// plus operation-level tests for optional <c>line</c>,
+/// <c>includeProperties</c>,
 /// <c>includeInheritedMembers</c>, <c>replaceExisting</c>,
 /// <c>visibility</c>, <c>copyConstructor</c>, <c>classBaseCopy</c>, and <c>callBase</c>.
 /// Tests validate type-level constraints for constructor generation.
@@ -40,6 +42,368 @@ public class GenerateConstructorOperationTests
             public int Age { get; set; }
         }
         """;
+
+    #region P0 optional line disambiguation
+
+    [Fact]
+    public void Line_DefaultsToNull()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Widget"
+        };
+
+        Assert.Null(@params.Line);
+    }
+
+    [Fact]
+    public void Validate_InvalidLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                Line = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                Line = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    private const string NestedSameNameWidgetSource = """
+        namespace TestApp;
+
+        public /* outer-widget */ class Widget
+        {
+            public string Name { get; set; }
+
+            public /* nested-widget */ class Widget
+            {
+                public int Age { get; set; }
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateConstructor_OmittedLine_KeepsTypeNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasConstructor(types[0]));
+        Assert.False(TypeHasConstructor(types[1]));
+        var outerCtor = ExtractConstructorFromType(types[0]);
+        Assert.Contains("Name", outerCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Age", outerCtor, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "nested-widget")
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasConstructor(types[0]));
+        Assert.True(TypeHasConstructor(types[1]));
+        var nestedCtor = ExtractConstructorFromType(types[1]);
+        Assert.Contains("Age", nestedCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Name", nestedCtor, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_LineOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "outer-widget")
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasConstructor(types[0]));
+        Assert.False(TypeHasConstructor(types[1]));
+        var outerCtor = ExtractConstructorFromType(types[0]);
+        Assert.Contains("Name", outerCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Age", outerCtor, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_Line_Preview_WritesNothing_AndDescribesGeneration()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "nested-widget"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Generate constructor", result.PendingChanges[0].Description);
+        Assert.Contains("Widget", result.PendingChanges[0].Description);
+        Assert.Contains("Age", result.PendingChanges[0].Description);
+        Assert.Contains("public Widget(", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("this.Age = age", result.PendingChanges[0].AfterSnippet);
+        Assert.DoesNotContain("Name", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GenerateConstructorOperation.FindTypeDeclaration(root, "Widget", line: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GenerateConstructorOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(NestedSameNameWidgetSource, "nested-widget"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Widget");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GenerateConstructorOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(NestedSameNameWidgetSource, "outer-widget"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Widget // split-widget
+            {
+                public string Name { get; set; }
+
+                public class Widget // nested-widget
+                {
+                    public int Age { get; set; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-widget");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = GenerateConstructorOperation.FindTypeDeclaration(root, "Widget", identifierLine);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineMiss_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GenerateConstructorOperation.FindTypeDeclaration(root, "Widget", line: 1);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void SpanCoversLine_TreatsEndAsExclusive()
+    {
+        var span = new FileLinePositionSpan(
+            "t.cs",
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
+
+        Assert.True(GenerateConstructorOperation.SpanCoversLine(span, 1));
+        Assert.True(GenerateConstructorOperation.SpanCoversLine(span, 2));
+        Assert.False(GenerateConstructorOperation.SpanCoversLine(span, 3));
+        Assert.False(GenerateConstructorOperation.SpanCoversLine(span, 0));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_LineOnLaterSameFilePartial_ReplaceExisting_InsertsOnSelectedPartial()
+    {
+        const string source = """
+            namespace Other
+            {
+                public class Widget
+                {
+                    public string Title { get; set; }
+                }
+            }
+
+            namespace TestApp
+            {
+                public partial class Widget
+                {
+                    public string Name { get; set; }
+
+                    public Widget(string name)
+                    {
+                        Name = "old"; /* old-ctor */
+                    }
+                }
+
+                public /* later-partial */ partial class Widget
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(source, "later-partial"),
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(3, types.Count);
+        Assert.False(TypeHasConstructor(types[0]));
+        Assert.False(TypeHasConstructor(types[1]));
+        Assert.True(TypeHasConstructor(types[2]));
+        var selectedCtor = ExtractConstructorFromType(types[2]);
+        Assert.Contains("this.Name = name", selectedCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-ctor", selectedCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"old\"", selectedCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Title", selectedCtor, StringComparison.Ordinal);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(1, CountOccurrences(updated, "public Widget("));
+        Assert.DoesNotContain("old-ctor", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_SequentialReplaceExisting_ReusedWorkspace_InsertsOnSecondSelectedType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Alpha
+            {
+                public string Name { get; set; }
+
+                public Alpha(string name)
+                {
+                    Name = "old-alpha";
+                }
+            }
+
+            public class Beta
+            {
+                public string Title { get; set; }
+
+                public Beta(string title)
+                {
+                    Title = "old-beta";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Types.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var first = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Alpha",
+            ReplaceExisting = true
+        });
+        Assert.True(first.Success);
+
+        var second = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Beta",
+            ReplaceExisting = true
+        });
+        Assert.True(second.Success);
+
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var types = GetTypes(updated, "Alpha").Concat(GetTypes(updated, "Beta")).ToList();
+        var alpha = types.Single(t => t.Identifier.Text == "Alpha");
+        var beta = types.Single(t => t.Identifier.Text == "Beta");
+        Assert.True(TypeHasConstructor(alpha));
+        Assert.True(TypeHasConstructor(beta));
+        var alphaCtor = ExtractConstructorFromType(alpha);
+        var betaCtor = ExtractConstructorFromType(beta);
+        Assert.Contains("this.Name = name", alphaCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Title", alphaCtor, StringComparison.Ordinal);
+        Assert.Contains("this.Title = title", betaCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Name", betaCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-alpha", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-beta", updated, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(NormalizeNewlines(alpha.ToFullString()), "public Alpha("));
+        Assert.Equal(1, CountOccurrences(NormalizeNewlines(beta.ToFullString()), "public Beta("));
+    }
+
+    #endregion
 
     #region Static Class Tests
 
@@ -4615,8 +4979,48 @@ public class GenerateConstructorOperationTests
             ?? throw new InvalidOperationException("Could not create non-static class symbol");
     }
 
+    private static string AbsoluteTestPath() =>
+        Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateConstructorMissing.cs");
+
+    private static IReadOnlyList<TypeDeclarationSyntax> GetTypes(string source, string name) =>
+        CSharpSyntaxTree.ParseText(source).GetRoot()
+            .DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == name)
+            .ToList();
+
+    private static bool TypeHasConstructor(TypeDeclarationSyntax type) =>
+        type.Members.OfType<ConstructorDeclarationSyntax>().Any();
+
+    private static string ExtractConstructorFromType(TypeDeclarationSyntax type)
+    {
+        var ctor = type.Members.OfType<ConstructorDeclarationSyntax>().Single();
+        return NormalizeNewlines(ctor.ToFullString());
+    }
+
+    // Single-line snippets only — IndexOf of an LF-only snippet missed
+    // CRLF checkouts (FindMethod_ColumnOnContinuationLine on #200 / #214).
+    private static int FindLine(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
     private static string NormalizeNewlines(string text) =>
-        text.Replace("\r\n", "\n", StringComparison.Ordinal);
+        text.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
 
     private static void AssertNoIndexerAssignment(string ctor)
     {

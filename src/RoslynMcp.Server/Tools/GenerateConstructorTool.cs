@@ -32,7 +32,7 @@ public sealed class GenerateConstructorTool : IToolHandler
     public string Name => "generate_constructor";
 
     /// <inheritdoc />
-    public string Description => "Generate a constructor that initializes fields and/or properties of a type.";
+    public string Description => "Generate a constructor that initializes fields and/or properties of a type. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,6 +55,12 @@ public sealed class GenerateConstructorTool : IToolHandler
             {
                 type = "string",
                 description = "Name of the type to add constructor to"
+            },
+            line = new
+            {
+                type = "integer",
+                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                minimum = 1
             },
             members = new
             {
@@ -147,6 +153,7 @@ public sealed class GenerateConstructorTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
+                Line = args.Line,
                 Members = args.Members,
                 IncludeProperties = args.IncludeProperties ?? true,
                 IncludeInheritedMembers = args.IncludeInheritedMembers ?? false,
@@ -186,6 +193,7 @@ public sealed class GenerateConstructorTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
+        public int? Line { get; init; }
         public List<string>? Members { get; init; }
         public bool? IncludeProperties { get; init; }
         public bool? IncludeInheritedMembers { get; init; }
