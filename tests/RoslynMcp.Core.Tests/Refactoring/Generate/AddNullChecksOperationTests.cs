@@ -373,8 +373,10 @@ public class AddNullChecksOperationTests
 
         var tree = CSharpSyntaxTree.ParseText(source);
         var root = tree.GetRoot();
-        var startLine = FindLine(source, "public void\n");
-        var identifierLine = FindLine(source, "Process(string name) { }");
+        var split = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "Process" && m.ParameterList.Parameters.Count == 1);
+        var startLine = split.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        var identifierLine = split.Identifier.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
         Assert.NotEqual(startLine, identifierLine);
 
         // Omitted column keeps today's start-line filter, then silent
