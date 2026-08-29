@@ -138,30 +138,36 @@ public class ConvertForeachLinqOperationTests
 
     #region Query-syntax form policy (documented leftovers)
 
-    [Theory]
-    [InlineData(LinqConversionKind.Project)]
-    [InlineData(LinqConversionKind.Filter)]
-    [InlineData(LinqConversionKind.FilterAndProject)]
-    public void HasQuerySyntaxForm_FilterAndProjectPatterns_IsTrue(LinqConversionKind kind)
+    [Fact]
+    public void HasQuerySyntaxForm_FilterAndProjectPatterns_IsTrue()
     {
-        Assert.True(ConvertForeachLinqOperation.HasQuerySyntaxForm(kind));
+        Assert.True(ConvertForeachLinqOperation.HasQuerySyntaxForm(LinqConversionKind.Project));
+        Assert.True(ConvertForeachLinqOperation.HasQuerySyntaxForm(LinqConversionKind.Filter));
+        Assert.True(ConvertForeachLinqOperation.HasQuerySyntaxForm(LinqConversionKind.FilterAndProject));
     }
 
-    [Theory]
-    [InlineData(LinqConversionKind.Any)]
-    [InlineData(LinqConversionKind.All)]
-    [InlineData(LinqConversionKind.FirstOrDefault)]
-    [InlineData(LinqConversionKind.Count)]
-    [InlineData(LinqConversionKind.Sum)]
-    public void HasQuerySyntaxForm_AggregationPatterns_KeepMethodSyntax(LinqConversionKind kind)
+    [Fact]
+    public void HasQuerySyntaxForm_AggregationPatterns_KeepMethodSyntax()
     {
         // Any / All / FirstOrDefault / Count-only / Sum have no query-syntax
         // form. preferQuerySyntax must keep method syntax rather than inventing
         // invalid query syntax (from … Any() is not legal).
-        Assert.False(ConvertForeachLinqOperation.HasQuerySyntaxForm(kind));
-        Assert.Equal(
-            "Convert foreach to LINQ method syntax",
-            ConvertForeachLinqOperation.DescribeRewrite(kind, preferQuerySyntax: true));
+        LinqConversionKind[] aggregations =
+        [
+            LinqConversionKind.Any,
+            LinqConversionKind.All,
+            LinqConversionKind.FirstOrDefault,
+            LinqConversionKind.Count,
+            LinqConversionKind.Sum
+        ];
+
+        foreach (var kind in aggregations)
+        {
+            Assert.False(ConvertForeachLinqOperation.HasQuerySyntaxForm(kind));
+            Assert.Equal(
+                "Convert foreach to LINQ method syntax",
+                ConvertForeachLinqOperation.DescribeRewrite(kind, preferQuerySyntax: true));
+        }
     }
 
     [Fact]

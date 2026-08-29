@@ -202,8 +202,10 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     /// </summary>
     internal static ExpressionSyntax BuildLinqAssignment(ForeachLinqConversion conversion, bool preferQuerySyntax)
     {
+        // Query keywords need elastic trivia expanded (from item, not fromitem).
+        // Method syntax is unchanged so existing .Where().Select().ToList() stays as today.
         var linq = preferQuerySyntax && HasQuerySyntaxForm(conversion.Kind)
-            ? BuildQueryThenToList(conversion)
+            ? BuildQueryThenToList(conversion).NormalizeWhitespace()
             : BuildMethodThenToList(conversion);
 
         return SyntaxFactory.AssignmentExpression(
