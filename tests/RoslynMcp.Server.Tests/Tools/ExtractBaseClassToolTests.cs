@@ -34,6 +34,7 @@ public class ExtractBaseClassToolTests
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
         Assert.Contains("indexer", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("makeAbstract", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -9,6 +9,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Refactoring.Generate;
+using RoslynMcp.Core.Refactoring.Hierarchy;
 using RoslynMcp.Core.Refactoring.Rename;
 using RoslynMcp.Core.Workspace;
 
@@ -119,7 +120,16 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         }
 
         // Find members to extract
-        var membersToExtract = FindMembersToExtract(typeDeclaration, @params.Members, semanticModel);
+        var membersToExtract = FindMembersToExtract(
+            typeDeclaration,
+            @params.Members,
+            semanticModel,
+            @params.MakeAbstract);
+
+        if (@params.MakeAbstract)
+            ValidateAbstractMembers(membersToExtract, semanticModel);
+
+        var extractedSymbols = BuildExtractedSymbolMap(membersToExtract, semanticModel);
 
         // Generate base class
         var baseClass = GenerateBaseClass(
@@ -228,7 +238,12 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                         memberNames.Add(GetIndexerRemovalKey(indexer));
                 }
 
-                var newMembers = RebuildDerivedMembers(newTypeDecl.Members, memberNames);
+                var newMembers = RebuildDerivedMembers(
+                    newTypeDecl.Members,
+                    memberNames,
+                    @params.MakeAbstract,
+                    extractedSymbols,
+                    typeSymbol);
 
                 newTypeDecl = newTypeDecl.WithMembers(SyntaxFactory.List(newMembers));
 
@@ -271,7 +286,8 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
     private static List<MemberDeclarationSyntax> FindMembersToExtract(
         ClassDeclarationSyntax typeDeclaration,
         IReadOnlyList<string> memberNames,
-        SemanticModel semanticModel)
+        SemanticModel semanticModel,
+        bool makeAbstract)
     {
         var requestedSet = new HashSet<string>(memberNames);
         var unmatched = new HashSet<string>(memberNames);
@@ -306,6 +322,14 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 if (indexer.ExplicitInterfaceImplementations.Length > 0
                     || indexerDecl.ExplicitInterfaceSpecifier != null)
                 {
+                    if (makeAbstract
+                        && ImplementInterfaceOperation.MatchesRequestedMember(indexer, requestedSet))
+                    {
+                        throw new RefactoringException(
+                            ErrorCodes.MemberNotMoveable,
+                            $"Indexer '{indexer.Name}' cannot be extracted as an abstract member.");
+                    }
+
                     continue;
                 }
 
@@ -411,13 +435,18 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
     }
 
     /// <summary>
-    /// Drops extracted members from the derived type. Field-like events match
-    /// by declarator name so a multi-variable event field keeps unrelated
-    /// declarators on the derived type.
+    /// Drops extracted members from the derived type, or keeps them as
+    /// <c>override</c> when <paramref name="makeAbstract"/> is true (fields
+    /// still move). Field-like events match by declarator name so a
+    /// multi-variable event field keeps unrelated declarators on the
+    /// derived type.
     /// </summary>
     private static List<MemberDeclarationSyntax> RebuildDerivedMembers(
         SyntaxList<MemberDeclarationSyntax> members,
-        HashSet<string> extractedNames)
+        HashSet<string> extractedNames,
+        bool makeAbstract,
+        IReadOnlyDictionary<string, ISymbol> extractedSymbols,
+        INamedTypeSymbol derivedType)
     {
         var result = new List<MemberDeclarationSyntax>();
         foreach (var member in members)
@@ -427,25 +456,144 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 var remaining = eventField.Declaration.Variables
                     .Where(v => !extractedNames.Contains(v.Identifier.Text))
                     .ToList();
-                if (remaining.Count == eventField.Declaration.Variables.Count)
+                var selected = eventField.Declaration.Variables
+                    .Where(v => extractedNames.Contains(v.Identifier.Text))
+                    .ToList();
+                if (selected.Count == 0)
                 {
                     result.Add(member);
                     continue;
                 }
 
-                if (remaining.Count == 0)
-                    continue;
+                if (remaining.Count > 0)
+                {
+                    result.Add(eventField.WithDeclaration(
+                        eventField.Declaration.WithVariables(SyntaxFactory.SeparatedList(remaining))));
+                }
 
-                result.Add(eventField.WithDeclaration(
-                    eventField.Declaration.WithVariables(SyntaxFactory.SeparatedList(remaining))));
+                if (makeAbstract)
+                {
+                    foreach (var variable in selected)
+                    {
+                        result.Add(HierarchyAbstractMemberRewriter.AddOverrideModifier(
+                            HierarchyAbstractMemberRewriter.IsolateMemberSyntax(
+                                member, variable.Identifier.Text),
+                            RequireExtractedSymbol(extractedSymbols, variable.Identifier.Text),
+                            derivedType));
+                    }
+                }
+
                 continue;
             }
 
             if (!ShouldRemoveMember(member, extractedNames))
+            {
                 result.Add(member);
+                continue;
+            }
+
+            if (makeAbstract && member is not FieldDeclarationSyntax)
+            {
+                var key = member is IndexerDeclarationSyntax indexer
+                    ? GetIndexerRemovalKey(indexer)
+                    : GetMemberName(member);
+                result.Add(HierarchyAbstractMemberRewriter.AddOverrideModifier(
+                    member,
+                    RequireExtractedSymbol(extractedSymbols, key),
+                    derivedType));
+            }
         }
 
         return result;
+    }
+
+    private static void ValidateAbstractMembers(
+        List<MemberDeclarationSyntax> members,
+        SemanticModel semanticModel)
+    {
+        foreach (var member in members)
+        {
+            if (member is FieldDeclarationSyntax)
+                continue;
+
+            if (member is EventFieldDeclarationSyntax eventField)
+            {
+                foreach (var variable in eventField.Declaration.Variables)
+                {
+                    if (semanticModel.GetDeclaredSymbol(variable) is ISymbol eventSymbol)
+                        ThrowIfCannotBeAbstract(eventSymbol, variable.Identifier.Text);
+                }
+
+                continue;
+            }
+
+            var name = GetMemberName(member) ?? "member";
+            if (semanticModel.GetDeclaredSymbol(member) is ISymbol symbol)
+                ThrowIfCannotBeAbstract(symbol, name);
+        }
+    }
+
+    private static void ThrowIfCannotBeAbstract(ISymbol symbol, string name)
+    {
+        if (HierarchyAbstractMemberRewriter.CanBeAbstract(symbol))
+            return;
+
+        throw new RefactoringException(
+            ErrorCodes.MemberNotMoveable,
+            symbol switch
+            {
+                IEventSymbol => $"Event '{name}' cannot be extracted as an abstract member.",
+                IPropertySymbol { IsIndexer: true } =>
+                    $"Indexer '{name}' cannot be extracted as an abstract member.",
+                IPropertySymbol => $"Property '{name}' cannot be extracted as an abstract member.",
+                IMethodSymbol => $"Method '{name}' cannot be extracted as an abstract member.",
+                _ => $"Member '{name}' cannot be extracted as an abstract member."
+            });
+    }
+
+    private static Dictionary<string, ISymbol> BuildExtractedSymbolMap(
+        List<MemberDeclarationSyntax> members,
+        SemanticModel semanticModel)
+    {
+        var map = new Dictionary<string, ISymbol>(StringComparer.Ordinal);
+        foreach (var member in members)
+        {
+            if (member is EventFieldDeclarationSyntax eventField)
+            {
+                foreach (var variable in eventField.Declaration.Variables)
+                {
+                    if (semanticModel.GetDeclaredSymbol(variable) is ISymbol eventSymbol)
+                        map[variable.Identifier.Text] = eventSymbol;
+                }
+
+                continue;
+            }
+
+            if (member is IndexerDeclarationSyntax indexer
+                && semanticModel.GetDeclaredSymbol(indexer) is ISymbol indexerSymbol)
+            {
+                map[GetIndexerRemovalKey(indexer)] = indexerSymbol;
+                continue;
+            }
+
+            var name = GetMemberName(member);
+            if (name != null && semanticModel.GetDeclaredSymbol(member) is ISymbol symbol)
+                map[name] = symbol;
+        }
+
+        return map;
+    }
+
+    private static ISymbol RequireExtractedSymbol(
+        IReadOnlyDictionary<string, ISymbol> extractedSymbols,
+        string? key)
+    {
+        if (key != null && extractedSymbols.TryGetValue(key, out var symbol))
+            return symbol;
+
+        throw new RefactoringException(
+            ErrorCodes.RoslynError,
+            $"Could not resolve symbol for extracted member '{key}'.");
     }
 
     private static ClassDeclarationSyntax GenerateBaseClass(
@@ -459,13 +607,48 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             modifiers.Add(SyntaxFactory.Token(SyntaxKind.AbstractKeyword));
         }
 
-        // Make members protected if they're private
-        var adjustedMembers = members.Select(m => AdjustMemberAccessibility(m)).ToList();
+        // Make members protected if they're private. makeAbstract converts
+        // methods / properties / events / indexers to abstract declarations;
+        // fields stay concrete.
+        var adjustedMembers = new List<MemberDeclarationSyntax>();
+        foreach (var member in members)
+        {
+            if (makeAbstract && member is not FieldDeclarationSyntax)
+            {
+                foreach (var abstractable in ExpandForAbstract(member))
+                {
+                    adjustedMembers.Add(HierarchyAbstractMemberRewriter.ConvertToAbstract(
+                        AdjustMemberAccessibility(abstractable),
+                        "Only methods, properties, indexers, and events can be extracted as abstract members."));
+                }
+            }
+            else
+            {
+                adjustedMembers.Add(AdjustMemberAccessibility(member));
+            }
+        }
 
         return SyntaxFactory.ClassDeclaration(className)
             .WithModifiers(SyntaxFactory.TokenList(modifiers))
             .WithMembers(SyntaxFactory.List(adjustedMembers))
             .NormalizeWhitespace();
+    }
+
+    private static IEnumerable<MemberDeclarationSyntax> ExpandForAbstract(MemberDeclarationSyntax member)
+    {
+        if (member is EventFieldDeclarationSyntax eventField
+            && eventField.Declaration.Variables.Count > 1)
+        {
+            foreach (var variable in eventField.Declaration.Variables)
+            {
+                yield return HierarchyAbstractMemberRewriter.IsolateMemberSyntax(
+                    member, variable.Identifier.Text);
+            }
+
+            yield break;
+        }
+
+        yield return member;
     }
 
     private static MemberDeclarationSyntax AdjustMemberAccessibility(MemberDeclarationSyntax member)
@@ -812,9 +995,18 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         string? projectPath)
     {
         var memberNames = string.Join(", ", members.SelectMany(GetExtractedMemberNames));
+        var abstractNames = string.Join(
+            ", ",
+            members.Where(m => m is not FieldDeclarationSyntax).SelectMany(GetExtractedMemberNames));
         var baseClassCode = baseClass.NormalizeWhitespace().ToFullString();
 
         var isNewFile = targetFile != @params.SourceFile;
+        var extractDescription = @params.MakeAbstract && abstractNames.Length > 0
+            ? $"Extract abstract base class {@params.BaseClassName} with abstract members: {abstractNames}"
+            : $"Extract base class {@params.BaseClassName} with members: {memberNames}";
+        var derivedDescription = @params.MakeAbstract && abstractNames.Length > 0
+            ? $"Keep {abstractNames} on {@params.TypeName} as override"
+            : $"Update {@params.TypeName} to inherit from {@params.BaseClassName}";
 
         var pendingChanges = new List<PendingChange>
         {
@@ -822,7 +1014,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             {
                 File = targetFile,
                 ChangeType = isNewFile ? ChangeKind.Create : ChangeKind.Modify,
-                Description = $"Extract base class {@params.BaseClassName} with members: {memberNames}",
+                Description = extractDescription,
                 BeforeSnippet = isNewFile ? "// (new file)" : $"// Before class '{@params.TypeName}'",
                 AfterSnippet = baseClassCode
             },
@@ -830,7 +1022,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             {
                 File = @params.SourceFile,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Update {@params.TypeName} to inherit from {@params.BaseClassName}",
+                Description = derivedDescription,
                 BeforeSnippet = $"class {@params.TypeName}",
                 AfterSnippet = $"class {@params.TypeName} : {@params.BaseClassName}"
             }

@@ -623,7 +623,9 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             return ConvertToInterfaceMember(isolated);
 
         return makeAbstract
-            ? ConvertToAbstract(isolated)
+            ? HierarchyAbstractMemberRewriter.ConvertToAbstract(
+                isolated,
+                "Only methods, properties, indexers, and events can be pulled up as abstract members.")
             : ConvertToVirtualOnBase(isolated);
     }
 
@@ -631,17 +633,8 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
     /// Keeps only the requested declarator when an event field declares
     /// multiple variables.
     /// </summary>
-    private static MemberDeclarationSyntax IsolateMemberSyntax(MemberDeclarationSyntax syntax, string name)
-    {
-        return syntax switch
-        {
-            EventFieldDeclarationSyntax eventField when eventField.Declaration.Variables.Count > 1 =>
-                eventField.WithDeclaration(eventField.Declaration.WithVariables(
-                    SyntaxFactory.SingletonSeparatedList(
-                        eventField.Declaration.Variables.First(v => v.Identifier.Text == name)))),
-            _ => syntax
-        };
-    }
+    private static MemberDeclarationSyntax IsolateMemberSyntax(MemberDeclarationSyntax syntax, string name) =>
+        HierarchyAbstractMemberRewriter.IsolateMemberSyntax(syntax, name);
 
     private static MemberDeclarationSyntax ConvertToInterfaceMember(MemberDeclarationSyntax member)
     {
@@ -745,117 +738,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             || token.IsKind(SyntaxKind.ProtectedKeyword)
             || token.IsKind(SyntaxKind.InternalKeyword));
 
-    private static MemberDeclarationSyntax ConvertToAbstract(MemberDeclarationSyntax member)
-    {
-        return member switch
-        {
-            MethodDeclarationSyntax method => method
-                .WithModifiers(ToAbstractModifiers(method.Modifiers))
-                .WithBody(null)
-                .WithExpressionBody(null)
-                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
-                .NormalizeWhitespace(),
-            PropertyDeclarationSyntax property => ToAbstractProperty(property),
-            IndexerDeclarationSyntax indexer when CanMakeIndexerAbstract(indexer) => ToAbstractIndexer(indexer),
-            EventDeclarationSyntax eventDecl when CanMakeEventAbstract(eventDecl) => ToAbstractEvent(eventDecl),
-            EventFieldDeclarationSyntax eventField when CanMakeEventAbstract(eventField) => ToAbstractEvent(eventField),
-            _ => throw new RefactoringException(
-                ErrorCodes.MemberNotMoveable,
-                "Only methods, properties, indexers, and events can be pulled up as abstract members.")
-        };
-    }
-
-    private static bool CanMakeIndexerAbstract(IndexerDeclarationSyntax indexer) =>
-        !indexer.Modifiers.Any(SyntaxKind.StaticKeyword) &&
-        indexer.ExplicitInterfaceSpecifier == null &&
-        (indexer.AccessorList == null
-            || indexer.AccessorList.Accessors.All(accessor => !IsPrivateOnlyAccessor(accessor)));
-
-    private static bool CanMakeEventAbstract(EventDeclarationSyntax eventDecl) =>
-        !eventDecl.Modifiers.Any(SyntaxKind.StaticKeyword) &&
-        eventDecl.ExplicitInterfaceSpecifier == null;
-
-    private static bool CanMakeEventAbstract(EventFieldDeclarationSyntax eventField) =>
-        !eventField.Modifiers.Any(SyntaxKind.StaticKeyword);
-
-    private static EventDeclarationSyntax ToAbstractEvent(EventDeclarationSyntax eventDecl)
-    {
-        return eventDecl
-            .WithModifiers(ToAbstractModifiers(eventDecl.Modifiers))
-            .WithAccessorList(null)
-            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
-            .NormalizeWhitespace();
-    }
-
-    private static EventDeclarationSyntax ToAbstractEvent(EventFieldDeclarationSyntax eventField)
-    {
-        var variable = eventField.Declaration.Variables.First();
-        return SyntaxFactory.EventDeclaration(eventField.Declaration.Type, variable.Identifier)
-            .WithAttributeLists(eventField.AttributeLists)
-            .WithModifiers(ToAbstractModifiers(eventField.Modifiers))
-            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
-            .NormalizeWhitespace();
-    }
-
-    private static PropertyDeclarationSyntax ToAbstractProperty(PropertyDeclarationSyntax property)
-    {
-        var accessors = new List<AccessorDeclarationSyntax>();
-        if (property.AccessorList != null)
-        {
-            foreach (var accessor in property.AccessorList.Accessors)
-            {
-                accessors.Add(accessor
-                    .WithBody(null)
-                    .WithExpressionBody(null)
-                    .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-            }
-        }
-        else
-        {
-            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-        }
-
-        return property
-            .WithModifiers(ToAbstractModifiers(property.Modifiers))
-            .WithExpressionBody(null)
-            .WithSemicolonToken(default)
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
-            .NormalizeWhitespace();
-    }
-
-    private static IndexerDeclarationSyntax ToAbstractIndexer(IndexerDeclarationSyntax indexer)
-    {
-        var accessors = new List<AccessorDeclarationSyntax>();
-        if (indexer.AccessorList != null)
-        {
-            foreach (var accessor in indexer.AccessorList.Accessors)
-            {
-                accessors.Add(accessor
-                    .WithBody(null)
-                    .WithExpressionBody(null)
-                    .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-            }
-        }
-        else
-        {
-            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-        }
-
-        return indexer
-            .WithModifiers(ToAbstractModifiers(indexer.Modifiers))
-            .WithExpressionBody(null)
-            .WithSemicolonToken(default)
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
-            .NormalizeWhitespace();
-    }
-
-    private static bool IsPrivateOnlyAccessor(AccessorDeclarationSyntax accessor) =>
-        accessor.Modifiers.Any(SyntaxKind.PrivateKeyword)
-        && !accessor.Modifiers.Any(SyntaxKind.ProtectedKeyword)
-        && !accessor.Modifiers.Any(SyntaxKind.InternalKeyword);
-
     private static MemberDeclarationSyntax ConvertToVirtualOnBase(MemberDeclarationSyntax member)
     {
         return member switch
@@ -883,25 +765,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 .NormalizeWhitespace(),
             _ => member.NormalizeWhitespace()
         };
-    }
-
-    private static SyntaxTokenList ToAbstractModifiers(SyntaxTokenList modifiers)
-    {
-        var tokens = StripModifiers(
-                modifiers,
-                SyntaxKind.PrivateKeyword,
-                SyntaxKind.VirtualKeyword,
-                SyntaxKind.OverrideKeyword,
-                SyntaxKind.SealedKeyword,
-                SyntaxKind.AbstractKeyword,
-                SyntaxKind.NewKeyword)
-            .ToList();
-
-        if (!HasAccessibility(tokens))
-            tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
-
-        tokens.Add(SyntaxFactory.Token(SyntaxKind.AbstractKeyword));
-        return SyntaxFactory.TokenList(tokens);
     }
 
     private static SyntaxTokenList AdjustBaseClassModifiers(SyntaxTokenList modifiers, bool addVirtual)
@@ -1023,56 +886,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         MemberDeclarationSyntax member,
         ISymbol symbol,
         INamedTypeSymbol target)
-    {
-        return member switch
-        {
-            MethodDeclarationSyntax method =>
-                OverrideAccessibilityReducer.ReduceOverrideAccessibility(
-                    method.WithModifiers(ToOverrideModifiers(method.Modifiers)),
-                    symbol,
-                    target),
-            PropertyDeclarationSyntax property =>
-                OverrideAccessibilityReducer.ReduceOverrideAccessibility(
-                    property.WithModifiers(ToOverrideModifiers(property.Modifiers)),
-                    symbol,
-                    target),
-            IndexerDeclarationSyntax indexer =>
-                OverrideAccessibilityReducer.ReduceOverrideAccessibility(
-                    indexer.WithModifiers(ToOverrideModifiers(indexer.Modifiers)),
-                    symbol,
-                    target),
-            EventDeclarationSyntax eventDecl =>
-                OverrideAccessibilityReducer.ReduceOverrideAccessibility(
-                    eventDecl.WithModifiers(ToOverrideModifiers(eventDecl.Modifiers)),
-                    symbol,
-                    target),
-            EventFieldDeclarationSyntax eventField =>
-                OverrideAccessibilityReducer.ReduceOverrideAccessibility(
-                    eventField.WithModifiers(ToOverrideModifiers(eventField.Modifiers)),
-                    symbol,
-                    target),
-            _ => member
-        };
-    }
-
-    private static SyntaxTokenList ToOverrideModifiers(SyntaxTokenList modifiers)
-    {
-        var tokens = StripModifiers(
-                modifiers,
-                SyntaxKind.PrivateKeyword,
-                SyntaxKind.VirtualKeyword,
-                SyntaxKind.AbstractKeyword,
-                SyntaxKind.OverrideKeyword,
-                SyntaxKind.NewKeyword)
-            .ToList();
-
-        if (modifiers.Any(SyntaxKind.PrivateKeyword) || !HasAccessibility(tokens))
-            tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
-
-        tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword)
-            .WithTrailingTrivia(SyntaxFactory.ElasticSpace));
-        return SyntaxFactory.TokenList(tokens);
-    }
+        => HierarchyAbstractMemberRewriter.AddOverrideModifier(member, symbol, target);
 
     private async Task<Solution> ApplyChangesAsync(
         Document derivedDocument,

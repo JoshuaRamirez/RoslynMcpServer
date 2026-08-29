@@ -622,7 +622,7 @@ public class ExtractBaseClassOperationTests
     }
 
     [SkippableFact]
-    public async Task ExtractBaseClass_MakeAbstract_MarksClassOnly_DoesNotInventAbstractEvent()
+    public async Task ExtractBaseClass_MakeAbstract_EventLeavesOverrideOnDerived()
     {
         const string source = """
             namespace TestApp;
@@ -648,10 +648,13 @@ public class ExtractBaseClassOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         var person = GetClassSection(updated, "Person");
+        var employee = GetClassSection(updated, "Employee");
 
         Assert.Contains("abstract class Person", updated);
-        Assert.Contains("public event System.EventHandler Changed", person);
-        Assert.DoesNotContain("abstract event", updated);
+        Assert.Contains("abstract event System.EventHandler Changed", person);
+        Assert.Contains("override event System.EventHandler Changed", employee);
+        AssertInheritsFrom(updated, "Employee", "Person");
+        AssertCompiles(updated);
     }
 
     [SkippableFact]
@@ -1105,7 +1108,7 @@ public class ExtractBaseClassOperationTests
     }
 
     [SkippableFact]
-    public async Task ExtractBaseClass_MakeAbstract_MarksClassOnly_DoesNotInventAbstractIndexer()
+    public async Task ExtractBaseClass_MakeAbstract_IndexerLeavesOverrideOnDerived()
     {
         await using var workspace = await TempWorkspace.CreateAsync(MixedIndexerSource, "Lookup.cs");
         var operation = new ExtractBaseClassOperation(workspace.Context);
@@ -1121,13 +1124,17 @@ public class ExtractBaseClassOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        var indexer = Assert.Single(FindIndexers(updated, "Indexable"));
+        var baseIndexer = Assert.Single(FindIndexers(updated, "Indexable"));
+        var derivedIndexer = Assert.Single(FindIndexers(updated, "Lookup"));
         Assert.Contains("abstract class Indexable", updated);
-        Assert.DoesNotContain(indexer.Modifiers, t => t.IsKind(SyntaxKind.AbstractKeyword));
-        Assert.DoesNotContain("abstract string this", updated);
-        Assert.DoesNotContain("abstract this", updated);
-        Assert.Contains("this[int i]", GetClassSection(updated, "Indexable"));
-        Assert.Empty(FindIndexers(updated, "Lookup"));
+        Assert.Contains(baseIndexer.Modifiers, t => t.IsKind(SyntaxKind.AbstractKeyword));
+        Assert.DoesNotContain(baseIndexer.Modifiers, t => t.IsKind(SyntaxKind.VirtualKeyword));
+        Assert.Null(baseIndexer.ExpressionBody);
+        Assert.All(baseIndexer.AccessorList!.Accessors, a => Assert.True(a.Body == null && a.ExpressionBody == null));
+        Assert.Contains(derivedIndexer.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.Contains("get =>", GetClassSection(updated, "Lookup"));
+        Assert.DoesNotContain("get =>", GetClassSection(updated, "Indexable"));
+        AssertInheritsFrom(updated, "Lookup", "Indexable");
         AssertCompiles(updated);
     }
 
@@ -1329,6 +1336,374 @@ public class ExtractBaseClassOperationTests
         Assert.DoesNotContain("ILookup.this", GetClassSection(updated, "Indexable"));
         AssertInheritsFrom(updated, "Lookup", "Indexable");
         AssertCompiles(updated);
+    }
+
+    #endregion
+
+    #region MakeAbstract
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_MethodLeavesOverrideOnDerived()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public int Work()
+                {
+                    return 1;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Work" },
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var person = GetClassSection(updated, "Person");
+        var employee = GetClassSection(updated, "Employee");
+        Assert.Contains("abstract class Person", updated);
+        Assert.Contains("abstract", person);
+        Assert.Contains("Work", person);
+        Assert.DoesNotContain("return 1", person);
+        Assert.Contains("override", employee);
+        Assert.Contains("return 1", employee);
+        AssertInheritsFrom(updated, "Employee", "Person");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_PropertyLeavesOverrideOnDerived()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Name" },
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var personProp = FindProperty(updated, "Person", "Name");
+        var employeeProp = FindProperty(updated, "Employee", "Name");
+        Assert.NotNull(personProp);
+        Assert.NotNull(employeeProp);
+        Assert.Contains("abstract class Person", updated);
+        Assert.Contains(personProp!.Modifiers, t => t.IsKind(SyntaxKind.AbstractKeyword));
+        Assert.All(personProp.AccessorList!.Accessors, a => Assert.True(a.Body == null && a.ExpressionBody == null));
+        Assert.Contains(employeeProp!.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        AssertInheritsFrom(updated, "Employee", "Person");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstractFalse_MethodStillMoves()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public int Work()
+                {
+                    return 1;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Work" },
+            MakeAbstract = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var person = GetClassSection(updated, "Person");
+        var employee = GetClassSection(updated, "Employee");
+        Assert.DoesNotContain("abstract class Person", updated);
+        Assert.Contains("Work", person);
+        Assert.Contains("return 1", person);
+        Assert.DoesNotContain("Work", employee);
+        Assert.DoesNotContain("override", employee);
+        AssertInheritsFrom(updated, "Employee", "Person");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_FieldStillMovesConcrete()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public int Age;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Age" },
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var person = GetClassSection(updated, "Person");
+        var employee = GetClassSection(updated, "Employee");
+        Assert.Contains("abstract class Person", updated);
+        Assert.Contains("public int Age", person);
+        Assert.DoesNotContain("abstract int Age", person);
+        Assert.DoesNotContain("Age", employee);
+        Assert.DoesNotContain("override", employee);
+        AssertInheritsFrom(updated, "Employee", "Person");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_StaticMethod_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public static void Work() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractBaseClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Employee",
+                BaseClassName = "Person",
+                Members = new[] { "Work" },
+                MakeAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_ExplicitInterfaceMethod_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWork
+            {
+                void Work();
+            }
+
+            public class Employee : IWork
+            {
+                void IWork.Work() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractBaseClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Employee",
+                BaseClassName = "Person",
+                Members = new[] { "Work" },
+                MakeAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_PrivateAccessorProperty_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public string Name { get; private set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractBaseClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Employee",
+                BaseClassName = "Person",
+                Members = new[] { "Name" },
+                MakeAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_PrivateAccessorIndexer_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Lookup
+            {
+                public int this[int i] { get => i; private set { } }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractBaseClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Lookup",
+                BaseClassName = "Indexable",
+                Members = new[] { "this[]" },
+                MakeAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_ExplicitInterfaceIndexer_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface ILookup
+            {
+                string this[int i] { get; }
+            }
+
+            public class Lookup : ILookup
+            {
+                string ILookup.this[int i] => "";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Lookup.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractBaseClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Lookup",
+                BaseClassName = "Indexable",
+                Members = new[] { "this[int i]" },
+                MakeAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_Preview_WritesNothing_AndDescribesAbstractAndOverrides()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public int Work()
+                {
+                    return 1;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Work" },
+            MakeAbstract = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(
+            result.PendingChanges,
+            change => change.Description.Contains("abstract", StringComparison.OrdinalIgnoreCase)
+                && change.Description.Contains("Work", StringComparison.Ordinal));
+        Assert.Contains(
+            result.PendingChanges,
+            change => change.Description.Contains("override", StringComparison.OrdinalIgnoreCase)
+                && change.Description.Contains("Work", StringComparison.Ordinal));
+        Assert.Contains(
+            result.PendingChanges[0].AfterSnippet,
+            "abstract",
+            StringComparison.Ordinal);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.False(File.Exists(Path.GetFullPath(Path.Combine(workspace.DirectoryPath, "Person.cs"))));
     }
 
     #endregion
