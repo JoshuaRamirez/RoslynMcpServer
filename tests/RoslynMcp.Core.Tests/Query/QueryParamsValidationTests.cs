@@ -967,6 +967,20 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void ConvertToPatternMatching_InvalidColumn_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateConvertToPatternMatchingParams(new ConvertToPatternMatchingParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                Line = 1,
+                Column = 0
+            }));
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
     #endregion
 
     #region ConvertToInterpolatedStringParams Validation
@@ -1042,19 +1056,8 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
     }
 
-    private static void ValidateConvertToPatternMatchingParams(ConvertToPatternMatchingParams p)
-    {
-        if (string.IsNullOrWhiteSpace(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-        if (!PathResolver.IsAbsolutePath(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-        if (!PathResolver.IsValidCSharpFilePath(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-        if (p.Line < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
-        if (!File.Exists(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
-    }
+    private static void ValidateConvertToPatternMatchingParams(ConvertToPatternMatchingParams p) =>
+        ConvertToPatternMatchingOperation.Validate(p);
 
     private static void ValidateConvertToInterpolatedStringParams(ConvertToInterpolatedStringParams p) =>
         ConvertToInterpolatedStringOperation.Validate(p);

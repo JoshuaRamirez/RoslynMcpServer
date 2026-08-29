@@ -21,7 +21,13 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(ConvertToPatternMatchingParams @params)
+    protected override void ValidateParams(ConvertToPatternMatchingParams @params) => Validate(@params);
+
+    /// <summary>
+    /// Validates convert-to-pattern-matching parameters. Internal so tests
+    /// can exercise input rules without loading a workspace.
+    /// </summary>
+    internal static void Validate(ConvertToPatternMatchingParams @params)
     {
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
@@ -34,6 +40,9 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
 
         if (@params.Line < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
+
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -51,30 +60,80 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
         if (root == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var targetLine = @params.Line - 1;
+        var target = FindConvertibleStatement(root, @params.Line, @params.Column);
 
-        // Try to find a switch statement to convert
-        var switchStmt = root.DescendantNodes()
-            .OfType<SwitchStatementSyntax>()
-            .FirstOrDefault(s => s.GetLocation().GetLineSpan().StartLinePosition.Line == targetLine);
-
-        if (switchStmt != null)
+        if (target is SwitchStatementSyntax switchStmt)
         {
             return await ConvertSwitchToExpression(operationId, document, root, switchStmt, @params, cancellationToken);
         }
 
-        // Try to find an if/is chain
-        var ifStmt = root.DescendantNodes()
-            .OfType<IfStatementSyntax>()
-            .FirstOrDefault(s => s.GetLocation().GetLineSpan().StartLinePosition.Line == targetLine);
-
-        if (ifStmt != null)
+        if (target is IfStatementSyntax ifStmt)
         {
             return await ConvertIfChainToSwitch(operationId, document, root, ifStmt, @params, cancellationToken);
         }
 
+        var location = @params.Column.HasValue
+            ? $"line {@params.Line}, column {@params.Column.Value}"
+            : $"line {@params.Line}";
         throw new RefactoringException(ErrorCodes.CannotConvert,
-            $"No switch statement or if/is chain found at line {@params.Line}.");
+            $"No switch statement or if/is chain found at {location}.");
+    }
+
+    /// <summary>
+    /// Finds a convertible switch or if. When <paramref name="column"/> is
+    /// omitted, keeps today's first-match whose start line equals
+    /// <paramref name="line"/> (switch before if). When set, picks the
+    /// smallest switch or if whose span covers that 1-based column. Do not
+    /// require the statement to start on <paramref name="line"/> when
+    /// column is set — a split <c>switch</c>/<c>if</c> may put the keyword
+    /// on a continuation line. Do not fall back to the start-line pick
+    /// when no covering node exists.
+    /// </summary>
+    internal static StatementSyntax? FindConvertibleStatement(SyntaxNode root, int line, int? column)
+    {
+        var switches = root.DescendantNodes().OfType<SwitchStatementSyntax>();
+        var ifs = root.DescendantNodes().OfType<IfStatementSyntax>();
+
+        if (!column.HasValue)
+        {
+            StatementSyntax? firstSwitch = switches.FirstOrDefault(statement => StartsOnLine(statement, line));
+            if (firstSwitch != null)
+                return firstSwitch;
+
+            return ifs.FirstOrDefault(statement => StartsOnLine(statement, line));
+        }
+
+        return switches.Cast<StatementSyntax>()
+            .Concat(ifs)
+            .Where(statement => SpanCoversColumn(statement.GetLocation().GetLineSpan(), line, column.Value))
+            .OrderBy(statement => statement.Span.Length)
+            .FirstOrDefault();
+    }
+
+    private static bool StartsOnLine(SyntaxNode node, int line) =>
+        node.GetLocation().GetLineSpan().StartLinePosition.Line + 1 == line;
+
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character of an adjacent statement also
+    /// match the previous switch or if.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == startLine && column < startCol)
+            return false;
+        if (line == endLine && column >= endCol)
+            return false;
+        return true;
     }
 
     private async Task<RefactoringResult> ConvertSwitchToExpression(
