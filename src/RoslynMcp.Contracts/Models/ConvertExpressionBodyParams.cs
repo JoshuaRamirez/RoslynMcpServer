@@ -21,6 +21,14 @@ public sealed class ConvertExpressionBodyParams
     public int? Line { get; init; }
 
     /// <summary>
+    /// 1-based column for disambiguation when more than one member shares a
+    /// line. Optional. When set, selects the member whose identifier or
+    /// declaration span covers that column. Omitted keeps today's first-match
+    /// on the line.
+    /// </summary>
+    public int? Column { get; init; }
+
+    /// <summary>
     /// Conversion direction: ToExpressionBody or ToBlockBody.
     /// </summary>
     public required string Direction { get; init; }

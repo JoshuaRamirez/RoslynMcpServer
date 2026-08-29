@@ -21,7 +21,13 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(ConvertExpressionBodyParams @params)
+    protected override void ValidateParams(ConvertExpressionBodyParams @params) => Validate(@params);
+
+    /// <summary>
+    /// Validates convert-expression-body parameters. Internal so tests can
+    /// exercise input rules without loading a workspace.
+    /// </summary>
+    internal static void Validate(ConvertExpressionBodyParams @params)
     {
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
@@ -40,6 +46,9 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
+
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
         if (!Enum.TryParse<ConversionDirection>(@params.Direction, ignoreCase: true, out var dir) ||
             (dir != ConversionDirection.ToExpressionBody && dir != ConversionDirection.ToBlockBody))
@@ -67,10 +76,15 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         var direction = Enum.Parse<ConversionDirection>(@params.Direction, ignoreCase: true);
 
         // Find the target member
-        var member = FindMember(root, @params.MemberName, @params.Line);
+        var member = FindMember(root, @params.MemberName, @params.Line, @params.Column);
         if (member == null)
+        {
+            var location = @params.Column.HasValue
+                ? $"{@params.MemberName ?? $"at line {@params.Line}"}, column {@params.Column.Value}"
+                : @params.MemberName ?? $"at line {@params.Line}";
             throw new RefactoringException(ErrorCodes.MethodNotFound,
-                $"Member '{@params.MemberName ?? $"at line {@params.Line}"}' not found.");
+                $"Member '{location}' not found.");
+        }
 
         SyntaxNode newMember;
         string beforeSnippet;
@@ -110,7 +124,17 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
             null, 0, 0);
     }
 
-    private static MemberDeclarationSyntax? FindMember(SyntaxNode root, string? memberName, int? line)
+    /// <summary>
+    /// Finds a convertible member. When <paramref name="column"/> is omitted,
+    /// keeps today's first-match (memberName and/or line). When set, picks
+    /// the member whose identifier or declaration span covers that 1-based
+    /// column.
+    /// </summary>
+    internal static MemberDeclarationSyntax? FindMember(
+        SyntaxNode root,
+        string? memberName,
+        int? line,
+        int? column)
     {
         var members = root.DescendantNodes().OfType<MemberDeclarationSyntax>()
             .Where(m => m is MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
@@ -127,7 +151,54 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
                 m.GetLocation().GetLineSpan().StartLinePosition.Line + 1 == line.Value);
         }
 
-        return members.FirstOrDefault();
+        if (!column.HasValue)
+            return members.FirstOrDefault();
+
+        var atColumn = members
+            .Where(m => MemberCoversColumn(m, line ?? StartLine(m), column.Value))
+            .OrderBy(m => IdentifierCoversColumn(m, line ?? StartLine(m), column.Value) ? 0 : 1)
+            .ThenBy(m => m.Span.Length)
+            .ToList();
+        return atColumn.FirstOrDefault();
+    }
+
+    private static int StartLine(MemberDeclarationSyntax member) =>
+        member.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+    private static bool MemberCoversColumn(MemberDeclarationSyntax member, int line, int column) =>
+        IdentifierCoversColumn(member, line, column) ||
+        SpanCoversColumn(member.GetLocation().GetLineSpan(), line, column);
+
+    private static bool IdentifierCoversColumn(MemberDeclarationSyntax member, int line, int column)
+    {
+        var token = GetIdentifierToken(member);
+        return token != default && SpanCoversColumn(token.GetLocation().GetLineSpan(), line, column);
+    }
+
+    private static SyntaxToken GetIdentifierToken(MemberDeclarationSyntax member) => member switch
+    {
+        MethodDeclarationSyntax method => method.Identifier,
+        PropertyDeclarationSyntax property => property.Identifier,
+        IndexerDeclarationSyntax indexer => indexer.ThisKeyword,
+        OperatorDeclarationSyntax op => op.OperatorToken,
+        ConversionOperatorDeclarationSyntax conversion => conversion.Type.GetFirstToken(),
+        _ => default
+    };
+
+    private static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == startLine && column < startCol)
+            return false;
+        if (line == endLine && column > endCol)
+            return false;
+        return true;
     }
 
     private static string? GetMemberName(MemberDeclarationSyntax member) => member switch

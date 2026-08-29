@@ -32,7 +32,8 @@ public sealed class ConvertExpressionBodyTool : IToolHandler
     public string Name => "convert_expression_body";
 
     /// <inheritdoc />
-    public string Description => "Convert a C# member between expression body (=>) and block body forms.";
+    public string Description =>
+        "Convert a C# member between expression body (=>) and block body forms. Direction is ToExpressionBody or ToBlockBody. column (optional) picks the member whose identifier or declaration span covers that column on the given line. Omitted keeps today's first-match on the line. Preview describes the rewrite and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -66,6 +67,11 @@ public sealed class ConvertExpressionBodyTool : IToolHandler
                 type = "integer",
                 description = "Line number for disambiguation if multiple members have the same name (1-based)",
                 minimum = 1
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set, selects the member whose identifier or declaration span covers that column on the given line."
             },
             preview = new
             {
@@ -104,6 +110,7 @@ public sealed class ConvertExpressionBodyTool : IToolHandler
                 Direction = args.Direction,
                 MemberName = args.MemberName,
                 Line = args.Line,
+                Column = args.Column,
                 Preview = args.Preview ?? false
             };
 
@@ -136,6 +143,7 @@ public sealed class ConvertExpressionBodyTool : IToolHandler
         public string Direction { get; init; } = "";
         public string? MemberName { get; init; }
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public bool? Preview { get; init; }
     }
 }
