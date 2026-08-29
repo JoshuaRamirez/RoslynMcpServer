@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -14,7 +15,9 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
 /// Generates interface member implementations for a type.
-/// Honors <c>replaceExisting</c> to include already-implemented interface
+/// Honors optional <c>line</c> to disambiguate same-named types in one
+/// file (identifier preferred, then smallest containing type). Honors
+/// <c>replaceExisting</c> to include already-implemented interface
 /// members, remove those declarations (including across partials) by
 /// signature, and insert a standard generated stub. Property/event accessors
 /// are never emitted as ordinary methods. Extra modifiers on the old
@@ -23,6 +26,14 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 public sealed class ImplementInterfaceOperation : RefactoringOperationBase<ImplementInterfaceParams>
 {
     /// <summary>
+    /// Marks the type declaration selected before
+    /// <see cref="RemoveExistingImplementationsAcrossPartialsAsync"/> so the
+    /// same node can be recovered after a same-file earlier partial shrinks
+    /// and shifts both <c>SpanStart</c> and physical line.
+    /// </summary>
+    private static readonly SyntaxAnnotation TargetTypeAnnotation = new("implement-interface-target-type");
+
+    /// <summary>
     /// Creates a new implement interface operation.
     /// </summary>
     public ImplementInterfaceOperation(WorkspaceContext context) : base(context)
@@ -30,7 +41,13 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(ImplementInterfaceParams @params)
+    protected override void ValidateParams(ImplementInterfaceParams @params) => Validate(@params);
+
+    /// <summary>
+    /// Validates implement-interface parameters. Internal so tests can
+    /// exercise input rules without loading a workspace.
+    /// </summary>
+    internal static void Validate(ImplementInterfaceParams @params)
     {
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
@@ -46,6 +63,9 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
 
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+
+        if (@params.Line.HasValue && @params.Line.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -66,10 +86,8 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         }
 
-        // Find the type declaration
-        var typeDeclaration = root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault(t => t.Identifier.Text == @params.TypeName);
+        // Find the type declaration (optional line disambiguates same-named types)
+        var typeDeclaration = FindTypeDeclaration(root, @params.TypeName, @params.Line);
 
         if (typeDeclaration == null)
         {
@@ -154,6 +172,16 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         var solution = document.Project.Solution;
         if (replacements.Count > 0)
         {
+            // Annotate before the rewrite. Removing a member from an
+            // earlier same-file partial shifts both SpanStart and the
+            // physical line of a later selected partial — do not re-find
+            // with those stale values.
+            root = root.ReplaceNode(
+                typeDeclaration,
+                typeDeclaration.WithAdditionalAnnotations(TargetTypeAnnotation));
+            document = document.WithSyntaxRoot(root);
+            solution = document.Project.Solution;
+
             solution = await RemoveExistingImplementationsAcrossPartialsAsync(
                 solution, typeSymbol, replacements.Values, cancellationToken);
             document = solution.GetDocument(document.Id)
@@ -162,7 +190,9 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                     $"Could not locate the document for type '{@params.TypeName}'.");
             root = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
-            typeDeclaration = FindTypeDeclaration(root, @params.TypeName, typeDeclaration.SpanStart)
+            typeDeclaration = root.GetAnnotatedNodes(TargetTypeAnnotation)
+                .OfType<TypeDeclarationSyntax>()
+                .FirstOrDefault()
                 ?? throw new RefactoringException(
                     ErrorCodes.TypeNotFound,
                     $"Type '{@params.TypeName}' not found in file.");
@@ -713,10 +743,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
 
         foreach (var tree in trees)
         {
-            var document = solution.GetDocument(tree)
-                ?? throw new RefactoringException(
-                    ErrorCodes.DocumentNotEditable,
-                    $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
+            var document = GetDocumentForTree(solution, tree, typeSymbol.Name);
             var treeRoot = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
@@ -727,9 +754,16 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             var eventFieldRewrites = new Dictionary<EventFieldDeclarationSyntax, EventFieldDeclarationSyntax>();
             foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
             {
-                if (reference.SyntaxTree != tree)
+                if (!SameSyntaxTree(reference.SyntaxTree, tree))
                     continue;
-                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax part)
+                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax originalPart)
+                    continue;
+                // The solution root may already carry a target-type
+                // annotation (new tree). Rematch by span — annotation does
+                // not change SpanStart — so RemoveNodes sees nodes from
+                // this root and keeps the annotation on the selected type.
+                var part = RematchTypeDeclaration(treeRoot, originalPart);
+                if (part == null)
                     continue;
 
                 HashSet<(int Start, int End, SyntaxKind Kind)>? memberKeys = null;
@@ -801,6 +835,37 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         return solution;
     }
 
+    private static Document GetDocumentForTree(Solution solution, SyntaxTree tree, string typeName)
+    {
+        var document = solution.GetDocument(tree);
+        if (document != null)
+            return document;
+
+        if (!string.IsNullOrEmpty(tree.FilePath))
+        {
+            foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
+            {
+                document = solution.GetDocument(id);
+                if (document != null)
+                    return document;
+            }
+        }
+
+        throw new RefactoringException(
+            ErrorCodes.DocumentNotEditable,
+            $"Could not locate a declaring document for type '{typeName}'.");
+    }
+
+    private static bool SameSyntaxTree(SyntaxTree left, SyntaxTree right) =>
+        left == right
+        || (!string.IsNullOrEmpty(left.FilePath)
+            && string.Equals(left.FilePath, right.FilePath, StringComparison.OrdinalIgnoreCase));
+
+    private static TypeDeclarationSyntax? RematchTypeDeclaration(SyntaxNode root, TypeDeclarationSyntax original) =>
+        root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
+
     private static void AddKeyed<T>(
         Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,
         SyntaxTree tree,
@@ -855,12 +920,77 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             : null;
     }
 
-    private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName, int preferredSpanStart)
+    /// <summary>
+    /// Finds a type by <paramref name="typeName"/>. Omitted <paramref name="line"/>
+    /// keeps today's <c>FirstOrDefault</c> pick, including when several
+    /// same-named types exist (nested vs outer, or two namespaces). When set,
+    /// picks the type whose identifier or declaration span covers that 1-based
+    /// line (same exclusive-end coverage as
+    /// <c>GenerateOverridesOperation.SpanCoversLine</c>). Prefer the identifier
+    /// hit, then the smallest containing type. Nested types participate
+    /// (<c>DescendantNodes</c>). Do not require the declaration to start on
+    /// <paramref name="line"/> — a split declaration may put the identifier
+    /// on a continuation line. If nothing covers this line, keep today's
+    /// first-match rather than inventing a not-found. After
+    /// <see cref="RemoveExistingImplementationsAcrossPartialsAsync"/>, recover
+    /// the selected type from <see cref="TargetTypeAnnotation"/> — do not
+    /// reuse a pre-rewrite SpanStart or line.
+    /// </summary>
+    internal static TypeDeclarationSyntax? FindTypeDeclaration(
+        SyntaxNode root,
+        string typeName,
+        int? line)
     {
-        var matches = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+        var candidates = root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
             .Where(t => t.Identifier.Text == typeName)
             .ToList();
-        return matches.FirstOrDefault(t => t.SpanStart == preferredSpanStart) ?? matches.FirstOrDefault();
+
+        if (candidates.Count == 0)
+            return null;
+
+        if (!line.HasValue)
+            return candidates.FirstOrDefault();
+
+        // Do not require the declaration to start on `line` — a split
+        // type's identifier may live on a continuation line whose
+        // declaration span still covers that line. Prefer the identifier
+        // hit, then the smallest containing type (nested over outer).
+        // Do not silently pick the first when a covering node exists
+        // elsewhere — scan every candidate. If nothing covers this line,
+        // keep today's first-match rather than inventing a not-found.
+        return candidates
+            .Where(t => TypeCoversLine(t, line.Value))
+            .OrderBy(t => IdentifierCoversLine(t, line.Value) ? 0 : 1)
+            .ThenBy(t => t.Span.Length)
+            .FirstOrDefault()
+            ?? candidates.FirstOrDefault();
+    }
+
+    private static bool TypeCoversLine(TypeDeclarationSyntax type, int line) =>
+        IdentifierCoversLine(type, line) ||
+        SpanCoversLine(type.GetLocation().GetLineSpan(), line);
+
+    private static bool IdentifierCoversLine(TypeDeclarationSyntax type, int line) =>
+        SpanCoversLine(type.Identifier.GetLocation().GetLineSpan(), line);
+
+    /// <summary>
+    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so a span that ends at the start of a line does not
+    /// cover that line. Treating the end as inclusive would let the first
+    /// line of an adjacent type also match the previous declaration. Same
+    /// exclusive-end idea as <c>GenerateOverridesOperation.SpanCoversLine</c>.
+    /// </summary>
+    internal static bool SpanCoversLine(FileLinePositionSpan span, int line)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == endLine && span.EndLinePosition.Character == 0)
+            return false;
+        return true;
     }
 
     /// <summary>

@@ -32,7 +32,7 @@ public sealed class ImplementInterfaceTool : IToolHandler
     public string Name => "implement_interface";
 
     /// <inheritdoc />
-    public string Description => "Generate interface member implementations for a type. throwNotImplemented (default true) throws NotImplementedException in stub bodies; replaceExisting (default false) replaces already-implemented interface members instead of failing; preview returns computed changes without applying.";
+    public string Description => "Generate interface member implementations for a type. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. throwNotImplemented (default true) throws NotImplementedException in stub bodies; replaceExisting (default false) replaces already-implemented interface members instead of failing; preview returns computed changes without applying.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,6 +55,12 @@ public sealed class ImplementInterfaceTool : IToolHandler
             {
                 type = "string",
                 description = "Name of the type to implement interface on"
+            },
+            line = new
+            {
+                type = "integer",
+                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                minimum = 1
             },
             interfaceName = new
             {
@@ -120,6 +126,7 @@ public sealed class ImplementInterfaceTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
+                Line = args.Line,
                 InterfaceName = args.InterfaceName,
                 ExplicitImplementation = args.ExplicitImplementation ?? false,
                 Members = args.Members,
@@ -155,6 +162,7 @@ public sealed class ImplementInterfaceTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
+        public int? Line { get; init; }
         public string InterfaceName { get; init; } = "";
         public bool? ExplicitImplementation { get; init; }
         public List<string>? Members { get; init; }

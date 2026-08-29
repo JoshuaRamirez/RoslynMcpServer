@@ -320,6 +320,37 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_ImplementInterface_LineIsOptional()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("implement-interface")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.Contains("--type-name", requiredSection);
+        Assert.Contains("--interface-name", requiredSection);
+        Assert.DoesNotContain("--line", requiredSection);
+        Assert.DoesNotContain("--replace-existing", requiredSection);
+        Assert.DoesNotContain("--throw-not-implemented", requiredSection);
+        Assert.DoesNotContain("--preview", requiredSection);
+
+        Assert.Contains("--line", optionalSection);
+        Assert.Contains("--replace-existing", optionalSection);
+        Assert.Contains("--throw-not-implemented", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+        Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("FirstOrDefault", tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void GenerateToolHelp_GenerateMethodStub_ThrowNotImplementedIsOptional()
     {
         var registry = ToolRegistry.BuildDefault();

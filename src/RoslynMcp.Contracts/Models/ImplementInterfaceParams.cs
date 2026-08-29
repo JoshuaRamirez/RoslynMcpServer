@@ -16,6 +16,15 @@ public sealed class ImplementInterfaceParams
     public required string TypeName { get; init; }
 
     /// <summary>
+    /// 1-based line number for disambiguation when several types share
+    /// <see cref="TypeName"/>. When set, selects the type whose identifier
+    /// or declaration span covers that line (identifier preferred, then
+    /// smallest containing type). Omitted keeps today's typeName
+    /// <c>FirstOrDefault</c> pick.
+    /// </summary>
+    public int? Line { get; init; }
+
+    /// <summary>
     /// Name of the interface to implement (simple or fully qualified).
     /// </summary>
     public required string InterfaceName { get; init; }
