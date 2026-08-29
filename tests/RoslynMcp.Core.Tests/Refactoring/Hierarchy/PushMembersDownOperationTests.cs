@@ -1699,6 +1699,408 @@ public class PushMembersDownOperationTests
 
     #endregion
 
+    #region CS0507 methods / properties / events
+
+    [Fact]
+    public void ReduceOverrideAccessibility_CrossAssembly_ProtectedInternalPropertySetter_BecomesProtected()
+    {
+        var (propertySymbol, _, otherAssemblyType, propertySyntax) = CompilePublicPropertyWithProtectedInternalSetter();
+
+        var reduced = PushMembersDownOperation.ReduceOverrideAccessibility(
+            propertySyntax, propertySymbol, otherAssemblyType);
+
+        Assert.Contains(reduced.Modifiers, t => t.IsKind(SyntaxKind.PublicKeyword));
+        Assert.DoesNotContain(reduced.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        var setter = Assert.Single(reduced.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.Contains(setter.Modifiers, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.DoesNotContain(setter.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_SameAssembly_KeepsProtectedInternalMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                protected internal virtual void Speak() { }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Speak"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("protected internal override void Speak()", GetTypeSection(updated, "Dog"));
+        Assert.DoesNotContain("protected override void Speak()", GetTypeSection(updated, "Dog"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_SameAssembly_KeepsProtectedInternalProperty()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                protected internal int Width { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Width"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var dog = GetTypeSection(updated, "Dog");
+        Assert.Contains("protected internal override int Width", dog);
+        Assert.DoesNotContain("protected override int Width", dog);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_SameAssembly_KeepsProtectedInternalEvent()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                protected internal virtual event System.EventHandler Changed;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Changed"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var dog = GetTypeSection(updated, "Dog");
+        Assert.Contains("protected internal override event", dog);
+        Assert.DoesNotContain("protected override event", dog);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_CrossAssembly_ProtectedInternalMethod_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                protected internal virtual void Speak() { }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.LibraryPath,
+            TypeName = "Animal",
+            Members = ["Speak"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        Assert.Contains("protected override void Speak()", GetTypeSection(derived, "Dog"));
+        Assert.DoesNotContain("protected internal override", derived);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_CrossAssembly_ProtectedInternalProperty_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                protected internal int Width { get; set; }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.LibraryPath,
+            TypeName = "Animal",
+            Members = ["Width"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        var dog = GetTypeSection(derived, "Dog");
+        Assert.Contains("protected override int Width", dog);
+        Assert.DoesNotContain("protected internal override", derived);
+        var property = FindProperty(derived, "Dog", "Width");
+        Assert.NotNull(property);
+        Assert.Contains(property!.Modifiers, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.DoesNotContain(property.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        Assert.Contains(property.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_CrossAssembly_ProtectedInternalEvent_EmitsProtected()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                protected internal virtual event System.EventHandler Changed;
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.LibraryPath,
+            TypeName = "Animal",
+            Members = ["Changed"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        Assert.Contains("protected override event", GetTypeSection(derived, "Dog"));
+        Assert.DoesNotContain("protected internal override", derived);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_SameAssembly_ProtectedInternalProperty_ProtectedSetter_KeepsBoth()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                protected internal int Width { get; protected set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Width"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var dog = GetTypeSection(updated, "Dog");
+        Assert.Contains("protected internal override int Width", dog);
+        Assert.Contains("protected set", dog);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_CrossAssembly_ProtectedInternalProperty_ProtectedSetter_OmitsRedundantAccessor()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                protected internal int Width { get; protected set; }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.LibraryPath,
+            TypeName = "Animal",
+            Members = ["Width"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        var dog = GetTypeSection(derived, "Dog");
+        Assert.Contains("protected override int Width", dog);
+        Assert.DoesNotContain("protected internal override", derived);
+        Assert.DoesNotContain("protected set", derived);
+        var property = FindProperty(derived, "Dog", "Width");
+        Assert.NotNull(property);
+        Assert.Contains(property!.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.GetAccessorDeclaration));
+        var setter = Assert.Single(property.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.Empty(setter.Modifiers);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_CrossAssembly_ProtectedInternalPropertySetter_EmitsProtectedSet()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                public int Width
+                {
+                    get => 0;
+                    protected internal set { }
+                }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.LibraryPath,
+            TypeName = "Animal",
+            Members = ["Width"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var derived = NormalizeNewlines(await File.ReadAllTextAsync(workspace.DerivedPath));
+        var property = FindProperty(derived, "Dog", "Width");
+        Assert.NotNull(property);
+        Assert.Contains(property!.Modifiers, t => t.IsKind(SyntaxKind.PublicKeyword));
+        Assert.DoesNotContain(property.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        var setter = Assert.Single(property.AccessorList!.Accessors, a => a.IsKind(SyntaxKind.SetAccessorDeclaration));
+        Assert.Contains(setter.Modifiers, t => t.IsKind(SyntaxKind.ProtectedKeyword));
+        Assert.DoesNotContain(setter.Modifiers, t => t.IsKind(SyntaxKind.InternalKeyword));
+        Assert.DoesNotContain("protected internal set", derived);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_CrossAssembly_ProtectedInternalMethod_Preview_DoesNotWriteFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                protected internal virtual void Speak() { }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var beforeLib = await File.ReadAllTextAsync(workspace.LibraryPath);
+        var beforeDerived = await File.ReadAllTextAsync(workspace.DerivedPath);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.LibraryPath,
+            TypeName = "Animal",
+            Members = ["Speak"],
+            LeaveAbstract = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c =>
+            c.AfterSnippet != null &&
+            c.AfterSnippet.Contains("protected override void Speak()") &&
+            !c.AfterSnippet.Contains("protected internal override"));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description != null && c.Description.Contains("Speak"));
+        Assert.Equal(beforeLib, await File.ReadAllTextAsync(workspace.LibraryPath));
+        Assert.Equal(beforeDerived, await File.ReadAllTextAsync(workspace.DerivedPath));
+    }
+
+    #endregion
+
     #region P0 Rejects
 
     [SkippableFact]
@@ -2484,6 +2886,39 @@ public class PushMembersDownOperationTests
         Assert.NotNull(dog);
         var syntax = libTree.GetCompilationUnitRoot().DescendantNodes().OfType<IndexerDeclarationSyntax>().Single();
         return (indexer, animal, dog!, syntax);
+    }
+
+    private static (IPropertySymbol Property, INamedTypeSymbol SameAssemblyType, INamedTypeSymbol OtherAssemblyType, PropertyDeclarationSyntax Syntax)
+        CompilePublicPropertyWithProtectedInternalSetter()
+    {
+        var libTree = CSharpSyntaxTree.ParseText("""
+            public class Animal
+            {
+                public int Width { get => 0; protected internal set { } }
+            }
+            """);
+        var lib = CSharpCompilation.Create(
+            "PushDownLibPropSetter",
+            new[] { libTree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) },
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var app = CSharpCompilation.Create(
+            "PushDownAppPropSetter",
+            new[] { CSharpSyntaxTree.ParseText("public class Dog : Animal { }") },
+            new MetadataReference[]
+            {
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                lib.ToMetadataReference()
+            },
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var animal = lib.GetTypeByMetadataName("Animal");
+        Assert.NotNull(animal);
+        var property = animal!.GetMembers().OfType<IPropertySymbol>().Single(p => p.Name == "Width");
+        var dog = app.GetTypeByMetadataName("Dog");
+        Assert.NotNull(dog);
+        var syntax = libTree.GetCompilationUnitRoot().DescendantNodes().OfType<PropertyDeclarationSyntax>().Single();
+        return (property, animal, dog!, syntax);
     }
 
     private sealed class TempWorkspace : IAsyncDisposable
