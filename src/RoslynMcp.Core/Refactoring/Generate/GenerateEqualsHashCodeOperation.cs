@@ -376,7 +376,15 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 }
 
                 if (implementIEquatable && semanticModel != null)
-                    updated = StripIEquatableInterface(part, updated, typeSymbol, semanticModel, cancellationToken);
+                {
+                    // Resolve from this document's model. After the
+                    // per-execution annotation rewrite, typeSymbol is from
+                    // the pre-annotation compilation and
+                    // SymbolEqualityComparer will not match IEquatable<T>.
+                    var currentType = semanticModel.GetDeclaredSymbol(part, cancellationToken) as INamedTypeSymbol
+                        ?? typeSymbol;
+                    updated = StripIEquatableInterface(part, updated, currentType, semanticModel, cancellationToken);
+                }
 
                 if (!ReferenceEquals(updated, part))
                     replacements[part] = updated;
