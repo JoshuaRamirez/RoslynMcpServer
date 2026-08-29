@@ -650,9 +650,9 @@ public class ConvertToAsyncOperationTests
         Assert.NotNull(first);
         Assert.NotNull(second);
         Assert.NotNull(omitted);
-        Assert.Equal(0, first.ParameterList.Parameters.Count);
-        Assert.Equal(1, second.ParameterList.Parameters.Count);
-        Assert.Equal(0, omitted.ParameterList.Parameters.Count);
+        Assert.Empty(first.ParameterList.Parameters);
+        Assert.Single(second.ParameterList.Parameters);
+        Assert.Empty(omitted.ParameterList.Parameters);
     }
 
     [Fact]
@@ -683,7 +683,7 @@ public class ConvertToAsyncOperationTests
 
         Assert.Null(byStartLineOnly);
         Assert.NotNull(byColumn);
-        Assert.Equal(0, byColumn.ParameterList.Parameters.Count);
+        Assert.Empty(byColumn.ParameterList.Parameters);
     }
 
     [Fact]
