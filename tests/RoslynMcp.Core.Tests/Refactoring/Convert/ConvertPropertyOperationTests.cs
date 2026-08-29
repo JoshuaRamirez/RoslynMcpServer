@@ -448,10 +448,10 @@ public class ConvertPropertyOperationTests
             class Outer
             {
                 public int Foo { get; set; }
-                class Inner
-                {
-                    public int Foo { get; set; }
-                }
+            }
+            class Other
+            {
+                public int Foo { get; set; }
             }
             """;
 
