@@ -136,18 +136,19 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
                     "Statement already has braces.");
             }
 
+            if (WouldHideExternallyReferencedLabel(target.Value.Body))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CompilationError,
+                    "Wrapping this statement would hide a label from an external goto.");
+            }
+
             onlyThese = [target.Value.Body];
             previewOwner = target.Value.Owner;
         }
         else if (scope == ScopeType)
         {
             typeScope = FindTypeDeclaration(root, @params.TypeName!);
-            if (typeScope == null)
-            {
-                throw new RefactoringException(
-                    ErrorCodes.TypeNotFound,
-                    $"Type '{@params.TypeName}' not found.");
-            }
         }
 
         var rewriter = new BraceRewriter(onlyThese, typeScope, wrapElseIf: onlyThese != null, previewOwner);
@@ -257,41 +258,134 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             "scope must be statement, file, or type.");
     }
 
-    internal static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName)
+    internal static TypeDeclarationSyntax FindTypeDeclaration(SyntaxNode root, string typeName)
     {
         var matches = root.DescendantNodes()
             .OfType<TypeDeclarationSyntax>()
             .Where(type => TypeNameMatches(type, typeName))
             .ToList();
 
-        return matches.Count == 1
-            ? matches[0]
-            : matches.FirstOrDefault(type => type.Identifier.Text == typeName)
-              ?? matches.FirstOrDefault();
+        if (matches.Count == 0)
+        {
+            throw new RefactoringException(
+                ErrorCodes.TypeNotFound,
+                $"Type '{typeName}' not found.");
+        }
+
+        if (matches.Count > 1)
+        {
+            throw new RefactoringException(
+                ErrorCodes.SymbolAmbiguous,
+                $"Multiple types named '{typeName}' found. Provide a namespace-qualified typeName to disambiguate.");
+        }
+
+        return matches[0];
     }
 
-    private static bool TypeNameMatches(TypeDeclarationSyntax type, string typeName)
+    internal static bool TypeNameMatches(TypeDeclarationSyntax type, string typeName)
     {
+        var qualified = GetQualifiedTypeName(type);
+        if (qualified.Equals(typeName, StringComparison.Ordinal))
+            return true;
+
         if (type.Identifier.Text.Equals(typeName, StringComparison.Ordinal))
             return true;
 
-        if (!typeName.Contains('.', StringComparison.Ordinal))
-            return false;
+        return qualified.EndsWith("." + typeName, StringComparison.Ordinal);
+    }
 
-        var parts = typeName.Split('.');
-        if (type.Identifier.Text != parts[^1])
-            return false;
-
-        var current = type.Parent as TypeDeclarationSyntax;
-        for (var i = parts.Length - 2; i >= 0; i--)
+    internal static string GetQualifiedTypeName(TypeDeclarationSyntax type)
+    {
+        var parts = new List<string>();
+        for (var current = (SyntaxNode)type; current != null; current = current.Parent)
         {
-            if (current == null || current.Identifier.Text != parts[i])
-                return false;
-            current = current.Parent as TypeDeclarationSyntax;
+            switch (current)
+            {
+                case TypeDeclarationSyntax declared:
+                    parts.Insert(0, declared.Identifier.Text);
+                    break;
+                case BaseNamespaceDeclarationSyntax ns:
+                    parts.InsertRange(0, ns.Name.ToString().Split('.'));
+                    break;
+            }
         }
 
-        return true;
+        return string.Join(".", parts);
     }
+
+    /// <summary>
+    /// True when wrapping <paramref name="body"/> in a new block would hide a
+    /// label that a <c>goto</c> outside that body currently resolves.
+    /// Labels already nested in an inner block stay hidden either way.
+    /// </summary>
+    internal static bool WouldHideExternallyReferencedLabel(StatementSyntax body)
+    {
+        var container = GetLabelContainer(body);
+        if (container == null)
+            return false;
+
+        foreach (var label in body.DescendantNodesAndSelf().OfType<LabeledStatementSyntax>())
+        {
+            if (IsLabelAlreadyNestedInInnerBlock(label, body))
+                continue;
+
+            var name = label.Identifier.ValueText;
+            foreach (var gotoStatement in container.DescendantNodes().OfType<GotoStatementSyntax>())
+            {
+                if (!gotoStatement.IsKind(SyntaxKind.GotoStatement))
+                    continue;
+
+                if (!string.Equals(GetGotoLabelName(gotoStatement), name, StringComparison.Ordinal))
+                    continue;
+
+                if (GetLabelContainer(gotoStatement) != container)
+                    continue;
+
+                if (body.Contains(gotoStatement))
+                    continue;
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsLabelAlreadyNestedInInnerBlock(LabeledStatementSyntax label, StatementSyntax body)
+    {
+        if (label == body)
+            return false;
+
+        foreach (var ancestor in label.Ancestors())
+        {
+            if (ancestor == body)
+                return false;
+
+            if (ancestor is BlockSyntax or SwitchSectionSyntax)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string? GetGotoLabelName(GotoStatementSyntax gotoStatement) =>
+        gotoStatement.Expression switch
+        {
+            IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+            { } expression => expression.ToString(),
+            _ => null
+        };
+
+    private static SyntaxNode? GetLabelContainer(SyntaxNode node) =>
+        node.AncestorsAndSelf().FirstOrDefault(ancestor => ancestor is
+            MethodDeclarationSyntax or
+            LocalFunctionStatementSyntax or
+            AnonymousFunctionExpressionSyntax or
+            AccessorDeclarationSyntax or
+            ConstructorDeclarationSyntax or
+            DestructorDeclarationSyntax or
+            OperatorDeclarationSyntax or
+            ConversionOperatorDeclarationSyntax);
 
     internal static ControlTarget? FindControlTarget(SyntaxNode root, int line, int? column)
     {
@@ -530,6 +624,9 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
         private bool ShouldWrap(StatementSyntax originalBody)
         {
             if (originalBody is BlockSyntax || originalBody.IsMissing)
+                return false;
+
+            if (WouldHideExternallyReferencedLabel(originalBody))
                 return false;
 
             if (_onlyThese != null)

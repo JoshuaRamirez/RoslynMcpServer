@@ -122,6 +122,56 @@ public class AddBracesOperationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void FindTypeDeclaration_SimpleName_Ambiguous_Throws()
+    {
+        var root = CSharpSyntaxTree.ParseText("""
+            namespace A { class C {} }
+            namespace B { class C {} }
+            """).GetRoot();
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddBracesOperation.FindTypeDeclaration(root, "C"));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_NamespaceQualified_SelectsA()
+    {
+        var root = CSharpSyntaxTree.ParseText("""
+            namespace A { class C {} }
+            namespace B { class C {} }
+            """).GetRoot();
+
+        var type = AddBracesOperation.FindTypeDeclaration(root, "A.C");
+
+        Assert.Equal("C", type.Identifier.Text);
+        Assert.Equal("A.C", AddBracesOperation.GetQualifiedTypeName(type));
+    }
+
+    [Fact]
+    public void WouldHideExternallyReferencedLabel_GotoRetry_IsTrue()
+    {
+        var method = CSharpSyntaxTree.ParseText("""
+            class Loop
+            {
+                void Run(bool condition)
+                {
+                    goto retry;
+                    if (condition)
+                        retry: Work();
+                }
+                static void Work() {}
+            }
+            """).GetRoot()
+            .DescendantNodes()
+            .OfType<IfStatementSyntax>()
+            .Single();
+
+        Assert.True(AddBracesOperation.WouldHideExternallyReferencedLabel(method.Statement));
+    }
+
     #endregion
 
     #region P0 Happy Path
@@ -629,6 +679,195 @@ public class AddBracesOperationTests
 
         Assert.Equal(ErrorCodes.TypeNotFound, ex.ErrorCode);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task AddBraces_GotoRetry_StatementScope_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Loop
+            {
+                public void Run(bool condition)
+                {
+                    goto retry;
+                    if (condition)
+                        retry: Work();
+                }
+
+                private static void Work() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddBracesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddBracesParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(source, "if (condition)")
+            }));
+
+        Assert.Equal(ErrorCodes.CompilationError, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task AddBraces_GotoRetry_FileScope_SkipsLabeledBody()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Loop
+            {
+                public void Run(bool condition, bool other)
+                {
+                    goto retry;
+                    if (condition)
+                        retry: Work();
+                    if (other)
+                        Safe();
+                }
+
+                private static void Work() { }
+                private static void Safe() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddBracesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddBracesParams
+        {
+            SourceFile = workspace.SourcePath,
+            Scope = "file"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.StatementsModified);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var root = CSharpSyntaxTree.ParseText(updated).GetRoot();
+        var labeledIf = root.DescendantNodes().OfType<IfStatementSyntax>()
+            .Single(statement => statement.Condition.ToString() == "condition");
+        var safeIf = root.DescendantNodes().OfType<IfStatementSyntax>()
+            .Single(statement => statement.Condition.ToString() == "other");
+        Assert.IsNotType<BlockSyntax>(labeledIf.Statement);
+        Assert.IsType<LabeledStatementSyntax>(labeledIf.Statement);
+        Assert.IsType<BlockSyntax>(safeIf.Statement);
+        Assert.Contains("retry: Work();", updated);
+        Assert.DoesNotContain("retry: Work();", safeIf.ToString());
+    }
+
+    [SkippableFact]
+    public async Task AddBraces_TypeScope_AmbiguousSimpleName_Throws()
+    {
+        const string source = """
+            namespace A
+            {
+                public class C
+                {
+                    public void Run(bool flag)
+                    {
+                        if (flag)
+                            Work();
+                    }
+
+                    private static void Work() { }
+                }
+            }
+
+            namespace B
+            {
+                public class C
+                {
+                    public void Run(bool flag)
+                    {
+                        if (flag)
+                            Work();
+                    }
+
+                    private static void Work() { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddBracesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddBracesParams
+            {
+                SourceFile = workspace.SourcePath,
+                Scope = "type",
+                TypeName = "C"
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task AddBraces_TypeScope_NamespaceQualified_EditsOnlyThatType()
+    {
+        const string source = """
+            namespace A
+            {
+                public class C
+                {
+                    public void Run(bool flag)
+                    {
+                        if (flag)
+                            WorkA();
+                    }
+
+                    private static void WorkA() { }
+                }
+            }
+
+            namespace B
+            {
+                public class C
+                {
+                    public void Run(bool flag)
+                    {
+                        if (flag)
+                            WorkB();
+                    }
+
+                    private static void WorkB() { }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddBracesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddBracesParams
+        {
+            SourceFile = workspace.SourcePath,
+            Scope = "type",
+            TypeName = "A.C"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.StatementsModified);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var root = CSharpSyntaxTree.ParseText(updated).GetRoot();
+        var typeA = root.DescendantNodes().OfType<ClassDeclarationSyntax>()
+            .Single(type => type.Identifier.Text == "C" &&
+                type.Ancestors().OfType<BaseNamespaceDeclarationSyntax>()
+                    .Any(ns => ns.Name.ToString() == "A"));
+        var typeB = root.DescendantNodes().OfType<ClassDeclarationSyntax>()
+            .Single(type => type.Identifier.Text == "C" &&
+                type.Ancestors().OfType<BaseNamespaceDeclarationSyntax>()
+                    .Any(ns => ns.Name.ToString() == "B"));
+        Assert.IsType<BlockSyntax>(typeA.DescendantNodes().OfType<IfStatementSyntax>().Single().Statement);
+        Assert.IsNotType<BlockSyntax>(typeB.DescendantNodes().OfType<IfStatementSyntax>().Single().Statement);
+        await AssertCompilesAsync(workspace);
     }
 
     [SkippableFact]
