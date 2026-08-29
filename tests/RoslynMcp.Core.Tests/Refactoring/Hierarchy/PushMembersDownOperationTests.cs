@@ -1932,7 +1932,7 @@ public class PushMembersDownOperationTests
     }
 
     [SkippableFact]
-    public async Task PushMembersDown_LeaveAbstract_CrossAssembly_ProtectedInternalSetter_EmitsProtectedSet()
+    public async Task PushMembersDown_LeaveAbstract_CrossAssembly_ProtectedInternalPropertySetter_EmitsProtectedSet()
     {
         await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
             """
