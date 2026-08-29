@@ -299,6 +299,68 @@ public class ConvertExpressionBodyOperationTests
     }
 
     [SkippableFact]
+    public async Task ConvertExpressionBody_ColumnOnContinuationLine_ConvertsThatMember()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Split
+            {
+                public int
+                Foo() { return 1; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertExpressionBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertExpressionBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "Foo()"),
+            Column = ColumnOf(source, "Foo()"),
+            Direction = "ToExpressionBody"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("=>", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("return 1;", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task ConvertExpressionBody_AdjacentMembers_ColumnOnSecondDoesNotRewriteFirst()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Adjacent
+            {
+                public int A()=>1;public int Longer()=>2;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertExpressionBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertExpressionBodyParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "public int A()"),
+            Column = ColumnOf(source, "public int Longer()"),
+            Direction = "ToBlockBody"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public int A()=>1;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public int Longer()=>2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return 2;", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
     public async Task ConvertExpressionBody_Column_ToBlockBody_SelectsSecondMemberOnSameLine()
     {
         await using var workspace = await TempWorkspace.CreateAsync(SameLineExpressionSource);
@@ -339,6 +401,57 @@ public class ConvertExpressionBodyOperationTests
         Assert.Equal("Foo", ((MethodDeclarationSyntax)first).Identifier.Text);
         Assert.Equal("Bar", ((MethodDeclarationSyntax)second).Identifier.Text);
         Assert.Equal("Foo", ((MethodDeclarationSyntax)omitted).Identifier.Text);
+    }
+
+    [Fact]
+    public void FindMember_ColumnOnContinuationLine_PicksMember()
+    {
+        const string source = """
+            class C
+            {
+                public int
+                Foo() { return 1; }
+            }
+            """;
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var startLine = FindLine(source, "public int");
+        var identifierLine = FindLine(source, "Foo()");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var byStartLineOnly = ConvertExpressionBodyOperation.FindMember(root, null, identifierLine, column: null);
+        var byColumn = ConvertExpressionBodyOperation.FindMember(
+            root, null, identifierLine, ColumnOf(source, "Foo()"));
+
+        Assert.Null(byStartLineOnly);
+        Assert.NotNull(byColumn);
+        Assert.Equal("Foo", ((MethodDeclarationSyntax)byColumn).Identifier.Text);
+    }
+
+    [Fact]
+    public void FindMember_AdjacentMembers_ExclusiveEndDoesNotStealNextMember()
+    {
+        const string source = """
+            class C
+            {
+                public int A()=>1;public int Longer()=>2;
+            }
+            """;
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var line = FindLine(source, "public int A()");
+        var secondStart = ColumnOf(source, "public int Longer()");
+        var secondId = ColumnOf(source, "Longer()");
+
+        var atSecondStart = ConvertExpressionBodyOperation.FindMember(root, null, line, secondStart);
+        var atSecondId = ConvertExpressionBodyOperation.FindMember(root, null, line, secondId);
+
+        Assert.NotNull(atSecondStart);
+        Assert.NotNull(atSecondId);
+        Assert.Equal("Longer", ((MethodDeclarationSyntax)atSecondStart).Identifier.Text);
+        Assert.Equal("Longer", ((MethodDeclarationSyntax)atSecondId).Identifier.Text);
     }
 
     #endregion
