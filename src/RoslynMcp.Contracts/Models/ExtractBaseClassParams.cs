@@ -41,7 +41,10 @@ public sealed class ExtractBaseClassParams
     public bool SeparateFile { get; init; }
 
     /// <summary>
-    /// Make base class abstract. Default: false.
+    /// When true, the new base class is abstract and extracted methods,
+    /// properties, events, and indexers become abstract on that base while
+    /// the derived type keeps override implementations. Fields still move
+    /// as concrete. Default: false (move, derived loses the member).
     /// </summary>
     public bool MakeAbstract { get; init; }
 

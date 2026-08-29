@@ -32,7 +32,7 @@ public sealed class ExtractBaseClassTool : IToolHandler
     public string Name => "extract_base_class";
 
     /// <inheritdoc />
-    public string Description => "Extract members to a new base class, including indexers as this[...] declarations. When separateFile is true and targetFile is omitted, the base class is written to {BaseClassName}.cs next to the source file.";
+    public string Description => "Extract members to a new base class, including indexers as this[...] declarations. When makeAbstract is true, extracted methods, properties, events, and indexers become abstract on the new base and the derived type keeps override implementations. When separateFile is true and targetFile is omitted, the base class is written to {BaseClassName}.cs next to the source file.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -81,7 +81,7 @@ public sealed class ExtractBaseClassTool : IToolHandler
             makeAbstract = new
             {
                 type = "boolean",
-                description = "Make base class abstract",
+                description = "When true, extracted methods, properties, events, and indexers become abstract on the new base and the derived type keeps override implementations. Fields still move as concrete. The new class is marked abstract.",
                 @default = false
             },
             preview = new
