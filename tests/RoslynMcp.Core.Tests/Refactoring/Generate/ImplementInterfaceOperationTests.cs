@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -307,10 +308,10 @@ public class ImplementInterfaceOperationTests
     [Fact]
     public void SpanCoversLine_TreatsEndAsExclusive()
     {
-        var span = new Microsoft.CodeAnalysis.Text.FileLinePositionSpan(
+        var span = new FileLinePositionSpan(
             "t.cs",
-            new Microsoft.CodeAnalysis.Text.LinePosition(0, 0),
-            new Microsoft.CodeAnalysis.Text.LinePosition(2, 0));
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
 
         Assert.True(ImplementInterfaceOperation.SpanCoversLine(span, 1));
         Assert.True(ImplementInterfaceOperation.SpanCoversLine(span, 2));
