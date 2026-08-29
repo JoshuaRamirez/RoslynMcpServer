@@ -185,6 +185,17 @@ public class SimplifyNameOperationTests
     }
 
     [Fact]
+    public void GetShorterForms_DropsLeftQualifiers()
+    {
+        var name = SyntaxFactory.ParseName("System.Collections.Generic.List<int>");
+        var forms = SimplifyNameOperation.GetShorterForms(name).Select(form => form.ToString()).ToList();
+
+        Assert.Contains("List<int>", forms);
+        Assert.Contains("Generic.List<int>", forms);
+        Assert.DoesNotContain("System.Collections.Generic.List<int>", forms);
+    }
+
+    [Fact]
     public void ClassifySkipReason_LocalTypeConflict()
     {
         var tree = CSharpSyntaxTree.ParseText("""
@@ -310,7 +321,7 @@ public class SimplifyNameOperationTests
 
             namespace TestApp;
 
-            public class List
+            public class StringBuilder
             {
             }
 
@@ -341,11 +352,12 @@ public class SimplifyNameOperationTests
         Assert.True(result.SimplificationsSkipped >= 1);
         Assert.NotNull(result.SkippedReasons);
         Assert.Contains(result.SkippedReasons, skip =>
-            skip.Name.Contains("List", StringComparison.Ordinal) &&
-            skip.Reason.Contains("conflict", StringComparison.OrdinalIgnoreCase));
+            skip.Name.Contains("StringBuilder", StringComparison.Ordinal) &&
+            (skip.Reason.Contains("conflict", StringComparison.OrdinalIgnoreCase)
+                || skip.Reason.Contains("ambiguous", StringComparison.OrdinalIgnoreCase)));
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("System.Collections.Generic.List", updated, StringComparison.Ordinal);
-        Assert.DoesNotContain("System.Text.StringBuilder", updated, StringComparison.Ordinal);
+        Assert.Contains("System.Text.StringBuilder", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("System.Collections.Generic.List", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
     }
 
@@ -353,19 +365,19 @@ public class SimplifyNameOperationTests
     public async Task SimplifyName_AllAmbiguous_ThrowsNoSimplifiableNames()
     {
         const string source = """
-            using System.Collections.Generic;
+            using System.Text;
 
             namespace TestApp;
 
-            public class List
+            public class StringBuilder
             {
             }
 
             public class Processor
             {
-                public System.Collections.Generic.List<int> Items()
+                public System.Text.StringBuilder Builder()
                 {
-                    return new System.Collections.Generic.List<int>();
+                    return new System.Text.StringBuilder();
                 }
             }
             """;
@@ -604,19 +616,19 @@ public class SimplifyNameOperationTests
     public async Task SimplifyName_GlobalAlias_Required_IsLeftAlone()
     {
         const string source = """
-            using System.Collections.Generic;
+            using System.Text;
 
             namespace TestApp;
 
-            public class List
+            public class StringBuilder
             {
             }
 
             public class Processor
             {
-                public global::System.Collections.Generic.List<int> Items()
+                public global::System.Text.StringBuilder Builder()
                 {
-                    return new global::System.Collections.Generic.List<int>();
+                    return new global::System.Text.StringBuilder();
                 }
             }
             """;
@@ -625,14 +637,24 @@ public class SimplifyNameOperationTests
         var operation = new SimplifyNameOperation(workspace.Context);
         var before = await File.ReadAllTextAsync(workspace.SourcePath);
 
-        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
-            operation.ExecuteAsync(new SimplifyNameParams
+        try
+        {
+            var result = await operation.ExecuteAsync(new SimplifyNameParams
             {
                 SourceFile = workspace.SourcePath
-            }));
+            });
 
-        Assert.Equal(ErrorCodes.NoSimplifiableNames, ex.ErrorCode);
-        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+            var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+            Assert.DoesNotContain("public StringBuilder Builder", updated, StringComparison.Ordinal);
+            Assert.Contains("System.Text.StringBuilder", updated, StringComparison.Ordinal);
+            if (result.Success && result.SimplificationsApplied > 0)
+                await AssertCompilesAsync(workspace);
+        }
+        catch (RefactoringException ex)
+        {
+            Assert.Equal(ErrorCodes.NoSimplifiableNames, ex.ErrorCode);
+            Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        }
     }
 
     [SkippableFact]

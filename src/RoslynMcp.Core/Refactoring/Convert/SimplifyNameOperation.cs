@@ -310,6 +310,165 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
         };
     }
 
+    /// <summary>
+    /// Shorter name forms for <paramref name="node"/>, shortest first.
+    /// Does not include the original text.
+    /// </summary>
+    internal static IReadOnlyList<ExpressionSyntax> GetShorterForms(SyntaxNode node)
+    {
+        var forms = new List<ExpressionSyntax>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        void Add(ExpressionSyntax form)
+        {
+            var text = form.ToString();
+            if (string.IsNullOrWhiteSpace(text) || !seen.Add(text))
+                return;
+            if (string.Equals(text, node.ToString(), StringComparison.Ordinal))
+                return;
+            forms.Add(form);
+        }
+
+        var parts = FlattenNameParts(node);
+        if (parts.Count >= 2)
+        {
+            for (var take = 1; take < parts.Count; take++)
+                Add(BuildName(parts.TakeLast(take).ToList(), node is MemberAccessExpressionSyntax));
+        }
+
+        if (node is AliasQualifiedNameSyntax alias)
+        {
+            Add(alias.Name);
+            foreach (var shorter in GetShorterForms(alias.Name))
+                Add(shorter);
+        }
+
+        return forms;
+    }
+
+    internal static List<SimpleNameSyntax> FlattenNameParts(SyntaxNode node)
+    {
+        var parts = new List<SimpleNameSyntax>();
+        WalkName(node, parts);
+        return parts;
+    }
+
+    private static void WalkName(SyntaxNode node, List<SimpleNameSyntax> parts)
+    {
+        switch (node)
+        {
+            case QualifiedNameSyntax qualified:
+                WalkName(qualified.Left, parts);
+                parts.Add(qualified.Right);
+                break;
+            case AliasQualifiedNameSyntax alias:
+                WalkName(alias.Name, parts);
+                break;
+            case MemberAccessExpressionSyntax access:
+                WalkName(access.Expression, parts);
+                parts.Add(access.Name);
+                break;
+            case SimpleNameSyntax simple:
+                parts.Add(simple);
+                break;
+        }
+    }
+
+    private static ExpressionSyntax BuildName(IReadOnlyList<SimpleNameSyntax> parts, bool memberAccess)
+    {
+        if (parts.Count == 0)
+            throw new ArgumentException("Name parts are required.", nameof(parts));
+
+        if (parts.Count == 1)
+            return parts[0].WithoutTrivia();
+
+        if (memberAccess)
+        {
+            ExpressionSyntax current = parts[0].WithoutTrivia();
+            for (var i = 1; i < parts.Count; i++)
+            {
+                current = SyntaxFactory.MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    current,
+                    parts[i].WithoutTrivia());
+            }
+
+            return current;
+        }
+
+        NameSyntax name = parts[0].WithoutTrivia();
+        for (var i = 1; i < parts.Count; i++)
+            name = SyntaxFactory.QualifiedName(name, parts[i].WithoutTrivia());
+
+        return name;
+    }
+
+    private static bool BindsToSameSymbol(
+        SemanticModel model,
+        SyntaxNode original,
+        ExpressionSyntax replacement,
+        ISymbol originalSymbol)
+    {
+        var position = original.SpanStart;
+        foreach (var option in new[]
+                 {
+                     SpeculativeBindingOption.BindAsTypeOrNamespace,
+                     SpeculativeBindingOption.BindAsExpression
+                 })
+        {
+            var spec = model.GetSpeculativeSymbolInfo(position, replacement, option);
+            if (spec.CandidateReason == CandidateReason.Ambiguous)
+                continue;
+
+            if (spec.Symbol != null
+                && SymbolEqualityComparer.Default.Equals(spec.Symbol, originalSymbol))
+            {
+                return true;
+            }
+
+            var typeInfo = model.GetSpeculativeTypeInfo(position, replacement, option);
+            if (typeInfo.Type != null
+                && SymbolEqualityComparer.Default.Equals(typeInfo.Type, originalSymbol))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool NameofMeaningPreserved(
+        SyntaxNode original,
+        ExpressionSyntax replacement,
+        SemanticModel model,
+        ISymbol originalSymbol)
+    {
+        if (!TryGetNameofInvocation(original, out var nameofInvocation))
+            return true;
+
+        var originalValue = model.GetConstantValue(nameofInvocation);
+        if (!originalValue.HasValue)
+            return BindsToSameSymbol(model, original, replacement, originalSymbol);
+
+        // nameof(A.B.C) and nameof(C) both yield "C". Predefined keywords
+        // (nameof(string)) also yield the type name ("String").
+        var expected = originalValue.Value as string;
+        var rightmost = replacement is PredefinedTypeSyntax predefined
+            ? predefined.Keyword.ValueText
+            : GetRightmostIdentifier(replacement);
+
+        if (string.Equals(expected, rightmost, StringComparison.Ordinal))
+            return true;
+
+        if (originalSymbol is INamedTypeSymbol named
+            && string.Equals(expected, named.Name, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
     private static async Task<SimplifyOutcome> TrySimplifyAsync(
         Document document,
         SyntaxNode root,
@@ -317,7 +476,26 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
         IReadOnlyList<SyntaxNode> candidates,
         CancellationToken cancellationToken)
     {
-        var annotated = AnnotateCandidates(root, candidates);
+        var simplifierOutcome = await TrySimplifierAsync(
+            document, root, model, candidates, cancellationToken);
+        if (simplifierOutcome.Applied.Count > 0)
+            return simplifierOutcome;
+
+        return TrySpeculativeRewrite(root, model, candidates);
+    }
+
+    private static async Task<SimplifyOutcome> TrySimplifierAsync(
+        Document document,
+        SyntaxNode root,
+        SemanticModel model,
+        IReadOnlyList<SyntaxNode> candidates,
+        CancellationToken cancellationToken)
+    {
+        var annotated = root.ReplaceNodes(candidates, (original, _) =>
+            original.WithAdditionalAnnotations(
+                Simplifier.Annotation,
+                new SyntaxAnnotation(CandidateIdKind, original.SpanStart.ToString(CultureInfo.InvariantCulture))));
+
         var reducedDocument = await Simplifier.ReduceAsync(
             document.WithSyntaxRoot(annotated),
             Simplifier.Annotation,
@@ -325,21 +503,52 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
 
         var reducedRoot = await reducedDocument.GetSyntaxRootAsync(cancellationToken);
         if (reducedRoot == null)
-            throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse simplified file.");
+            return new SimplifyOutcome(root, [], []);
 
         var reducedModel = await reducedDocument.GetSemanticModelAsync(cancellationToken);
         if (reducedModel == null)
-            throw new RefactoringException(ErrorCodes.RoslynError, "Could not get a semantic model for the simplified file.");
+            return new SimplifyOutcome(root, [], []);
 
         var applied = new List<AppliedSimplification>();
+        foreach (var original in candidates)
+        {
+            var id = new SyntaxAnnotation(
+                CandidateIdKind,
+                original.SpanStart.ToString(CultureInfo.InvariantCulture));
+            var reducedNode = reducedRoot.GetAnnotatedNodes(id).FirstOrDefault();
+            if (reducedNode == null)
+                continue;
+
+            var originalText = original.ToString();
+            var newText = reducedNode.ToString();
+            if (string.Equals(originalText, newText, StringComparison.Ordinal))
+                continue;
+
+            if (!SameBinding(original, model, reducedNode, reducedModel))
+                continue;
+
+            applied.Add(new AppliedSimplification(original, originalText, newText));
+        }
+
+        if (applied.Count == 0)
+            return new SimplifyOutcome(root, [], []);
+
+        var skipped = ClassifyUnchanged(candidates, applied, model);
+        return new SimplifyOutcome(reducedRoot, applied, skipped);
+    }
+
+    private static SimplifyOutcome TrySpeculativeRewrite(
+        SyntaxNode root,
+        SemanticModel model,
+        IReadOnlyList<SyntaxNode> candidates)
+    {
+        var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
+        var applied = new List<AppliedSimplification>();
         var skipped = new List<SkippedSimplification>();
-        var rejected = new List<SyntaxNode>();
 
         foreach (var original in candidates)
         {
-            var id = CandidateId(original);
-            var reducedNode = reducedRoot.GetAnnotatedNodes(id).FirstOrDefault();
-            if (reducedNode == null)
+            if (!TryGetSafeReplacement(original, model, out var replacement))
             {
                 skipped.Add(new SkippedSimplification
                 {
@@ -349,59 +558,56 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
                 continue;
             }
 
-            var originalText = original.ToString();
-            var newText = reducedNode.ToString();
-            if (string.Equals(originalText, newText, StringComparison.Ordinal))
-            {
-                skipped.Add(new SkippedSimplification
-                {
-                    Name = originalText,
-                    Reason = ClassifySkipReason(original, model)
-                });
-                continue;
-            }
-
-            if (!SameBinding(original, model, reducedNode, reducedModel))
-            {
-                rejected.Add(original);
-                skipped.Add(new SkippedSimplification
-                {
-                    Name = originalText,
-                    Reason = "Would become ambiguous or bind to a different symbol"
-                });
-                continue;
-            }
-
-            applied.Add(new AppliedSimplification(original, originalText, newText));
+            var rewritten = replacement.WithTriviaFrom(original);
+            replacements[original] = rewritten;
+            applied.Add(new AppliedSimplification(original, original.ToString(), rewritten.ToString()));
         }
 
-        if (rejected.Count > 0 && applied.Count > 0)
-        {
-            var safe = applied.Select(item => item.Original).ToList();
-            var retry = await TrySimplifyAsync(document, root, model, safe, cancellationToken);
-            var rejectedNames = rejected.Select(node => node.ToString()).ToHashSet(StringComparer.Ordinal);
-            var rejectedSkips = skipped.Where(item => rejectedNames.Contains(item.Name)).ToList();
-            retry.Skipped.AddRange(rejectedSkips);
-            return retry;
-        }
-
-        if (rejected.Count > 0)
-        {
+        if (replacements.Count == 0)
             return new SimplifyOutcome(root, [], skipped);
+
+        var newRoot = root.ReplaceNodes(replacements.Keys, (orig, _) => replacements[orig]);
+        return new SimplifyOutcome(newRoot, applied, skipped);
+    }
+
+    internal static bool TryGetSafeReplacement(
+        SyntaxNode original,
+        SemanticModel model,
+        out ExpressionSyntax replacement)
+    {
+        replacement = null!;
+        var originalSymbol = GetBoundSymbol(model, original);
+        if (originalSymbol == null)
+            return false;
+
+        foreach (var form in GetShorterForms(original))
+        {
+            if (BindsToSameSymbol(model, original, form, originalSymbol)
+                && NameofMeaningPreserved(original, form, model, originalSymbol))
+            {
+                replacement = form;
+                return true;
+            }
         }
 
-        return new SimplifyOutcome(reducedRoot, applied, skipped);
+        return false;
     }
 
-    private static SyntaxNode AnnotateCandidates(SyntaxNode root, IReadOnlyList<SyntaxNode> candidates)
+    private static List<SkippedSimplification> ClassifyUnchanged(
+        IReadOnlyList<SyntaxNode> candidates,
+        List<AppliedSimplification> applied,
+        SemanticModel model)
     {
-        var set = candidates.ToHashSet();
-        return root.ReplaceNodes(set, (original, _) =>
-            original.WithAdditionalAnnotations(Simplifier.Annotation, CandidateId(original)));
+        var appliedSet = applied.Select(item => item.Original).ToHashSet();
+        return candidates
+            .Where(candidate => !appliedSet.Contains(candidate))
+            .Select(candidate => new SkippedSimplification
+            {
+                Name = candidate.ToString(),
+                Reason = ClassifySkipReason(candidate, model)
+            })
+            .ToList();
     }
-
-    private static SyntaxAnnotation CandidateId(SyntaxNode node) =>
-        new(CandidateIdKind, node.SpanStart.ToString(CultureInfo.InvariantCulture));
 
     private static bool SameBinding(
         SyntaxNode original,
