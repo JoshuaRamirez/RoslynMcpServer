@@ -89,12 +89,14 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
                 $"Method '{@params.MethodName}' not found.");
         }
 
-        // Omitted column keeps today's MethodName + Line pick (first
-        // start-line match; Line required when more than one match).
-        // When column is set, pick the method whose identifier or
-        // declaration span covers that column — do not require the
-        // declaration to start on `line` (continuation-line identifier).
-        if (!@params.Column.HasValue && methodDeclarations.Count > 1 && !@params.Line.HasValue)
+        // Line is required when more than one method matches, even if
+        // column is set. Column without Line is not a source position:
+        // FindMethod would substitute each candidate's own start line and
+        // could silently pick the shortest equally-aligned overload.
+        // When both are set, pick by identifier/declaration span and do
+        // not require the declaration to start on `line` (continuation-
+        // line identifier).
+        if (methodDeclarations.Count > 1 && !@params.Line.HasValue)
         {
             var lines = methodDeclarations
                 .Select(m => m.GetLocation().GetLineSpan().StartLinePosition.Line + 1)

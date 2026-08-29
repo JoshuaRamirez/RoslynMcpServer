@@ -855,6 +855,45 @@ public class ConvertToAsyncOperationTests
         Assert.Contains("public void Process()", updated);
     }
 
+    [SkippableFact]
+    public async Task ConvertToAsync_ColumnWithoutLine_MultipleOverloads_ThrowsSymbolAmbiguous()
+    {
+        const string source = """
+            using System.Threading.Tasks;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Process()
+                {
+                    Task.Delay(1);
+                }
+
+                public void Process(int n)
+                {
+                    Task.Delay(n);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToAsyncParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                Column = ColumnOf(source, "Process()"),
+                RenameToAsync = false
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     #endregion
 
     #region Helper unit tests
