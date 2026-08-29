@@ -509,8 +509,8 @@ public static class ErrorCodes
     public const string ConditionNotInvertible = "3154";
 
     // --------------------------------------------
-    // Add Braces Errors (3155-3156)
-    // Spec UC-A5 lists 3119 / 3120; those codes already ship for
+    // Add / Remove Braces Errors (3155-3158)
+    // Spec UC-A5 / UC-A6 list 3119-3122; those codes already ship for
     // safe-delete / make-static. invert_if used 3153-3154 for the same reason.
     // --------------------------------------------
 
@@ -519,6 +519,12 @@ public static class ErrorCodes
 
     /// <summary>The targeted control statement already has braces (statement scope).</summary>
     public const string AlreadyHasBraces = "3156";
+
+    /// <summary>The targeted control statement has no braces to remove (statement scope).</summary>
+    public const string NoBracesToRemove = "3157";
+
+    /// <summary>The targeted block does not contain exactly one statement (statement scope).</summary>
+    public const string MultipleStatementsInBlock = "3158";
 
     // ============================================
     // System Errors (4xxx)
