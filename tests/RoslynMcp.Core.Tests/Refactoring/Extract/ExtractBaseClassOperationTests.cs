@@ -1698,10 +1698,7 @@ public class ExtractBaseClassOperationTests
             result.PendingChanges,
             change => change.Description.Contains("override", StringComparison.OrdinalIgnoreCase)
                 && change.Description.Contains("Work", StringComparison.Ordinal));
-        Assert.Contains(
-            result.PendingChanges[0].AfterSnippet,
-            "abstract",
-            StringComparison.Ordinal);
+        Assert.Contains("abstract", result.PendingChanges[0].AfterSnippet, StringComparison.Ordinal);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.False(File.Exists(Path.GetFullPath(Path.Combine(workspace.DirectoryPath, "Person.cs"))));
     }
