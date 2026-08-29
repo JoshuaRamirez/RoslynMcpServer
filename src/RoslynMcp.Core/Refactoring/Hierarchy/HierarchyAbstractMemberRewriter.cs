@@ -193,6 +193,7 @@ internal static class HierarchyAbstractMemberRewriter
         return property
             .WithModifiers(ToAbstractModifiers(property.Modifiers))
             .WithExpressionBody(null)
+            .WithInitializer(null)
             .WithSemicolonToken(default)
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
             .NormalizeWhitespace();
@@ -234,7 +235,8 @@ internal static class HierarchyAbstractMemberRewriter
                 SyntaxKind.OverrideKeyword,
                 SyntaxKind.SealedKeyword,
                 SyntaxKind.AbstractKeyword,
-                SyntaxKind.NewKeyword)
+                SyntaxKind.NewKeyword,
+                SyntaxKind.AsyncKeyword)
             .ToList();
 
         if (!HasAccessibility(tokens))

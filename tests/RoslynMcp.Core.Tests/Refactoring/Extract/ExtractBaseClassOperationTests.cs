@@ -1422,6 +1422,84 @@ public class ExtractBaseClassOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_InitializedProperty_DropsInitializerOnBase_KeepsOnOverride()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public string Name { get; set; } = "";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Name" },
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var personProp = FindProperty(updated, "Person", "Name");
+        var employeeProp = FindProperty(updated, "Employee", "Name");
+        Assert.NotNull(personProp);
+        Assert.NotNull(employeeProp);
+        Assert.Contains(personProp!.Modifiers, t => t.IsKind(SyntaxKind.AbstractKeyword));
+        Assert.Null(personProp.Initializer);
+        Assert.Contains(employeeProp!.Modifiers, t => t.IsKind(SyntaxKind.OverrideKeyword));
+        Assert.NotNull(employeeProp.Initializer);
+        Assert.Equal("\"\"", employeeProp.Initializer!.Value.ToString());
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_MakeAbstract_AsyncMethod_StripsAsyncOnBase_KeepsOnOverride()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Employee
+            {
+                public async System.Threading.Tasks.Task Work()
+                {
+                    await System.Threading.Tasks.Task.CompletedTask;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "Person",
+            Members = new[] { "Work" },
+            MakeAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var person = GetClassSection(updated, "Person");
+        var employee = GetClassSection(updated, "Employee");
+        Assert.Contains("abstract", person);
+        Assert.Contains("Work", person);
+        Assert.DoesNotContain("async", person);
+        Assert.Contains("async", employee);
+        Assert.Contains("override", employee);
+        Assert.Contains("await", employee);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
     public async Task ExtractBaseClass_MakeAbstractFalse_MethodStillMoves()
     {
         const string source = """
