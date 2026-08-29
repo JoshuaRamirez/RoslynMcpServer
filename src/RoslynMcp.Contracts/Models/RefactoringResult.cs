@@ -79,10 +79,25 @@ public sealed class RefactoringResult
     public int StatementsModified { get; init; }
 
     /// <summary>
-    /// Scope of the add_braces / remove_braces operation (<c>statement</c>,
-    /// <c>file</c>, or <c>type</c>).
+    /// Scope of the add_braces / remove_braces / simplify_name operation
+    /// (<c>statement</c>, <c>file</c>, <c>type</c>, or <c>location</c>).
     /// </summary>
     public string? Scope { get; init; }
+
+    /// <summary>
+    /// Number of names that were simplified (simplify_name).
+    /// </summary>
+    public int SimplificationsApplied { get; init; }
+
+    /// <summary>
+    /// Number of names that were skipped (simplify_name).
+    /// </summary>
+    public int SimplificationsSkipped { get; init; }
+
+    /// <summary>
+    /// Reasons for skipped simplifications (simplify_name).
+    /// </summary>
+    public IReadOnlyList<SkippedSimplification>? SkippedReasons { get; init; }
 
     /// <summary>
     /// Creates a successful result.

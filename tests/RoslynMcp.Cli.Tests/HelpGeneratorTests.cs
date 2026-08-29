@@ -15,11 +15,11 @@ public class HelpGeneratorTests
     }
 
     [Fact]
-    public void GenerateGlobalHelp_Lists65Tools()
+    public void GenerateGlobalHelp_Lists66Tools()
     {
         var registry = ToolRegistry.BuildDefault();
         var help = HelpGenerator.GenerateGlobalHelp(registry);
-        Assert.Contains("Total: 65 tools", help);
+        Assert.Contains("Total: 66 tools", help);
         Assert.Contains("pull-members-up", help);
         Assert.Contains("push-members-down", help);
         Assert.Contains("use-base-type", help);
@@ -31,6 +31,7 @@ public class HelpGeneratorTests
         Assert.Contains("invert-if", help);
         Assert.Contains("add-braces", help);
         Assert.Contains("remove-braces", help);
+        Assert.Contains("simplify-name", help);
         Assert.Contains("generate-property", help);
         Assert.Contains("generate-method-stub", help);
         Assert.Contains("implement-abstract", help);
@@ -405,6 +406,35 @@ public class HelpGeneratorTests
         Assert.Contains("--column", optionalSection);
         Assert.Contains("--scope", optionalSection);
         Assert.Contains("--type-name", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+    }
+
+    [Fact]
+    public void GenerateToolHelp_SimplifyName_ShowsScopeLineAndPreview()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("simplify-name")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("simplify-name", help);
+        Assert.Contains("namespace", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.DoesNotContain("--line", requiredSection);
+        Assert.DoesNotContain("--scope", requiredSection);
+        Assert.DoesNotContain("--preview", requiredSection);
+
+        Assert.Contains("--line", optionalSection);
+        Assert.Contains("--column", optionalSection);
+        Assert.Contains("--scope", optionalSection);
         Assert.Contains("--preview", optionalSection);
     }
 }
