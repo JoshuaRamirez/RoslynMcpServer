@@ -249,7 +249,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `convert_to_async` | Convert a synchronous method to async/await pattern. | `sourceFile`, `methodName`, `line`, `renameToAsync` |
+| `convert_to_async` | Convert a synchronous method to async/await pattern (`renameToAsync`: default true rewrites call-site identifiers to the `Async` name; `updateCallers`: default false keeps today's unaugmented callers — no `await` wrap and callers are not made async; true wraps already-async callers in `await` and skips synchronous callers that cannot legally await, reporting them; `preview` describes caller updates or that none will happen and writes nothing). | `sourceFile`, `methodName`, `line`, `renameToAsync`, `updateCallers`, `preview` |
 | `convert_expression_body` | Toggle between expression body (`=> expr;`) and block body (`{ return expr; }`). | `sourceFile`, `direction`, `memberName`, `line` |
 | `convert_to_block_body` | Convert a selected expression-bodied member (`=> expr`) to a block body. Methods become `{ return expr; }` or `{ expr; }` as appropriate; properties and accessors that are expression-bodied are converted too. | `sourceFile`, `memberName`, `line` |
 | `convert_property` | Convert between auto-property and full property with backing field. | `sourceFile`, `direction`, `propertyName`, `line` |

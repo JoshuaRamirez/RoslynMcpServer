@@ -100,6 +100,16 @@ public sealed class RefactoringResult
     public IReadOnlyList<SkippedSimplification>? SkippedReasons { get; init; }
 
     /// <summary>
+    /// Number of call sites updated to await the converted method (convert_to_async).
+    /// </summary>
+    public int CallersUpdated { get; init; }
+
+    /// <summary>
+    /// Call sites that were not awaited when <c>updateCallers</c> was true (convert_to_async).
+    /// </summary>
+    public IReadOnlyList<SkippedCaller>? CallersSkipped { get; init; }
+
+    /// <summary>
     /// Creates a successful result.
     /// </summary>
     public static RefactoringResult Succeeded(

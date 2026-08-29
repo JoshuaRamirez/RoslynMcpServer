@@ -26,6 +26,13 @@ public sealed class ConvertToAsyncParams
     public bool RenameToAsync { get; init; } = true;
 
     /// <summary>
+    /// Update callers to await the converted method. Default: false
+    /// (convert the method and, when renaming, rewrite call-site
+    /// identifiers; do not wrap callers in await or make them async).
+    /// </summary>
+    public bool UpdateCallers { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// </summary>
     public bool Preview { get; init; }
