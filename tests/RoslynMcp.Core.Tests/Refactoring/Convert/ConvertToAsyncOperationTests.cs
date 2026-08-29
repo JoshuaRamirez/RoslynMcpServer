@@ -904,6 +904,14 @@ public class ConvertToAsyncOperationTests
     #region Helper unit tests
 
     [Fact]
+    public void FindLine_CrlfSource_MatchesSnippetThatIncludesLf()
+    {
+        const string lf = "class C\n{\n    public void\n    Process() { }\n}\n";
+        var crlf = lf.Replace("\n", "\r\n", StringComparison.Ordinal);
+        Assert.Equal(FindLine(lf, "public void\n"), FindLine(crlf, "public void\n"));
+    }
+
+    [Fact]
     public void DescribeCallerUpdates_False_SaysNoneWillHappen()
     {
         var plan = new ConvertToAsyncOperation.CallerUpdatePlan([], []);
@@ -1027,6 +1035,11 @@ public class ConvertToAsyncOperationTests
 
     private static int FindLine(string source, string snippet)
     {
+        // Raw-string fixtures stay LF in git; Windows checkout may be CRLF.
+        // Normalize so snippets that include '\n' still match.
+        source = source.Replace("\r\n", "\n", StringComparison.Ordinal);
+        snippet = snippet.Replace("\r\n", "\n", StringComparison.Ordinal);
+
         var index = source.IndexOf(snippet, StringComparison.Ordinal);
         if (index < 0)
             throw new InvalidOperationException($"Snippet not found: {snippet}");
