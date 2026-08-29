@@ -526,6 +526,15 @@ public static class ErrorCodes
     /// <summary>The targeted block does not contain exactly one statement (statement scope).</summary>
     public const string MultipleStatementsInBlock = "3158";
 
+    // --------------------------------------------
+    // Simplify Name Errors (3159)
+    // Spec UC-A8 lists 3123; that code already ships as NoValidInstanceReceiver.
+    // invert_if / add_braces / remove_braces used 3153-3158 for the same reason.
+    // --------------------------------------------
+
+    /// <summary>No names can be simplified in the requested scope.</summary>
+    public const string NoSimplifiableNames = "3159";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

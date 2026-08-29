@@ -146,7 +146,10 @@ public abstract class RefactoringOperationBase<TParams> : IRefactoringOperation<
             OriginalCondition = result.OriginalCondition,
             InvertedCondition = result.InvertedCondition,
             StatementsModified = result.StatementsModified,
-            Scope = result.Scope
+            Scope = result.Scope,
+            SimplificationsApplied = result.SimplificationsApplied,
+            SimplificationsSkipped = result.SimplificationsSkipped,
+            SkippedReasons = result.SkippedReasons
         };
     }
 }
