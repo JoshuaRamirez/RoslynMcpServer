@@ -498,6 +498,16 @@ public static class ErrorCodes
     /// </summary>
     public const string OverrideExists = "3152";
 
+    // --------------------------------------------
+    // Invert If Errors (3153-3154)
+    // --------------------------------------------
+
+    /// <summary>No if statement found at the specified location (if keyword line / optional column).</summary>
+    public const string NoIfStatementAtLocation = "3153";
+
+    /// <summary>Condition cannot be safely inverted (for example it introduces a pattern or out variable).</summary>
+    public const string ConditionNotInvertible = "3154";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================
