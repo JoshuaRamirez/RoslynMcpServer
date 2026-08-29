@@ -105,8 +105,11 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
 
         if (!column.HasValue)
         {
-            return formats.FirstOrDefault(invocation => StartsOnLine(invocation, line))
-                ?? concats.FirstOrDefault(binary => StartsOnLine(binary, line));
+            ExpressionSyntax? firstFormat = formats.FirstOrDefault(invocation => StartsOnLine(invocation, line));
+            if (firstFormat != null)
+                return firstFormat;
+
+            return concats.FirstOrDefault(binary => StartsOnLine(binary, line));
         }
 
         var formatAtColumn = formats
