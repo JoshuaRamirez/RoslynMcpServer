@@ -84,9 +84,11 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
     /// Finds a convertible <c>string.Format</c> invocation or concatenation.
     /// When <paramref name="column"/> is omitted, keeps today's first-match
     /// whose start line equals <paramref name="line"/> (Format before
-    /// concatenation). When set, picks the Format invocation or concatenation
-    /// whose span covers that 1-based column. Format is still preferred when
-    /// both kinds cover the column.
+    /// concatenation). When set, picks the Format invocation or the outer
+    /// concatenation whose span covers that 1-based column. Format is still
+    /// preferred when both kinds cover the column. Concatenation matches walk
+    /// up to <see cref="OuterConcatenation"/> so a 3+ operand chain is not
+    /// flattened from an inner node.
     /// </summary>
     internal static ExpressionSyntax? FindConvertibleExpression(
         SyntaxNode root,

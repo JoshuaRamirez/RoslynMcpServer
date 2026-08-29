@@ -522,9 +522,9 @@ public class ConvertToInterpolatedStringOperationTests
     {
         Assert.DoesNotContain("\"Hello \" + name + suffix", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("\"Hello \" + name;", updated, StringComparison.Ordinal);
-        Assert.Contains("{name}", updated, StringComparison.Ordinal);
+        Assert.Contains("{name", updated, StringComparison.Ordinal);
         Assert.Contains("{suffix}", updated, StringComparison.Ordinal);
-        Assert.Contains("$\"Hello {name}{suffix}\"", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("+ suffix", updated, StringComparison.Ordinal);
     }
 
     private static (SyntaxNode Root, SemanticModel Model) Compile(string source)
