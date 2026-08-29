@@ -201,6 +201,101 @@ public class RemoveBracesOperationTests
         Assert.True(RemoveBracesOperation.WouldCreateDanglingElse(outer, inner));
     }
 
+    [Fact]
+    public void WouldCreateDanglingElse_ElseClauseOwner_IsFalse()
+    {
+        var elseClause = CSharpSyntaxTree.ParseText("""
+            class Gate
+            {
+                void Run(bool a, bool b)
+                {
+                    if (a)
+                        Work();
+                    else
+                    {
+                        if (b) Other();
+                    }
+                }
+                static void Work() {}
+                static void Other() {}
+            }
+            """).GetRoot()
+            .DescendantNodes()
+            .OfType<ElseClauseSyntax>()
+            .Single();
+
+        var inner = Assert.IsType<BlockSyntax>(elseClause.Statement).Statements[0];
+        Assert.False(RemoveBracesOperation.WouldCreateDanglingElse(elseClause, inner));
+    }
+
+    [Fact]
+    public void CollectTargets_ElseOwner_IsElseClause()
+    {
+        var root = CSharpSyntaxTree.ParseText("""
+            class Gate
+            {
+                void Run(bool flag)
+                {
+                    if (flag)
+                        Work();
+                    else
+                    {
+                        Other();
+                    }
+                }
+                static void Work() {}
+                static void Other() {}
+            }
+            """).GetRoot();
+
+        var elseTarget = RemoveBracesOperation.CollectTargets(root)
+            .Single(target => target.Keyword.IsKind(SyntaxKind.ElseKeyword));
+
+        Assert.IsType<ElseClauseSyntax>(elseTarget.Owner);
+    }
+
+    [Fact]
+    public void CannotBeEmbeddedStatement_DeclarationLocalFunctionAndLabel_AreTrue()
+    {
+        var root = CSharpSyntaxTree.ParseText("""
+            class Gate
+            {
+                void Run()
+                {
+                    { var value = 1; }
+                    { void Local() {} }
+                    { retry: Work(); }
+                    { Work(); }
+                }
+                static void Work() {}
+            }
+            """).GetRoot();
+
+        var blocks = root.DescendantNodes().OfType<BlockSyntax>()
+            .Where(block => block.Parent is BlockSyntax)
+            .ToList();
+
+        Assert.True(RemoveBracesOperation.CannotBeEmbeddedStatement(blocks[0].Statements[0]));
+        Assert.True(RemoveBracesOperation.CannotBeEmbeddedStatement(blocks[1].Statements[0]));
+        Assert.True(RemoveBracesOperation.CannotBeEmbeddedStatement(blocks[2].Statements[0]));
+        Assert.False(RemoveBracesOperation.CannotBeEmbeddedStatement(blocks[3].Statements[0]));
+    }
+
+    [Fact]
+    public void UnwrapBlock_PreservesCommentOnOpenBrace()
+    {
+        var block = (BlockSyntax)SyntaxFactory.ParseStatement("""
+            { // keep-reason
+                return 1;
+            }
+            """);
+
+        var unwrapped = RemoveBracesOperation.UnwrapBlock(block);
+
+        Assert.Contains("keep-reason", unwrapped.GetLeadingTrivia().ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("return 1;", unwrapped.ToString(), StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region P0 Happy Path
@@ -949,6 +1044,203 @@ public class RemoveBracesOperationTests
     }
 
     [SkippableFact]
+    public async Task RemoveBraces_LocalDeclaration_StatementScope_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Gate
+            {
+                public void Run(bool flag)
+                {
+                    if (flag)
+                    {
+                        var value = GetValue();
+                    }
+                }
+
+                private static int GetValue() => 1;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveBracesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RemoveBracesParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(source, "if (flag)")
+            }));
+
+        Assert.Equal(ErrorCodes.CompilationError, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RemoveBraces_LocalFunction_StatementScope_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Gate
+            {
+                public void Run(bool flag)
+                {
+                    if (flag)
+                    {
+                        void Local() { }
+                    }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveBracesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RemoveBracesParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(source, "if (flag)")
+            }));
+
+        Assert.Equal(ErrorCodes.CompilationError, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RemoveBraces_LabeledBody_StatementScope_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Gate
+            {
+                public void Run(bool flag)
+                {
+                    if (flag)
+                    {
+                        retry: Work();
+                    }
+                }
+
+                private static void Work() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveBracesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RemoveBracesParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(source, "if (flag)")
+            }));
+
+        Assert.Equal(ErrorCodes.CompilationError, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RemoveBraces_FileScope_SkipsNonEmbeddableAndUnwrapsNeighbor()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Gate
+            {
+                public void Run(bool declare, bool local, bool labeled, bool other)
+                {
+                    if (declare)
+                    {
+                        var value = GetValue();
+                    }
+                    if (local)
+                    {
+                        void Local() { }
+                    }
+                    if (labeled)
+                    {
+                        retry: Work();
+                    }
+                    if (other)
+                    {
+                        Safe();
+                    }
+                }
+
+                private static int GetValue() => 1;
+                private static void Work() { }
+                private static void Safe() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveBracesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveBracesParams
+        {
+            SourceFile = workspace.SourcePath,
+            Scope = "file"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.StatementsModified);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var root = CSharpSyntaxTree.ParseText(updated).GetRoot();
+        IfStatementSyntax IfWith(string condition) =>
+            root.DescendantNodes().OfType<IfStatementSyntax>()
+                .Single(statement => statement.Condition.ToString() == condition);
+
+        Assert.IsType<BlockSyntax>(IfWith("declare").Statement);
+        Assert.IsType<BlockSyntax>(IfWith("local").Statement);
+        Assert.IsType<BlockSyntax>(IfWith("labeled").Statement);
+        Assert.IsNotType<BlockSyntax>(IfWith("other").Statement);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task RemoveBraces_OpenBraceComment_Survives()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Gate
+            {
+                public string Classify(int x)
+                {
+                    if (x > 0)
+                    { // keep-reason
+                        return "positive";
+                    }
+                    return "other";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveBracesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveBracesParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "if (x > 0)")
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.StatementsModified);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("keep-reason", updated, StringComparison.Ordinal);
+        AssertIfBodyIsNotBlock(updated, "x > 0");
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
     public async Task RemoveBraces_TypeScope_AmbiguousSimpleName_Throws()
     {
         const string source = """
@@ -1155,6 +1447,52 @@ public class RemoveBracesOperationTests
         var innerIf = Assert.IsType<IfStatementSyntax>(
             Assert.IsType<BlockSyntax>(outerIf.Else!.Statement).Statements[0]);
         Assert.IsNotType<BlockSyntax>(innerIf.Statement);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task RemoveBraces_StatementScope_ElseBlockIf_BecomesElseIf()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Chain
+            {
+                public string Pick(bool a, bool b)
+                {
+                    if (a)
+                    {
+                        return "a";
+                    }
+                    else
+                    {
+                        if (b)
+                            return "b";
+                    }
+                    return "none";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveBracesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveBracesParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "else")
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.StatementsModified);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var outerIf = CSharpSyntaxTree.ParseText(updated).GetRoot()
+            .DescendantNodes().OfType<IfStatementSyntax>()
+            .First(statement => statement.Condition.ToString().Contains("a", StringComparison.Ordinal));
+        Assert.IsType<BlockSyntax>(outerIf.Statement);
+        var elseIf = Assert.IsType<IfStatementSyntax>(outerIf.Else?.Statement);
+        Assert.IsNotType<BlockSyntax>(elseIf.Statement);
+        Assert.Contains("return \"b\";", elseIf.Statement.ToString());
         await AssertCompilesAsync(workspace);
     }
 

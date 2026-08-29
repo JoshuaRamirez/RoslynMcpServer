@@ -145,6 +145,13 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
                         : "Block contains multiple statements.");
             }
 
+            if (CannotBeEmbeddedStatement(block.Statements[0]))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CompilationError,
+                    "Removing these braces would produce a statement that cannot be embedded (CS1023).");
+            }
+
             if (WouldCreateDanglingElse(target.Value.Owner, block.Statements[0]))
             {
                 throw new RefactoringException(
@@ -330,9 +337,21 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
     }
 
     /// <summary>
+    /// True when <paramref name="statement"/> cannot legally replace a
+    /// single-statement block as an embedded statement (CS1023): local
+    /// declarations, local functions, and labeled statements.
+    /// </summary>
+    internal static bool CannotBeEmbeddedStatement(StatementSyntax statement) =>
+        statement is LocalDeclarationStatementSyntax
+            or LocalFunctionStatementSyntax
+            or LabeledStatementSyntax;
+
+    /// <summary>
     /// True when unwrapping a block whose single statement is
     /// <paramref name="inner"/> would let a following <c>else</c> bind to a
     /// nested <c>if</c> (dangling else) or produce a second <c>else</c>.
+    /// Only the <c>if</c> then-body can create that problem; an
+    /// <see cref="ElseClauseSyntax"/> owner is the else itself.
     /// </summary>
     internal static bool WouldCreateDanglingElse(SyntaxNode owner, StatementSyntax inner)
     {
@@ -487,7 +506,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
                     if (ifStatement.Else != null)
                     {
                         yield return new ControlTarget(
-                            ifStatement,
+                            ifStatement.Else,
                             ifStatement.Else.Statement,
                             ifStatement.Else.ElseKeyword);
                     }
@@ -518,8 +537,20 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
         if (block.Statements.Count != 1)
             return block;
 
-        return block.Statements[0];
+        var statement = block.Statements[0];
+        var openTrivia = NonWhitespaceTrivia(block.OpenBraceToken.LeadingTrivia)
+            .Concat(NonWhitespaceTrivia(block.OpenBraceToken.TrailingTrivia));
+        var closeTrivia = NonWhitespaceTrivia(block.CloseBraceToken.LeadingTrivia)
+            .Concat(NonWhitespaceTrivia(block.CloseBraceToken.TrailingTrivia));
+
+        return statement
+            .WithLeadingTrivia(openTrivia.Concat(statement.GetLeadingTrivia()))
+            .WithTrailingTrivia(statement.GetTrailingTrivia().Concat(closeTrivia));
     }
+
+    private static IEnumerable<SyntaxTrivia> NonWhitespaceTrivia(SyntaxTriviaList trivia) =>
+        trivia.Where(item => !item.IsKind(SyntaxKind.WhitespaceTrivia)
+            && !item.IsKind(SyntaxKind.EndOfLineTrivia));
 
     private static bool KeywordIsOnLine(SyntaxToken keyword, int line)
     {
@@ -562,7 +593,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
     /// <summary>
     /// A control statement (or else clause) that can lose braces.
     /// </summary>
-    /// <param name="Owner">The if/for/foreach/while/using statement that owns the body.</param>
+    /// <param name="Owner">The if/for/foreach/while/using statement, or the else clause, that owns the body.</param>
     /// <param name="Body">The embedded statement that may be a single-statement block.</param>
     /// <param name="Keyword">The keyword the user points at (if, else, for, foreach, while, using).</param>
     internal readonly record struct ControlTarget(SyntaxNode Owner, StatementSyntax Body, SyntaxToken Keyword);
@@ -621,7 +652,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
                 UnwrappedCount++;
             }
 
-            return rewritten;
+            return AnnotateIfPreviewOwner(node, rewritten);
         }
 
         public override SyntaxNode? VisitForStatement(ForStatementSyntax node)
@@ -706,6 +737,9 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
                 return false;
 
             var inner = block.Statements[0];
+
+            if (CannotBeEmbeddedStatement(inner))
+                return false;
 
             if (!_unwrapElseIf && owner is ElseClauseSyntax && inner is IfStatementSyntax)
                 return false;
