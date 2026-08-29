@@ -1291,6 +1291,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         INamedTypeSymbol target)
         => ReduceOverrideAccessibility(indexer, symbol, target);
 
+    /// <summary>
+    /// Reduces accessor <c>protected internal</c> and drops an accessor
+    /// modifier that matches the (possibly CS0507-reduced) property
+    /// accessibility (CS0273).
+    /// </summary>
     private static BasePropertyDeclarationSyntax ReduceAccessorOverrideAccessibility(
         BasePropertyDeclarationSyntax member,
         IPropertySymbol symbol,
@@ -1299,6 +1304,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (member.AccessorList == null)
             return member;
 
+        var propertyAccessibility = SyntaxGenerationHelper.OverrideAccessibility(symbol, target);
         var accessors = new List<AccessorDeclarationSyntax>();
         foreach (var accessor in member.AccessorList.Accessors)
         {
@@ -1309,10 +1315,22 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 _ => null
             };
 
-            accessors.Add(accessorSymbol == null
-                ? accessor
-                : accessor.WithModifiers(
-                    ReduceCrossAssemblyOverrideAccessibility(accessor.Modifiers, accessorSymbol, target)));
+            if (accessorSymbol == null)
+            {
+                accessors.Add(accessor);
+                continue;
+            }
+
+            var accessorAccessibility = SyntaxGenerationHelper.OverrideAccessibility(accessorSymbol, target);
+            if (accessorAccessibility == Accessibility.NotApplicable
+                || accessorAccessibility == propertyAccessibility)
+            {
+                accessors.Add(accessor.WithModifiers(default));
+                continue;
+            }
+
+            accessors.Add(accessor.WithModifiers(
+                ReduceCrossAssemblyOverrideAccessibility(accessor.Modifiers, accessorSymbol, target)));
         }
 
         return member.WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
