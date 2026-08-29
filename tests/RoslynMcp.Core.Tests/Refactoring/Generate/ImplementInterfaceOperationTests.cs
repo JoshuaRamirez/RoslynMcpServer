@@ -371,6 +371,67 @@ public class ImplementInterfaceOperationTests
         Assert.Equal(1, CountOccurrences(await File.ReadAllTextAsync(workspace.SourcePath), "public void DoWork("));
     }
 
+    [SkippableFact]
+    public async Task ImplementInterface_SequentialReplaceExisting_ReusedWorkspace_InsertsOnSecondSelectedType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IAlpha
+            {
+                void AlphaWork();
+            }
+
+            public interface IBeta
+            {
+                void BetaWork();
+            }
+
+            public class Alpha : IAlpha
+            {
+                public void AlphaWork() { /* old-alpha */ }
+            }
+
+            public class Beta : IBeta
+            {
+                public void BetaWork() { /* old-beta */ }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Types.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var first = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Alpha",
+            InterfaceName = "IAlpha",
+            ReplaceExisting = true
+        });
+        Assert.True(first.Success);
+
+        var second = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Beta",
+            InterfaceName = "IBeta",
+            ReplaceExisting = true
+        });
+        Assert.True(second.Success);
+
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var alpha = FindType(updated, "Alpha");
+        var beta = FindType(updated, "Beta");
+        Assert.True(TypeHasMethod((ClassDeclarationSyntax)alpha, "AlphaWork"));
+        Assert.False(TypeHasMethod((ClassDeclarationSyntax)alpha, "BetaWork"));
+        Assert.True(TypeHasMethod((ClassDeclarationSyntax)beta, "BetaWork"));
+        Assert.False(TypeHasMethod((ClassDeclarationSyntax)beta, "AlphaWork"));
+        Assert.DoesNotContain("old-alpha", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-beta", updated, StringComparison.Ordinal);
+        Assert.Contains("throw new NotImplementedException()", alpha.ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("throw new NotImplementedException()", beta.ToFullString(), StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region Happy Path / Regressions

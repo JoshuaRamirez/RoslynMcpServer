@@ -26,14 +26,6 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 public sealed class ImplementInterfaceOperation : RefactoringOperationBase<ImplementInterfaceParams>
 {
     /// <summary>
-    /// Marks the type declaration selected before
-    /// <see cref="RemoveExistingImplementationsAcrossPartialsAsync"/> so the
-    /// same node can be recovered after a same-file earlier partial shrinks
-    /// and shifts both <c>SpanStart</c> and physical line.
-    /// </summary>
-    private static readonly SyntaxAnnotation TargetTypeAnnotation = new("implement-interface-target-type");
-
-    /// <summary>
     /// Creates a new implement interface operation.
     /// </summary>
     public ImplementInterfaceOperation(WorkspaceContext context) : base(context)
@@ -170,15 +162,21 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         }
 
         var solution = document.Project.Solution;
+        // Fresh instance per execution. A static annotation is shared
+        // across operations; after CommitChanges the in-memory solution
+        // can still carry it, so a later replaceExisting on another type
+        // would recover the stale node via FirstOrDefault.
+        SyntaxAnnotation? targetTypeAnnotation = null;
         if (replacements.Count > 0)
         {
             // Annotate before the rewrite. Removing a member from an
             // earlier same-file partial shifts both SpanStart and the
             // physical line of a later selected partial — do not re-find
             // with those stale values.
+            targetTypeAnnotation = new SyntaxAnnotation("implement-interface-target-type");
             root = root.ReplaceNode(
                 typeDeclaration,
-                typeDeclaration.WithAdditionalAnnotations(TargetTypeAnnotation));
+                typeDeclaration.WithAdditionalAnnotations(targetTypeAnnotation));
             document = document.WithSyntaxRoot(root);
             solution = document.Project.Solution;
 
@@ -190,7 +188,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                     $"Could not locate the document for type '{@params.TypeName}'.");
             root = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
-            typeDeclaration = root.GetAnnotatedNodes(TargetTypeAnnotation)
+            typeDeclaration = root.GetAnnotatedNodes(targetTypeAnnotation)
                 .OfType<TypeDeclarationSyntax>()
                 .FirstOrDefault()
                 ?? throw new RefactoringException(
@@ -198,8 +196,11 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                     $"Type '{@params.TypeName}' not found in file.");
         }
 
-        // Add implementations to type
+        // Add implementations to type. Strip the per-execution annotation
+        // so it does not linger in the workspace after commit.
         var newTypeDeclaration = AddMembers(typeDeclaration, implementations);
+        if (targetTypeAnnotation != null)
+            newTypeDeclaration = (TypeDeclarationSyntax)newTypeDeclaration.WithoutAnnotations(targetTypeAnnotation);
         var newRoot = root.ReplaceNode(typeDeclaration, newTypeDeclaration);
 
         var newDocument = document.WithSyntaxRoot(newRoot);
@@ -933,7 +934,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
     /// on a continuation line. If nothing covers this line, keep today's
     /// first-match rather than inventing a not-found. After
     /// <see cref="RemoveExistingImplementationsAcrossPartialsAsync"/>, recover
-    /// the selected type from <see cref="TargetTypeAnnotation"/> — do not
+    /// the selected type from the per-execution syntax annotation — do not
     /// reuse a pre-rewrite SpanStart or line.
     /// </summary>
     internal static TypeDeclarationSyntax? FindTypeDeclaration(
