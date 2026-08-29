@@ -244,15 +244,18 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
         }
         else
         {
-            newThen = originalElse;
-            newElse = SyntaxFactory.ElseClause(originalThen);
+            // An unbraced if-as-then would capture the new outer else
+            // (dangling else): `if (!a) if (b) B(); else A();`.
+            newThen = originalElse is IfStatementSyntax
+                ? SyntaxFactory.Block(originalElse)
+                : originalElse;
+            newElse = ifStatement.Else!.WithStatement(originalThen);
         }
 
         return ifStatement
             .WithCondition(invertedCondition.WithTriviaFrom(ifStatement.Condition))
             .WithStatement(newThen)
-            .WithElse(newElse)
-            .NormalizeWhitespace();
+            .WithElse(newElse);
     }
 
     private static ExpressionSyntax InvertExpression(ExpressionSyntax expression, SemanticModel? model)
@@ -276,12 +279,14 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
                 return SyntaxFactory.BinaryExpression(
                     SyntaxKind.LogicalOrExpression,
                     ParenthesizeForLogicalOperand(InvertExpression(binary.Left, model)),
+                    SyntaxFactory.Token(SyntaxKind.BarBarToken).WithTriviaFrom(binary.OperatorToken),
                     ParenthesizeForLogicalOperand(InvertExpression(binary.Right, model)));
 
             case BinaryExpressionSyntax binary when binary.IsKind(SyntaxKind.LogicalOrExpression):
                 return SyntaxFactory.BinaryExpression(
                     SyntaxKind.LogicalAndExpression,
                     ParenthesizeForLogicalOperand(InvertExpression(binary.Left, model)),
+                    SyntaxFactory.Token(SyntaxKind.AmpersandAmpersandToken).WithTriviaFrom(binary.OperatorToken),
                     ParenthesizeForLogicalOperand(InvertExpression(binary.Right, model)));
 
             case BinaryExpressionSyntax binary when TryFlipComparison(binary, model, out var flipped):
@@ -291,7 +296,7 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
                 return InvertIsPattern(isPattern);
         }
 
-        return Negate(expression);
+        return Negate(expression, model);
     }
 
     private static bool TryFlipComparison(
@@ -314,33 +319,69 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
         if (newKind == null)
             return false;
 
-        if (model != null && !IsSafeToFlipComparison(binary, model))
+        if (model != null && !IsSafeToFlipComparison(binary, model, newKind.Value))
             return false;
 
-        flipped = SyntaxFactory.BinaryExpression(
-            newKind.Value,
-            binary.Left.WithoutTrivia(),
-            binary.Right.WithoutTrivia());
+        var operatorToken = SyntaxFactory.Token(OperatorTokenKind(newKind.Value))
+            .WithTriviaFrom(binary.OperatorToken);
+        flipped = SyntaxFactory.BinaryExpression(newKind.Value, binary.Left, operatorToken, binary.Right);
         return true;
     }
 
-    private static bool IsSafeToFlipComparison(BinaryExpressionSyntax binary, SemanticModel model)
+    private static SyntaxKind OperatorTokenKind(SyntaxKind expressionKind) => expressionKind switch
+    {
+        SyntaxKind.GreaterThanExpression => SyntaxKind.GreaterThanToken,
+        SyntaxKind.LessThanExpression => SyntaxKind.LessThanToken,
+        SyntaxKind.GreaterThanOrEqualExpression => SyntaxKind.GreaterThanEqualsToken,
+        SyntaxKind.LessThanOrEqualExpression => SyntaxKind.LessThanEqualsToken,
+        SyntaxKind.EqualsExpression => SyntaxKind.EqualsEqualsToken,
+        SyntaxKind.NotEqualsExpression => SyntaxKind.ExclamationEqualsToken,
+        _ => throw new ArgumentOutOfRangeException(nameof(expressionKind), expressionKind, null)
+    };
+
+    private static bool IsSafeToFlipComparison(
+        BinaryExpressionSyntax binary,
+        SemanticModel model,
+        SyntaxKind flippedKind)
     {
         if (model.GetSymbolInfo(binary).Symbol is IMethodSymbol { MethodKind: MethodKind.UserDefinedOperator })
             return false;
 
         var leftType = model.GetTypeInfo(binary.Left).Type;
         var rightType = model.GetTypeInfo(binary.Right).Type;
-        return !IsFloatingPoint(leftType) && !IsFloatingPoint(rightType);
+        if (IsFloatingPoint(leftType) || IsFloatingPoint(rightType))
+            return false;
+
+        // Lifted nullable relational ops: null > 0 and null <= 0 are both false,
+        // so flipping the operator is not negation.
+        if (IsRelationalComparison(flippedKind) &&
+            (IsNullableValueType(leftType) || IsNullableValueType(rightType)))
+            return false;
+
+        return true;
     }
+
+    private static bool IsRelationalComparison(SyntaxKind kind) => kind is
+        SyntaxKind.GreaterThanExpression or
+        SyntaxKind.LessThanExpression or
+        SyntaxKind.GreaterThanOrEqualExpression or
+        SyntaxKind.LessThanOrEqualExpression;
 
     private static bool IsFloatingPoint(ITypeSymbol? type)
     {
-        if (type == null)
-            return false;
-
-        return type.SpecialType is SpecialType.System_Single or SpecialType.System_Double;
+        var underlying = UnwrapNullable(type);
+        return underlying?.SpecialType is SpecialType.System_Single or SpecialType.System_Double;
     }
+
+    private static bool IsNullableValueType(ITypeSymbol? type) =>
+        type is INamedTypeSymbol named &&
+        named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
+
+    private static ITypeSymbol? UnwrapNullable(ITypeSymbol? type) =>
+        type is INamedTypeSymbol named &&
+        named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T
+            ? named.TypeArguments[0]
+            : type;
 
     private static ExpressionSyntax InvertIsPattern(IsPatternExpressionSyntax isPattern)
     {
@@ -365,13 +406,63 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
                 isPattern.Pattern.WithoutTrivia()));
     }
 
-    private static ExpressionSyntax Negate(ExpressionSyntax expression)
+    private static ExpressionSyntax Negate(ExpressionSyntax expression, SemanticModel? model)
     {
+        if (model != null && !CanApplyLogicalNot(expression, model))
+        {
+            throw new RefactoringException(
+                ErrorCodes.ConditionNotInvertible,
+                "Condition cannot be safely inverted because logical negation is not defined for this type.");
+        }
+
         var operand = NeedsParenthesesForLogicalNot(expression)
             ? SyntaxFactory.ParenthesizedExpression(expression.WithoutTrivia())
             : expression.WithoutTrivia();
 
-        return SyntaxFactory.PrefixUnaryExpression(SyntaxKind.LogicalNotExpression, operand);
+        return SyntaxFactory.PrefixUnaryExpression(SyntaxKind.LogicalNotExpression, operand)
+            .WithLeadingTrivia(expression.GetLeadingTrivia())
+            .WithTrailingTrivia(expression.GetTrailingTrivia());
+    }
+
+    private static bool CanApplyLogicalNot(ExpressionSyntax expression, SemanticModel model)
+    {
+        var info = model.GetTypeInfo(expression);
+        if (IsBooleanLike(info.Type) || IsBooleanLike(info.ConvertedType))
+            return true;
+
+        var type = info.Type;
+        if (type == null || type.TypeKind == TypeKind.Error)
+            return false;
+
+        return HasLogicalNotOperator(type);
+    }
+
+    private static bool IsBooleanLike(ITypeSymbol? type)
+    {
+        if (type == null)
+            return false;
+
+        if (type.SpecialType == SpecialType.System_Boolean)
+            return true;
+
+        return type is INamedTypeSymbol named &&
+               named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T &&
+               named.TypeArguments[0].SpecialType == SpecialType.System_Boolean;
+    }
+
+    private static bool HasLogicalNotOperator(ITypeSymbol type)
+    {
+        for (var current = type; current != null; current = current.BaseType)
+        {
+            if (current.GetMembers("op_LogicalNot").OfType<IMethodSymbol>().Any(method =>
+                    method.MethodKind == MethodKind.UserDefinedOperator &&
+                    method.Parameters.Length == 1))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static ExpressionSyntax ParenthesizeForLogicalOperand(ExpressionSyntax expression)

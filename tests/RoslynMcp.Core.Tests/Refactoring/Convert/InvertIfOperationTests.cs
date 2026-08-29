@@ -1,4 +1,6 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -519,6 +521,156 @@ public class InvertIfOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("if (a)", updated);
         Assert.Contains("if (!b)", updated);
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_ElseIf_WrapsThenBranchToAvoidDanglingElse()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Chain
+            {
+                public string Pick(bool a, bool b)
+                {
+                    if (a)
+                        return "a";
+                    else if (b)
+                        return "b";
+                    return "none";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "if (a)")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var tree = CSharpSyntaxTree.ParseText(updated);
+        var outerIf = tree.GetRoot()
+            .DescendantNodes()
+            .OfType<IfStatementSyntax>()
+            .First(statement => statement.Condition.ToString().Contains("!a", StringComparison.Ordinal));
+
+        Assert.IsType<BlockSyntax>(outerIf.Statement);
+        Assert.Contains("return \"a\";", outerIf.Else?.Statement.ToString() ?? "");
+        Assert.DoesNotContain("return \"a\";", outerIf.Statement.ToString());
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_NullableRelational_WrapsWithNot()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class NullableCmp
+            {
+                public string Classify(int? x)
+                {
+                    if (x > 0)
+                        return "positive";
+                    else
+                        return "other";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "if (x > 0)")
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal("!(x > 0)", result.InvertedCondition);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("!(x > 0)", updated);
+        Assert.DoesNotContain("x <= 0", updated);
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_CustomTruthWithoutNot_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public struct Flag
+            {
+                public static bool operator true(Flag value) => true;
+                public static bool operator false(Flag value) => false;
+            }
+
+            public class UsesFlag
+            {
+                public void Run(Flag flag)
+                {
+                    if (flag)
+                        Then();
+                    else
+                        Else();
+                }
+
+                private static void Then() { }
+                private static void Else() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InvertIfOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InvertIfParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(source, "if (flag)")
+            }));
+
+        Assert.Equal(ErrorCodes.ConditionNotInvertible, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_ComparisonTrivia_IsPreserved()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Commented
+            {
+                public string Classify(int x)
+                {
+                    if (x /* boundary */ > 0)
+                        return "positive";
+                    else
+                        return "other";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "if (x /* boundary */ > 0)")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("/* boundary */", updated);
+        Assert.Contains("<=", updated);
     }
 
     #endregion
