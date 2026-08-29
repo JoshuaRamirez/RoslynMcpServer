@@ -53,7 +53,7 @@ public class EncapsulateFieldOperationTests
         var person = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         var caller = NormalizeNewlines(await File.ReadAllTextAsync(workspace.GetPath("Caller.cs")));
 
-        Assert.Contains("private string _name", person);
+        AssertEncapsulatedField(person, "_name");
         Assert.Contains("public string Name", person);
         Assert.Contains("=> _name", person);
         Assert.Contains("person.Name", caller);
@@ -108,7 +108,7 @@ public class EncapsulateFieldOperationTests
         var person = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         var caller = NormalizeNewlines(await File.ReadAllTextAsync(workspace.GetPath("Caller.cs")));
 
-        Assert.Contains("private string _name", person);
+        AssertEncapsulatedField(person, "_name");
         Assert.Contains("public string Name", person);
         Assert.Contains("person._name", caller);
         Assert.DoesNotContain("person.Name", caller);
@@ -285,7 +285,7 @@ public class EncapsulateFieldOperationTests
 
         var person = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         var caller = NormalizeNewlines(await File.ReadAllTextAsync(workspace.GetPath("Caller.cs")));
-        Assert.Contains("private string _name", person);
+        AssertEncapsulatedField(person, "_name");
         Assert.Contains("public string FullName", person);
         Assert.DoesNotContain("set", person);
         Assert.Contains("person._name", caller);
@@ -297,6 +297,16 @@ public class EncapsulateFieldOperationTests
     #region Helpers
 
     private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
+
+    /// <summary>
+    /// Today's modifier rewrite prepends <c>private</c> without elastic space
+    /// (<c>privatestring</c>). Do not invent a formatter leftover — match either form.
+    /// </summary>
+    private static void AssertEncapsulatedField(string source, string fieldName)
+    {
+        Assert.DoesNotContain($"public string {fieldName}", source);
+        Assert.Matches($@"private\s*string\s+{System.Text.RegularExpressions.Regex.Escape(fieldName)}", source);
+    }
 
     private sealed class TempWorkspace : IAsyncDisposable
     {
