@@ -90,11 +90,11 @@ public class GenerateConstructorOperationTests
     private const string NestedSameNameWidgetSource = """
         namespace TestApp;
 
-        public class Widget // outer-widget
+        public /* outer-widget */ class Widget
         {
             public string Name { get; set; }
 
-            public class Widget // nested-widget
+            public /* nested-widget */ class Widget
             {
                 public int Age { get; set; }
             }
@@ -306,7 +306,7 @@ public class GenerateConstructorOperationTests
                     }
                 }
 
-                public partial class Widget // later-partial
+                public /* later-partial */ partial class Widget
                 {
                 }
             }
