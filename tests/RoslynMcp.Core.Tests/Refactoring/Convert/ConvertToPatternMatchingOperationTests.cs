@@ -38,7 +38,7 @@ public class ConvertToPatternMatchingOperationTests
         {
             public string Describe(object value)
             {
-                if (value is int)
+                if (value is int i)
                     return "int";
                 else
                     return "other";
@@ -53,7 +53,7 @@ public class ConvertToPatternMatchingOperationTests
         {
             public string Describe(object a, object b)
             {
-                if (a is int) return "intA"; else return "otherA"; switch (b) { case 1: return "one"; default: return "otherB"; }
+                if (a is int i) return "intA"; else return "otherA"; switch (b) { case 1: return "one"; default: return "otherB"; }
             }
         }
         """;
@@ -65,7 +65,7 @@ public class ConvertToPatternMatchingOperationTests
         {
             public string Describe(object value)
             {
-                if (value is int) return "int"; else return "other"; if (value is string) return "string"; else return "other";
+                if (value is int i) return "int"; else return "other"; if (value is string s) return "string"; else return "other";
             }
         }
         """;
@@ -77,7 +77,7 @@ public class ConvertToPatternMatchingOperationTests
         {
             public string Describe(object a, object b)
             {
-                if (a is int) return "intA"; else return "otherA";if (b is string) return "stringB"; else return "otherB";
+                if (a is int i) return "intA"; else return "otherA";if (b is string s) return "stringB"; else return "otherB";
             }
         }
         """;
@@ -90,7 +90,7 @@ public class ConvertToPatternMatchingOperationTests
             public string Describe(object value)
             {
                 if
-                    (value is int)
+                    (value is int i)
                     return "int";
                 else
                     return "other";
@@ -202,12 +202,12 @@ public class ConvertToPatternMatchingOperationTests
         var result = await operation.ExecuteAsync(new ConvertToPatternMatchingParams
         {
             SourceFile = workspace.SourcePath,
-            Line = FindLine(SingleIfSource, "if (value is int)")
+            Line = FindLine(SingleIfSource, "if (value is int i)")
         });
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.DoesNotContain("if (value is int)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (value is int i)", updated, StringComparison.Ordinal);
         Assert.Contains("switch", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
     }
@@ -259,12 +259,12 @@ public class ConvertToPatternMatchingOperationTests
         var result = await operation.ExecuteAsync(new ConvertToPatternMatchingParams
         {
             SourceFile = workspace.SourcePath,
-            Line = FindLine(SameLineIfThenSwitchSource, "if (a is int)")
+            Line = FindLine(SameLineIfThenSwitchSource, "if (a is int i)")
         });
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("if (a is int)", updated, StringComparison.Ordinal);
+        Assert.Contains("if (a is int i)", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("switch (b)", updated, StringComparison.Ordinal);
         Assert.Contains("=>", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
@@ -279,13 +279,13 @@ public class ConvertToPatternMatchingOperationTests
         var result = await operation.ExecuteAsync(new ConvertToPatternMatchingParams
         {
             SourceFile = workspace.SourcePath,
-            Line = FindLine(SameLineTwoIfsSource, "if (value is int)")
+            Line = FindLine(SameLineTwoIfsSource, "if (value is int i)")
         });
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.DoesNotContain("if (value is int)", updated, StringComparison.Ordinal);
-        Assert.Contains("if (value is string)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (value is int i)", updated, StringComparison.Ordinal);
+        Assert.Contains("if (value is string s)", updated, StringComparison.Ordinal);
         Assert.Contains("switch", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
     }
@@ -299,8 +299,8 @@ public class ConvertToPatternMatchingOperationTests
     {
         await using var workspace = await TempWorkspace.CreateAsync(SameLineTwoIfsSource);
         var operation = new ConvertToPatternMatchingOperation(workspace.Context);
-        var line = FindLine(SameLineTwoIfsSource, "if (value is int)");
-        var secondColumn = ColumnOf(SameLineTwoIfsSource, "if (value is string)");
+        var line = FindLine(SameLineTwoIfsSource, "if (value is int i)");
+        var secondColumn = ColumnOf(SameLineTwoIfsSource, "if (value is string s)");
 
         var result = await operation.ExecuteAsync(new ConvertToPatternMatchingParams
         {
@@ -311,8 +311,8 @@ public class ConvertToPatternMatchingOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("if (value is int)", updated, StringComparison.Ordinal);
-        Assert.DoesNotContain("if (value is string)", updated, StringComparison.Ordinal);
+        Assert.Contains("if (value is int i)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (value is string s)", updated, StringComparison.Ordinal);
         Assert.Contains("switch", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
     }
@@ -326,13 +326,13 @@ public class ConvertToPatternMatchingOperationTests
         var result = await operation.ExecuteAsync(new ConvertToPatternMatchingParams
         {
             SourceFile = workspace.SourcePath,
-            Line = FindLine(SameLineIfThenSwitchSource, "if (a is int)"),
-            Column = ColumnOf(SameLineIfThenSwitchSource, "if (a is int)")
+            Line = FindLine(SameLineIfThenSwitchSource, "if (a is int i)"),
+            Column = ColumnOf(SameLineIfThenSwitchSource, "if (a is int i)")
         });
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.DoesNotContain("if (a is int)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (a is int i)", updated, StringComparison.Ordinal);
         Assert.Contains("switch (b)", updated, StringComparison.Ordinal);
         Assert.Contains("switch", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
@@ -347,8 +347,8 @@ public class ConvertToPatternMatchingOperationTests
         var result = await operation.ExecuteAsync(new ConvertToPatternMatchingParams
         {
             SourceFile = workspace.SourcePath,
-            Line = FindLine(ContinuationIfSource, "(value is int)"),
-            Column = ColumnOf(ContinuationIfSource, "(value is int)")
+            Line = FindLine(ContinuationIfSource, "(value is int i)"),
+            Column = ColumnOf(ContinuationIfSource, "(value is int i)")
         });
 
         Assert.True(result.Success);
@@ -363,10 +363,10 @@ public class ConvertToPatternMatchingOperationTests
     {
         var tree = CSharpSyntaxTree.ParseText(SameLineIfThenSwitchSource);
         var root = tree.GetRoot();
-        var line = FindLine(SameLineIfThenSwitchSource, "if (a is int)");
+        var line = FindLine(SameLineIfThenSwitchSource, "if (a is int i)");
         var omitted = ConvertToPatternMatchingOperation.FindConvertibleStatement(root, line, column: null);
         var byIfColumn = ConvertToPatternMatchingOperation.FindConvertibleStatement(
-            root, line, ColumnOf(SameLineIfThenSwitchSource, "if (a is int)"));
+            root, line, ColumnOf(SameLineIfThenSwitchSource, "if (a is int i)"));
         var bySwitchColumn = ConvertToPatternMatchingOperation.FindConvertibleStatement(
             root, line, ColumnOf(SameLineIfThenSwitchSource, "switch (b)"));
 
@@ -380,11 +380,11 @@ public class ConvertToPatternMatchingOperationTests
     {
         var tree = CSharpSyntaxTree.ParseText(SameLineTwoIfsSource);
         var root = tree.GetRoot();
-        var line = FindLine(SameLineTwoIfsSource, "if (value is int)");
+        var line = FindLine(SameLineTwoIfsSource, "if (value is int i)");
         var first = ConvertToPatternMatchingOperation.FindConvertibleStatement(
-            root, line, ColumnOf(SameLineTwoIfsSource, "if (value is int)"));
+            root, line, ColumnOf(SameLineTwoIfsSource, "if (value is int i)"));
         var second = ConvertToPatternMatchingOperation.FindConvertibleStatement(
-            root, line, ColumnOf(SameLineTwoIfsSource, "if (value is string)"));
+            root, line, ColumnOf(SameLineTwoIfsSource, "if (value is string s)"));
         var omitted = ConvertToPatternMatchingOperation.FindConvertibleStatement(root, line, column: null);
 
         Assert.IsType<IfStatementSyntax>(first);
@@ -403,13 +403,13 @@ public class ConvertToPatternMatchingOperationTests
         var tree = CSharpSyntaxTree.ParseText(ContinuationIfSource);
         var root = tree.GetRoot();
         var startLine = FindLine(ContinuationIfSource, "if");
-        var continuationLine = FindLine(ContinuationIfSource, "(value is int)");
+        var continuationLine = FindLine(ContinuationIfSource, "(value is int i)");
         Assert.NotEqual(startLine, continuationLine);
 
         var omittedOnContinuation = ConvertToPatternMatchingOperation.FindConvertibleStatement(
             root, continuationLine, column: null);
         var byColumn = ConvertToPatternMatchingOperation.FindConvertibleStatement(
-            root, continuationLine, ColumnOf(ContinuationIfSource, "(value is int)"));
+            root, continuationLine, ColumnOf(ContinuationIfSource, "(value is int i)"));
 
         Assert.Null(omittedOnContinuation);
         Assert.IsType<IfStatementSyntax>(byColumn);
@@ -420,11 +420,11 @@ public class ConvertToPatternMatchingOperationTests
     {
         var tree = CSharpSyntaxTree.ParseText(AdjacentIfsSource);
         var root = tree.GetRoot();
-        var line = FindLine(AdjacentIfsSource, "if (a is int)");
+        var line = FindLine(AdjacentIfsSource, "if (a is int i)");
         var first = root.DescendantNodes().OfType<IfStatementSyntax>()
             .First(statement => statement.ToString().Contains("intA", StringComparison.Ordinal));
         var firstEndCol = first.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
-        var secondKeyword = ColumnOf(AdjacentIfsSource, "if (b is string)");
+        var secondKeyword = ColumnOf(AdjacentIfsSource, "if (b is string s)");
 
         var atExclusiveEnd = ConvertToPatternMatchingOperation.FindConvertibleStatement(root, line, firstEndCol);
         var atSecondKeyword = ConvertToPatternMatchingOperation.FindConvertibleStatement(root, line, secondKeyword);
