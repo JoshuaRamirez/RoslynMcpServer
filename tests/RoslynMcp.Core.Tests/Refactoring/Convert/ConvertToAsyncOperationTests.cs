@@ -319,6 +319,116 @@ public class ConvertToAsyncOperationTests
 
     #endregion
 
+    #region Nested sync self-calls and conditional access
+
+    [SkippableFact]
+    public async Task ConvertToAsync_UpdateCallersTrue_NestedSyncLocalFunctionAndLambda_NotAwaited()
+    {
+        const string source = """
+            using System;
+            using System.Threading.Tasks;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Process()
+                {
+                    Task.Delay(1);
+                    void Nested()
+                    {
+                        Process();
+                    }
+                    Action go = () => Process();
+                    Nested();
+                    go();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            UpdateCallers = true
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.CallersSkipped);
+        Assert.Contains(result.CallersSkipped, skipped =>
+            skipped.Caller == "Nested" &&
+            skipped.Reason == ConvertToAsyncOperation.SyncCallerSkipReason);
+        Assert.Contains(result.CallersSkipped, skipped =>
+            skipped.Caller == "(lambda)" &&
+            skipped.Reason == ConvertToAsyncOperation.SyncCallerSkipReason);
+
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("async Task ProcessAsync()", updated);
+        Assert.Contains("await Task.Delay(1)", updated);
+
+        var process = CSharpSyntaxTree.ParseText(updated).GetRoot()
+            .DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(method => method.Identifier.Text == "ProcessAsync");
+        var nested = process.DescendantNodes().OfType<LocalFunctionStatementSyntax>()
+            .Single(local => local.Identifier.Text == "Nested");
+        Assert.False(nested.Modifiers.Any(SyntaxKind.AsyncKeyword));
+        Assert.Empty(nested.DescendantNodes().OfType<AwaitExpressionSyntax>());
+        Assert.Contains("ProcessAsync()", nested.ToString(), StringComparison.Ordinal);
+
+        var lambda = process.DescendantNodes().OfType<ParenthesizedLambdaExpressionSyntax>().Single();
+        Assert.False(lambda.AsyncKeyword.IsKind(SyntaxKind.AsyncKeyword));
+        Assert.Empty(lambda.DescendantNodes().OfType<AwaitExpressionSyntax>());
+        Assert.Contains("ProcessAsync()", lambda.ToString(), StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_UpdateCallersTrue_ConditionalAccessInAsyncCaller_IsAwaited()
+    {
+        const string source = """
+            using System.Threading.Tasks;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Process()
+                {
+                    Task.Delay(1);
+                }
+
+                public async Task CallerAsync(Worker? other)
+                {
+                    other?.Process();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            UpdateCallers = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.CallersUpdated);
+        Assert.Null(result.CallersSkipped);
+
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var callerAsync = GetMethodBody(updated, "CallerAsync");
+        Assert.Contains("await other?.ProcessAsync()", callerAsync);
+        Assert.DoesNotContain("other?.Process();", callerAsync);
+    }
+
+    #endregion
+
     #region Existing convert-to-async behavior
 
     [SkippableFact]
@@ -464,6 +574,18 @@ public class ConvertToAsyncOperationTests
     {
         var name = SyntaxFactory.IdentifierName("Process");
         Assert.Null(ConvertToAsyncOperation.GetContainingInvocation(name));
+    }
+
+    [Fact]
+    public void GetContainingInvocation_ConditionalAccess()
+    {
+        var expression = SyntaxFactory.ParseExpression("worker?.Process()");
+        var conditional = Assert.IsType<ConditionalAccessExpressionSyntax>(expression);
+        var invocation = Assert.IsType<InvocationExpressionSyntax>(conditional.WhenNotNull);
+        var binding = Assert.IsType<MemberBindingExpressionSyntax>(invocation.Expression);
+
+        Assert.Same(invocation, ConvertToAsyncOperation.GetContainingInvocation(binding.Name));
+        Assert.Same(conditional, ConvertToAsyncOperation.GetAwaitWrapTarget(invocation));
     }
 
     [Fact]

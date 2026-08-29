@@ -19,6 +19,7 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
 {
     private static readonly SyntaxAnnotation AwaitableCallAnnotation = new("convert-to-async-awaitable");
     private static readonly SyntaxAnnotation SelfCallAnnotation = new("convert-to-async-self-call");
+    private static readonly SyntaxAnnotation SelfCallAwaitAnnotation = new("convert-to-async-self-call-await");
 
     internal const string SyncCallerSkipReason =
         "Caller is not async; skipped await wrap to keep the method compiling.";
@@ -171,7 +172,11 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         foreach (var call in awaitableCalls)
             AddAnnotation(annotatedCalls, call, AwaitableCallAnnotation);
         foreach (var site in callSites.Where(site => site.IsInsideConvertedMethod && site.Invocation != null))
+        {
             AddAnnotation(annotatedCalls, site.Invocation!, SelfCallAnnotation);
+            if (ShouldAwaitCallSite(site, @params.UpdateCallers))
+                AddAnnotation(annotatedCalls, site.Invocation!, SelfCallAwaitAnnotation);
+        }
 
         var methodToRewrite = methodDecl;
         if (annotatedCalls.Count > 0)
@@ -183,8 +188,7 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
 
         methodToRewrite = (MethodDeclarationSyntax)new AnnotatedCallRewriter(
             @params.MethodName,
-            newMethodName,
-            awaitSelfCalls: @params.UpdateCallers).Visit(methodToRewrite)!;
+            newMethodName).Visit(methodToRewrite)!;
 
         var newMethod = methodToRewrite
             .WithIdentifier(SyntaxFactory.Identifier(newMethodName))
@@ -293,6 +297,8 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
             var (isAsync, enclosingName) = GetEnclosingCallable(name);
             var isInsideConvertedMethod = location.Document.Id == document.Id
                 && methodDecl.Span.Contains(name.Span);
+            var isEnclosingConvertedMethod = location.Document.Id == document.Id
+                && IsNearestEnclosingConvertedMethod(name, methodDecl);
 
             callSites.Add(new CallSite(
                 location.Document.Id,
@@ -300,6 +306,7 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
                 name,
                 invocation,
                 isInsideConvertedMethod,
+                isEnclosingConvertedMethod,
                 isAsync,
                 invocation != null && IsAlreadyAwaited(invocation),
                 enclosingName));
@@ -331,8 +338,11 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
             if (site.IsAlreadyAwaited)
                 continue;
 
-            // The converted method itself becomes async, so self-calls can legally await.
-            if (site.IsAsyncContext || site.IsInsideConvertedMethod)
+            // Await only when the nearest enclosing callable is already async,
+            // or is the converted method itself (it becomes async). Nested sync
+            // local functions / lambdas stay unawaited even when they live inside
+            // the converted method.
+            if (ShouldAwaitCallSite(site, updateCallers: true))
             {
                 updated.Add(site);
                 continue;
@@ -354,21 +364,31 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         bool updateCallers,
         string newMethodName)
     {
-        var willAwait = updateCallers
-            && site.Invocation != null
-            && !site.IsAlreadyAwaited
-            && (site.IsAsyncContext || site.IsInsideConvertedMethod);
-
-        if (willAwait && site.Invocation != null)
+        if (site.Invocation == null)
         {
-            var invocation = site.Invocation;
             if (needsRename)
+                return new NodeReplacement(site.Name, WithMethodName(site.Name, newMethodName));
+            return null;
+        }
+
+        var invocation = site.Invocation;
+        ExpressionSyntax updatedInvocation = invocation;
+        if (needsRename)
+        {
+            var renamed = WithMethodName(site.Name, newMethodName);
+            updatedInvocation = invocation.ReplaceNode(site.Name, renamed);
+        }
+
+        if (ShouldAwaitCallSite(site, updateCallers))
+        {
+            var wrapTarget = GetAwaitWrapTarget(invocation);
+            if (wrapTarget is ConditionalAccessExpressionSyntax conditional)
             {
-                var renamed = WithMethodName(site.Name, newMethodName);
-                invocation = invocation.ReplaceNode(site.Name, renamed);
+                var updatedConditional = conditional.ReplaceNode(invocation, updatedInvocation);
+                return new NodeReplacement(conditional, WrapWithAwait(updatedConditional));
             }
 
-            return new NodeReplacement(site.Invocation, WrapWithAwait(invocation));
+            return new NodeReplacement(invocation, WrapWithAwait(updatedInvocation));
         }
 
         if (needsRename)
@@ -402,13 +422,70 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
 
         if (name.Parent is MemberBindingExpressionSyntax binding
             && binding.Name == name
-            && binding.Parent is ConditionalAccessExpressionSyntax conditional
-            && conditional.WhenNotNull is InvocationExpressionSyntax conditionalInvocation)
+            && binding.Parent is InvocationExpressionSyntax bindingInvocation
+            && bindingInvocation.Expression == binding)
         {
-            return conditionalInvocation;
+            return bindingInvocation;
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Await when the nearest enclosing callable is already async, or is the
+    /// converted method (it becomes async). Nested sync local functions and
+    /// lambdas are not awaited.
+    /// </summary>
+    internal static bool ShouldAwaitCallSite(CallSite site, bool updateCallers)
+    {
+        if (!updateCallers || site.Invocation == null || site.IsAlreadyAwaited)
+            return false;
+
+        return site.IsAsyncContext || site.IsEnclosingConvertedMethod;
+    }
+
+    /// <summary>
+    /// True when the nearest enclosing callable is <paramref name="methodDecl"/>
+    /// (no nested local function, lambda, or other callable in between).
+    /// </summary>
+    internal static bool IsNearestEnclosingConvertedMethod(SyntaxNode node, MethodDeclarationSyntax methodDecl)
+    {
+        for (var current = node; current != null; current = current.Parent)
+        {
+            switch (current)
+            {
+                case MethodDeclarationSyntax method:
+                    return method == methodDecl;
+                case LocalFunctionStatementSyntax:
+                case ParenthesizedLambdaExpressionSyntax:
+                case SimpleLambdaExpressionSyntax:
+                case AnonymousMethodExpressionSyntax:
+                case ConstructorDeclarationSyntax:
+                case DestructorDeclarationSyntax:
+                case OperatorDeclarationSyntax:
+                case ConversionOperatorDeclarationSyntax:
+                case AccessorDeclarationSyntax:
+                    return false;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Conditional access invocations (<c>obj?.M()</c>) must be awaited at the
+    /// outermost <c>?.</c> expression, not the inner WhenNotNull invocation.
+    /// </summary>
+    internal static ExpressionSyntax GetAwaitWrapTarget(ExpressionSyntax expression)
+    {
+        var current = expression;
+        while (current.Parent is ConditionalAccessExpressionSyntax conditional
+               && conditional.WhenNotNull == current)
+        {
+            current = conditional;
+        }
+
+        return current;
     }
 
     internal static (bool IsAsync, string Name) GetEnclosingCallable(SyntaxNode node)
@@ -445,7 +522,7 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
 
     internal static bool IsAlreadyAwaited(ExpressionSyntax expression)
     {
-        var parent = expression.Parent;
+        var parent = GetAwaitWrapTarget(expression).Parent;
         while (parent is ParenthesizedExpressionSyntax paren)
             parent = paren.Parent;
 
@@ -588,6 +665,7 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         SimpleNameSyntax Name,
         InvocationExpressionSyntax? Invocation,
         bool IsInsideConvertedMethod,
+        bool IsEnclosingConvertedMethod,
         bool IsAsyncContext,
         bool IsAlreadyAwaited,
         string EnclosingName);
@@ -616,19 +694,26 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
     {
         private readonly string _oldName;
         private readonly string _newName;
-        private readonly bool _awaitSelfCalls;
 
-        public AnnotatedCallRewriter(string oldName, string newName, bool awaitSelfCalls)
+        public AnnotatedCallRewriter(string oldName, string newName)
         {
             _oldName = oldName;
             _newName = newName;
-            _awaitSelfCalls = awaitSelfCalls;
+        }
+
+        public override SyntaxNode? VisitConditionalAccessExpression(ConditionalAccessExpressionSyntax node)
+        {
+            var visited = (ConditionalAccessExpressionSyntax)base.VisitConditionalAccessExpression(node)!;
+            var invocation = FindAwaitableInvocationUnder(node);
+            if (invocation != null && GetAwaitWrapTarget(invocation) == node)
+                return WrapWithAwait(visited);
+
+            return visited;
         }
 
         public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
         {
             var visited = (InvocationExpressionSyntax)base.VisitInvocationExpression(node)!;
-            var isAwaitable = node.HasAnnotation(AwaitableCallAnnotation);
             var isSelfCall = node.HasAnnotation(SelfCallAnnotation);
 
             if (isSelfCall && _oldName != _newName)
@@ -638,7 +723,7 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
                     visited = visited.ReplaceNode(name, WithMethodName(name, _newName));
             }
 
-            if (isAwaitable || (isSelfCall && _awaitSelfCalls && !IsAlreadyAwaited(node)))
+            if (ShouldAwaitAnnotated(node) && GetAwaitWrapTarget(node) == node)
             {
                 return SyntaxFactory.AwaitExpression(
                     SyntaxFactory.Token(SyntaxKind.AwaitKeyword).WithTrailingTrivia(SyntaxFactory.Space),
@@ -647,6 +732,20 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
             }
 
             return visited;
+        }
+
+        private static bool ShouldAwaitAnnotated(InvocationExpressionSyntax node)
+        {
+            return node.HasAnnotation(AwaitableCallAnnotation)
+                || node.HasAnnotation(SelfCallAwaitAnnotation);
+        }
+
+        private static InvocationExpressionSyntax? FindAwaitableInvocationUnder(
+            ConditionalAccessExpressionSyntax node)
+        {
+            return node.DescendantNodesAndSelf()
+                .OfType<InvocationExpressionSyntax>()
+                .FirstOrDefault(ShouldAwaitAnnotated);
         }
     }
 }
