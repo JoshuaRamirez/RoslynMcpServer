@@ -207,7 +207,7 @@ public sealed class ToolRegistry
 
         // ── Refactoring: Convert (13) ─────────────────────────────────
         r.RegisterRefactoring<ConvertToAsyncOperation, ConvertToAsyncParams>(
-            "convert-to-async", "Convert a synchronous method to async; updateCallers (default false) awaits already-async callers and skips sync callers that cannot legally await");
+            "convert-to-async", "Convert a synchronous method to async; column (optional) picks the method whose identifier or declaration span covers that column; updateCallers (default false) awaits already-async callers and skips sync callers that cannot legally await");
         r.RegisterRefactoring<ConvertExpressionBodyOperation, ConvertExpressionBodyParams>(
             "convert-expression-body", "Toggle between expression body and block body; column (optional) picks the member whose identifier or declaration span covers that column on the given line");
         r.RegisterRefactoring<ConvertToBlockBodyOperation, ConvertToBlockBodyParams>(

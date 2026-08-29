@@ -33,7 +33,7 @@ public sealed class ConvertToAsyncTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a synchronous method to async/await pattern. renameToAsync (default true) rewrites call-site identifiers to the Async name. updateCallers (default false) wraps already-async callers in await and skips synchronous callers that cannot legally await. Preview describes caller updates and writes nothing.";
+        "Convert a synchronous method to async/await pattern. column (optional) picks the method whose identifier or declaration span covers that column. Omitted keeps today's MethodName + Line pick. renameToAsync (default true) rewrites call-site identifiers to the Async name. updateCallers (default false) wraps already-async callers in await and skips synchronous callers that cannot legally await. Preview describes caller updates and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -61,6 +61,11 @@ public sealed class ConvertToAsyncTool : IToolHandler
             {
                 type = "integer",
                 description = "Line number for disambiguation if multiple methods have the same name (1-based)"
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set, selects the method whose identifier or declaration span covers that column. Omitted keeps today's MethodName + Line pick."
             },
             renameToAsync = new
             {
@@ -110,6 +115,7 @@ public sealed class ConvertToAsyncTool : IToolHandler
                 SourceFile = args.SourceFile,
                 MethodName = args.MethodName,
                 Line = args.Line,
+                Column = args.Column,
                 RenameToAsync = args.RenameToAsync ?? true,
                 UpdateCallers = args.UpdateCallers ?? false,
                 Preview = args.Preview ?? false
@@ -143,6 +149,7 @@ public sealed class ConvertToAsyncTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string MethodName { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public bool? RenameToAsync { get; init; }
         public bool? UpdateCallers { get; init; }
         public bool? Preview { get; init; }

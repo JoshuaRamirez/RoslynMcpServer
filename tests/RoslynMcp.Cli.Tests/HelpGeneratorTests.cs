@@ -418,6 +418,7 @@ public class HelpGeneratorTests
 
         Assert.Contains("convert-to-async", help);
         Assert.Contains("updateCallers", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
 
         var requiredIdx = help.IndexOf("REQUIRED:");
         var optionalIdx = help.IndexOf("OPTIONAL:");
@@ -431,9 +432,11 @@ public class HelpGeneratorTests
         Assert.Contains("--method-name", requiredSection);
         Assert.DoesNotContain("--update-callers", requiredSection);
         Assert.DoesNotContain("--rename-to-async", requiredSection);
+        Assert.DoesNotContain("--column", requiredSection);
         Assert.DoesNotContain("--preview", requiredSection);
 
         Assert.Contains("--line", optionalSection);
+        Assert.Contains("--column", optionalSection);
         Assert.Contains("--rename-to-async", optionalSection);
         Assert.Contains("--update-callers", optionalSection);
         Assert.Contains("--preview", optionalSection);
