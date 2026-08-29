@@ -14,7 +14,7 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
 /// Operation-level tests for <see cref="GeneratePropertyOperation"/>, including
-/// <c>replaceExisting</c>.
+/// optional <c>line</c> and <c>replaceExisting</c>.
 /// </summary>
 public class GeneratePropertyOperationTests
 {
@@ -125,6 +125,54 @@ public class GeneratePropertyOperationTests
     }
 
     [Fact]
+    public void Line_DefaultsToNull()
+    {
+        var @params = new GeneratePropertyParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Widget",
+            PropertyName = "Name",
+            PropertyType = "string"
+        };
+
+        Assert.Null(@params.Line);
+    }
+
+    [Fact]
+    public void Validate_InvalidLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.Validate(new GeneratePropertyParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                PropertyName = "Name",
+                PropertyType = "string",
+                Line = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.Validate(new GeneratePropertyParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                PropertyName = "Name",
+                PropertyType = "string",
+                Line = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
     public void ReplaceExisting_DefaultsToFalse()
     {
         var @params = new GeneratePropertyParams
@@ -231,6 +279,429 @@ public class GeneratePropertyOperationTests
             GeneratePropertyOperation.ResolvePropertyToReplace(type, "Name", replaceExisting: false));
 
         Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+    }
+
+    #endregion
+
+    #region P0 optional line disambiguation
+
+    private const string NestedSameNameWidgetSource = """
+        namespace TestApp;
+
+        public /* outer-widget */ class Widget
+        {
+            public /* nested-widget */ class Widget
+            {
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateProperty_OmittedLine_KeepsTypeNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            PropertyName = "Name",
+            PropertyType = "string"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasProperty(types[0], "Name"));
+        Assert.False(TypeHasProperty(types[1], "Name"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "nested-widget"),
+            PropertyName = "Age",
+            PropertyType = "int"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasProperty(types[0], "Age"));
+        Assert.True(TypeHasProperty(types[1], "Age"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_LineOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "outer-widget"),
+            PropertyName = "Name",
+            PropertyType = "string"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasProperty(types[0], "Name"));
+        Assert.False(TypeHasProperty(types[1], "Name"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_Line_Preview_WritesNothing_AndDescribesGeneration()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "nested-widget"),
+            PropertyName = "Age",
+            PropertyType = "int",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Generate property 'Age'", result.PendingChanges[0].Description);
+        Assert.Contains("Widget", result.PendingChanges[0].Description);
+        Assert.Contains("public int Age { get; set; }", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GeneratePropertyOperation.FindTypeDeclaration(root, "Widget", line: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GeneratePropertyOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(NestedSameNameWidgetSource, "nested-widget"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Widget");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GeneratePropertyOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(NestedSameNameWidgetSource, "outer-widget"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Widget // split-widget
+            {
+                public class Widget // nested-widget
+                {
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-widget");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = GeneratePropertyOperation.FindTypeDeclaration(root, "Widget", identifierLine);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineMiss_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GeneratePropertyOperation.FindTypeDeclaration(root, "Widget", line: 1);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    private const string EnumFirstThenSameNamedClassSource = """
+        namespace Other
+        {
+            public /* widget-enum */ enum Widget
+            {
+                Ready
+            }
+        }
+
+        namespace TestApp
+        {
+            public /* widget-class */ class Widget
+            {
+            }
+        }
+        """;
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_EnumFirstPicksEnum()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = GeneratePropertyOperation.FindTypeDeclaration(root, "Widget", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnEnumIdentifier_PicksEnum()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = GeneratePropertyOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(EnumFirstThenSameNamedClassSource, "widget-enum"));
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnClassIdentifier_PicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = GeneratePropertyOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(EnumFirstThenSameNamedClassSource, "widget-class"));
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_OmittedLine_EnumFirstThenSameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("public string Name", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_LineOnEnumIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                Line = FindLine(EnumFirstThenSameNamedClassSource, "widget-enum"),
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("public string Name", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_LineOnClassIdentifier_SameNamedEnum_GeneratesOnClass()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(EnumFirstThenSameNamedClassSource, "widget-class"),
+            PropertyName = "Name",
+            PropertyType = "string"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Widget");
+        Assert.Single(types);
+        Assert.True(TypeHasProperty(types[0], "Name"));
+        Assert.Contains("public string Name { get; set; }", updated);
+        Assert.Contains("enum Widget", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public string Name", updated[..updated.IndexOf("class Widget", StringComparison.Ordinal)]);
+    }
+
+    [Fact]
+    public void SpanCoversLine_TreatsEndAsExclusive()
+    {
+        var span = new FileLinePositionSpan(
+            "t.cs",
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
+
+        Assert.True(GeneratePropertyOperation.SpanCoversLine(span, 1));
+        Assert.True(GeneratePropertyOperation.SpanCoversLine(span, 2));
+        Assert.False(GeneratePropertyOperation.SpanCoversLine(span, 3));
+        Assert.False(GeneratePropertyOperation.SpanCoversLine(span, 0));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_LineOnLaterSameFilePartial_ReplaceExisting_InsertsOnSelectedPartial()
+    {
+        const string source = """
+            namespace Other
+            {
+                public class Widget
+                {
+                    public string Title { get; set; }
+                }
+            }
+
+            namespace TestApp
+            {
+                public partial class Widget
+                {
+                    public string Name { get; set; } = "old-partial";
+                }
+
+                public /* later-partial */ partial class Widget
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(source, "later-partial"),
+            PropertyName = "Name",
+            PropertyType = "int",
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(3, types.Count);
+        Assert.False(TypeHasProperty(types[0], "Name"));
+        Assert.False(TypeHasProperty(types[1], "Name"));
+        Assert.True(TypeHasProperty(types[2], "Name"));
+        var selected = ExtractPropertyFromType(types[2], "Name");
+        Assert.Contains("public int Name { get; set; }", selected, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-partial", selected, StringComparison.Ordinal);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(1, CountOccurrences(updated, "public int Name"));
+        Assert.DoesNotContain("old-partial", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public string Name", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_SequentialReplaceExisting_ReusedWorkspace_InsertsOnSecondSelectedType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Alpha
+            {
+                public string Name { get; set; } = "old-alpha";
+            }
+
+            public class Beta
+            {
+                public string Title { get; set; } = "old-beta";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Types.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var first = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Alpha",
+            PropertyName = "Name",
+            PropertyType = "int",
+            ReplaceExisting = true
+        });
+        Assert.True(first.Success);
+
+        var second = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Beta",
+            PropertyName = "Title",
+            PropertyType = "int",
+            ReplaceExisting = true
+        });
+        Assert.True(second.Success);
+
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var types = GetTypes(updated, "Alpha").Concat(GetTypes(updated, "Beta")).ToList();
+        var alpha = types.Single(t => t.Identifier.Text == "Alpha");
+        var beta = types.Single(t => t.Identifier.Text == "Beta");
+        Assert.True(TypeHasProperty(alpha, "Name"));
+        Assert.True(TypeHasProperty(beta, "Title"));
+        Assert.False(TypeHasProperty(alpha, "Title"));
+        Assert.False(TypeHasProperty(beta, "Name"));
+        var alphaProp = ExtractPropertyFromType(alpha, "Name");
+        var betaProp = ExtractPropertyFromType(beta, "Title");
+        Assert.Contains("public int Name { get; set; }", alphaProp, StringComparison.Ordinal);
+        Assert.Contains("public int Title { get; set; }", betaProp, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-alpha", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-beta", updated, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(NormalizeNewlines(alpha.ToFullString()), "public int Name"));
+        Assert.Equal(1, CountOccurrences(NormalizeNewlines(beta.ToFullString()), "public int Title"));
     }
 
     #endregion
@@ -1255,8 +1726,46 @@ public class GeneratePropertyOperationTests
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpGeneratePropertyMissing.cs");
 
+    private static IReadOnlyList<TypeDeclarationSyntax> GetTypes(string source, string name) =>
+        CSharpSyntaxTree.ParseText(source).GetRoot()
+            .DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == name)
+            .ToList();
+
+    private static bool TypeHasProperty(TypeDeclarationSyntax type, string propertyName) =>
+        type.Members.OfType<PropertyDeclarationSyntax>().Any(p => p.Identifier.Text == propertyName);
+
+    private static string ExtractPropertyFromType(TypeDeclarationSyntax type, string propertyName)
+    {
+        var property = type.Members.OfType<PropertyDeclarationSyntax>()
+            .Single(p => p.Identifier.Text == propertyName);
+        return NormalizeNewlines(property.ToFullString());
+    }
+
+    // Single-line snippets only — IndexOf of an LF-only snippet missed
+    // CRLF checkouts (FindMethod_ColumnOnContinuationLine on #200 / #214).
+    private static int FindLine(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
     private static string NormalizeNewlines(string text) =>
-        text.Replace("\r\n", "\n", StringComparison.Ordinal);
+        text.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
 
     private static int CountOccurrences(string text, string value)
     {
