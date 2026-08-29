@@ -32,7 +32,8 @@ public sealed class InlineVariableTool : IToolHandler
     public string Name => "inline_variable";
 
     /// <inheritdoc />
-    public string Description => "Inline a local variable by replacing all usages with its initializer value.";
+    public string Description =>
+        "Inline a local variable by replacing all usages with its initializer value. column (optional) picks the declaration whose identifier or declaration span covers that column. Omitted keeps today's variableName + optional line start-line pick.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -60,6 +61,11 @@ public sealed class InlineVariableTool : IToolHandler
             {
                 type = "integer",
                 description = "Line number where the variable is declared (1-based). Optional for disambiguation."
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set, selects the declaration whose identifier or declaration span covers that column. Omitted keeps today's variableName + optional line start-line pick."
             },
             preview = new
             {
@@ -97,6 +103,7 @@ public sealed class InlineVariableTool : IToolHandler
                 SourceFile = args.SourceFile,
                 VariableName = args.VariableName,
                 Line = args.Line,
+                Column = args.Column,
                 Preview = args.Preview ?? false
             };
 
@@ -128,6 +135,7 @@ public sealed class InlineVariableTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string VariableName { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public bool? Preview { get; init; }
     }
 }

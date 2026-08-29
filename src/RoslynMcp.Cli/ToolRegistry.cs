@@ -183,7 +183,7 @@ public sealed class ToolRegistry
 
         // ── Refactoring: Inline (3) ───────────────────────────────────
         r.RegisterRefactoring<InlineVariableOperation, InlineVariableParams>(
-            "inline-variable", "Inline a variable, replacing all references with its value");
+            "inline-variable", "Inline a variable, replacing all references with its value; column (optional) picks the declaration whose identifier or declaration span covers that column; omitted keeps today's variableName + optional line start-line pick");
         r.RegisterRefactoring<InlineMethodOperation, InlineMethodParams>(
             "inline-method", "Inline a method by replacing call sites with the method body");
         r.RegisterRefactoring<InlineConstantOperation, InlineConstantParams>(

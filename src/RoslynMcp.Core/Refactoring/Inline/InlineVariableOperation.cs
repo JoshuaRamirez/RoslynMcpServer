@@ -24,7 +24,13 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(InlineVariableParams @params)
+    protected override void ValidateParams(InlineVariableParams @params) => Validate(@params);
+
+    /// <summary>
+    /// Validates inline-variable parameters. Internal so tests can
+    /// exercise input rules without loading a workspace.
+    /// </summary>
+    internal static void Validate(InlineVariableParams @params)
     {
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
@@ -37,6 +43,9 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
 
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -73,29 +82,39 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
                 $"Variable '{@params.VariableName}' not found.");
         }
 
-        VariableDeclaratorSyntax declarator;
-        if (variableDeclarators.Count > 1)
+        // Line is required when more than one variable matches, even if
+        // column is set. Column without Line is not a source position:
+        // FindDeclarator would substitute each candidate's own start line
+        // and could silently pick the shortest equally-aligned local.
+        // When both are set, pick by identifier/declaration span and do
+        // not require the declaration to start on `line` (continuation-
+        // line identifier).
+        if (variableDeclarators.Count > 1 && !@params.Line.HasValue)
         {
-            if (!@params.Line.HasValue)
-            {
-                var lines = variableDeclarators
-                    .Select(v => v.GetLocation().GetLineSpan().StartLinePosition.Line + 1)
-                    .ToList();
-                throw new RefactoringException(
-                    ErrorCodes.SymbolAmbiguous,
-                    $"Multiple variables named '{@params.VariableName}' found. Provide line number. Options: {string.Join(", ", lines)}");
-            }
+            var lines = variableDeclarators
+                .Select(v => StartLine(v))
+                .ToList();
+            throw new RefactoringException(
+                ErrorCodes.SymbolAmbiguous,
+                $"Multiple variables named '{@params.VariableName}' found. Provide line number. Options: {string.Join(", ", lines)}");
+        }
 
-            declarator = variableDeclarators.FirstOrDefault(v =>
-                v.GetLocation().GetLineSpan().StartLinePosition.Line + 1 == @params.Line.Value)
-                ?? throw new RefactoringException(
-                    ErrorCodes.VariableNotFound,
-                    $"Variable '{@params.VariableName}' not found at line {@params.Line}.");
-        }
-        else
+        var declarator = FindDeclarator(root, @params.VariableName, @params.Line, @params.Column);
+        if (declarator == null)
         {
-            declarator = variableDeclarators[0];
+            var location = @params.Column.HasValue
+                ? @params.Line.HasValue
+                    ? $"'{@params.VariableName}' at line {@params.Line}, column {@params.Column.Value}"
+                    : $"'{@params.VariableName}' at column {@params.Column.Value}"
+                : $"'{@params.VariableName}' at line {@params.Line}";
+            throw new RefactoringException(
+                ErrorCodes.VariableNotFound,
+                $"Variable {location} not found.");
         }
+
+        // Remember the chosen declarator so removal after rewrite does
+        // not drop a different same-name local.
+        var targetSpanStart = declarator.SpanStart;
 
         // Check for initializer
         if (declarator.Initializer == null)
@@ -187,28 +206,26 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         var rewriter = new InlineRewriter(@params.VariableName, variableSymbol, initializerExpression, semanticModel);
         var newRoot = rewriter.Visit(root);
 
-        // Remove the declaration statement if it only declares this variable
-        var declarationStatement = declarator.Ancestors().OfType<LocalDeclarationStatementSyntax>().First();
-        var variableDeclaration = declarator.Parent as VariableDeclarationSyntax;
+        // Remove the chosen declaration (not another same-name local).
+        var newDeclarator = newRoot!.DescendantNodes()
+            .OfType<VariableDeclaratorSyntax>()
+            .FirstOrDefault(v =>
+                v.Identifier.Text == @params.VariableName && v.SpanStart == targetSpanStart);
 
-        if (variableDeclaration != null && variableDeclaration.Variables.Count == 1)
+        if (newDeclarator != null)
         {
-            // Remove entire statement
-            var statementToRemove = newRoot.DescendantNodes()
-                .OfType<LocalDeclarationStatementSyntax>()
-                .FirstOrDefault(s => s.Declaration.Variables.Any(v => v.Identifier.Text == @params.VariableName));
-            if (statementToRemove != null)
+            var newDeclaration = newDeclarator.Parent as VariableDeclarationSyntax;
+            if (newDeclaration != null && newDeclaration.Variables.Count == 1)
             {
-                newRoot = newRoot.RemoveNode(statementToRemove, SyntaxRemoveOptions.KeepLeadingTrivia);
+                var statementToRemove = newDeclarator.Ancestors()
+                    .OfType<LocalDeclarationStatementSyntax>()
+                    .FirstOrDefault();
+                if (statementToRemove != null)
+                {
+                    newRoot = newRoot.RemoveNode(statementToRemove, SyntaxRemoveOptions.KeepLeadingTrivia);
+                }
             }
-        }
-        else
-        {
-            // Just remove this variable from the declaration
-            var newDeclarator = newRoot.DescendantNodes()
-                .OfType<VariableDeclaratorSyntax>()
-                .FirstOrDefault(v => v.Identifier.Text == @params.VariableName);
-            if (newDeclarator != null)
+            else
             {
                 newRoot = newRoot.RemoveNode(newDeclarator, SyntaxRemoveOptions.KeepNoTrivia);
             }
@@ -257,6 +274,87 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         };
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
+    }
+
+    /// <summary>
+    /// Resolves the variable declarator. Omitted <paramref name="column"/>
+    /// keeps today's first-match (VariableName; Line when more than one
+    /// match, start-line filter). When set, picks the declaration whose
+    /// identifier or declaration span covers that 1-based column.
+    /// </summary>
+    internal static VariableDeclaratorSyntax? FindDeclarator(
+        SyntaxNode root,
+        string variableName,
+        int? line,
+        int? column)
+    {
+        var declarators = root.DescendantNodes()
+            .OfType<VariableDeclaratorSyntax>()
+            .Where(v => v.Identifier.Text == variableName)
+            .ToList();
+
+        if (column.HasValue)
+        {
+            // When column is set, do not require the declaration to start
+            // on `line` — a split declaration's identifier may live on a
+            // continuation line whose declaration span still covers that
+            // column.
+            return declarators
+                .Where(d => DeclaratorCoversColumn(d, line ?? StartLine(d), column.Value))
+                .OrderBy(d => IdentifierCoversColumn(d, line ?? StartLine(d), column.Value) ? 0 : 1)
+                .ThenBy(d => d.Span.Length)
+                .FirstOrDefault();
+        }
+
+        // Omitted column keeps today's VariableName + Line pick: a single
+        // name match is used as-is (Line is only for disambiguation).
+        // More than one match uses the first whose declaration starts on
+        // `line`.
+        if (declarators.Count <= 1)
+            return declarators.FirstOrDefault();
+
+        if (!line.HasValue)
+            return null;
+
+        return declarators.FirstOrDefault(d => StartLine(d) == line.Value);
+    }
+
+    private static int StartLine(VariableDeclaratorSyntax declarator) =>
+        declarator.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+    private static bool DeclaratorCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
+        IdentifierCoversColumn(declarator, line, column) ||
+        SpanCoversColumn(DeclarationSpan(declarator), line, column);
+
+    private static bool IdentifierCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
+        SpanCoversColumn(declarator.Identifier.GetLocation().GetLineSpan(), line, column);
+
+    private static FileLinePositionSpan DeclarationSpan(VariableDeclaratorSyntax declarator) =>
+        declarator.Parent is VariableDeclarationSyntax declaration
+            ? declaration.GetLocation().GetLineSpan()
+            : declarator.GetLocation().GetLineSpan();
+
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character of an adjacent declaration also
+    /// match the previous one.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == startLine && column < startCol)
+            return false;
+        if (line == endLine && column >= endCol)
+            return false;
+        return true;
     }
 
     private sealed class InlineRewriter : CSharpSyntaxRewriter
