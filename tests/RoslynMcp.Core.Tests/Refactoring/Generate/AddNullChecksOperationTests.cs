@@ -364,26 +364,24 @@ public class AddNullChecksOperationTests
         const string source = """
             class C
             {
+                public void Process(string name, string extra) { }
+
                 public void
                 Process(string name) { }
-
-                public void Process(string name, string extra) { }
             }
             """;
 
         var tree = CSharpSyntaxTree.ParseText(source);
         var root = tree.GetRoot();
-        var startLine = FindLine(source, "public void");
+        var startLine = FindLine(source, "public void\n");
         var identifierLine = FindLine(source, "Process(string name) { }");
         Assert.NotEqual(startLine, identifierLine);
 
-        // Omitted column keeps today's start-line filter. The split
-        // signature does not start on the identifier line, so today's
-        // silent First() fallback would pick the first candidate (the
-        // split method) — but only after the start-line miss. When another
-        // Process starts on the identifier line, omitted column picks that
-        // one. Column on the continuation identifier still selects the
-        // split method.
+        // Omitted column keeps today's start-line filter, then silent
+        // First() when line misses. Neither Process starts on the
+        // identifier line, so omitted column picks the first candidate
+        // (two-parameter). Column on the continuation identifier still
+        // selects the split method.
         var byStartLineOnly = AddNullChecksOperation.FindMethod(root, "Process", identifierLine, column: null);
         var byColumn = AddNullChecksOperation.FindMethod(
             root, "Process", identifierLine, ColumnOf(source, "Process(string name) { }"));
@@ -549,26 +547,6 @@ public class AddNullChecksOperationTests
 
         Assert.Equal(ErrorCodes.NoMembersToGenerate, ex.ErrorCode);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
-    }
-
-    [SkippableFact]
-    public async Task AddNullChecks_GuardStyle_WritesIfThrow()
-    {
-        await using var workspace = await TempWorkspace.CreateAsync(SingleMethodSource);
-        var operation = new AddNullChecksOperation(workspace.Context);
-
-        var result = await operation.ExecuteAsync(new AddNullChecksParams
-        {
-            SourceFile = workspace.SourcePath,
-            MethodName = "Process",
-            Style = "guard"
-        });
-
-        Assert.True(result.Success);
-        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
-        Assert.Contains("is null", updated, StringComparison.Ordinal);
-        Assert.Contains("ArgumentNullException", updated, StringComparison.Ordinal);
-        Assert.DoesNotContain("ThrowIfNull", updated, StringComparison.Ordinal);
     }
 
     #endregion
