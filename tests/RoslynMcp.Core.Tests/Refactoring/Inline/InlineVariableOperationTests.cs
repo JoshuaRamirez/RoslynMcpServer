@@ -45,18 +45,16 @@ public class InlineVariableOperationTests
 
         public class Split
         {
-            public int Run()
+            public int Run(bool inner)
             {
                 int // split-decl
                 value = 1;
-                var first = value;
-
+                if (inner)
                 {
                     int value = 2;
-                    var second = value;
+                    return value;
                 }
-
-                return first;
+                return value;
             }
         }
         """;
@@ -297,10 +295,10 @@ public class InlineVariableOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("var first = 1;", updated);
+        Assert.Contains("return 1;", updated);
         Assert.DoesNotContain("value = 1;", updated);
         Assert.Contains("int value = 2;", updated);
-        Assert.Contains("var second = value;", updated);
+        Assert.Contains("return value;", updated);
     }
 
     [SkippableFact]
