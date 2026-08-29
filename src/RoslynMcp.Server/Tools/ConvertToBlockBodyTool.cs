@@ -32,7 +32,8 @@ public sealed class ConvertToBlockBodyTool : IToolHandler
     public string Name => "convert_to_block_body";
 
     /// <inheritdoc />
-    public string Description => "Convert a selected expression-bodied C# member (=> expr) to a block body. Methods become { return expr; } or { expr; } as appropriate; properties and accessors that are expression-bodied are converted too.";
+    public string Description =>
+        "Convert a selected expression-bodied C# member (=> expr) to a block body. Methods become { return expr; } or { expr; } as appropriate; properties and accessors that are expression-bodied are converted too. column (optional) picks the member whose identifier or declaration span covers that column on the given line. Omitted keeps today's memberName and/or line pick (smallest containing node). Preview describes the rewrite and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -61,6 +62,11 @@ public sealed class ConvertToBlockBodyTool : IToolHandler
                 type = "integer",
                 description = "Line number of the member (1-based). Required when memberName is omitted.",
                 minimum = 1
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set, selects the member whose identifier or declaration span covers that column on the given line. Omitted keeps today's memberName and/or line pick."
             },
             preview = new
             {
@@ -98,6 +104,7 @@ public sealed class ConvertToBlockBodyTool : IToolHandler
                 SourceFile = args.SourceFile,
                 MemberName = args.MemberName,
                 Line = args.Line,
+                Column = args.Column,
                 Preview = args.Preview ?? false
             };
 
@@ -129,6 +136,7 @@ public sealed class ConvertToBlockBodyTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string? MemberName { get; init; }
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public bool? Preview { get; init; }
     }
 }
