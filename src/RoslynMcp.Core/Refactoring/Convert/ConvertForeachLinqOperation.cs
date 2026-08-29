@@ -229,6 +229,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             listName!,
             foreach_.Expression,
             foreach_.Identifier.Text,
+            ExplicitElementType(foreach_.Type),
             Filter: null,
             addArg!,
             foreach_.NormalizeWhitespace().ToFullString());
@@ -257,6 +258,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             listName!,
             foreach_.Expression,
             foreach_.Identifier.Text,
+            ExplicitElementType(foreach_.Type),
             ifStmt.Condition,
             addArg!,
             foreach_.NormalizeWhitespace().ToFullString());
@@ -330,9 +332,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         }
 
         var query = SyntaxFactory.QueryExpression(
-            SyntaxFactory.FromClause(
-                SyntaxFactory.Identifier(conversion.VariableName),
-                conversion.Collection),
+            BuildFromClause(conversion),
             body);
 
         return SyntaxFactory.InvocationExpression(
@@ -340,6 +340,23 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
                 SyntaxKind.SimpleMemberAccessExpression,
                 SyntaxFactory.ParenthesizedExpression(query),
                 SyntaxFactory.IdentifierName("ToList")));
+    }
+
+    /// <summary>
+    /// Explicit foreach element type, or null when the loop is <c>var</c>
+    /// (query syntax stays untyped — <c>from item in …</c>, not
+    /// <c>from var item in …</c>).
+    /// </summary>
+    internal static TypeSyntax? ExplicitElementType(TypeSyntax type) =>
+        type.IsVar ? null : type.WithoutTrivia();
+
+    private static FromClauseSyntax BuildFromClause(ForeachLinqConversion conversion)
+    {
+        var identifier = SyntaxFactory.Identifier(conversion.VariableName);
+        if (conversion.ElementType != null)
+            return SyntaxFactory.FromClause(conversion.ElementType, identifier, conversion.Collection);
+
+        return SyntaxFactory.FromClause(identifier, conversion.Collection);
     }
 
     private static SyntaxNode ReplaceForeachWithLinq(SyntaxNode root, ForEachStatementSyntax foreach_, ExpressionSyntax linqExpr)
@@ -387,6 +404,7 @@ internal sealed record ForeachLinqConversion(
     ExpressionSyntax ListName,
     ExpressionSyntax Collection,
     string VariableName,
+    TypeSyntax? ElementType,
     ExpressionSyntax? Filter,
     ExpressionSyntax Projection,
     string BeforeSnippet);

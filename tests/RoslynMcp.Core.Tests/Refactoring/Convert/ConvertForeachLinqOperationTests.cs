@@ -1,5 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
@@ -184,8 +185,24 @@ public class ConvertForeachLinqOperationTests
         Assert.DoesNotContain("from ", methodText, StringComparison.Ordinal);
         Assert.Contains("from ", queryText, StringComparison.Ordinal);
         Assert.Contains("select ", queryText, StringComparison.Ordinal);
+        Assert.DoesNotContain("from string", queryText, StringComparison.Ordinal);
         Assert.DoesNotContain(".Select", queryText, StringComparison.Ordinal);
         Assert.Contains(".ToList()", queryText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildLinqAssignment_PreferQuerySyntax_ExplicitElementType_EmitsTypedFrom()
+    {
+        var conversion = SampleConversion(
+            LinqConversionKind.Project,
+            filter: null,
+            projection: "item.Length",
+            elementType: SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.StringKeyword)));
+        var query = ConvertForeachLinqOperation.BuildLinqAssignment(conversion, preferQuerySyntax: true);
+        var queryText = query.NormalizeWhitespace().ToFullString();
+
+        Assert.Contains("from string item in", queryText, StringComparison.Ordinal);
+        Assert.Contains("select ", queryText, StringComparison.Ordinal);
     }
 
     #endregion
@@ -311,6 +328,88 @@ public class ConvertForeachLinqOperationTests
         Assert.Contains(".ToList()", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("where ", updated, StringComparison.Ordinal);
         Assert.DoesNotContain(".Select", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("from string", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task ConvertForeachLinq_PreferQuerySyntaxTrue_ExplicitElementType_EmitsTypedFromAndCompiles()
+    {
+        const string source = """
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Collector
+            {
+                public List<int> Lengths(IEnumerable<object> items)
+                {
+                    var results = new List<int>();
+                    foreach (string item in items)
+                        results.Add(item.Length);
+                    return results;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "foreach (string item in items)"),
+            PreferQuerySyntax = true
+        });
+
+        Assert.True(result.Success);
+
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("foreach", updated, StringComparison.Ordinal);
+        Assert.Contains("from string item in", updated, StringComparison.Ordinal);
+        Assert.Contains("select ", updated, StringComparison.Ordinal);
+        Assert.Contains(".ToList()", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task ConvertForeachLinq_PreferQuerySyntaxTrue_VarElementType_StaysUntyped()
+    {
+        const string source = """
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Collector
+            {
+                public List<int> Lengths(IEnumerable<string> items)
+                {
+                    var results = new List<int>();
+                    foreach (var item in items)
+                        results.Add(item.Length);
+                    return results;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "foreach (var item in items)"),
+            PreferQuerySyntax = true
+        });
+
+        Assert.True(result.Success);
+
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("from item in", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("from var ", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("from string", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
     }
 
@@ -529,13 +628,15 @@ public class ConvertForeachLinqOperationTests
     private static ForeachLinqConversion SampleConversion(
         LinqConversionKind kind,
         string? filter,
-        string projection)
+        string projection,
+        TypeSyntax? elementType = null)
     {
         return new ForeachLinqConversion(
             kind,
             SyntaxFactory.IdentifierName("results"),
             SyntaxFactory.IdentifierName("items"),
             "item",
+            elementType,
             filter == null ? null : SyntaxFactory.ParseExpression(filter),
             SyntaxFactory.ParseExpression(projection),
             "foreach (var item in items) { }");
