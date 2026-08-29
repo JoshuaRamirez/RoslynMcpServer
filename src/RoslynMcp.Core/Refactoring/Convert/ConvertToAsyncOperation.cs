@@ -17,6 +17,16 @@ namespace RoslynMcp.Core.Refactoring.Convert;
 /// </summary>
 public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertToAsyncParams>
 {
+    private static readonly SyntaxAnnotation AwaitableCallAnnotation = new("convert-to-async-awaitable");
+    private static readonly SyntaxAnnotation SelfCallAnnotation = new("convert-to-async-self-call");
+    private static readonly SyntaxAnnotation SelfCallAwaitAnnotation = new("convert-to-async-self-call-await");
+
+    internal const string SyncCallerSkipReason =
+        "Caller is not async; skipped await wrap to keep the method compiling.";
+
+    internal const string NotInvocationSkipReason =
+        "Reference is not an invocation (method group or similar); skipped await wrap.";
+
     /// <summary>
     /// Creates a new convert to async operation.
     /// </summary>
@@ -132,76 +142,445 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
             ? @params.MethodName + "Async"
             : @params.MethodName;
 
-        // Convert return type
-        var newReturnType = SyntaxGenerationHelper.ToAsyncReturnType(methodSymbol.ReturnType);
+        var needsRename = newMethodName != @params.MethodName;
+        var callSites = needsRename || @params.UpdateCallers
+            ? await CollectCallSitesAsync(
+                methodSymbol,
+                methodDecl,
+                document,
+                @params.MethodName,
+                cancellationToken)
+            : [];
+
+        var plan = PlanCallerUpdates(callSites, @params.UpdateCallers);
 
         // If preview mode, return without applying
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params, methodSymbol, newMethodName, awaitableCalls.Count);
+            return CreatePreviewResult(
+                operationId,
+                @params,
+                methodSymbol,
+                newMethodName,
+                awaitableCalls.Count,
+                plan);
         }
 
-        // Build new method
-        var newMethod = methodDecl
+        // Annotate body invocations before changing the signature. WithIdentifier /
+        // AddModifiers shift spans, so the rewriter cannot match original TextSpans.
+        var annotatedCalls = new Dictionary<InvocationExpressionSyntax, List<SyntaxAnnotation>>();
+        foreach (var call in awaitableCalls)
+            AddAnnotation(annotatedCalls, call, AwaitableCallAnnotation);
+        foreach (var site in callSites.Where(site => site.IsInsideConvertedMethod && site.Invocation != null))
+        {
+            AddAnnotation(annotatedCalls, site.Invocation!, SelfCallAnnotation);
+            if (ShouldAwaitCallSite(site, @params.UpdateCallers))
+                AddAnnotation(annotatedCalls, site.Invocation!, SelfCallAwaitAnnotation);
+        }
+
+        var methodToRewrite = methodDecl;
+        if (annotatedCalls.Count > 0)
+        {
+            methodToRewrite = methodDecl.ReplaceNodes(
+                annotatedCalls.Keys,
+                (original, _) => original.WithAdditionalAnnotations(annotatedCalls[original]));
+        }
+
+        methodToRewrite = (MethodDeclarationSyntax)new AnnotatedCallRewriter(
+            @params.MethodName,
+            newMethodName).Visit(methodToRewrite)!;
+
+        var newMethod = methodToRewrite
             .WithIdentifier(SyntaxFactory.Identifier(newMethodName))
-            .WithReturnType(newReturnType.WithTrailingTrivia(SyntaxFactory.Space))
+            .WithReturnType(SyntaxGenerationHelper.ToAsyncReturnType(methodSymbol.ReturnType)
+                .WithTrailingTrivia(SyntaxFactory.Space))
             .AddModifiers(SyntaxFactory.Token(SyntaxKind.AsyncKeyword).WithTrailingTrivia(SyntaxFactory.Space));
 
-        // Add await to awaitable calls
-        var rewriter = new AsyncRewriter(awaitableCalls, semanticModel);
-        newMethod = (MethodDeclarationSyntax)rewriter.Visit(newMethod);
+        var newSolution = document.Project.Solution;
+        var sourceReplaced = false;
+        var externalSites = callSites.Where(site => !site.IsInsideConvertedMethod).ToList();
 
-        // Replace in document
-        var newRoot = root.ReplaceNode(methodDecl, newMethod);
-        var newSolution = document.WithSyntaxRoot(newRoot).Project.Solution;
-
-        // Update call sites if method was renamed
-        if (newMethodName != @params.MethodName)
+        foreach (var group in externalSites.GroupBy(site => site.DocumentId))
         {
-            var references = await SymbolFinder.FindReferencesAsync(
-                methodSymbol,
-                newSolution,
-                cancellationToken);
+            var refDoc = newSolution.GetDocument(group.Key);
+            if (refDoc == null) continue;
 
-            foreach (var reference in references.SelectMany(r => r.Locations))
+            var refRoot = await refDoc.GetSyntaxRootAsync(cancellationToken);
+            if (refRoot == null) continue;
+
+            var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
+            if (group.Key == document.Id)
             {
-                var refDoc = newSolution.GetDocument(reference.Document.Id);
-                if (refDoc == null) continue;
-
-                var refRoot = await refDoc.GetSyntaxRootAsync(cancellationToken);
-                if (refRoot == null) continue;
-
-                var refNode = refRoot.FindNode(reference.Location.SourceSpan);
-                if (refNode is IdentifierNameSyntax identifier &&
-                    identifier.Identifier.Text == @params.MethodName)
-                {
-                    var newIdentifier = SyntaxFactory.IdentifierName(newMethodName)
-                        .WithTriviaFrom(identifier);
-                    var newRefRoot = refRoot.ReplaceNode(identifier, newIdentifier);
-                    newSolution = refDoc.WithSyntaxRoot(newRefRoot).Project.Solution;
-                }
+                replacements[methodDecl] = newMethod;
+                sourceReplaced = true;
             }
+
+            foreach (var site in group)
+            {
+                var replacement = BuildCallSiteReplacement(site, needsRename, @params.UpdateCallers, newMethodName);
+                if (replacement != null)
+                    replacements[replacement.Original] = replacement.Replacement;
+            }
+
+            if (replacements.Count == 0) continue;
+
+            var newRefRoot = refRoot.ReplaceNodes(replacements.Keys, (old, _) => replacements[old]);
+            newSolution = refDoc.WithSyntaxRoot(newRefRoot).Project.Solution;
+        }
+
+        if (!sourceReplaced)
+        {
+            var currentDoc = newSolution.GetDocument(document.Id) ?? document;
+            var currentRoot = await currentDoc.GetSyntaxRootAsync(cancellationToken) ?? root;
+            var newRoot = currentRoot.ReplaceNode(methodDecl, newMethod);
+            newSolution = currentDoc.WithSyntaxRoot(newRoot).Project.Solution;
         }
 
         // Commit changes
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
 
-        return RefactoringResult.Succeeded(
-            operationId,
-            new FileChanges
+        return new RefactoringResult
+        {
+            Success = true,
+            OperationId = operationId,
+            Changes = new FileChanges
             {
                 FilesModified = commitResult.FilesModified,
                 FilesCreated = commitResult.FilesCreated,
                 FilesDeleted = commitResult.FilesDeleted
             },
-            new Contracts.Models.SymbolInfo
+            Symbol = new Contracts.Models.SymbolInfo
             {
                 Name = newMethodName,
                 FullyQualifiedName = $"{methodSymbol.ContainingType.ToDisplayString()}.{newMethodName}",
                 Kind = Contracts.Enums.SymbolKind.Method
             },
-            awaitableCalls.Count,
-            0);
+            ReferencesUpdated = awaitableCalls.Count,
+            CallersUpdated = plan.Updated.Count,
+            CallersSkipped = plan.Skipped.Count == 0 ? null : plan.Skipped
+        };
+    }
+
+    private static async Task<List<CallSite>> CollectCallSitesAsync(
+        IMethodSymbol methodSymbol,
+        MethodDeclarationSyntax methodDecl,
+        Document document,
+        string methodName,
+        CancellationToken cancellationToken)
+    {
+        var solution = document.Project.Solution;
+        var references = await SymbolFinder.FindReferencesAsync(
+            methodSymbol,
+            solution,
+            cancellationToken);
+
+        var declarationNameSpan = methodDecl.Identifier.Span;
+        var callSites = new List<CallSite>();
+
+        foreach (var location in references.SelectMany(reference => reference.Locations))
+        {
+            var refDoc = solution.GetDocument(location.Document.Id);
+            if (refDoc == null) continue;
+
+            var refRoot = await refDoc.GetSyntaxRootAsync(cancellationToken);
+            if (refRoot == null) continue;
+
+            var node = refRoot.FindNode(location.Location.SourceSpan);
+            var name = FindNameNode(node, methodName);
+            if (name == null) continue;
+
+            var isDeclarationName = location.Document.Id == document.Id
+                && declarationNameSpan.Contains(location.Location.SourceSpan);
+            if (isDeclarationName) continue;
+
+            var invocation = GetContainingInvocation(name);
+            var (isAsync, enclosingName) = GetEnclosingCallable(name);
+            var isInsideConvertedMethod = location.Document.Id == document.Id
+                && methodDecl.Span.Contains(name.Span);
+            var isEnclosingConvertedMethod = location.Document.Id == document.Id
+                && IsNearestEnclosingConvertedMethod(name, methodDecl);
+
+            callSites.Add(new CallSite(
+                location.Document.Id,
+                refDoc.FilePath ?? location.Document.Name,
+                name,
+                invocation,
+                isInsideConvertedMethod,
+                isEnclosingConvertedMethod,
+                isAsync,
+                invocation != null && IsAlreadyAwaited(invocation),
+                enclosingName));
+        }
+
+        return callSites;
+    }
+
+    internal static CallerUpdatePlan PlanCallerUpdates(IReadOnlyList<CallSite> callSites, bool updateCallers)
+    {
+        var updated = new List<CallSite>();
+        var skipped = new List<SkippedCaller>();
+
+        if (!updateCallers)
+            return new CallerUpdatePlan(updated, skipped);
+
+        foreach (var site in callSites)
+        {
+            if (site.Invocation == null)
+            {
+                skipped.Add(new SkippedCaller
+                {
+                    Caller = site.EnclosingName,
+                    Reason = NotInvocationSkipReason
+                });
+                continue;
+            }
+
+            if (site.IsAlreadyAwaited)
+                continue;
+
+            // Await only when the nearest enclosing callable is already async,
+            // or is the converted method itself (it becomes async). Nested sync
+            // local functions / lambdas stay unawaited even when they live inside
+            // the converted method.
+            if (ShouldAwaitCallSite(site, updateCallers: true))
+            {
+                updated.Add(site);
+                continue;
+            }
+
+            skipped.Add(new SkippedCaller
+            {
+                Caller = site.EnclosingName,
+                Reason = SyncCallerSkipReason
+            });
+        }
+
+        return new CallerUpdatePlan(updated, skipped);
+    }
+
+    private static NodeReplacement? BuildCallSiteReplacement(
+        CallSite site,
+        bool needsRename,
+        bool updateCallers,
+        string newMethodName)
+    {
+        if (site.Invocation == null)
+        {
+            if (needsRename)
+                return new NodeReplacement(site.Name, WithMethodName(site.Name, newMethodName));
+            return null;
+        }
+
+        var invocation = site.Invocation;
+        ExpressionSyntax updatedInvocation = invocation;
+        if (needsRename)
+        {
+            var renamed = WithMethodName(site.Name, newMethodName);
+            updatedInvocation = invocation.ReplaceNode(site.Name, renamed);
+        }
+
+        if (ShouldAwaitCallSite(site, updateCallers))
+        {
+            var wrapTarget = GetAwaitWrapTarget(invocation);
+            if (wrapTarget is ConditionalAccessExpressionSyntax conditional)
+            {
+                var updatedConditional = conditional.ReplaceNode(invocation, updatedInvocation);
+                return new NodeReplacement(conditional, WrapWithAwait(updatedConditional));
+            }
+
+            return new NodeReplacement(invocation, WrapWithAwait(updatedInvocation));
+        }
+
+        if (needsRename)
+            return new NodeReplacement(site.Name, WithMethodName(site.Name, newMethodName));
+
+        return null;
+    }
+
+    internal static SimpleNameSyntax? FindNameNode(SyntaxNode node, string methodName)
+    {
+        if (node is SimpleNameSyntax simple && simple.Identifier.Text == methodName)
+            return simple;
+
+        return node.DescendantNodesAndSelf()
+            .OfType<SimpleNameSyntax>()
+            .FirstOrDefault(name => name.Identifier.Text == methodName);
+    }
+
+    internal static InvocationExpressionSyntax? GetContainingInvocation(SimpleNameSyntax name)
+    {
+        if (name.Parent is InvocationExpressionSyntax direct && direct.Expression == name)
+            return direct;
+
+        if (name.Parent is MemberAccessExpressionSyntax member
+            && member.Name == name
+            && member.Parent is InvocationExpressionSyntax memberInvocation
+            && memberInvocation.Expression == member)
+        {
+            return memberInvocation;
+        }
+
+        if (name.Parent is MemberBindingExpressionSyntax binding
+            && binding.Name == name
+            && binding.Parent is InvocationExpressionSyntax bindingInvocation
+            && bindingInvocation.Expression == binding)
+        {
+            return bindingInvocation;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Await when the nearest enclosing callable is already async, or is the
+    /// converted method (it becomes async). Nested sync local functions and
+    /// lambdas are not awaited.
+    /// </summary>
+    internal static bool ShouldAwaitCallSite(CallSite site, bool updateCallers)
+    {
+        if (!updateCallers || site.Invocation == null || site.IsAlreadyAwaited)
+            return false;
+
+        return site.IsAsyncContext || site.IsEnclosingConvertedMethod;
+    }
+
+    /// <summary>
+    /// True when the nearest enclosing callable is <paramref name="methodDecl"/>
+    /// (no nested local function, lambda, or other callable in between).
+    /// </summary>
+    internal static bool IsNearestEnclosingConvertedMethod(SyntaxNode node, MethodDeclarationSyntax methodDecl)
+    {
+        for (var current = node; current != null; current = current.Parent)
+        {
+            switch (current)
+            {
+                case MethodDeclarationSyntax method:
+                    return method == methodDecl;
+                case LocalFunctionStatementSyntax:
+                case ParenthesizedLambdaExpressionSyntax:
+                case SimpleLambdaExpressionSyntax:
+                case AnonymousMethodExpressionSyntax:
+                case ConstructorDeclarationSyntax:
+                case DestructorDeclarationSyntax:
+                case OperatorDeclarationSyntax:
+                case ConversionOperatorDeclarationSyntax:
+                case AccessorDeclarationSyntax:
+                    return false;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Conditional access invocations (<c>obj?.M()</c>) must be awaited at the
+    /// outermost <c>?.</c> expression, not the inner WhenNotNull invocation.
+    /// </summary>
+    internal static ExpressionSyntax GetAwaitWrapTarget(ExpressionSyntax expression)
+    {
+        var current = expression;
+        while (current.Parent is ConditionalAccessExpressionSyntax conditional
+               && conditional.WhenNotNull == current)
+        {
+            current = conditional;
+        }
+
+        return current;
+    }
+
+    internal static (bool IsAsync, string Name) GetEnclosingCallable(SyntaxNode node)
+    {
+        for (var current = node; current != null; current = current.Parent)
+        {
+            switch (current)
+            {
+                case MethodDeclarationSyntax method:
+                    return (method.Modifiers.Any(SyntaxKind.AsyncKeyword), method.Identifier.Text);
+                case LocalFunctionStatementSyntax local:
+                    return (local.Modifiers.Any(SyntaxKind.AsyncKeyword), local.Identifier.Text);
+                case ParenthesizedLambdaExpressionSyntax paren:
+                    return (paren.AsyncKeyword.IsKind(SyntaxKind.AsyncKeyword), "(lambda)");
+                case SimpleLambdaExpressionSyntax simple:
+                    return (simple.AsyncKeyword.IsKind(SyntaxKind.AsyncKeyword), "(lambda)");
+                case AnonymousMethodExpressionSyntax anon:
+                    return (anon.AsyncKeyword.IsKind(SyntaxKind.AsyncKeyword), "(anonymous method)");
+                case ConstructorDeclarationSyntax ctor:
+                    return (false, ctor.Identifier.Text);
+                case DestructorDeclarationSyntax:
+                    return (false, "destructor");
+                case OperatorDeclarationSyntax op:
+                    return (false, op.OperatorToken.Text);
+                case ConversionOperatorDeclarationSyntax:
+                    return (false, "conversion operator");
+                case AccessorDeclarationSyntax accessor:
+                    return (false, accessor.Keyword.Text);
+            }
+        }
+
+        return (false, "(unknown)");
+    }
+
+    internal static bool IsAlreadyAwaited(ExpressionSyntax expression)
+    {
+        var parent = GetAwaitWrapTarget(expression).Parent;
+        while (parent is ParenthesizedExpressionSyntax paren)
+            parent = paren.Parent;
+
+        return parent is AwaitExpressionSyntax;
+    }
+
+    internal static bool NeedsParentheses(ExpressionSyntax expression)
+    {
+        return expression.Parent is MemberAccessExpressionSyntax
+            or ConditionalAccessExpressionSyntax
+            or ElementAccessExpressionSyntax
+            or InvocationExpressionSyntax
+            or PostfixUnaryExpressionSyntax;
+    }
+
+    internal static SimpleNameSyntax WithMethodName(SimpleNameSyntax name, string newName)
+    {
+        return name.WithIdentifier(SyntaxFactory.Identifier(newName).WithTriviaFrom(name.Identifier));
+    }
+
+    internal static ExpressionSyntax WrapWithAwait(ExpressionSyntax expression)
+    {
+        var awaitExpression = SyntaxFactory.AwaitExpression(
+            SyntaxFactory.Token(SyntaxKind.AwaitKeyword).WithTrailingTrivia(SyntaxFactory.Space),
+            expression.WithoutLeadingTrivia());
+
+        if (NeedsParentheses(expression))
+        {
+            return SyntaxFactory.ParenthesizedExpression(awaitExpression.WithoutTrivia())
+                .WithTriviaFrom(expression);
+        }
+
+        return awaitExpression.WithLeadingTrivia(expression.GetLeadingTrivia());
+    }
+
+    internal static string DescribeCallerUpdates(bool updateCallers, CallerUpdatePlan plan)
+    {
+        if (!updateCallers)
+            return "Callers will not be updated to await the converted method.";
+
+        if (plan.Updated.Count == 0 && plan.Skipped.Count == 0)
+            return "No callers will be updated to await the converted method.";
+
+        var parts = new List<string>();
+        if (plan.Updated.Count == 1)
+            parts.Add("Update 1 caller to await the converted method.");
+        else if (plan.Updated.Count > 1)
+            parts.Add($"Update {plan.Updated.Count} callers to await the converted method.");
+
+        if (plan.Skipped.Count == 1)
+            parts.Add("Skip 1 caller that cannot legally await.");
+        else if (plan.Skipped.Count > 1)
+            parts.Add($"Skip {plan.Skipped.Count} callers that cannot legally await.");
+
+        if (parts.Count == 0)
+            return "No callers will be updated to await the converted method.";
+
+        return string.Join(" ", parts);
     }
 
     private static List<InvocationExpressionSyntax> FindAwaitableCalls(
@@ -243,11 +622,13 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         ConvertToAsyncParams @params,
         IMethodSymbol method,
         string newMethodName,
-        int awaitableCallCount)
+        int awaitableCallCount,
+        CallerUpdatePlan plan)
     {
         var oldSig = $"{method.ReturnType.ToDisplayString()} {@params.MethodName}(...)";
         var newReturnType = method.ReturnsVoid ? "Task" : $"Task<{method.ReturnType.ToDisplayString()}>";
         var newSig = $"async {newReturnType} {newMethodName}(...)";
+        var callerDescription = DescribeCallerUpdates(@params.UpdateCallers, plan);
 
         var pendingChanges = new List<PendingChange>
         {
@@ -258,37 +639,113 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
                 Description = $"Convert '{@params.MethodName}' to async ({awaitableCallCount} await expressions added)",
                 BeforeSnippet = oldSig,
                 AfterSnippet = newSig
+            },
+            new()
+            {
+                File = @params.SourceFile,
+                ChangeType = ChangeKind.Modify,
+                Description = callerDescription
             }
         };
 
-        return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        return new RefactoringResult
+        {
+            Success = true,
+            OperationId = operationId,
+            Preview = true,
+            PendingChanges = pendingChanges,
+            CallersUpdated = plan.Updated.Count,
+            CallersSkipped = plan.Skipped.Count == 0 ? null : plan.Skipped
+        };
     }
 
-    private sealed class AsyncRewriter : CSharpSyntaxRewriter
-    {
-        private readonly HashSet<InvocationExpressionSyntax> _awaitableCalls;
-        private readonly SemanticModel _semanticModel;
+    internal sealed record CallSite(
+        DocumentId DocumentId,
+        string FilePath,
+        SimpleNameSyntax Name,
+        InvocationExpressionSyntax? Invocation,
+        bool IsInsideConvertedMethod,
+        bool IsEnclosingConvertedMethod,
+        bool IsAsyncContext,
+        bool IsAlreadyAwaited,
+        string EnclosingName);
 
-        public AsyncRewriter(List<InvocationExpressionSyntax> awaitableCalls, SemanticModel semanticModel)
+    internal sealed record CallerUpdatePlan(
+        IReadOnlyList<CallSite> Updated,
+        IReadOnlyList<SkippedCaller> Skipped);
+
+    private sealed record NodeReplacement(SyntaxNode Original, SyntaxNode Replacement);
+
+    private static void AddAnnotation(
+        Dictionary<InvocationExpressionSyntax, List<SyntaxAnnotation>> map,
+        InvocationExpressionSyntax invocation,
+        SyntaxAnnotation annotation)
+    {
+        if (!map.TryGetValue(invocation, out var annotations))
         {
-            _awaitableCalls = new HashSet<InvocationExpressionSyntax>(awaitableCalls);
-            _semanticModel = semanticModel;
+            annotations = [];
+            map[invocation] = annotations;
+        }
+
+        annotations.Add(annotation);
+    }
+
+    private sealed class AnnotatedCallRewriter : CSharpSyntaxRewriter
+    {
+        private readonly string _oldName;
+        private readonly string _newName;
+
+        public AnnotatedCallRewriter(string oldName, string newName)
+        {
+            _oldName = oldName;
+            _newName = newName;
+        }
+
+        public override SyntaxNode? VisitConditionalAccessExpression(ConditionalAccessExpressionSyntax node)
+        {
+            var visited = (ConditionalAccessExpressionSyntax)base.VisitConditionalAccessExpression(node)!;
+            var invocation = FindAwaitableInvocationUnder(node);
+            if (invocation != null && GetAwaitWrapTarget(invocation) == node)
+                return WrapWithAwait(visited);
+
+            return visited;
         }
 
         public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
         {
             var visited = (InvocationExpressionSyntax)base.VisitInvocationExpression(node)!;
+            var isSelfCall = node.HasAnnotation(SelfCallAnnotation);
 
-            // Check if this invocation should be awaited
-            // We need to find the original node in our set
-            if (_awaitableCalls.Any(c => c.Span == node.Span))
+            if (isSelfCall && _oldName != _newName)
             {
-                // Wrap in await expression
-                return SyntaxFactory.AwaitExpression(visited)
-                    .WithTriviaFrom(visited);
+                var name = FindNameNode(visited, _oldName);
+                if (name != null)
+                    visited = visited.ReplaceNode(name, WithMethodName(name, _newName));
+            }
+
+            if (ShouldAwaitAnnotated(node) && GetAwaitWrapTarget(node) == node)
+            {
+                return SyntaxFactory.AwaitExpression(
+                    SyntaxFactory.Token(SyntaxKind.AwaitKeyword).WithTrailingTrivia(SyntaxFactory.Space),
+                    visited.WithoutLeadingTrivia())
+                    .WithLeadingTrivia(visited.GetLeadingTrivia());
             }
 
             return visited;
+        }
+
+        private static bool ShouldAwaitAnnotated(InvocationExpressionSyntax node)
+        {
+            return node.HasAnnotation(AwaitableCallAnnotation)
+                || node.HasAnnotation(SelfCallAwaitAnnotation);
+        }
+
+        private static InvocationExpressionSyntax? FindAwaitableInvocationUnder(
+            ConditionalAccessExpressionSyntax node)
+        {
+            return node.DescendantNodesAndSelf()
+                .OfType<InvocationExpressionSyntax>()
+                .FirstOrDefault(ShouldAwaitAnnotated);
         }
     }
 }

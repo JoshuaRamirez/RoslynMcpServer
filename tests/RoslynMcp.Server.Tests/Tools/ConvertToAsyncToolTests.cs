@@ -88,7 +88,20 @@ public class ConvertToAsyncToolTests
         // Assert - Optional properties
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("renameToAsync", out _));
+        Assert.True(properties.TryGetProperty("updateCallers", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_UpdateCallersProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var updateCallers = doc.RootElement.GetProperty("properties").GetProperty("updateCallers");
+
+        Assert.Equal("boolean", updateCallers.GetProperty("type").GetString());
+        Assert.False(updateCallers.GetProperty("default").GetBoolean());
     }
 
     [Fact]

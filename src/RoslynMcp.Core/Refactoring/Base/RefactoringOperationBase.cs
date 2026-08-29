@@ -149,7 +149,9 @@ public abstract class RefactoringOperationBase<TParams> : IRefactoringOperation<
             Scope = result.Scope,
             SimplificationsApplied = result.SimplificationsApplied,
             SimplificationsSkipped = result.SimplificationsSkipped,
-            SkippedReasons = result.SkippedReasons
+            SkippedReasons = result.SkippedReasons,
+            CallersUpdated = result.CallersUpdated,
+            CallersSkipped = result.CallersSkipped
         };
     }
 }

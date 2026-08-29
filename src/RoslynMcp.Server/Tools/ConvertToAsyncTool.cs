@@ -32,7 +32,8 @@ public sealed class ConvertToAsyncTool : IToolHandler
     public string Name => "convert_to_async";
 
     /// <inheritdoc />
-    public string Description => "Convert a synchronous method to async/await pattern.";
+    public string Description =>
+        "Convert a synchronous method to async/await pattern. renameToAsync (default true) rewrites call-site identifiers to the Async name. updateCallers (default false) wraps already-async callers in await and skips synchronous callers that cannot legally await. Preview describes caller updates and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -66,6 +67,12 @@ public sealed class ConvertToAsyncTool : IToolHandler
                 type = "boolean",
                 description = "Rename method by adding Async suffix",
                 @default = true
+            },
+            updateCallers = new
+            {
+                type = "boolean",
+                description = "Update callers to await the converted method. Default false leaves callers unaugmented (identifier rename still applies when renameToAsync is true). True wraps already-async callers in await and skips synchronous callers that cannot legally await.",
+                @default = false
             },
             preview = new
             {
@@ -104,6 +111,7 @@ public sealed class ConvertToAsyncTool : IToolHandler
                 MethodName = args.MethodName,
                 Line = args.Line,
                 RenameToAsync = args.RenameToAsync ?? true,
+                UpdateCallers = args.UpdateCallers ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -136,6 +144,7 @@ public sealed class ConvertToAsyncTool : IToolHandler
         public string MethodName { get; init; } = "";
         public int? Line { get; init; }
         public bool? RenameToAsync { get; init; }
+        public bool? UpdateCallers { get; init; }
         public bool? Preview { get; init; }
     }
 }
