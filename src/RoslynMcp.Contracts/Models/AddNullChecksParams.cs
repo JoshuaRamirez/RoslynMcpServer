@@ -21,6 +21,14 @@ public sealed class AddNullChecksParams
     public int? Line { get; init; }
 
     /// <summary>
+    /// 1-based column for disambiguation. When set, selects the smallest method
+    /// or constructor whose identifier or declaration span covers that column.
+    /// Omitted keeps today's MethodName and optional Line start-line pick
+    /// (including today's silent First() fallback when line misses).
+    /// </summary>
+    public int? Column { get; init; }
+
+    /// <summary>
     /// Style: "throw" (ArgumentNullException.ThrowIfNull) or "guard" (if-throw).
     /// Default: "throw".
     /// </summary>

@@ -71,6 +71,21 @@ public class AddNullChecksToolTests
         Assert.Contains("solutionPath", requiredFields);
         Assert.Contains("sourceFile", requiredFields);
         Assert.Contains("methodName", requiredFields);
+        Assert.DoesNotContain("column", requiredFields);
+    }
+
+    [Fact]
+    public void GetDefinition_HasOptionalColumn()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("line", out _));
+        Assert.True(properties.TryGetProperty("column", out _));
+        Assert.True(properties.TryGetProperty("style", out _));
+        Assert.True(properties.TryGetProperty("preview", out _));
     }
 
     #endregion
