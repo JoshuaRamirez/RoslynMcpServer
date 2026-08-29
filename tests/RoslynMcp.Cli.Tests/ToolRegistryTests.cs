@@ -10,7 +10,7 @@ public class ToolRegistryTests
     {
         var registry = ToolRegistry.BuildDefault();
         var tools = registry.GetAllTools();
-        Assert.Equal(64, tools.Count);
+        Assert.Equal(65, tools.Count);
     }
 
     [Fact]
@@ -108,6 +108,7 @@ public class ToolRegistryTests
     [InlineData("convert-to-block-body", "Refactoring")]
     [InlineData("invert-if", "Refactoring")]
     [InlineData("add-braces", "Refactoring")]
+    [InlineData("remove-braces", "Refactoring")]
     [InlineData("generate-constructor", "Refactoring")]
     [InlineData("generate-property", "Refactoring")]
     [InlineData("generate-method-stub", "Refactoring")]
@@ -128,7 +129,7 @@ public class ToolRegistryTests
     {
         var registry = ToolRegistry.BuildDefault();
         var count = registry.GetAllTools().Count(t => t.Category == "Refactoring");
-        Assert.Equal(51, count);
+        Assert.Equal(52, count);
     }
 
     [Fact]

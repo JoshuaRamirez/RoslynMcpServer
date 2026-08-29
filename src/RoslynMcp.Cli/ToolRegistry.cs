@@ -47,7 +47,7 @@ public sealed class ToolEntry
 }
 
 /// <summary>
-/// Maps tool names to execution delegates for all 64 Roslyn tools.
+/// Maps tool names to execution delegates for all 65 Roslyn tools.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -139,7 +139,7 @@ public sealed class ToolRegistry
         _tools.Values.OrderBy(t => t.Category).ThenBy(t => t.Name).ToList();
 
     /// <summary>
-    /// Build the default registry with all 64 tools registered.
+    /// Build the default registry with all 65 tools registered.
     /// </summary>
     public static ToolRegistry BuildDefault()
     {
@@ -205,7 +205,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<EncapsulateFieldOperation, EncapsulateFieldParams>(
             "encapsulate-field", "Encapsulate a field into a property");
 
-        // ── Refactoring: Convert (11) ─────────────────────────────────
+        // ── Refactoring: Convert (12) ─────────────────────────────────
         r.RegisterRefactoring<ConvertToAsyncOperation, ConvertToAsyncParams>(
             "convert-to-async", "Convert a synchronous method to async");
         r.RegisterRefactoring<ConvertExpressionBodyOperation, ConvertExpressionBodyParams>(
@@ -216,6 +216,8 @@ public sealed class ToolRegistry
             "invert-if", "Flip an if-statement condition and swap the if/else branches");
         r.RegisterRefactoring<AddBracesOperation, AddBracesParams>(
             "add-braces", "Add braces to control statements (if, else, for, foreach, while, using) that have a single-statement body");
+        r.RegisterRefactoring<RemoveBracesOperation, RemoveBracesParams>(
+            "remove-braces", "Remove braces from control statements (if, else, for, foreach, while, using) that have a single-statement braced body");
         r.RegisterRefactoring<ConvertPropertyOperation, ConvertPropertyParams>(
             "convert-property", "Convert between auto-property and full property");
         r.RegisterRefactoring<ConvertForeachLinqOperation, ConvertForeachLinqParams>(
