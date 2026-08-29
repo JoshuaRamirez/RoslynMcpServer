@@ -22,7 +22,13 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(ConvertPropertyParams @params)
+    protected override void ValidateParams(ConvertPropertyParams @params) => Validate(@params);
+
+    /// <summary>
+    /// Validates convert-property parameters. Internal so tests can
+    /// exercise input rules without loading a workspace.
+    /// </summary>
+    internal static void Validate(ConvertPropertyParams @params)
     {
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
@@ -41,6 +47,9 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
+
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
         if (!Enum.TryParse<ConversionDirection>(@params.Direction, ignoreCase: true, out var dir) ||
             (dir != ConversionDirection.ToAutoProperty && dir != ConversionDirection.ToFullProperty))
@@ -68,20 +77,15 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
 
         var direction = Enum.Parse<ConversionDirection>(@params.Direction, ignoreCase: true);
 
-        // Find the property
-        var properties = root.DescendantNodes().OfType<PropertyDeclarationSyntax>();
-
-        if (!string.IsNullOrWhiteSpace(@params.PropertyName))
-            properties = properties.Where(p => p.Identifier.Text == @params.PropertyName);
-
-        if (@params.Line.HasValue)
-            properties = properties.Where(p =>
-                p.GetLocation().GetLineSpan().StartLinePosition.Line + 1 == @params.Line.Value);
-
-        var property = properties.FirstOrDefault();
+        var property = FindProperty(root, @params.PropertyName, @params.Line, @params.Column);
         if (property == null)
+        {
+            var location = @params.Column.HasValue
+                ? $"{@params.PropertyName ?? $"at line {@params.Line}"}, column {@params.Column.Value}"
+                : @params.PropertyName ?? $"at line {@params.Line}";
             throw new RefactoringException(ErrorCodes.SymbolNotFound,
-                $"Property '{@params.PropertyName ?? $"at line {@params.Line}"}' not found.");
+                $"Property '{location}' not found.");
+        }
 
         SyntaxNode newRoot;
         string beforeSnippet;
@@ -240,5 +244,86 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
         var after = newProperty.NormalizeWhitespace().ToFullString();
 
         return (root.ReplaceNode(property, newProperty), before, after);
+    }
+
+    /// <summary>
+    /// Finds a property. When <paramref name="column"/> is omitted, keeps
+    /// today's pick (propertyName and/or line start-line <c>FirstOrDefault</c>).
+    /// When set with <paramref name="line"/>, picks the smallest property
+    /// whose identifier or declaration span covers that 1-based column.
+    /// Column without line cannot disambiguate same-indent same-name
+    /// properties across lines — keep today's first-match rather than
+    /// substituting each candidate's own start line. Do not require the
+    /// declaration to start on <paramref name="line"/> when column is set
+    /// — a split property may put the identifier on a continuation line.
+    /// </summary>
+    internal static PropertyDeclarationSyntax? FindProperty(
+        SyntaxNode root,
+        string? propertyName,
+        int? line,
+        int? column)
+    {
+        IEnumerable<PropertyDeclarationSyntax> properties = root.DescendantNodes()
+            .OfType<PropertyDeclarationSyntax>();
+
+        if (!string.IsNullOrWhiteSpace(propertyName))
+            properties = properties.Where(p => p.Identifier.Text == propertyName);
+
+        // Column without line is not a source position: substituting each
+        // candidate's own start line would match every equally-aligned
+        // same-name property and could silently pick the shortest. Keep
+        // today's FirstOrDefault after the propertyName filter.
+        if (column.HasValue && !line.HasValue)
+            return properties.FirstOrDefault();
+
+        if (column.HasValue)
+        {
+            // Do not require the declaration to start on `line` — a split
+            // property's identifier may live on a continuation line whose
+            // declaration span still covers that column.
+            return properties
+                .Where(p => PropertyCoversColumn(p, line!.Value, column.Value))
+                .OrderBy(p => IdentifierCoversColumn(p, line!.Value, column.Value) ? 0 : 1)
+                .ThenBy(p => p.Span.Length)
+                .FirstOrDefault();
+        }
+
+        if (line.HasValue)
+            properties = properties.Where(p => StartLine(p) == line.Value);
+
+        return properties.FirstOrDefault();
+    }
+
+    private static int StartLine(PropertyDeclarationSyntax property) =>
+        property.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+    private static bool PropertyCoversColumn(PropertyDeclarationSyntax property, int line, int column) =>
+        IdentifierCoversColumn(property, line, column) ||
+        SpanCoversColumn(property.GetLocation().GetLineSpan(), line, column);
+
+    private static bool IdentifierCoversColumn(PropertyDeclarationSyntax property, int line, int column) =>
+        SpanCoversColumn(property.Identifier.GetLocation().GetLineSpan(), line, column);
+
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character of an adjacent property also
+    /// match the previous declaration.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == startLine && column < startCol)
+            return false;
+        if (line == endLine && column >= endCol)
+            return false;
+        return true;
     }
 }

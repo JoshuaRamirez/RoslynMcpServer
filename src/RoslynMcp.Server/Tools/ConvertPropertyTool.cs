@@ -32,7 +32,8 @@ public sealed class ConvertPropertyTool : IToolHandler
     public string Name => "convert_property";
 
     /// <inheritdoc />
-    public string Description => "Convert a C# property between auto-property and full property with backing field.";
+    public string Description =>
+        "Convert a C# property between auto-property and full property with backing field. column (optional) picks the smallest property whose identifier or declaration span covers that column on the given line. Omitted keeps today's propertyName and/or line start-line pick. Preview describes the rewrite and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -65,6 +66,12 @@ public sealed class ConvertPropertyTool : IToolHandler
             {
                 type = "integer",
                 description = "Line number for disambiguation if multiple properties have the same name (1-based)",
+                minimum = 1
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set, selects the smallest property whose identifier or declaration span covers that column on the given line. Omitted keeps today's propertyName and/or line start-line pick.",
                 minimum = 1
             },
             preview = new
@@ -104,6 +111,7 @@ public sealed class ConvertPropertyTool : IToolHandler
                 Direction = args.Direction,
                 PropertyName = args.PropertyName,
                 Line = args.Line,
+                Column = args.Column,
                 Preview = args.Preview ?? false
             };
 
@@ -136,6 +144,7 @@ public sealed class ConvertPropertyTool : IToolHandler
         public string Direction { get; init; } = "";
         public string? PropertyName { get; init; }
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public bool? Preview { get; init; }
     }
 }
