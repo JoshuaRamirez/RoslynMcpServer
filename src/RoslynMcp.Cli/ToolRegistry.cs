@@ -223,7 +223,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ConvertPropertyOperation, ConvertPropertyParams>(
             "convert-property", "Convert between auto-property and full property");
         r.RegisterRefactoring<ConvertForeachLinqOperation, ConvertForeachLinqParams>(
-            "convert-foreach-linq", "Convert between foreach loop and LINQ expression");
+            "convert-foreach-linq", "Convert foreach loops with Add patterns to LINQ; preferQuerySyntax (default false) keeps method syntax, true emits query syntax (from … where … select) for filter/project/ToList; Any/All/FirstOrDefault/Count keep method syntax; column disambiguates two foreach statements on one line");
         r.RegisterRefactoring<ConvertAnonymousToClassOperation, ConvertAnonymousToClassParams>(
             "convert-anonymous-to-class", "Convert an anonymous type to a named class or record");
         r.RegisterRefactoring<ConvertTupleToStructOperation, ConvertTupleToStructParams>(

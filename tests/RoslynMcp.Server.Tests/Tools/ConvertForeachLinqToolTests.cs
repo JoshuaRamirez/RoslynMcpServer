@@ -73,6 +73,31 @@ public class ConvertForeachLinqToolTests
         Assert.Contains("line", requiredFields);
     }
 
+    [Fact]
+    public void GetDefinition_HasProperties_ForPreferQuerySyntaxAndColumn()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("column", out _));
+        Assert.True(properties.TryGetProperty("preferQuerySyntax", out _));
+        Assert.True(properties.TryGetProperty("preview", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_PreferQuerySyntaxProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var preferQuerySyntax = doc.RootElement.GetProperty("properties").GetProperty("preferQuerySyntax");
+
+        Assert.Equal("boolean", preferQuerySyntax.GetProperty("type").GetString());
+        Assert.False(preferQuerySyntax.GetProperty("default").GetBoolean());
+    }
+
     #endregion
 
     #region ExecuteAsync Argument Validation Tests

@@ -32,7 +32,8 @@ public sealed class ConvertForeachLinqTool : IToolHandler
     public string Name => "convert_foreach_linq";
 
     /// <inheritdoc />
-    public string Description => "Convert foreach loops with Add/accumulate patterns to LINQ expressions (Select, Where).";
+    public string Description =>
+        "Convert foreach loops with Add/accumulate patterns to LINQ. preferQuerySyntax (default false) keeps today's method syntax (.Where().Select().ToList()); true emits query syntax (from … where … select) for filter / project / ToList patterns. Any / All / FirstOrDefault / Count keep method syntax. column (optional) picks the foreach whose keyword covers that column on the given line. Preview describes the rewrite and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,6 +56,17 @@ public sealed class ConvertForeachLinqTool : IToolHandler
             {
                 type = "integer",
                 description = "1-based line number of the target statement"
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column of the foreach keyword. When set, selects the foreach whose keyword covers that column on the given line."
+            },
+            preferQuerySyntax = new
+            {
+                type = "boolean",
+                description = "Emit query syntax (from … where … select) instead of method syntax. Default false keeps today's .Where().Select().ToList(). Patterns without a query-syntax form (Any / All / FirstOrDefault / Count) keep method syntax.",
+                @default = false
             },
             preview = new
             {
@@ -91,6 +103,8 @@ public sealed class ConvertForeachLinqTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 Line = args.Line ?? 0,
+                Column = args.Column,
+                PreferQuerySyntax = args.PreferQuerySyntax ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -121,6 +135,8 @@ public sealed class ConvertForeachLinqTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
+        public bool? PreferQuerySyntax { get; init; }
         public bool? Preview { get; init; }
     }
 }
