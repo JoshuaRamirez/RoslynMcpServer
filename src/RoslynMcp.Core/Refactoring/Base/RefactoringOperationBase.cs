@@ -142,7 +142,9 @@ public abstract class RefactoringOperationBase<TParams> : IRefactoringOperation<
             UsingDirectivesRemoved = result.UsingDirectivesRemoved,
             ExecutionTimeMs = elapsedMs,
             Error = result.Error,
-            PendingChanges = result.PendingChanges
+            PendingChanges = result.PendingChanges,
+            OriginalCondition = result.OriginalCondition,
+            InvertedCondition = result.InvertedCondition
         };
     }
 }

@@ -63,6 +63,16 @@ public sealed class RefactoringResult
     public IReadOnlyList<PendingChange>? PendingChanges { get; init; }
 
     /// <summary>
+    /// Original if-statement condition text (invert_if).
+    /// </summary>
+    public string? OriginalCondition { get; init; }
+
+    /// <summary>
+    /// Inverted if-statement condition text (invert_if).
+    /// </summary>
+    public string? InvertedCondition { get; init; }
+
+    /// <summary>
     /// Creates a successful result.
     /// </summary>
     public static RefactoringResult Succeeded(

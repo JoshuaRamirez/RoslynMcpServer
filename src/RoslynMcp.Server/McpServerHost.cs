@@ -94,6 +94,7 @@ public sealed class McpServerHost : IAsyncDisposable
         _toolRegistry.Register(new AnalyzeDataFlowTool(workspaceProvider));
         _toolRegistry.Register(new ConvertExpressionBodyTool(workspaceProvider));
         _toolRegistry.Register(new ConvertToBlockBodyTool(workspaceProvider));
+        _toolRegistry.Register(new InvertIfTool(workspaceProvider));
         _toolRegistry.Register(new ConvertPropertyTool(workspaceProvider));
         _toolRegistry.Register(new IntroduceParameterTool(workspaceProvider));
 
