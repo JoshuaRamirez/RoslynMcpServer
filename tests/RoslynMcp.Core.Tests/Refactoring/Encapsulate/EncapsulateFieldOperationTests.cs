@@ -30,6 +30,26 @@ public class EncapsulateFieldOperationTests
         }
         """;
 
+    private const string PersonNameFieldSource = """
+        namespace TestApp;
+
+        public class Person
+        {
+            public string name;
+
+            public string Display() => name;
+        }
+        """;
+
+    private const string CallerNameFieldSource = """
+        namespace TestApp;
+
+        public class Caller
+        {
+            public static string Read(Person person) => person.name;
+        }
+        """;
+
     #region P0 Default / omitted updateReferences
 
     [SkippableFact]
@@ -112,6 +132,35 @@ public class EncapsulateFieldOperationTests
         Assert.Contains("public string Name", person);
         Assert.Contains("person._name", caller);
         Assert.DoesNotContain("person.Name", caller);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_UpdateReferencesFalse_RenamedField_RewritesExternalRefsToNewFieldName()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Person.cs", PersonNameFieldSource),
+            ("Caller.cs", CallerNameFieldSource));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "name",
+            UpdateReferences = false
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.ReferencesUpdated);
+
+        var person = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var caller = NormalizeNewlines(await File.ReadAllTextAsync(workspace.GetPath("Caller.cs")));
+
+        AssertEncapsulatedField(person, "_name");
+        Assert.Contains("public string Name", person);
+        Assert.Contains("person._name", caller);
+        Assert.DoesNotContain("person.Name", caller);
+        Assert.DoesNotContain("person.name;", caller);
+        Assert.DoesNotContain("=> person.name", caller);
     }
 
     #endregion

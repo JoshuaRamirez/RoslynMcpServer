@@ -135,10 +135,27 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             .Where(loc => !IsInsideContainingType(loc, fieldSymbol.ContainingType, semanticModel))
             .ToList();
 
+        // Rename field if property name would conflict (computed before preview
+        // so the description can mention backing-field rename updates).
+        var newFieldName = @params.FieldName;
+        var fieldRenamed = false;
+        if (propertyName.Equals(@params.FieldName, StringComparison.OrdinalIgnoreCase))
+        {
+            newFieldName = "_" + char.ToLowerInvariant(@params.FieldName[0]) + @params.FieldName.Substring(1);
+            fieldRenamed = true;
+        }
+
         // If preview mode, return without applying
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params, fieldSymbol, propertyName, property, externalReferences.Count);
+            return CreatePreviewResult(
+                operationId,
+                @params,
+                fieldSymbol,
+                propertyName,
+                property,
+                externalReferences.Count,
+                fieldRenamed);
         }
 
         // Make field private if it's not already
@@ -155,12 +172,8 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             newFieldDeclaration = fieldDeclaration.WithModifiers(newModifiers);
         }
 
-        // Rename field if property name would conflict
-        string newFieldName = @params.FieldName;
-        if (propertyName.Equals(@params.FieldName, StringComparison.OrdinalIgnoreCase))
+        if (fieldRenamed)
         {
-            newFieldName = "_" + char.ToLowerInvariant(@params.FieldName[0]) + @params.FieldName.Substring(1);
-
             var newDeclarator = fieldDeclarator.WithIdentifier(SyntaxFactory.Identifier(newFieldName));
             var variableDeclaration = (VariableDeclarationSyntax)fieldDeclarator.Parent!;
             var newVariableDeclaration = variableDeclaration.ReplaceNode(fieldDeclarator, newDeclarator);
@@ -200,8 +213,14 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
         var newSolution = document.WithSyntaxRoot(newRoot).Project.Solution;
 
-        // Update external references to use property (UC-EF1 updateReferences; default true)
-        if (@params.UpdateReferences)
+        // Redirect to the property when updateReferences is true. When false,
+        // still rewrite to the renamed backing field so callers stay on the
+        // field (`name` → `_name`) instead of a name that no longer exists.
+        var referenceReplacement = @params.UpdateReferences
+            ? propertyName
+            : fieldRenamed ? newFieldName : null;
+
+        if (referenceReplacement != null)
         {
             foreach (var reference in externalReferences)
             {
@@ -215,7 +234,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
                 if (refNode is IdentifierNameSyntax identifier &&
                     identifier.Identifier.Text == @params.FieldName)
                 {
-                    var newIdentifier = SyntaxFactory.IdentifierName(propertyName)
+                    var newIdentifier = SyntaxFactory.IdentifierName(referenceReplacement)
                         .WithTriviaFrom(identifier);
                     var newRefRoot = refRoot.ReplaceNode(identifier, newIdentifier);
                     newSolution = refDoc.WithSyntaxRoot(newRefRoot).Project.Solution;
@@ -223,7 +242,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             }
         }
 
-        var referencesUpdated = @params.UpdateReferences ? externalReferences.Count : 0;
+        var referencesUpdated = referenceReplacement != null ? externalReferences.Count : 0;
 
         // Commit changes
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
@@ -294,7 +313,8 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         IFieldSymbol field,
         string propertyName,
         PropertyDeclarationSyntax property,
-        int externalRefCount)
+        int externalRefCount,
+        bool fieldRenamed)
     {
         var pendingChanges = new List<PendingChange>
         {
@@ -302,7 +322,12 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             {
                 File = @params.SourceFile,
                 ChangeType = ChangeKind.Modify,
-                Description = DescribeReferenceUpdates(@params.FieldName, propertyName, @params.UpdateReferences, externalRefCount),
+                Description = DescribeReferenceUpdates(
+                    @params.FieldName,
+                    propertyName,
+                    @params.UpdateReferences,
+                    externalRefCount,
+                    fieldRenamed),
                 BeforeSnippet = $"{field.DeclaredAccessibility.ToString().ToLower()} {field.Type.ToDisplayString()} {@params.FieldName};",
                 AfterSnippet = $"private {field.Type.ToDisplayString()} {@params.FieldName};\n\n{property.NormalizeWhitespace()}"
             }
@@ -315,11 +340,14 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         string fieldName,
         string propertyName,
         bool updateReferences,
-        int externalRefCount)
+        int externalRefCount,
+        bool fieldRenamed = false)
     {
         var referenceClause = updateReferences
             ? $"{externalRefCount} external references to update"
-            : "external references will not be updated";
+            : fieldRenamed
+                ? $"{externalRefCount} external references will follow the renamed backing field"
+                : "external references will not be updated";
         return $"Encapsulate field '{fieldName}' as property '{propertyName}' ({referenceClause})";
     }
 
