@@ -227,7 +227,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `change_signature` | Add, remove, or reorder method parameters and update all call sites. | `sourceFile`, `methodName`, `parameters` (array of changes), `line` |
+| `change_signature` | Add, remove, or reorder method parameters and update all call sites (`column` picks the smallest method whose identifier or declaration span covers that column; omitted keeps today's methodName and/or line start-line pick so a continuation-line identifier still needs `column` when `line` is the identifier line of a split signature). | `sourceFile`, `methodName`, `parameters` (array of changes), `line`, `column` |
 | `add_parameter` | Add a named parameter to a method and update call sites, overrides, and interface implementations. | `sourceFile`, `methodName`, `parameterName`, `parameterType`, `defaultValue`, `position`, `line`, `column`, `updateOverrides`, `updateImplementations` |
 | `remove_parameter` | Remove a named parameter from a method and drop matching call-site arguments, updating overrides and interface implementations. | `sourceFile`, `methodName`, `parameterName`, `line`, `column`, `force`, `updateOverrides`, `updateImplementations` |
 | `reorder_parameters` | Reorder a method's parameters by a 0-based permutation and update positional call-site arguments, updating overrides and interface implementations. | `sourceFile`, `methodName`, `newOrder`, `line`, `column`, `updateOverrides`, `updateImplementations` |

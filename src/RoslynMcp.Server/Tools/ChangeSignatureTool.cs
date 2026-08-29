@@ -61,6 +61,11 @@ public sealed class ChangeSignatureTool : IToolHandler
                 type = "integer",
                 description = "Line number for disambiguation if multiple methods have the same name (1-based)"
             },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set, selects the smallest method whose identifier or declaration span covers that column. Omitted keeps today's MethodName and/or Line start-line pick."
+            },
             parameters = new
             {
                 type = "array",
@@ -141,6 +146,7 @@ public sealed class ChangeSignatureTool : IToolHandler
                 SourceFile = args.SourceFile,
                 MethodName = args.MethodName,
                 Line = args.Line,
+                Column = args.Column,
                 Parameters = args.Parameters?.Select(p => new ParameterChange
                 {
                     OriginalName = p.OriginalName,
@@ -181,6 +187,7 @@ public sealed class ChangeSignatureTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string MethodName { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public List<ParameterChangeArg>? Parameters { get; init; }
         public bool? Preview { get; init; }
     }

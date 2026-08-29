@@ -21,6 +21,13 @@ public sealed class ChangeSignatureParams
     public int? Line { get; init; }
 
     /// <summary>
+    /// 1-based column for disambiguation. When set, selects the smallest method
+    /// whose identifier or declaration span covers that column. Omitted keeps
+    /// today's MethodName and/or Line start-line pick.
+    /// </summary>
+    public int? Column { get; init; }
+
+    /// <summary>
     /// Parameter changes to apply.
     /// </summary>
     public required IReadOnlyList<ParameterChange> Parameters { get; init; }

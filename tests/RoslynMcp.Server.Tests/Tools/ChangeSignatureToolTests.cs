@@ -89,7 +89,20 @@ public class ChangeSignatureToolTests
 
         // Assert - Optional properties
         Assert.True(properties.TryGetProperty("line", out _));
+        Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+        Assert.False(RequiredFieldsContains(doc, "column"));
+    }
+
+    private static bool RequiredFieldsContains(JsonDocument doc, string name)
+    {
+        foreach (var item in doc.RootElement.GetProperty("required").EnumerateArray())
+        {
+            if (item.GetString() == name)
+                return true;
+        }
+
+        return false;
     }
 
     [Fact]
