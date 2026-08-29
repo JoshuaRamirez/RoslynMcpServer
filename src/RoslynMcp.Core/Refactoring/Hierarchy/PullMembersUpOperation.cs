@@ -971,7 +971,12 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 if (keepAsOverride)
                 {
                     foreach (var pulledMember in pulled)
-                        newMembers.Add(AddOverrideModifier(IsolateMemberSyntax(member, pulledMember.Name)));
+                    {
+                        newMembers.Add(AddOverrideModifier(
+                            IsolateMemberSyntax(member, pulledMember.Name),
+                            pulledMember.Symbol,
+                            target));
+                    }
                 }
 
                 continue;
@@ -979,7 +984,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
 
             if (keepAsOverride)
             {
-                newMembers.Add(AddOverrideModifier(member));
+                newMembers.Add(AddOverrideModifier(member, pulled[0].Symbol, target));
             }
         }
 
@@ -1007,15 +1012,45 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         return true;
     }
 
-    private static MemberDeclarationSyntax AddOverrideModifier(MemberDeclarationSyntax member)
+    /// <summary>
+    /// Keeps an override on the derived type after <c>makeAbstract</c>.
+    /// <paramref name="target"/> is the destination base: the member
+    /// symbol still lives on the derived type, so comparing that
+    /// assembly against the base is what triggers CS0507 reduction
+    /// (same helpers as <see cref="PushMembersDownOperation"/>).
+    /// </summary>
+    private static MemberDeclarationSyntax AddOverrideModifier(
+        MemberDeclarationSyntax member,
+        ISymbol symbol,
+        INamedTypeSymbol target)
     {
         return member switch
         {
-            MethodDeclarationSyntax method => method.WithModifiers(ToOverrideModifiers(method.Modifiers)),
-            PropertyDeclarationSyntax property => property.WithModifiers(ToOverrideModifiers(property.Modifiers)),
-            IndexerDeclarationSyntax indexer => indexer.WithModifiers(ToOverrideModifiers(indexer.Modifiers)),
-            EventDeclarationSyntax eventDecl => eventDecl.WithModifiers(ToOverrideModifiers(eventDecl.Modifiers)),
-            EventFieldDeclarationSyntax eventField => eventField.WithModifiers(ToOverrideModifiers(eventField.Modifiers)),
+            MethodDeclarationSyntax method =>
+                OverrideAccessibilityReducer.ReduceOverrideAccessibility(
+                    method.WithModifiers(ToOverrideModifiers(method.Modifiers)),
+                    symbol,
+                    target),
+            PropertyDeclarationSyntax property =>
+                OverrideAccessibilityReducer.ReduceOverrideAccessibility(
+                    property.WithModifiers(ToOverrideModifiers(property.Modifiers)),
+                    symbol,
+                    target),
+            IndexerDeclarationSyntax indexer =>
+                OverrideAccessibilityReducer.ReduceOverrideAccessibility(
+                    indexer.WithModifiers(ToOverrideModifiers(indexer.Modifiers)),
+                    symbol,
+                    target),
+            EventDeclarationSyntax eventDecl =>
+                OverrideAccessibilityReducer.ReduceOverrideAccessibility(
+                    eventDecl.WithModifiers(ToOverrideModifiers(eventDecl.Modifiers)),
+                    symbol,
+                    target),
+            EventFieldDeclarationSyntax eventField =>
+                OverrideAccessibilityReducer.ReduceOverrideAccessibility(
+                    eventField.WithModifiers(ToOverrideModifiers(eventField.Modifiers)),
+                    symbol,
+                    target),
             _ => member
         };
     }
