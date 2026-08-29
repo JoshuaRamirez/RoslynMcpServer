@@ -32,7 +32,8 @@ public sealed class ConvertToInterpolatedStringTool : IToolHandler
     public string Name => "convert_to_interpolated_string";
 
     /// <inheritdoc />
-    public string Description => "Convert string.Format() calls and string concatenation to interpolated strings.";
+    public string Description =>
+        "Convert string.Format() calls and string concatenation to interpolated strings. column (optional) picks the Format invocation or concatenation whose span covers that column on the given line. Omitted keeps today's first-match on the line. Preview describes the rewrite and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,6 +56,11 @@ public sealed class ConvertToInterpolatedStringTool : IToolHandler
             {
                 type = "integer",
                 description = "1-based line number of the target statement"
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set, selects the string.Format invocation or concatenation whose span covers that column on the given line."
             },
             preview = new
             {
@@ -91,6 +97,7 @@ public sealed class ConvertToInterpolatedStringTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 Line = args.Line ?? 0,
+                Column = args.Column,
                 Preview = args.Preview ?? false
             };
 
@@ -121,6 +128,7 @@ public sealed class ConvertToInterpolatedStringTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public bool? Preview { get; init; }
     }
 }

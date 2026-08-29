@@ -2,6 +2,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Convert;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Query;
@@ -995,6 +996,19 @@ public class QueryParamsValidationTests
     }
 
     [Fact]
+    public void ConvertToInterpolatedString_InvalidColumn_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateConvertToInterpolatedStringParams(new ConvertToInterpolatedStringParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                Line = 1,
+                Column = 0
+            }));
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+    }
+
+    [Fact]
     public void ConvertToInterpolatedString_NonCsFile_ThrowsException()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -1042,19 +1056,8 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
     }
 
-    private static void ValidateConvertToInterpolatedStringParams(ConvertToInterpolatedStringParams p)
-    {
-        if (string.IsNullOrWhiteSpace(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-        if (!PathResolver.IsAbsolutePath(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-        if (!PathResolver.IsValidCSharpFilePath(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-        if (p.Line < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
-        if (!File.Exists(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
-    }
+    private static void ValidateConvertToInterpolatedStringParams(ConvertToInterpolatedStringParams p) =>
+        ConvertToInterpolatedStringOperation.Validate(p);
 
     #endregion
 }

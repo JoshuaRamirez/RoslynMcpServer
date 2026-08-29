@@ -257,7 +257,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 | `convert_anonymous_to_class` | Convert an anonymous type (`new { ... }`) to a named class or record, replacing same-shape anonymous creations in the solution. | `sourceFile`, `line`, `newTypeName`, `column`, `asRecord` |
 | `convert_tuple_to_struct` | Convert a tuple (`(int X, int Y)` / `(1, 2)` / `ValueTuple`) to a named struct, replacing same-shape tuple creations in the solution. | `sourceFile`, `line`, `newTypeName`, `column` |
 | `convert_to_pattern_matching` | Convert if/is chains and switch statements to switch expressions. | `sourceFile`, `line` |
-| `convert_to_interpolated_string` | Convert string.Format() calls and concatenation to interpolated strings. | `sourceFile`, `line` |
+| `convert_to_interpolated_string` | Convert string.Format() calls and concatenation to interpolated strings (`column` picks the Format invocation or concatenation whose span covers that column on the given line; omitted keeps today's first-match-on-the-line pick so indented expressions still convert; `preview` describes the rewrite and writes nothing). | `sourceFile`, `line`, `column`, `preview` |
 | `introduce_parameter` | Promote a local variable to a method parameter, updating all call sites. | `sourceFile`, `variableName`, `line` |
 
 ### Using Directives
