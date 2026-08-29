@@ -32,7 +32,8 @@ public sealed class ConvertToPatternMatchingTool : IToolHandler
     public string Name => "convert_to_pattern_matching";
 
     /// <inheritdoc />
-    public string Description => "Convert if/is chains and switch statements to switch expressions with pattern matching.";
+    public string Description =>
+        "Convert if/is chains and switch statements to switch expressions with pattern matching. column (optional) picks the smallest switch or if whose span covers that column on the given line. Omitted keeps today's first start-line switch-then-if pick. Preview describes the rewrite and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,6 +56,11 @@ public sealed class ConvertToPatternMatchingTool : IToolHandler
             {
                 type = "integer",
                 description = "1-based line number of the target statement"
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set, selects the smallest switch or if whose span covers that column on the given line. Omitted keeps today's first start-line switch-then-if pick."
             },
             preview = new
             {
@@ -91,6 +97,7 @@ public sealed class ConvertToPatternMatchingTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 Line = args.Line ?? 0,
+                Column = args.Column,
                 Preview = args.Preview ?? false
             };
 
@@ -121,6 +128,7 @@ public sealed class ConvertToPatternMatchingTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public bool? Preview { get; init; }
     }
 }
