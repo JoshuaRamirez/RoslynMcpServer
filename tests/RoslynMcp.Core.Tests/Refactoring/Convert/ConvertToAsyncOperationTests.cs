@@ -856,7 +856,7 @@ public class ConvertToAsyncOperationTests
     }
 
     [SkippableFact]
-    public async Task ConvertToAsync_ColumnWithoutLine_MultipleOverloads_ThrowsSymbolAmbiguous()
+    public async Task ConvertToAsync_ColumnWithoutLine_SameIndentFooOverloads_ThrowsSymbolAmbiguous()
     {
         const string source = """
             using System.Threading.Tasks;
@@ -865,17 +865,20 @@ public class ConvertToAsyncOperationTests
 
             public class Worker
             {
-                public void Process()
+                public void Foo()
                 {
                     Task.Delay(1);
                 }
 
-                public void Process(int n)
+                public void Foo(int n)
                 {
                     Task.Delay(n);
                 }
             }
             """;
+
+        var column = ColumnOf(source, "Foo()");
+        Assert.Equal(column, ColumnOf(source, "Foo(int n)"));
 
         await using var workspace = await TempWorkspace.CreateAsync(source);
         var before = await File.ReadAllTextAsync(workspace.SourcePath);
@@ -885,13 +888,15 @@ public class ConvertToAsyncOperationTests
             operation.ExecuteAsync(new ConvertToAsyncParams
             {
                 SourceFile = workspace.SourcePath,
-                MethodName = "Process",
-                Column = ColumnOf(source, "Process()"),
+                MethodName = "Foo",
+                Column = column,
                 RenameToAsync = false
             }));
 
         Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("async Task Foo", NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
     }
 
     #endregion
