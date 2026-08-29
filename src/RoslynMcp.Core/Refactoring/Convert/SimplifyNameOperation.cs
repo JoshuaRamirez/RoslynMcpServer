@@ -321,10 +321,10 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
 
         void Add(ExpressionSyntax form)
         {
-            var text = form.ToString();
+            var text = form.WithoutTrivia().ToString();
             if (string.IsNullOrWhiteSpace(text) || !seen.Add(text))
                 return;
-            if (string.Equals(text, node.ToString(), StringComparison.Ordinal))
+            if (string.Equals(text, node.WithoutTrivia().ToString(), StringComparison.Ordinal))
                 return;
             forms.Add(form);
         }
@@ -359,14 +359,14 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
         {
             case QualifiedNameSyntax qualified:
                 WalkName(qualified.Left, parts);
-                parts.Add(qualified.Right);
+                parts.Add(WithIncomingSeparatorTrivia(qualified.Right, qualified.DotToken));
                 break;
             case AliasQualifiedNameSyntax alias:
                 WalkName(alias.Name, parts);
                 break;
             case MemberAccessExpressionSyntax access:
                 WalkName(access.Expression, parts);
-                parts.Add(access.Name);
+                parts.Add(WithIncomingSeparatorTrivia(access.Name, access.OperatorToken));
                 break;
             case SimpleNameSyntax simple:
                 parts.Add(simple);
@@ -374,31 +374,65 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
         }
     }
 
+    internal static SyntaxNode RestoreRetainedComponentTrivia(SyntaxNode original, SyntaxNode reduced)
+    {
+        var parts = FlattenNameParts(original);
+        if (parts.Count == 0)
+            return reduced;
+
+        var extra = SyntaxFactory.TriviaList(parts[^1].GetLeadingTrivia()
+            .Where(static trivia => trivia.IsKind(SyntaxKind.MultiLineCommentTrivia)
+                || trivia.IsKind(SyntaxKind.SingleLineCommentTrivia)
+                || trivia.IsDirective));
+
+        if (extra.Count == 0)
+            return reduced;
+
+        if (reduced.GetLeadingTrivia().Any(trivia => extra.Any(item =>
+                item.IsKind(trivia.Kind()) && item.ToString() == trivia.ToString())))
+        {
+            return reduced;
+        }
+
+        return reduced.WithLeadingTrivia(reduced.GetLeadingTrivia().AddRange(extra));
+    }
+
+    private static T WithIncomingSeparatorTrivia<T>(T name, SyntaxToken separator)
+        where T : SimpleNameSyntax
+    {
+        if (separator.TrailingTrivia.Count == 0)
+            return name;
+
+        return name.WithLeadingTrivia(separator.TrailingTrivia.AddRange(name.GetLeadingTrivia()));
+    }
+
     private static ExpressionSyntax BuildName(IReadOnlyList<SimpleNameSyntax> parts, bool memberAccess)
     {
         if (parts.Count == 0)
             throw new ArgumentException("Name parts are required.", nameof(parts));
 
+        // Keep trivia on retained components (comments / directives on an
+        // identifier or on the preceding "."). Do not call WithoutTrivia().
         if (parts.Count == 1)
-            return parts[0].WithoutTrivia();
+            return parts[0];
 
         if (memberAccess)
         {
-            ExpressionSyntax current = parts[0].WithoutTrivia();
+            ExpressionSyntax current = parts[0];
             for (var i = 1; i < parts.Count; i++)
             {
                 current = SyntaxFactory.MemberAccessExpression(
                     SyntaxKind.SimpleMemberAccessExpression,
                     current,
-                    parts[i].WithoutTrivia());
+                    parts[i]);
             }
 
             return current;
         }
 
-        NameSyntax name = parts[0].WithoutTrivia();
+        NameSyntax name = parts[0];
         for (var i = 1; i < parts.Count; i++)
-            name = SyntaxFactory.QualifiedName(name, parts[i].WithoutTrivia());
+            name = SyntaxFactory.QualifiedName(name, parts[i]);
 
         return name;
     }
@@ -421,14 +455,53 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
                 continue;
 
             if (spec.Symbol != null
-                && SymbolEqualityComparer.Default.Equals(spec.Symbol, originalSymbol))
+                && SymbolEqualityComparer.Default.Equals(spec.Symbol, originalSymbol)
+                && UnqualifiedNameIsInScope(model, original.SpanStart, replacement, originalSymbol))
             {
                 return true;
             }
 
-            var typeInfo = model.GetSpeculativeTypeInfo(position, replacement, option);
-            if (typeInfo.Type != null
-                && SymbolEqualityComparer.Default.Equals(typeInfo.Type, originalSymbol))
+            // Predefined keywords (int, string) only appear via TypeInfo.
+            if (replacement is PredefinedTypeSyntax)
+            {
+                var typeInfo = model.GetSpeculativeTypeInfo(position, replacement, option);
+                if (typeInfo.Type != null
+                    && SymbolEqualityComparer.Default.Equals(typeInfo.Type, originalSymbol))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Speculative bind at a qualified-name span can report the original
+    /// symbol for a simple name that is not actually in scope (e.g. Int32
+    /// without <c>using System</c>). Require an unqualified replacement to
+    /// appear in LookupSymbols.
+    /// </summary>
+    private static bool UnqualifiedNameIsInScope(
+        SemanticModel model,
+        int position,
+        ExpressionSyntax replacement,
+        ISymbol originalSymbol)
+    {
+        if (replacement is not SimpleNameSyntax)
+            return true;
+
+        var simple = GetRightmostIdentifier(replacement);
+        foreach (var symbol in model.LookupSymbols(position, name: simple))
+        {
+            if (SymbolEqualityComparer.Default.Equals(symbol, originalSymbol))
+                return true;
+
+            if (originalSymbol is INamedTypeSymbol originalType
+                && symbol is INamedTypeSymbol lookupType
+                && SymbolEqualityComparer.Default.Equals(
+                    lookupType.OriginalDefinition,
+                    originalType.OriginalDefinition))
             {
                 return true;
             }
@@ -491,14 +564,30 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
         IReadOnlyList<SyntaxNode> candidates,
         CancellationToken cancellationToken)
     {
+        // Roslyn matches SyntaxAnnotation by instance, not by kind/data.
+        // Keep the attached instance and look up reduced nodes with it.
+        var annotations = new Dictionary<SyntaxNode, SyntaxAnnotation>();
+        foreach (var original in candidates)
+        {
+            annotations[original] = new SyntaxAnnotation(
+                CandidateIdKind,
+                original.SpanStart.ToString(CultureInfo.InvariantCulture));
+        }
+
         var annotated = root.ReplaceNodes(candidates, (original, _) =>
             original.WithAdditionalAnnotations(
                 Simplifier.Annotation,
-                new SyntaxAnnotation(CandidateIdKind, original.SpanStart.ToString(CultureInfo.InvariantCulture))));
+                Simplifier.SpecialTypeAnnotation,
+                annotations[original]));
 
+        var annotatedDocument = document.WithSyntaxRoot(annotated);
         var reducedDocument = await Simplifier.ReduceAsync(
-            document.WithSyntaxRoot(annotated),
+            annotatedDocument,
             Simplifier.Annotation,
+            cancellationToken: cancellationToken);
+        reducedDocument = await Simplifier.ReduceAsync(
+            reducedDocument,
+            Simplifier.SpecialTypeAnnotation,
             cancellationToken: cancellationToken);
 
         var reducedRoot = await reducedDocument.GetSyntaxRootAsync(cancellationToken);
@@ -510,28 +599,47 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
             return new SimplifyOutcome(root, [], []);
 
         var applied = new List<AppliedSimplification>();
+        var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
         foreach (var original in candidates)
         {
-            var id = new SyntaxAnnotation(
-                CandidateIdKind,
-                original.SpanStart.ToString(CultureInfo.InvariantCulture));
-            var reducedNode = reducedRoot.GetAnnotatedNodes(id).FirstOrDefault();
+            var reducedNode = reducedRoot.GetAnnotatedNodes(annotations[original]).FirstOrDefault();
             if (reducedNode == null)
                 continue;
 
             var originalText = original.ToString();
-            var newText = reducedNode.ToString();
+            var restored = RestoreRetainedComponentTrivia(original, reducedNode);
+            var newText = restored.ToString();
             if (string.Equals(originalText, newText, StringComparison.Ordinal))
-                continue;
+            {
+                // Suffix fallback cannot emit predefined keywords (int, string).
+                // When Simplifier leaves the qualified special type unchanged,
+                // apply that reduction here so System.Int32 → int without usings.
+                if (TryReduceToPredefinedType(original, model, out var predefined))
+                {
+                    restored = RestoreRetainedComponentTrivia(original, predefined);
+                    newText = restored.ToString();
+                    replacements[reducedNode] = restored;
+                    applied.Add(new AppliedSimplification(original, originalText, newText));
+                }
 
+                continue;
+            }
+
+            // Bind against the in-tree reduced node; restored may be a detached trivia copy.
             if (!SameBinding(original, model, reducedNode, reducedModel))
                 continue;
+
+            if (restored != reducedNode)
+                replacements[reducedNode] = restored;
 
             applied.Add(new AppliedSimplification(original, originalText, newText));
         }
 
         if (applied.Count == 0)
             return new SimplifyOutcome(root, [], []);
+
+        if (replacements.Count > 0)
+            reducedRoot = reducedRoot.ReplaceNodes(replacements.Keys, (orig, _) => replacements[orig]);
 
         var skipped = ClassifyUnchanged(candidates, applied, model);
         return new SimplifyOutcome(reducedRoot, applied, skipped);
@@ -558,7 +666,11 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
                 continue;
             }
 
-            var rewritten = replacement.WithTriviaFrom(original);
+            // Keep retained-component trivia (inner comments). Concatenate the
+            // original node's exterior trivia so indentation / trailing newline stay.
+            var rewritten = replacement
+                .WithLeadingTrivia(original.GetLeadingTrivia().AddRange(replacement.GetLeadingTrivia()))
+                .WithTrailingTrivia(replacement.GetTrailingTrivia().AddRange(original.GetTrailingTrivia()));
             replacements[original] = rewritten;
             applied.Add(new AppliedSimplification(original, original.ToString(), rewritten.ToString()));
         }
@@ -568,6 +680,46 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
 
         var newRoot = root.ReplaceNodes(replacements.Keys, (orig, _) => replacements[orig]);
         return new SimplifyOutcome(newRoot, applied, skipped);
+    }
+
+    /// <summary>
+    /// Maps a special type to its C# keyword. Used for Simplifier-only
+    /// reductions the suffix fallback cannot produce (System.Int32 → int).
+    /// </summary>
+    internal static bool TryReduceToPredefinedType(
+        SyntaxNode original,
+        SemanticModel model,
+        out PredefinedTypeSyntax predefined)
+    {
+        predefined = null!;
+        if (GetBoundSymbol(model, original) is not INamedTypeSymbol { SpecialType: not SpecialType.None } named)
+            return false;
+
+        var keyword = named.SpecialType switch
+        {
+            SpecialType.System_Boolean => SyntaxKind.BoolKeyword,
+            SpecialType.System_Char => SyntaxKind.CharKeyword,
+            SpecialType.System_SByte => SyntaxKind.SByteKeyword,
+            SpecialType.System_Byte => SyntaxKind.ByteKeyword,
+            SpecialType.System_Int16 => SyntaxKind.ShortKeyword,
+            SpecialType.System_UInt16 => SyntaxKind.UShortKeyword,
+            SpecialType.System_Int32 => SyntaxKind.IntKeyword,
+            SpecialType.System_UInt32 => SyntaxKind.UIntKeyword,
+            SpecialType.System_Int64 => SyntaxKind.LongKeyword,
+            SpecialType.System_UInt64 => SyntaxKind.ULongKeyword,
+            SpecialType.System_Single => SyntaxKind.FloatKeyword,
+            SpecialType.System_Double => SyntaxKind.DoubleKeyword,
+            SpecialType.System_Decimal => SyntaxKind.DecimalKeyword,
+            SpecialType.System_String => SyntaxKind.StringKeyword,
+            SpecialType.System_Object => SyntaxKind.ObjectKeyword,
+            _ => SyntaxKind.None
+        };
+
+        if (keyword == SyntaxKind.None)
+            return false;
+
+        predefined = SyntaxFactory.PredefinedType(SyntaxFactory.Token(keyword));
+        return true;
     }
 
     internal static bool TryGetSafeReplacement(

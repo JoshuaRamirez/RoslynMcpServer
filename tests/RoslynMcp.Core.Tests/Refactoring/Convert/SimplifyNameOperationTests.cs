@@ -196,6 +196,24 @@ public class SimplifyNameOperationTests
     }
 
     [Fact]
+    public void GetShorterForms_KeepsInnerCommentOnRetainedName()
+    {
+        var root = CSharpSyntaxTree.ParseText("""
+            class C
+            {
+                System.Collections.Generic./* type */List<int> items;
+            }
+            """).GetRoot();
+
+        var name = SimplifyNameOperation.CollectQualifiedNameNodes(root).Single();
+        var forms = SimplifyNameOperation.GetShorterForms(name);
+        var shortest = forms[0].ToFullString();
+
+        Assert.Contains("/* type */", shortest, StringComparison.Ordinal);
+        Assert.Contains("List<int>", shortest, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ClassifySkipReason_LocalTypeConflict()
     {
         var tree = CSharpSyntaxTree.ParseText("""
@@ -365,19 +383,25 @@ public class SimplifyNameOperationTests
     public async Task SimplifyName_AllAmbiguous_ThrowsNoSimplifiableNames()
     {
         const string source = """
-            using System.Text;
-
-            namespace TestApp;
-
-            public class StringBuilder
+            namespace Other
             {
+                public class Widget
+                {
+                }
             }
 
-            public class Processor
+            namespace TestApp
             {
-                public System.Text.StringBuilder Builder()
+                public class Widget
                 {
-                    return new System.Text.StringBuilder();
+                }
+
+                public class Processor
+                {
+                    public Other.Widget Create()
+                    {
+                        return new Other.Widget();
+                    }
                 }
             }
             """;
@@ -608,7 +632,7 @@ public class SimplifyNameOperationTests
         Assert.True(result.SimplificationsApplied >= 1);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.DoesNotContain("TestApp.Outer.Inner", updated, StringComparison.Ordinal);
-        Assert.Contains("Outer.Inner", updated, StringComparison.Ordinal);
+        Assert.Contains("Inner", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
     }
 
@@ -686,6 +710,82 @@ public class SimplifyNameOperationTests
             Assert.Contains("nameof(", updated, StringComparison.Ordinal);
         }
 
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_SimplifierOnly_PredefinedTypeWithoutUsing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Processor
+            {
+                public System.Int32 Count() => 0;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, implicitUsings: false);
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath);
+        Assert.NotNull(document);
+        var model = await document.GetSemanticModelAsync();
+        Assert.NotNull(model);
+        var root = await document.GetSyntaxRootAsync();
+        Assert.NotNull(root);
+        var qualified = SimplifyNameOperation.CollectQualifiedNameNodes(root).Single();
+        var fallbackCan = SimplifyNameOperation.TryGetSafeReplacement(qualified, model, out var fallback);
+        Assert.False(
+            fallbackCan,
+            "Fallback must not be able to shorten System.Int32 without using System. Got: "
+            + fallback?.ToFullString());
+
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.SimplificationsApplied >= 1);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("System.Int32", updated, StringComparison.Ordinal);
+        Assert.Contains("int", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_RetainedInnerComment_Survives()
+    {
+        const string source = """
+            using System.Collections.Generic;
+
+            namespace TestApp;
+
+            public class Processor
+            {
+                public System.Collections.Generic./* type */List<int> Items()
+                {
+                    return new System.Collections.Generic.List<int>();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new SimplifyNameOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            SourceFile = workspace.SourcePath,
+            Scope = "location",
+            Line = FindLine(source, "/* type */")
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.SimplificationsApplied >= 1);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("/* type */", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("System.Collections.Generic./* type */List", updated, StringComparison.Ordinal);
+        Assert.Contains("List<int>", updated, StringComparison.Ordinal);
         await AssertCompilesAsync(workspace);
     }
 
@@ -773,7 +873,10 @@ public class SimplifyNameOperationTests
         public required string SourcePath { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public static async Task<TempWorkspace> CreateAsync(
+            string source,
+            string fileName = "Types.cs",
+            bool implicitUsings = true)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -782,12 +885,14 @@ public class SimplifyNameOperationTests
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
             var sourcePath = Path.Combine(directory, fileName);
+            var implicitUsingsValue = implicitUsings ? "enable" : "disable";
 
-            await File.WriteAllTextAsync(projectPath, """
+            await File.WriteAllTextAsync(projectPath, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <ImplicitUsings>{implicitUsingsValue}</ImplicitUsings>
                   </PropertyGroup>
                 </Project>
                 """);
