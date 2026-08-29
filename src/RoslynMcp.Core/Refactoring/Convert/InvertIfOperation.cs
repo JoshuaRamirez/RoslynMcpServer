@@ -257,8 +257,6 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
 
     private static ExpressionSyntax InvertExpression(ExpressionSyntax expression, SemanticModel? model)
     {
-        expression = expression.WithoutTrivia();
-
         switch (expression)
         {
             case ParenthesizedExpressionSyntax parenthesized:
