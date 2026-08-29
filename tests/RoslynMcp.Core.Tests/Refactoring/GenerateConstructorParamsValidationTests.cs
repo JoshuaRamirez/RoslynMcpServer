@@ -83,6 +83,52 @@ public class GenerateConstructorParamsValidationTests
     }
 
     [Fact]
+    public void Line_DefaultsToNull()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass"
+        };
+
+        Assert.Null(@params.Line);
+    }
+
+    [Fact]
+    public void ValidateParams_InvalidLine_ThrowsInvalidLineNumber()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass",
+            Line = 0
+        };
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(@params));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void ValidateParams_NegativeLine_ThrowsInvalidLineNumber()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass",
+            Line = -1
+        };
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(@params));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
     public void IncludeProperties_DefaultsToTrue()
     {
         var @params = new GenerateConstructorParams
