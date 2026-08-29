@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Formatting;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
@@ -151,6 +152,14 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
 
         var rewriter = new BraceRewriter(onlyThese, typeScope, wrapElseIf: onlyThese != null, previewOwner);
         var newRoot = rewriter.Visit(root) ?? root;
+        if (rewriter.WrappedCount > 0)
+        {
+            newRoot = Formatter.Format(
+                newRoot,
+                BraceRewriter.FormatAnnotation,
+                Context.Workspace,
+                cancellationToken: cancellationToken);
+        }
 
         if (scope != ScopeStatement && rewriter.WrappedCount == 0)
         {
@@ -399,6 +408,7 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
     private sealed class BraceRewriter : CSharpSyntaxRewriter
     {
         internal static readonly SyntaxAnnotation OwnerAnnotation = new("add-braces-owner");
+        internal static readonly SyntaxAnnotation FormatAnnotation = new("add-braces-format");
 
         private readonly HashSet<StatementSyntax>? _onlyThese;
         private readonly TypeDeclarationSyntax? _typeScope;
@@ -424,7 +434,8 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             var rewritten = (IfStatementSyntax)base.VisitIfStatement(node)!;
             if (ShouldWrap(node.Statement))
             {
-                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement));
+                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement))
+                    .WithAdditionalAnnotations(FormatAnnotation);
                 WrappedCount++;
             }
 
@@ -443,7 +454,8 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
 
             if (ShouldWrap(node.Statement))
             {
-                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement));
+                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement))
+                    .WithAdditionalAnnotations(FormatAnnotation);
                 WrappedCount++;
             }
 
@@ -455,7 +467,8 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             var rewritten = (ForStatementSyntax)base.VisitForStatement(node)!;
             if (ShouldWrap(node.Statement))
             {
-                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement));
+                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement))
+                    .WithAdditionalAnnotations(FormatAnnotation);
                 WrappedCount++;
             }
 
@@ -467,7 +480,8 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             var rewritten = (ForEachStatementSyntax)base.VisitForEachStatement(node)!;
             if (ShouldWrap(node.Statement))
             {
-                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement));
+                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement))
+                    .WithAdditionalAnnotations(FormatAnnotation);
                 WrappedCount++;
             }
 
@@ -479,7 +493,8 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             var rewritten = (ForEachVariableStatementSyntax)base.VisitForEachVariableStatement(node)!;
             if (ShouldWrap(node.Statement))
             {
-                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement));
+                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement))
+                    .WithAdditionalAnnotations(FormatAnnotation);
                 WrappedCount++;
             }
 
@@ -491,7 +506,8 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             var rewritten = (WhileStatementSyntax)base.VisitWhileStatement(node)!;
             if (ShouldWrap(node.Statement))
             {
-                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement));
+                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement))
+                    .WithAdditionalAnnotations(FormatAnnotation);
                 WrappedCount++;
             }
 
@@ -503,7 +519,8 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             var rewritten = (UsingStatementSyntax)base.VisitUsingStatement(node)!;
             if (ShouldWrap(node.Statement))
             {
-                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement));
+                rewritten = rewritten.WithStatement(WrapInBraces(rewritten.Statement))
+                    .WithAdditionalAnnotations(FormatAnnotation);
                 WrappedCount++;
             }
 

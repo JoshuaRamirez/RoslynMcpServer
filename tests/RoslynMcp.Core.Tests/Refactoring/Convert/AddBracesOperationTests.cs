@@ -159,6 +159,7 @@ public class AddBracesOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         AssertIfBodyIsBlock(updated, "x > 0");
         Assert.Contains("return \"positive\";", updated);
+        Assert.DoesNotContain("{            return", updated);
         await AssertCompilesAsync(workspace);
     }
 

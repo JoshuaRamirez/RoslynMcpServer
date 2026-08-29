@@ -112,7 +112,7 @@ public sealed class AddBracesTool : IToolHandler
                 SourceFile = args.SourceFile,
                 Line = args.Line,
                 Column = args.Column,
-                Scope = args.Scope ?? AddBracesOperation.ScopeStatement,
+                Scope = args.Scope ?? "statement",
                 TypeName = args.TypeName,
                 Preview = args.Preview ?? false
             };
