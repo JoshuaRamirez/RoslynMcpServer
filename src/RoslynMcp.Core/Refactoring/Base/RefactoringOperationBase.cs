@@ -144,7 +144,9 @@ public abstract class RefactoringOperationBase<TParams> : IRefactoringOperation<
             Error = result.Error,
             PendingChanges = result.PendingChanges,
             OriginalCondition = result.OriginalCondition,
-            InvertedCondition = result.InvertedCondition
+            InvertedCondition = result.InvertedCondition,
+            StatementsModified = result.StatementsModified,
+            Scope = result.Scope
         };
     }
 }

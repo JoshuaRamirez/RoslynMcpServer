@@ -508,6 +508,18 @@ public static class ErrorCodes
     /// <summary>Condition cannot be safely inverted (for example it introduces a pattern or out variable).</summary>
     public const string ConditionNotInvertible = "3154";
 
+    // --------------------------------------------
+    // Add Braces Errors (3155-3156)
+    // Spec UC-A5 lists 3119 / 3120; those codes already ship for
+    // safe-delete / make-static. invert_if used 3153-3154 for the same reason.
+    // --------------------------------------------
+
+    /// <summary>No control statement found at the specified location (statement scope).</summary>
+    public const string NoControlStatement = "3155";
+
+    /// <summary>The targeted control statement already has braces (statement scope).</summary>
+    public const string AlreadyHasBraces = "3156";
+
     // ============================================
     // System Errors (4xxx)
     // ============================================

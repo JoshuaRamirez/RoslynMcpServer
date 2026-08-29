@@ -73,6 +73,16 @@ public sealed class RefactoringResult
     public string? InvertedCondition { get; init; }
 
     /// <summary>
+    /// Number of control-statement bodies that received braces (add_braces).
+    /// </summary>
+    public int StatementsModified { get; init; }
+
+    /// <summary>
+    /// Scope of the add_braces operation (<c>statement</c>, <c>file</c>, or <c>type</c>).
+    /// </summary>
+    public string? Scope { get; init; }
+
+    /// <summary>
     /// Creates a successful result.
     /// </summary>
     public static RefactoringResult Succeeded(
