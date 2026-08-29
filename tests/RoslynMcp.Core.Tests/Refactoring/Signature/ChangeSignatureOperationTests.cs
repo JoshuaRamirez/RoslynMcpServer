@@ -121,8 +121,8 @@ public class ChangeSignatureOperationTests
         });
 
         Assert.True(result.Success);
-        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("Process(int x, bool flag)", updated);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.True(HasParameters(updated, "Process", ("int", "x"), ("bool", "flag")));
     }
 
     [SkippableFact]
@@ -139,8 +139,8 @@ public class ChangeSignatureOperationTests
         });
 
         Assert.True(result.Success);
-        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("Process(int x, bool flag)", updated);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.True(HasParameters(updated, "Process", ("int", "x"), ("bool", "flag")));
     }
 
     [SkippableFact]
@@ -159,10 +159,12 @@ public class ChangeSignatureOperationTests
         });
 
         Assert.True(result.Success);
-        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("Process(int x, bool flag)", updated);
-        Assert.Contains("public void Process(int x, int y)", updated);
-        Assert.DoesNotContain("Process(int x, int y, bool flag)", updated);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var processMethods = GetMethods(updated, "Process");
+        Assert.Equal(2, processMethods.Count);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "flag"]);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "y"]);
+        Assert.DoesNotContain(processMethods, m => ParameterNames(m) is ["x", "y", "flag"]);
     }
 
     [SkippableFact]
@@ -207,10 +209,12 @@ public class ChangeSignatureOperationTests
         });
 
         Assert.True(result.Success);
-        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("public void Process(int x) { }", updated);
-        Assert.Contains("Process(int x, int y, bool flag)", updated);
-        Assert.DoesNotContain("Process(int x, bool flag)", updated);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var processMethods = GetMethods(updated, "Process");
+        Assert.Equal(2, processMethods.Count);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x"]);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "y", "flag"]);
+        Assert.DoesNotContain(processMethods, m => ParameterNames(m) is ["x", "flag"]);
     }
 
     [SkippableFact]
@@ -231,10 +235,12 @@ public class ChangeSignatureOperationTests
         });
 
         Assert.True(result.Success);
-        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("Process(int x, bool flag)", updated);
-        Assert.Contains("public void Process(int x, int y)", updated);
-        Assert.DoesNotContain("Process(int x, int y, bool flag)", updated);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var processMethods = GetMethods(updated, "Process");
+        Assert.Equal(2, processMethods.Count);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "flag"]);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "y"]);
+        Assert.DoesNotContain(processMethods, m => ParameterNames(m) is ["x", "y", "flag"]);
     }
 
     [SkippableFact]
@@ -263,8 +269,8 @@ public class ChangeSignatureOperationTests
         });
 
         Assert.True(result.Success);
-        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("Process(int x, bool flag)", updated);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.True(HasParameters(updated, "Process", ("int", "x"), ("bool", "flag")));
     }
 
     [SkippableFact]
@@ -292,10 +298,9 @@ public class ChangeSignatureOperationTests
         });
 
         Assert.True(result.Success);
-        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("public void Other(int x){}", updated);
-        Assert.Contains("Process(int x, bool flag)", updated);
-        Assert.DoesNotContain("Other(int x, bool flag)", updated);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.True(HasParameters(updated, "Other", ("int", "x")));
+        Assert.True(HasParameters(updated, "Process", ("int", "x"), ("bool", "flag")));
     }
 
     [Fact]
@@ -544,6 +549,27 @@ public class ChangeSignatureOperationTests
     #region Helpers
 
     private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
+
+    private static List<MethodDeclarationSyntax> GetMethods(string source, string methodName) =>
+        CSharpSyntaxTree.ParseText(source).GetRoot()
+            .DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == methodName)
+            .ToList();
+
+    private static string[] ParameterNames(MethodDeclarationSyntax method) =>
+        method.ParameterList.Parameters.Select(p => p.Identifier.Text).ToArray();
+
+    private static bool HasParameters(string source, string methodName, params (string Type, string Name)[] expected)
+    {
+        var methods = GetMethods(source, methodName);
+        return methods.Any(method =>
+            method.ParameterList.Parameters.Count == expected.Length &&
+            method.ParameterList.Parameters
+                .Select((p, i) => p.Identifier.Text == expected[i].Name &&
+                                  (p.Type?.ToString().Trim() ?? "") == expected[i].Type)
+                .All(match => match));
+    }
 
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpChangeSignatureMissing.cs");
