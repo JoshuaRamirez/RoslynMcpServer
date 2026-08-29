@@ -220,7 +220,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `inline_method` | Inline a method by replacing call sites with the method body. Optionally remove the method. | `sourceFile`, `methodName`, `line`, `column`, `callSiteLocation`, `removeMethod` |
-| `inline_variable` | Inline a local variable by replacing all usages with its initializer value. | `sourceFile`, `variableName`, `line` |
+| `inline_variable` | Inline a local variable by replacing all usages with its initializer value (`column` picks the declaration whose identifier or declaration span covers that column; omitted keeps today's variableName + optional line start-line pick so a continuation-line identifier still needs `column` when `line` is the type line of a split declaration). | `sourceFile`, `variableName`, `line`, `column`, `preview` |
 | `inline_constant` | Inline a const field by replacing references with a formatted literal. Optionally remove the constant. | `sourceFile`, `constantName`, `typeName`, `removeConstant` |
 
 ### Signature and Encapsulation
