@@ -229,7 +229,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ConvertTupleToStructOperation, ConvertTupleToStructParams>(
             "convert-tuple-to-struct", "Convert a tuple to a named struct");
         r.RegisterRefactoring<ConvertToInterpolatedStringOperation, ConvertToInterpolatedStringParams>(
-            "convert-to-interpolated-string", "Convert string concatenation to interpolated string");
+            "convert-to-interpolated-string", "Convert string.Format() and concatenation to interpolated strings; column (optional) picks the Format invocation or concatenation whose span covers that column on the given line");
         r.RegisterRefactoring<ConvertToPatternMatchingOperation, ConvertToPatternMatchingParams>(
             "convert-to-pattern-matching", "Convert type checks to pattern matching");
 

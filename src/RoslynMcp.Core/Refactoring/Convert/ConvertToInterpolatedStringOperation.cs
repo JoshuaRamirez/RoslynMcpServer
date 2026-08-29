@@ -21,7 +21,13 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(ConvertToInterpolatedStringParams @params)
+    protected override void ValidateParams(ConvertToInterpolatedStringParams @params) => Validate(@params);
+
+    /// <summary>
+    /// Validates convert-to-interpolated-string parameters. Internal so tests
+    /// can exercise input rules without loading a workspace.
+    /// </summary>
+    internal static void Validate(ConvertToInterpolatedStringParams @params)
     {
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
@@ -34,6 +40,9 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
 
         if (@params.Line < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
+
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -52,33 +61,120 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var targetLine = @params.Line - 1;
+        var target = FindConvertibleExpression(root, semanticModel, @params.Line, @params.Column);
 
-        // Try string.Format first
-        var formatInvocation = root.DescendantNodes()
-            .OfType<InvocationExpressionSyntax>()
-            .FirstOrDefault(i => i.GetLocation().GetLineSpan().StartLinePosition.Line == targetLine &&
-                                  IsStringFormatCall(i, semanticModel));
-
-        if (formatInvocation != null)
+        if (target is InvocationExpressionSyntax formatInvocation)
         {
             return await ConvertStringFormat(operationId, document, root, formatInvocation, @params, cancellationToken);
         }
 
-        // Try concatenation
-        var concat = root.DescendantNodes()
-            .OfType<BinaryExpressionSyntax>()
-            .FirstOrDefault(b => b.GetLocation().GetLineSpan().StartLinePosition.Line == targetLine &&
-                                  b.IsKind(SyntaxKind.AddExpression) &&
-                                  IsStringConcatenation(b, semanticModel));
-
-        if (concat != null)
+        if (target is BinaryExpressionSyntax concat)
         {
             return await ConvertConcatenation(operationId, document, root, concat, @params, cancellationToken);
         }
 
+        var location = @params.Column.HasValue
+            ? $"line {@params.Line}, column {@params.Column.Value}"
+            : $"line {@params.Line}";
         throw new RefactoringException(ErrorCodes.CannotConvert,
-            $"No string.Format() call or string concatenation found at line {@params.Line}.");
+            $"No string.Format() call or string concatenation found at {location}.");
+    }
+
+    /// <summary>
+    /// Finds a convertible <c>string.Format</c> invocation or concatenation.
+    /// When <paramref name="column"/> is omitted, keeps today's first-match
+    /// whose start line equals <paramref name="line"/> (Format before
+    /// concatenation). When set, picks the Format invocation or the outer
+    /// concatenation whose span covers that 1-based column. Format is still
+    /// preferred when both kinds cover the column. Concatenation matches walk
+    /// up to <see cref="OuterConcatenation"/> so a 3+ operand chain is not
+    /// flattened from an inner node.
+    /// </summary>
+    internal static ExpressionSyntax? FindConvertibleExpression(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        int line,
+        int? column)
+    {
+        var formats = root.DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .Where(invocation => IsStringFormatCall(invocation, semanticModel));
+
+        var concats = root.DescendantNodes()
+            .OfType<BinaryExpressionSyntax>()
+            .Where(binary => binary.IsKind(SyntaxKind.AddExpression) &&
+                             IsStringConcatenation(binary, semanticModel));
+
+        if (!column.HasValue)
+        {
+            ExpressionSyntax? firstFormat = formats.FirstOrDefault(invocation => StartsOnLine(invocation, line));
+            if (firstFormat != null)
+                return firstFormat;
+
+            var firstConcat = concats.FirstOrDefault(binary => StartsOnLine(binary, line));
+            return firstConcat == null ? null : OuterConcatenation(firstConcat);
+        }
+
+        var formatAtColumn = formats
+            .Where(invocation => SpanCoversColumn(invocation.GetLocation().GetLineSpan(), line, column.Value))
+            .OrderBy(invocation => invocation.Span.Length)
+            .FirstOrDefault();
+        if (formatAtColumn != null)
+            return formatAtColumn;
+
+        // Prefer the outer matching concatenation. Shortest-span pick would
+        // return an inner binary of a 3+ operand chain; flattening that inner
+        // node and then replacing the walked-up outer silently drops later
+        // operands. Adjacent independent concatenations still do not share a
+        // span, so column continues to distinguish them.
+        var concatAtColumn = concats
+            .Where(binary => SpanCoversColumn(binary.GetLocation().GetLineSpan(), line, column.Value))
+            .OrderByDescending(binary => binary.Span.Length)
+            .FirstOrDefault();
+        return concatAtColumn == null ? null : OuterConcatenation(concatAtColumn);
+    }
+
+    /// <summary>
+    /// Walks to the outermost <c>+</c> concatenation that contains
+    /// <paramref name="concat"/>. Adjacent independent concatenations are
+    /// siblings, not ancestors, so this does not collapse two statements.
+    /// </summary>
+    internal static BinaryExpressionSyntax OuterConcatenation(BinaryExpressionSyntax concat)
+    {
+        var outer = concat;
+        while (outer.Parent is BinaryExpressionSyntax parentBinary &&
+               parentBinary.IsKind(SyntaxKind.AddExpression))
+        {
+            outer = parentBinary;
+        }
+
+        return outer;
+    }
+
+    private static bool StartsOnLine(SyntaxNode node, int line) =>
+        node.GetLocation().GetLineSpan().StartLinePosition.Line + 1 == line;
+
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character of an adjacent expression also
+    /// match the previous Format invocation or concatenation.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == startLine && column < startCol)
+            return false;
+        if (line == endLine && column >= endCol)
+            return false;
+        return true;
     }
 
     private static bool IsStringFormatCall(InvocationExpressionSyntax invocation, SemanticModel model)
@@ -226,8 +322,10 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         BinaryExpressionSyntax concat, ConvertToInterpolatedStringParams @params,
         CancellationToken cancellationToken)
     {
-        // Flatten the concatenation tree
-        var parts = FlattenConcatenation(concat);
+        // Flatten the outermost concatenation so a column (or omitted first
+        // match) on an inner operand of a 3+ chain still keeps later parts.
+        var outerConcat = OuterConcatenation(concat);
+        var parts = FlattenConcatenation(outerConcat);
 
         var contents = new List<InterpolatedStringContentSyntax>();
         foreach (var part in parts)
@@ -251,14 +349,6 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         var interpolatedString = SyntaxFactory.InterpolatedStringExpression(
             SyntaxFactory.Token(SyntaxKind.InterpolatedStringStartToken),
             SyntaxFactory.List(contents));
-
-        // Find the outermost concatenation expression
-        var outerConcat = concat;
-        while (outerConcat.Parent is BinaryExpressionSyntax parentBinary &&
-               parentBinary.IsKind(SyntaxKind.AddExpression))
-        {
-            outerConcat = parentBinary;
-        }
 
         var before = outerConcat.NormalizeWhitespace().ToFullString();
         var after = interpolatedString.NormalizeWhitespace().ToFullString();
