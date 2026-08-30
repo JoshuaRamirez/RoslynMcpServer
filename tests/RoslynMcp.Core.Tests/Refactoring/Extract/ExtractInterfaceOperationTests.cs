@@ -14,7 +14,7 @@ namespace RoslynMcp.Core.Tests.Refactoring.Extract;
 
 /// <summary>
 /// Operation-level tests for <see cref="ExtractInterfaceOperation"/>, including optional
-/// <c>line</c>, <c>separateFile</c>, <c>targetFile</c>, and <c>addInterfaceToType</c>.
+/// <c>line</c>, <c>column</c>, <c>separateFile</c>, <c>targetFile</c>, and <c>addInterfaceToType</c>.
 /// </summary>
 public class ExtractInterfaceOperationTests
 {
@@ -156,6 +156,69 @@ public class ExtractInterfaceOperationTests
 
         Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
         Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Column_DefaultsToNull()
+    {
+        var @params = new ExtractInterfaceParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Person",
+            InterfaceName = "IPerson"
+        };
+
+        Assert.Null(@params.Column);
+    }
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractInterfaceOperation.Validate(new ExtractInterfaceParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Person",
+                InterfaceName = "IPerson",
+                Column = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractInterfaceOperation.Validate(new ExtractInterfaceParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Person",
+                InterfaceName = "IPerson",
+                Column = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Validate_EmptyTypeName_WithColumnAndLine_ThrowsMissingRequiredParam(string typeName)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractInterfaceOperation.Validate(new ExtractInterfaceParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = typeName,
+                InterfaceName = "IPerson",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
     [SkippableFact]
@@ -545,6 +608,499 @@ public class ExtractInterfaceOperationTests
         Assert.Contains("interface IPerson", updated);
         Assert.Contains("enum Person", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("interface IPerson", updated[..updated.IndexOf("enum Person", StringComparison.Ordinal)]);
+    }
+
+    #endregion
+
+    #region P0 optional column disambiguation
+
+    private const string SameLineNestedPersonSource = """
+        namespace TestApp;
+
+        public class Person { public string Name { get; set; } public class Person { public int Age { get; set; } } }
+        """;
+
+    [SkippableFact]
+    public async Task ExtractInterface_OmittedColumn_KeepsTypeNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            InterfaceName = "IPerson"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Person");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeImplementsInterface(types[0], "IPerson"));
+        Assert.False(TypeImplementsInterface(types[1], "IPerson"));
+        Assert.NotNull(FindProperty(updated, "IPerson", "Name"));
+        Assert.Null(FindProperty(updated, "IPerson", "Age"));
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_OmittedColumn_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            InterfaceName = "IPerson",
+            Line = FindLine(NestedSameNamePersonSource, "nested-person")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Person");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeImplementsInterface(types[0], "IPerson"));
+        Assert.True(TypeImplementsInterface(types[1], "IPerson"));
+        Assert.Null(FindProperty(updated, "IPerson", "Name"));
+        Assert.NotNull(FindProperty(updated, "IPerson", "Age"));
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_ColumnOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedPersonSource, "Person.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+        var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
+        var column = ColumnOf(SameLineNestedPersonSource, "Person { public int Age");
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            InterfaceName = "IPerson",
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Person");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeImplementsInterface(types[0], "IPerson"));
+        Assert.True(TypeImplementsInterface(types[1], "IPerson"));
+        Assert.Null(FindProperty(updated, "IPerson", "Name"));
+        Assert.NotNull(FindProperty(updated, "IPerson", "Age"));
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_ColumnOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedPersonSource, "Person.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+        var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
+        var column = ColumnOf(SameLineNestedPersonSource, "Person { public string Name");
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            InterfaceName = "IPerson",
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Person");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeImplementsInterface(types[0], "IPerson"));
+        Assert.False(TypeImplementsInterface(types[1], "IPerson"));
+        Assert.NotNull(FindProperty(updated, "IPerson", "Name"));
+        Assert.Null(FindProperty(updated, "IPerson", "Age"));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedColumn_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = ExtractInterfaceOperation.FindTypeDeclaration(root, "Person", line: null, column: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedColumn_EnumFirstPicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = ExtractInterfaceOperation.FindTypeDeclaration(root, "Person", line: null, column: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedPersonSource).GetRoot();
+        var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
+        var found = ExtractInterfaceOperation.FindTypeDeclaration(
+            root, "Person", line, ColumnOf(SameLineNestedPersonSource, "Person { public int Age"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Person");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedPersonSource).GetRoot();
+        var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
+        var found = ExtractInterfaceOperation.FindTypeDeclaration(
+            root, "Person", line, ColumnOf(SameLineNestedPersonSource, "Person { public string Name"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnWithoutLine_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedPersonSource).GetRoot();
+        var nestedColumn = ColumnOf(SameLineNestedPersonSource, "Person { public int Age");
+        var found = ExtractInterfaceOperation.FindTypeDeclaration(
+            root, "Person", line: null, nestedColumn);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnWithoutLine_EnumFirstPicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var enumColumn = ColumnOf(EnumFirstThenSameNamedClassSource, "Person");
+        var found = ExtractInterfaceOperation.FindTypeDeclaration(
+            root, "Person", line: null, enumColumn);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnWithoutLine_DelegateFirstPicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateFirstThenSameNamedClassSource).GetRoot();
+        var delegateColumn = ColumnOf(DelegateFirstThenSameNamedClassSource, "Person()");
+        var found = ExtractInterfaceOperation.FindTypeDeclaration(
+            root, "Person", line: null, delegateColumn);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Person // split-person
+            {
+                public string Name { get; set; }
+
+                public class Person // nested-person
+                {
+                    public int Age { get; set; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-person");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = ExtractInterfaceOperation.FindTypeDeclaration(
+            root, "Person", identifierLine, ColumnOf(source, "Person // split-person"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_ColumnOnContinuationLine_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Person // split-person
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Person.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+        var startLine = FindLine(source, "public class\n    Person");
+        var identifierLine = FindLine(source, "split-person");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            InterfaceName = "IPerson",
+            Line = identifierLine,
+            Column = ColumnOf(source, "Person // split-person")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Person");
+        Assert.Single(types);
+        Assert.True(TypeImplementsInterface(types[0], "IPerson"));
+        Assert.NotNull(FindProperty(updated, "IPerson", "Name"));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnEnumIdentifier_PicksEnum()
+    {
+        const string source = """
+            namespace TestApp { public enum Person { Ready } public class Person { public string Name { get; set; } }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var line = FindLine(source, "public enum Person");
+        var found = ExtractInterfaceOperation.FindTypeDeclaration(
+            root, "Person", line, ColumnOf(source, "Person { Ready }"));
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_ColumnOnEnumIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        const string source = """
+            namespace TestApp { public enum Person { Ready } public class Person { public string Name { get; set; } }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Person.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractInterfaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                InterfaceName = "IPerson",
+                Line = FindLine(source, "public enum Person"),
+                Column = ColumnOf(source, "Person { Ready }")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("interface IPerson", updated, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnDelegateIdentifier_PicksDelegate()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateFirstThenSameNamedClassSource).GetRoot();
+        var found = ExtractInterfaceOperation.FindTypeDeclaration(
+            root, "Person",
+            FindLine(DelegateFirstThenSameNamedClassSource, "person-delegate"),
+            ColumnOf(DelegateFirstThenSameNamedClassSource, "Person()"));
+
+        Assert.NotNull(found);
+        Assert.IsType<DelegateDeclarationSyntax>(found);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_ColumnOnDelegateIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DelegateFirstThenSameNamedClassSource, "Person.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractInterfaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                InterfaceName = "IPerson",
+                Line = FindLine(DelegateFirstThenSameNamedClassSource, "person-delegate"),
+                Column = ColumnOf(DelegateFirstThenSameNamedClassSource, "Person()")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("interface IPerson", updated, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnAndLineMiss_DoesNotFallBackToFirst()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = ExtractInterfaceOperation.FindTypeDeclaration(root, "Person", line: 1, column: 1);
+
+        Assert.Null(found);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_ColumnAndLineMiss_ThrowsTypeNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractInterfaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                InterfaceName = "IPerson",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.TypeNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_ColumnAndLine_UnknownTypeName_ThrowsTypeNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractInterfaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Missing",
+                InterfaceName = "IPerson",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.TypeNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_Column_Preview_WritesNothing_AndDescribesRewrite()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedPersonSource, "Person.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            InterfaceName = "IPerson",
+            Line = line,
+            Column = ColumnOf(SameLineNestedPersonSource, "Person { public int Age"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Extract interface IPerson", result.PendingChanges[0].Description);
+        Assert.Contains("Age", result.PendingChanges[0].Description);
+        Assert.DoesNotContain("Name", result.PendingChanges[0].Description);
+        Assert.Contains("Age", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("Add IPerson to base list of Person", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class Outer { class Nested { } }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var nested = tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == "Nested");
+        var span = nested.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(ExtractInterfaceOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(ExtractInterfaceOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(ExtractInterfaceOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(ExtractInterfaceOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_SequentialColumn_ReusedWorkspace_AttachesToSecondSelectedType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person { public string Name { get; set; } public class Person { public int Age { get; set; } } }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Person.cs");
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+        var line = FindLine(source, "public class Person { public string Name");
+
+        var first = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            InterfaceName = "IOuterPerson",
+            Line = line,
+            Column = ColumnOf(source, "Person { public string Name")
+        });
+        Assert.True(first.Success);
+
+        // Recompute from the rewritten file. A per-execution annotation
+        // must not leave the first selected type as the only recover-able
+        // node in a reused workspace.
+        var afterFirst = await File.ReadAllTextAsync(workspace.SourcePath);
+        var second = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            InterfaceName = "INestedPerson",
+            Line = FindLine(afterFirst, "Person { public int Age"),
+            Column = ColumnOf(afterFirst, "Person { public int Age")
+        });
+        Assert.True(second.Success);
+
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Person");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeImplementsInterface(types[0], "IOuterPerson"));
+        Assert.False(TypeImplementsInterface(types[0], "INestedPerson"));
+        Assert.True(TypeImplementsInterface(types[1], "INestedPerson"));
+        Assert.False(TypeImplementsInterface(types[1], "IOuterPerson"));
+        Assert.NotNull(FindProperty(updated, "IOuterPerson", "Name"));
+        Assert.NotNull(FindProperty(updated, "INestedPerson", "Age"));
+        Assert.Null(FindProperty(updated, "IOuterPerson", "Age"));
+        Assert.Null(FindProperty(updated, "INestedPerson", "Name"));
     }
 
     #endregion
@@ -1130,6 +1686,20 @@ public class ExtractInterfaceOperationTests
         }
 
         return line;
+    }
+
+    // Single-line snippets only — IndexOf of an LF-only snippet missed
+    // CRLF checkouts (FindMethod_ColumnOnContinuationLine on #200 / #214).
+    private static int ColumnOf(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
     }
 
     private static TypeDeclarationSyntax FindType(string source, string typeName)

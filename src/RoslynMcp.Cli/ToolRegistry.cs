@@ -153,7 +153,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ExtractConstantOperation, ExtractConstantParams>(
             "extract-constant", "Extract a literal value into a named constant");
         r.RegisterRefactoring<ExtractInterfaceOperation, ExtractInterfaceParams>(
-            "extract-interface", "Extract an interface from a class; line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick; separateFile writes {InterfaceName}.cs next to the source");
+            "extract-interface", "Extract an interface from a class; line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick; column (optional) picks the type whose identifier or declaration span covers that column when set with line; omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter; separateFile writes {InterfaceName}.cs next to the source");
         r.RegisterRefactoring<ExtractBaseClassOperation, ExtractBaseClassParams>(
             "extract-base-class", "Extract a base class from common members; line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick; separateFile writes {BaseClassName}.cs next to the source");
         r.RegisterRefactoring<IntroduceParameterOperation, IntroduceParameterParams>(

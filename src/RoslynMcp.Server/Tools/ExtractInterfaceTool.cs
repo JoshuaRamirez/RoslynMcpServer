@@ -32,7 +32,7 @@ public sealed class ExtractInterfaceTool : IToolHandler
     public string Name => "extract_interface";
 
     /// <inheritdoc />
-    public string Description => "Extract an interface from a class's public members, including indexers as this[...] declarations. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. When separateFile is true and targetFile is omitted, the interface is written to {InterfaceName}.cs next to the source file.";
+    public string Description => "Extract an interface from a class's public members, including indexers as this[...] declarations. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. When separateFile is true and targetFile is omitted, the interface is written to {InterfaceName}.cs next to the source file.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -60,6 +60,12 @@ public sealed class ExtractInterfaceTool : IToolHandler
             {
                 type = "integer",
                 description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                minimum = 1
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter.",
                 minimum = 1
             },
             interfaceName = new
@@ -126,6 +132,7 @@ public sealed class ExtractInterfaceTool : IToolHandler
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
                 Line = args.Line,
+                Column = args.Column,
                 InterfaceName = args.InterfaceName,
                 Members = args.Members,
                 TargetFile = args.TargetFile,
@@ -162,6 +169,7 @@ public sealed class ExtractInterfaceTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public string InterfaceName { get; init; } = "";
         public List<string>? Members { get; init; }
         public string? TargetFile { get; init; }
