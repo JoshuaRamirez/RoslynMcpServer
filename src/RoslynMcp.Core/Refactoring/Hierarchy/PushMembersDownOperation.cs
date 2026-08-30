@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -14,6 +15,16 @@ namespace RoslynMcp.Core.Refactoring.Hierarchy;
 
 /// <summary>
 /// Moves selected members from a base type down onto derived types.
+/// Honors optional <c>line</c> to disambiguate same-named types in one
+/// file (identifier preferred, then smallest containing type).
+/// Omitted line keeps today's <c>TypeDeclarationSyntax</c>
+/// <c>FirstOrDefault</c> pick (enum and
+/// <c>DelegateDeclarationSyntax</c> do not participate).
+/// When line is set, a covering enum or delegate is included so it
+/// reaches <c>InvalidSymbolKind</c> rather than retargeting a later class.
+/// After the push (source rewrite + members added to derived types), the
+/// selected declaration is recovered by a per-execution syntax annotation
+/// (stripped before commit).
 /// </summary>
 public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMembersDownParams>
 {
@@ -48,6 +59,9 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
+        if (@params.Line.HasValue && @params.Line.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
+
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
@@ -65,17 +79,29 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var sourceDecl = FindTypeDeclaration(root, @params.TypeName);
-        if (sourceDecl == null)
+        // Optional line disambiguates same-named types. Omitted keeps
+        // today's TypeDeclarationSyntax FirstOrDefault pick (enum and
+        // DelegateDeclarationSyntax do not participate). Line set also
+        // includes a covering enum or delegate so it reaches
+        // InvalidSymbolKind instead of retargeting a later class.
+        var found = FindTypeDeclaration(root, @params.TypeName, @params.Line);
+        if (found == null)
         {
             throw new RefactoringException(
                 ErrorCodes.TypeNotFound,
                 $"Type '{@params.TypeName}' not found in file.");
         }
 
-        var sourceSymbol = semanticModel.GetDeclaredSymbol(sourceDecl, cancellationToken) as INamedTypeSymbol;
+        var sourceSymbol = semanticModel.GetDeclaredSymbol(found, cancellationToken) as INamedTypeSymbol;
         if (sourceSymbol == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve type symbol.");
+
+        if (found is not TypeDeclarationSyntax sourceDecl)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolKind,
+                $"Type '{sourceSymbol.Name}' is not a supported target for push_members_down.");
+        }
 
         var members = FindMembersToPush(sourceDecl, @params.Members, semanticModel, cancellationToken);
         var targets = await GetDerivedTypes(sourceSymbol, @params.TargetDerivedTypes, cancellationToken);
@@ -127,11 +153,45 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 derivedUpdates);
         }
 
+        // Fresh instance per execution. A static annotation is shared
+        // across operations; after CommitChanges the in-memory solution
+        // can still carry it, so a later push on another type would
+        // recover the stale node via FirstOrDefault.
+        // Annotate before the rewrite. Same-file push rewrites the
+        // source type and adds members to derived types — both shift
+        // later same-named types. Do not re-find with stale SpanStart
+        // or line.
+        var sourceTypeAnnotation = new SyntaxAnnotation("push-members-down-source-type");
+        var previousTree = root.SyntaxTree;
+        root = root.ReplaceNode(
+            sourceDecl,
+            sourceDecl.WithAdditionalAnnotations(sourceTypeAnnotation));
+        document = document.WithSyntaxRoot(root);
+        var annotatedSolution = document.Project.Solution;
+        // If GetDocument(oldTree) misses after the annotation rewrite,
+        // look up by file path and rematch by span (same as
+        // pull_members_up / extract_base_class / implement_abstract).
+        document = annotatedSolution.GetDocument(previousTree)
+            ?? GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName);
+        root = await document.GetSyntaxRootAsync(cancellationToken)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+        sourceDecl = RecoverAnnotatedType(
+            root,
+            sourceTypeAnnotation,
+            sourceDecl,
+            @params.TypeName);
+
+        // Strip the per-execution annotation so it does not linger in the
+        // workspace after commit.
+        sourceReplacement = (TypeDeclarationSyntax)sourceReplacement.WithoutAnnotations(sourceTypeAnnotation);
+
+        var rematchedUpdates = RematchDerivedUpdates(root, document, derivedUpdates);
+
         var solution = await ApplyChangesAsync(
             document,
             sourceDecl,
             sourceReplacement,
-            derivedUpdates,
+            rematchedUpdates,
             cancellationToken);
 
         var commitResult = await CommitChangesAsync(solution, cancellationToken);
@@ -156,15 +216,274 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             0);
     }
 
-    private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName)
+    /// <summary>
+    /// Finds a type by <paramref name="typeName"/>. Omitted <paramref name="line"/>
+    /// keeps today's <c>TypeDeclarationSyntax</c> <c>FirstOrDefault</c>
+    /// pick, including when several same-named types exist (nested vs outer
+    /// or two namespaces). Enums and delegates are not in that set, so
+    /// omitted line still picks a later same-named class rather than an
+    /// earlier enum or <c>DelegateDeclarationSyntax</c>. When set, picks the
+    /// type whose identifier or declaration span covers that 1-based line
+    /// (same exclusive-end coverage as
+    /// <c>ExtractInterfaceOperation.SpanCoversLine</c> /
+    /// <c>ExtractBaseClassOperation.SpanCoversLine</c> /
+    /// <c>PullMembersUpOperation.SpanCoversLine</c>). Prefer the identifier
+    /// hit, then the smallest containing type. Nested types, enums, and
+    /// <c>DelegateDeclarationSyntax</c> participate when line is set so a
+    /// covering enum or delegate still reaches <c>InvalidSymbolKind</c>
+    /// rather than retargeting a later class. Do not require the declaration
+    /// to start on <paramref name="line"/> — a split declaration may put the
+    /// identifier on a continuation line. If nothing covers this line, keep
+    /// today's first-match rather than inventing a not-found. After the
+    /// push (source rewrite + members added to derived types), recover the
+    /// selected type from the per-execution syntax annotation — do not
+    /// reuse a pre-rewrite SpanStart or line.
+    /// </summary>
+    internal static MemberDeclarationSyntax? FindTypeDeclaration(
+        SyntaxNode root,
+        string typeName,
+        int? line)
     {
         var simpleName = typeName.Contains('.')
             ? typeName[(typeName.LastIndexOf('.') + 1)..]
             : typeName;
 
-        return root.DescendantNodes()
+        var typeCandidates = root.DescendantNodes()
             .OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault(t => t.Identifier.Text == simpleName);
+            .Where(t => t.Identifier.Text == simpleName)
+            .ToList();
+
+        if (!line.HasValue)
+            return typeCandidates.FirstOrDefault();
+
+        // Line set: include BaseTypeDeclarationSyntax (enum) and
+        // DelegateDeclarationSyntax in the covering-line set. Do not
+        // require the declaration to start on `line` — a split type's
+        // identifier may live on a continuation line whose declaration
+        // span still covers that line. Prefer the identifier hit, then
+        // the smallest containing type (nested over outer). Include enum
+        // and delegate candidates. Do not silently pick the first when a
+        // covering node exists elsewhere — scan every candidate. If
+        // nothing covers this line, keep today's TypeDeclarationSyntax
+        // first-match rather than inventing a not-found (enums and
+        // delegates stay out of that omitted-line fallback).
+        var lineCandidates = root.DescendantNodes()
+            .OfType<BaseTypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == simpleName)
+            .Cast<MemberDeclarationSyntax>()
+            .Concat(root.DescendantNodes()
+                .OfType<DelegateDeclarationSyntax>()
+                .Where(d => d.Identifier.Text == simpleName))
+            .ToList();
+
+        if (lineCandidates.Count == 0)
+            return null;
+
+        return lineCandidates
+            .Where(t => TypeCoversLine(t, line.Value))
+            .OrderBy(t => IdentifierCoversLine(t, line.Value) ? 0 : 1)
+            .ThenBy(t => t.Span.Length)
+            .FirstOrDefault()
+            ?? typeCandidates.FirstOrDefault();
+    }
+
+    private static bool TypeCoversLine(MemberDeclarationSyntax type, int line) =>
+        IdentifierCoversLine(type, line) ||
+        SpanCoversLine(type.GetLocation().GetLineSpan(), line);
+
+    private static bool IdentifierCoversLine(MemberDeclarationSyntax type, int line)
+    {
+        var identifier = GetTypeIdentifier(type);
+        return identifier != default
+            && SpanCoversLine(identifier.GetLocation().GetLineSpan(), line);
+    }
+
+    private static SyntaxToken GetTypeIdentifier(MemberDeclarationSyntax type) => type switch
+    {
+        BaseTypeDeclarationSyntax named => named.Identifier,
+        DelegateDeclarationSyntax del => del.Identifier,
+        _ => default
+    };
+
+    /// <summary>
+    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so a span that ends at the start of a line does not
+    /// cover that line. Treating the end as inclusive would let the first
+    /// line of an adjacent type also match the previous declaration. Same
+    /// exclusive-end idea as <c>ExtractInterfaceOperation.SpanCoversLine</c>.
+    /// </summary>
+    internal static bool SpanCoversLine(FileLinePositionSpan span, int line)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == endLine && span.EndLinePosition.Character == 0)
+            return false;
+        return true;
+    }
+
+    private static TypeDeclarationSyntax RecoverAnnotatedType(
+        SyntaxNode root,
+        SyntaxAnnotation sourceTypeAnnotation,
+        TypeDeclarationSyntax original,
+        string typeName)
+    {
+        var annotated = root.GetAnnotatedNodes(sourceTypeAnnotation)
+            .OfType<TypeDeclarationSyntax>()
+            .FirstOrDefault();
+        if (annotated != null)
+            return annotated;
+
+        return RematchTypeDeclaration(root, original)
+            ?? throw new RefactoringException(
+                ErrorCodes.TypeNotFound,
+                $"Type '{typeName}' not found in file.");
+    }
+
+    private static Document GetDocumentForTree(Solution solution, SyntaxTree tree, string typeName)
+    {
+        var document = solution.GetDocument(tree);
+        if (document != null)
+            return document;
+
+        if (!string.IsNullOrEmpty(tree.FilePath))
+        {
+            foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
+            {
+                document = solution.GetDocument(id);
+                if (document != null)
+                    return document;
+            }
+        }
+
+        throw new RefactoringException(
+            ErrorCodes.DocumentNotEditable,
+            $"Could not locate a declaring document for type '{typeName}'.");
+    }
+
+    private static Document? GetDocumentByFilePath(Solution solution, SyntaxTree tree)
+    {
+        if (string.IsNullOrEmpty(tree.FilePath))
+            return null;
+
+        foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
+        {
+            var document = solution.GetDocument(id);
+            if (document != null)
+                return document;
+        }
+
+        return null;
+    }
+
+    private static TypeDeclarationSyntax? RematchTypeDeclaration(
+        SyntaxNode root,
+        TypeDeclarationSyntax original) =>
+        root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
+
+    /// <summary>
+    /// Folds descendant derived-type replacements that
+    /// <c>ReplaceNodes</c> already applied onto <paramref name="rewrittenAncestor"/>
+    /// into the precomputed source rewrite. The source rewrite was built
+    /// before those nested updates (and may use a different node identity
+    /// after the per-execution annotation), so match nested types by
+    /// identifier and enclosing type rather than <c>SpanStart</c>.
+    /// </summary>
+    private static TypeDeclarationSyntax MergeEnclosedDerivedUpdates(
+        TypeDeclarationSyntax sourceReplacement,
+        TypeDeclarationSyntax rewrittenAncestor,
+        TypeDeclarationSyntax originalSource,
+        IReadOnlyDictionary<SyntaxNode, SyntaxNode> map)
+    {
+        var enclosed = map.Keys
+            .OfType<TypeDeclarationSyntax>()
+            .Where(node => node != originalSource && originalSource.Contains(node))
+            .ToList();
+        if (enclosed.Count == 0)
+            return sourceReplacement;
+
+        var stillPresent = enclosed.Where(sourceReplacement.Contains).ToList();
+        if (stillPresent.Count == enclosed.Count)
+        {
+            return (TypeDeclarationSyntax)sourceReplacement.ReplaceNodes(
+                stillPresent,
+                (nested, _) => map[nested]);
+        }
+
+        var transplants = new Dictionary<SyntaxNode, SyntaxNode>();
+        foreach (var nestedOriginal in enclosed)
+        {
+            var inReplacement = FindMatchingNestedType(sourceReplacement, nestedOriginal);
+            if (inReplacement == null || transplants.ContainsKey(inReplacement))
+                continue;
+
+            var updated = RematchTypeDeclaration(rewrittenAncestor, nestedOriginal)
+                ?? FindMatchingNestedType(rewrittenAncestor, nestedOriginal)
+                ?? map[nestedOriginal] as TypeDeclarationSyntax;
+            if (updated != null)
+                transplants[inReplacement] = updated;
+        }
+
+        if (transplants.Count == 0)
+            return sourceReplacement;
+
+        return (TypeDeclarationSyntax)sourceReplacement.ReplaceNodes(
+            transplants.Keys,
+            (node, _) => transplants[node]);
+    }
+
+    private static TypeDeclarationSyntax? FindMatchingNestedType(
+        TypeDeclarationSyntax container,
+        TypeDeclarationSyntax original)
+    {
+        var bySpan = RematchTypeDeclaration(container, original);
+        if (bySpan != null)
+            return bySpan;
+
+        var parentName = (original.Parent as TypeDeclarationSyntax)?.Identifier.Text;
+        return container.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(candidate => candidate.Identifier.Text == original.Identifier.Text)
+            .Where(candidate =>
+                (candidate.Parent as TypeDeclarationSyntax)?.Identifier.Text == parentName)
+            .OrderBy(candidate => candidate.Span.Length)
+            .FirstOrDefault();
+    }
+
+    private static IReadOnlyList<DerivedUpdate> RematchDerivedUpdates(
+        SyntaxNode sourceRoot,
+        Document sourceDocument,
+        IReadOnlyList<DerivedUpdate> derivedUpdates)
+    {
+        var rematched = new List<DerivedUpdate>(derivedUpdates.Count);
+        foreach (var update in derivedUpdates)
+        {
+            if (update.Original.SyntaxTree == sourceRoot.SyntaxTree)
+            {
+                rematched.Add(update);
+                continue;
+            }
+
+            var updateDocument = sourceDocument.Project.Solution.GetDocument(update.Original.SyntaxTree)
+                ?? GetDocumentByFilePath(sourceDocument.Project.Solution, update.Original.SyntaxTree);
+            if (updateDocument != null && updateDocument.Id == sourceDocument.Id)
+            {
+                var rematchedOriginal = RematchTypeDeclaration(sourceRoot, update.Original)
+                    ?? throw new RefactoringException(
+                        ErrorCodes.RoslynError,
+                        $"Could not locate declaration for '{update.Type.Name}'.");
+                rematched.Add(update with { Original = rematchedOriginal });
+                continue;
+            }
+
+            rematched.Add(update);
+        }
+
+        return rematched;
     }
 
     internal static async Task<IReadOnlyList<INamedTypeSymbol>> GetDerivedTypes(
@@ -1586,7 +1905,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
         foreach (var group in replacements.GroupBy(replacement => replacement.Tree))
         {
-            var document = solution.GetDocument(group.Key);
+            // After WithSyntaxRoot (annotation), GetDocument(oldTree) can miss
+            // when a derived type lives in the same file. Look up by file path
+            // rather than treating the miss as a non-editable target.
+            var document = solution.GetDocument(group.Key)
+                ?? GetDocumentByFilePath(solution, group.Key);
             if (document == null)
             {
                 throw new RefactoringException(
@@ -1599,7 +1922,28 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
             var map = group.ToDictionary(item => item.Original, item => item.Replacement);
-            var newRoot = currentRoot.ReplaceNodes(map.Keys, (original, _) => map[original]);
+            // ReplaceNodes rewrites descendants first, then invokes the
+            // ancestor callback with that rewritten node. Returning the
+            // precomputed source replacement (and discarding `rewritten`)
+            // drops a member added to a nested derived type that lives
+            // inside the source declaration (e.g. Puppy : Animal inside
+            // Animal). Merge those same-tree descendant updates into the
+            // source rewrite.
+            var newRoot = currentRoot.ReplaceNodes(map.Keys, (original, rewritten) =>
+            {
+                var replacement = map[original];
+                if (original != sourceDecl)
+                    return replacement;
+
+                if (rewritten == original)
+                    return replacement;
+
+                return MergeEnclosedDerivedUpdates(
+                    (TypeDeclarationSyntax)replacement,
+                    (TypeDeclarationSyntax)rewritten,
+                    sourceDecl,
+                    map);
+            });
             solution = document.WithSyntaxRoot(newRoot).Project.Solution;
         }
 

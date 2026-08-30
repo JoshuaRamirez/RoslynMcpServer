@@ -32,7 +32,7 @@ public sealed class PushMembersDownTool : IToolHandler
     public string Name => "push_members_down";
 
     /// <inheritdoc />
-    public string Description => "Move selected members from a base type down onto derived types.";
+    public string Description => "Move selected members from a base type down onto derived types. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,6 +55,12 @@ public sealed class PushMembersDownTool : IToolHandler
             {
                 type = "string",
                 description = "Name of the base class or interface"
+            },
+            line = new
+            {
+                type = "integer",
+                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                minimum = 1
             },
             members = new
             {
@@ -109,6 +115,7 @@ public sealed class PushMembersDownTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
+                Line = args.Line,
                 Members = args.Members ?? new List<string>(),
                 TargetDerivedTypes = args.TargetDerivedTypes,
                 LeaveAbstract = args.LeaveAbstract ?? false,
@@ -142,6 +149,7 @@ public sealed class PushMembersDownTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
+        public int? Line { get; init; }
         public List<string>? Members { get; init; }
         public List<string>? TargetDerivedTypes { get; init; }
         public bool? LeaveAbstract { get; init; }
