@@ -1029,10 +1029,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
 
         foreach (var tree in trees)
         {
-            var document = solution.GetDocument(tree)
-                ?? throw new RefactoringException(
-                    ErrorCodes.DocumentNotEditable,
-                    $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
+            var document = GetDocumentForTree(solution, tree, typeSymbol.Name);
             var treeRoot = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
@@ -1043,9 +1040,16 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             var eventFieldRewrites = new Dictionary<EventFieldDeclarationSyntax, EventFieldDeclarationSyntax>();
             foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
             {
-                if (reference.SyntaxTree != tree)
+                if (!SameSyntaxTree(reference.SyntaxTree, tree))
                     continue;
-                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax part)
+                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax originalPart)
+                    continue;
+                // The solution root may already carry a target-type
+                // annotation (new tree). Rematch by span — annotation does
+                // not change SpanStart — so RemoveNodes sees nodes from
+                // this root and keeps the annotation on the selected type.
+                var part = RematchTypeDeclaration(treeRoot, originalPart);
+                if (part == null)
                     continue;
 
                 HashSet<(int Start, int End, SyntaxKind Kind)>? memberKeys = null;
@@ -1116,6 +1120,37 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
 
         return solution;
     }
+
+    private static Document GetDocumentForTree(Solution solution, SyntaxTree tree, string typeName)
+    {
+        var document = solution.GetDocument(tree);
+        if (document != null)
+            return document;
+
+        if (!string.IsNullOrEmpty(tree.FilePath))
+        {
+            foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
+            {
+                document = solution.GetDocument(id);
+                if (document != null)
+                    return document;
+            }
+        }
+
+        throw new RefactoringException(
+            ErrorCodes.DocumentNotEditable,
+            $"Could not locate a declaring document for type '{typeName}'.");
+    }
+
+    private static bool SameSyntaxTree(SyntaxTree left, SyntaxTree right) =>
+        left == right
+        || (!string.IsNullOrEmpty(left.FilePath)
+            && string.Equals(left.FilePath, right.FilePath, StringComparison.OrdinalIgnoreCase));
+
+    private static TypeDeclarationSyntax? RematchTypeDeclaration(SyntaxNode root, TypeDeclarationSyntax original) =>
+        root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
 
     private static void AddKeyed<T>(
         Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,
