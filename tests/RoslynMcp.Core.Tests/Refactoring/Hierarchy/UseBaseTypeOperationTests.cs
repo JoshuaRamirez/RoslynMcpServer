@@ -424,9 +424,10 @@ public class UseBaseTypeOperationTests
         Assert.Contains("public static int Feed(Animal dog) => dog.Eat();", updated);
         Assert.Contains("namespace TestApp", updated);
         Assert.DoesNotContain("Feed(Dog dog)", updated);
-        var otherUse = updated[updated.IndexOf("namespace Other", StringComparison.Ordinal)..
-            updated.IndexOf("namespace TestApp", StringComparison.Ordinal)];
-        var testAppUse = updated[updated.IndexOf("namespace TestApp", StringComparison.Ordinal)..];
+        var otherStart = updated.IndexOf("namespace Other", StringComparison.Ordinal);
+        var testAppStart = updated.IndexOf("namespace TestApp", StringComparison.Ordinal);
+        var otherUse = updated[otherStart..testAppStart];
+        var testAppUse = updated[testAppStart..];
         Assert.Contains("Feed(Animal dog)", otherUse);
         Assert.Contains("Feed(Animal dog)", testAppUse);
     }
