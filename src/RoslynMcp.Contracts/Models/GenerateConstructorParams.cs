@@ -25,6 +25,15 @@ public sealed class GenerateConstructorParams
     public int? Line { get; init; }
 
     /// <summary>
+    /// 1-based column for disambiguation. When set with <see cref="Line"/>,
+    /// selects the type whose identifier or declaration span covers that
+    /// column (identifier preferred, then smallest containing type).
+    /// Omitted keeps today's typeName + optional line pick. Column without
+    /// line keeps today's first-match after the typeName filter.
+    /// </summary>
+    public int? Column { get; init; }
+
+    /// <summary>
     /// Names of members to initialize. If null or empty, uses instance fields
     /// and, when <see cref="IncludeProperties"/> is true, settable properties.
     /// When <see cref="IncludeInheritedMembers"/> is true, auto-collection and name
