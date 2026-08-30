@@ -178,6 +178,9 @@ public class HelpGeneratorTests
         Assert.Contains("--format", help);
         Assert.Contains("--replace-existing", help);
         Assert.Contains("--call-super", help);
+        Assert.Contains("--line", help);
+        Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("FirstOrDefault", tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -234,9 +237,11 @@ public class HelpGeneratorTests
         Assert.Contains("--type-name", requiredSection);
         Assert.DoesNotContain("--include-properties", requiredSection);
         Assert.DoesNotContain("--call-super", requiredSection);
+        Assert.DoesNotContain("--line", requiredSection);
 
         Assert.Contains("--include-properties", optionalSection);
         Assert.Contains("--call-super", optionalSection);
+        Assert.Contains("--line", optionalSection);
     }
 
     [Fact]
