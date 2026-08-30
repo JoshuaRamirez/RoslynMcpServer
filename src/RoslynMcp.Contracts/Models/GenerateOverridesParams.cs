@@ -25,6 +25,15 @@ public sealed class GenerateOverridesParams
     public int? Line { get; init; }
 
     /// <summary>
+    /// 1-based column for disambiguation. When set with <see cref="Line"/>,
+    /// selects the type whose identifier or declaration span covers that
+    /// column (identifier preferred, then smallest containing type).
+    /// Omitted keeps today's typeName + optional line pick. Column without
+    /// line keeps today's first-match after the typeName filter.
+    /// </summary>
+    public int? Column { get; init; }
+
+    /// <summary>
     /// Names of specific members to override. If null, shows available members.
     /// </summary>
     public IReadOnlyList<string>? Members { get; init; }
