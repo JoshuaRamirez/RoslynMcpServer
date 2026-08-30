@@ -1125,7 +1125,7 @@ public class GeneratePropertyOperationTests
         const string source = """
             namespace TestApp;
 
-            public class Widget { public string Name { get; set; } = "old-outer"; public class Widget { public int Age { get; set; } = 0; /* old-nested */ } }
+            public class Widget { public string Name { get; set; } = "old-outer"; public class Widget { public int Age { get; set; } = /* old-nested */ 0; } }
             """;
 
         await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
