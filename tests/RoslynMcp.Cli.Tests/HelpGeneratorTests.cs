@@ -256,8 +256,10 @@ public class HelpGeneratorTests
         Assert.Contains("--source-file", requiredSection);
         Assert.Contains("--type-name", requiredSection);
         Assert.DoesNotContain("--line", requiredSection);
+        Assert.DoesNotContain("--column", requiredSection);
 
         Assert.Contains("--line", optionalSection);
+        Assert.Contains("--column", optionalSection);
         Assert.Contains("--implement-i-equatable", help);
         Assert.Contains("--generate-operators", help);
         Assert.Contains("--replace-existing", help);
@@ -266,6 +268,7 @@ public class HelpGeneratorTests
         Assert.Contains("--call-super", help);
         Assert.Contains("--include-inherited-members", help);
         Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("FirstOrDefault", tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
