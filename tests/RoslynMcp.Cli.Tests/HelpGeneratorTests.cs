@@ -438,15 +438,18 @@ public class HelpGeneratorTests
         Assert.DoesNotContain("--call-base", requiredSection);
         Assert.DoesNotContain("--members", requiredSection);
         Assert.DoesNotContain("--line", requiredSection);
+        Assert.DoesNotContain("--column", requiredSection);
 
         Assert.Contains("--replace-existing", optionalSection);
         Assert.Contains("--call-base", optionalSection);
         Assert.Contains("--members", optionalSection);
         Assert.Contains("--line", optionalSection);
+        Assert.Contains("--column", optionalSection);
         Assert.Contains("replaceExisting", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("callBase", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("base.Prop", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("FirstOrDefault", tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 

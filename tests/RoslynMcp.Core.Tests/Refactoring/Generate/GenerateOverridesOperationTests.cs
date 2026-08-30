@@ -13,9 +13,9 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
 /// Operation-level tests for <see cref="GenerateOverridesOperation"/>, including
-/// optional <c>line</c> disambiguation, <c>callBase</c>, <c>members</c>,
-/// <c>preview</c>, <c>replaceExisting</c>, and cross-assembly CS0507
-/// accessibility for methods, properties, and indexers.
+/// optional <c>line</c> / <c>column</c> disambiguation, <c>callBase</c>,
+/// <c>members</c>, <c>preview</c>, <c>replaceExisting</c>, and cross-assembly
+/// CS0507 accessibility for methods, properties, and indexers.
 /// </summary>
 public class GenerateOverridesOperationTests
 {
@@ -156,6 +156,48 @@ public class GenerateOverridesOperationTests
         };
 
         Assert.Null(@params.Line);
+    }
+
+    [Fact]
+    public void Column_DefaultsToNull()
+    {
+        var @params = new GenerateOverridesParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Dog"
+        };
+
+        Assert.Null(@params.Column);
+    }
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateOverridesOperation.Validate(new GenerateOverridesParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Dog",
+                Column = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateOverridesOperation.Validate(new GenerateOverridesParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Dog",
+                Column = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
     }
 
     [Fact]
@@ -433,6 +475,302 @@ public class GenerateOverridesOperationTests
         Assert.DoesNotContain("=> \"old\"", types[2].ToFullString(), StringComparison.Ordinal);
         Assert.Contains("base.ToString()", types[2].ToFullString(), StringComparison.Ordinal);
         Assert.Equal(1, CountOverrideToString(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
+    #endregion
+
+    #region P0 optional column disambiguation
+
+    private const string SameLineNestedWidgetSource = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public virtual void Speak() { }
+        }
+
+        public class Widget : Animal { public class Widget : Animal { } }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateOverrides_OmittedColumn_KeepsTypeNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Members = new[] { "Speak" }
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasOverride(types[0], "Speak"));
+        Assert.False(TypeHasOverride(types[1], "Speak"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_OmittedColumn_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "nested-widget"),
+            Members = new[] { "Speak" }
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasOverride(types[0], "Speak"));
+        Assert.True(TypeHasOverride(types[1], "Speak"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ColumnOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : Animal { public class");
+        var column = ColumnOf(SameLineNestedWidgetSource, "Widget : Animal { }");
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = column,
+            Members = new[] { "Speak" }
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasOverride(types[0], "Speak"));
+        Assert.True(TypeHasOverride(types[1], "Speak"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ColumnOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : Animal { public class");
+        var column = ColumnOf(SameLineNestedWidgetSource, "Widget : Animal { public class");
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = column,
+            Members = new[] { "Speak" }
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasOverride(types[0], "Speak"));
+        Assert.False(TypeHasOverride(types[1], "Speak"));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedColumn_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GenerateOverridesOperation.FindTypeDeclaration(root, "Widget", line: null, column: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : Animal { public class");
+        var found = GenerateOverridesOperation.FindTypeDeclaration(
+            root, "Widget", line, ColumnOf(SameLineNestedWidgetSource, "Widget : Animal { }"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Widget");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : Animal { public class");
+        var found = GenerateOverridesOperation.FindTypeDeclaration(
+            root, "Widget", line, ColumnOf(SameLineNestedWidgetSource, "Widget : Animal { public class"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnWithoutLine_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
+        var nestedColumn = ColumnOf(SameLineNestedWidgetSource, "Widget : Animal { }");
+        var found = GenerateOverridesOperation.FindTypeDeclaration(
+            root, "Widget", line: null, nestedColumn);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Widget : Animal // split-widget
+            {
+                public class Widget : Animal // nested-widget
+                {
+                }
+            }
+
+            public class Animal
+            {
+                public virtual void Speak() { }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-widget");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = GenerateOverridesOperation.FindTypeDeclaration(
+            root, "Widget", identifierLine, ColumnOf(source, "Widget : Animal // split-widget"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ColumnOnContinuationLine_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual void Speak() { }
+            }
+
+            public class
+                Widget : Animal // split-widget
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var startLine = FindLine(source, "public class\n    Widget");
+        var identifierLine = FindLine(source, "split-widget");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = identifierLine,
+            Column = ColumnOf(source, "Widget : Animal // split-widget"),
+            Members = new[] { "Speak" }
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Single(types);
+        Assert.True(TypeHasOverride(types[0], "Speak"));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnAndLineMiss_DoesNotFallBackToFirst()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GenerateOverridesOperation.FindTypeDeclaration(root, "Widget", line: 1, column: 1);
+
+        Assert.Null(found);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ColumnAndLineMiss_ThrowsTypeNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateOverridesParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                Line = 1,
+                Column = 1,
+                Members = new[] { "Speak" }
+            }));
+
+        Assert.Equal(ErrorCodes.TypeNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_Column_Preview_WritesNothing_AndDescribesGeneration()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : Animal { public class");
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = ColumnOf(SameLineNestedWidgetSource, "Widget : Animal { }"),
+            Members = new[] { "Speak" },
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Generate overrides for:", result.PendingChanges[0].Description);
+        Assert.Contains("Speak", result.PendingChanges[0].Description);
+        Assert.Contains("base.Speak()", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class Outer { class Nested { } }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var nested = tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == "Nested");
+        var span = nested.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(GenerateOverridesOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(GenerateOverridesOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(GenerateOverridesOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(GenerateOverridesOperation.SpanCoversColumn(span, line, startCol - 1));
     }
 
     #endregion
@@ -2918,6 +3256,18 @@ public class GenerateOverridesOperationTests
         }
 
         return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
     }
 
     private static bool HasOverrideToString(string source) =>
