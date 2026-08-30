@@ -789,8 +789,8 @@ public class GenerateConstructorOperationTests
         Assert.DoesNotContain("Name", nestedCtor, StringComparison.Ordinal);
         Assert.DoesNotContain("old-outer", types[0].ToFullString(), StringComparison.Ordinal);
         Assert.DoesNotContain("old-nested", types[1].ToFullString(), StringComparison.Ordinal);
-        Assert.Equal(1, types[0].Members.OfType<ConstructorDeclarationSyntax>().Count());
-        Assert.Equal(1, types[1].Members.OfType<ConstructorDeclarationSyntax>().Count());
+        Assert.Single(types[0].Members.OfType<ConstructorDeclarationSyntax>());
+        Assert.Single(types[1].Members.OfType<ConstructorDeclarationSyntax>());
     }
 
     #endregion
