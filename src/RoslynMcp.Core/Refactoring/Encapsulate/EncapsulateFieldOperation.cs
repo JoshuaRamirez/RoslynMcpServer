@@ -14,17 +14,21 @@ namespace RoslynMcp.Core.Refactoring.Encapsulate;
 
 /// <summary>
 /// Encapsulates a field by converting it to a property.
-/// Honors optional <c>line</c> to disambiguate same-named fields in one
-/// file (identifier preferred, then smallest covering declarator/field).
-/// Omitted line keeps today's field <c>VariableDeclaratorSyntax</c>
-/// <c>FirstOrDefault</c> pick. Locals and other non-field declarators
-/// stay excluded. Nested types participate when line is set. If line is
-/// set and no covering field matches, throw <c>FieldNotFound</c> rather
-/// than falling back to first-match. After the rewrite rematches the
-/// selected field, recover it from a per-execution syntax annotation
-/// and strip the annotation before commit. Same-file outer/sibling
-/// references are external (semantic containment in the selected type,
-/// not file-path equality) and are annotated before the field rewrite.
+/// Honors optional <c>line</c> and <c>column</c> to disambiguate
+/// same-named fields in one file (identifier preferred, then smallest
+/// covering declarator/field). Omitted column keeps today's fieldName +
+/// optional line pick. Omitted line keeps today's field
+/// <c>VariableDeclaratorSyntax</c> <c>FirstOrDefault</c> pick. Column
+/// without line keeps that omitted-line first-match after the fieldName
+/// filter. Locals and other non-field declarators stay excluded. Nested
+/// types participate when line is set. If line is set (including
+/// column+line) and no covering field matches, throw
+/// <c>FieldNotFound</c> rather than falling back to first-match. After
+/// the rewrite rematches the selected field, recover it from a
+/// per-execution syntax annotation and strip the annotation before
+/// commit. Same-file outer/sibling references are external (semantic
+/// containment in the selected type, not file-path equality) and are
+/// annotated before the field rewrite.
 /// </summary>
 public sealed class EncapsulateFieldOperation : RefactoringOperationBase<EncapsulateFieldParams>
 {
@@ -59,6 +63,9 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
 
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
+
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
@@ -81,13 +88,16 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         }
 
-        // Optional line disambiguates same-named fields. Omitted keeps
-        // today's field VariableDeclaratorSyntax FirstOrDefault. Line
-        // set picks the covering field (identifier preferred, then
-        // smallest covering declarator/field). Nested types participate.
-        // Locals stay excluded. Do not fall back to first-match when
-        // line is set and nothing covers that line.
-        var fieldDeclarator = FindFieldDeclarator(root, @params.FieldName, @params.Line);
+        // Optional line/column disambiguates same-named fields. Omitted
+        // column keeps today's fieldName + optional line pick. Omitted
+        // line keeps today's field VariableDeclaratorSyntax FirstOrDefault.
+        // Column without line keeps that omitted-line first-match after
+        // the fieldName filter. Line set (including column+line) picks
+        // the covering field (identifier preferred, then smallest
+        // covering declarator/field). Nested types participate. Locals
+        // stay excluded. Do not fall back to first-match when line is
+        // set and nothing covers that position.
+        var fieldDeclarator = FindFieldDeclarator(root, @params.FieldName, @params.Line, @params.Column);
         if (fieldDeclarator == null)
         {
             throw new RefactoringException(
@@ -325,33 +335,64 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
     /// <summary>
     /// Finds a field by <paramref name="fieldName"/>. Omitted
-    /// <paramref name="line"/> keeps today's field
-    /// <c>VariableDeclaratorSyntax</c> <c>FirstOrDefault</c> pick,
-    /// including when several same-named fields exist (nested vs outer).
-    /// Locals and other non-field declarators stay excluded. When set,
-    /// picks the field whose identifier or declaration span covers that
-    /// 1-based line (same exclusive-end coverage as
-    /// <c>UseBaseTypeOperation.SpanCoversLine</c> /
-    /// <c>PullMembersUpOperation.SpanCoversLine</c> /
-    /// <c>PushMembersDownOperation.SpanCoversLine</c>). Prefer the
+    /// <paramref name="column"/> keeps today's fieldName + optional
+    /// <paramref name="line"/> pick, including omitted-line field
+    /// <c>VariableDeclaratorSyntax</c> <c>FirstOrDefault</c> and
+    /// line-only exclusive-end coverage (<see cref="SpanCoversLine"/>).
+    /// Do not force column 1 when omitted. Locals and other non-field
+    /// declarators stay excluded. Column without line keeps today's
+    /// <c>FirstOrDefault</c> after the fieldName filter rather than
+    /// substituting each candidate's own start line. When column is set
+    /// with line, picks the field whose identifier or declaration span
+    /// covers that 1-based column (same exclusive-end coverage as
+    /// <c>UseBaseTypeOperation.SpanCoversColumn</c> /
+    /// <c>PushMembersDownOperation.SpanCoversColumn</c> /
+    /// <c>PullMembersUpOperation.SpanCoversColumn</c>). Prefer the
     /// identifier hit, then the smallest covering declarator or field.
     /// Nested types participate. Do not require the declaration to start
-    /// on <paramref name="line"/> — a split declaration may put the
-    /// identifier on a continuation line. If nothing covers this line,
-    /// return null rather than falling back to first-match. After the
-    /// rewrite rematches the selected field, recover it from the
-    /// per-execution syntax annotation — do not reuse a pre-rewrite
-    /// SpanStart or line.
+    /// on <paramref name="line"/> when column is set — a split
+    /// declaration may put the identifier on a continuation line. If
+    /// column is set with line and nothing covers that position, return
+    /// null (<c>FieldNotFound</c>) rather than falling back to
+    /// first-match. Line-only with no covering span also returns null
+    /// (today's <c>FieldNotFound</c>). After the rewrite rematches the
+    /// selected field, recover it from the per-execution syntax
+    /// annotation — do not reuse a pre-rewrite SpanStart or line.
     /// </summary>
     internal static VariableDeclaratorSyntax? FindFieldDeclarator(
         SyntaxNode root,
         string fieldName,
-        int? line)
+        int? line,
+        int? column = null)
     {
         var matches = root.DescendantNodes()
             .OfType<VariableDeclaratorSyntax>()
             .Where(IsMatchingFieldDeclarator)
             .ToList();
+
+        // Column without line is not a source position: substituting each
+        // candidate's own start line would match every equally-aligned
+        // same-name field and could silently pick the shortest. Keep
+        // today's FirstOrDefault after the fieldName filter.
+        if (column.HasValue && !line.HasValue)
+            return matches.FirstOrDefault();
+
+        if (column.HasValue)
+        {
+            // Do not require the declaration to start on `line` — a split
+            // field's identifier may live on a continuation line whose
+            // declaration span still covers that column. Prefer the
+            // identifier hit, then the smallest covering declarator or
+            // field (nested over outer). Do not silently pick the first
+            // when a covering node exists elsewhere — scan every
+            // candidate. If nothing covers this position, keep today's
+            // not-found (null) rather than inventing a first-match.
+            return matches
+                .Where(declarator => FieldCoversColumn(declarator, line!.Value, column.Value))
+                .OrderBy(declarator => IdentifierCoversColumn(declarator, line!.Value, column.Value) ? 0 : 1)
+                .ThenBy(declarator => SmallestCoveringSpanLength(declarator, line!.Value, column.Value))
+                .FirstOrDefault();
+        }
 
         if (!line.HasValue)
             return matches.FirstOrDefault();
@@ -376,6 +417,15 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
     private static bool IdentifierCoversLine(VariableDeclaratorSyntax declarator, int line) =>
         SpanCoversLine(declarator.Identifier.GetLocation().GetLineSpan(), line);
 
+    private static bool FieldCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
+        IdentifierCoversColumn(declarator, line, column) ||
+        SpanCoversColumn(declarator.GetLocation().GetLineSpan(), line, column) ||
+        (GetFieldDeclaration(declarator) is { } field &&
+         SpanCoversColumn(field.GetLocation().GetLineSpan(), line, column));
+
+    private static bool IdentifierCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
+        SpanCoversColumn(declarator.Identifier.GetLocation().GetLineSpan(), line, column);
+
     private static int SmallestCoveringSpanLength(VariableDeclaratorSyntax declarator, int line)
     {
         var smallest = int.MaxValue;
@@ -391,8 +441,49 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         return smallest;
     }
 
+    private static int SmallestCoveringSpanLength(VariableDeclaratorSyntax declarator, int line, int column)
+    {
+        var smallest = int.MaxValue;
+        if (SpanCoversColumn(declarator.GetLocation().GetLineSpan(), line, column))
+            smallest = Math.Min(smallest, declarator.Span.Length);
+
+        if (GetFieldDeclaration(declarator) is { } field &&
+            SpanCoversColumn(field.GetLocation().GetLineSpan(), line, column))
+        {
+            smallest = Math.Min(smallest, field.Span.Length);
+        }
+
+        return smallest;
+    }
+
     private static FieldDeclarationSyntax? GetFieldDeclaration(VariableDeclaratorSyntax declarator) =>
         declarator.Parent?.Parent as FieldDeclarationSyntax;
+
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character of an adjacent field also
+    /// match the previous declaration. Same helper as
+    /// <c>UseBaseTypeOperation.SpanCoversColumn</c> /
+    /// <c>PushMembersDownOperation.SpanCoversColumn</c> /
+    /// <c>PullMembersUpOperation.SpanCoversColumn</c>.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == startLine && column < startCol)
+            return false;
+        if (line == endLine && column >= endCol)
+            return false;
+        return true;
+    }
 
     /// <summary>
     /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>

@@ -744,6 +744,438 @@ public class EncapsulateFieldOperationTests
 
     #endregion
 
+    #region P0 optional column disambiguation
+
+    private const string SameLineNestedNameFieldSource = """
+        namespace TestApp;
+
+        public class Person { public string name; /* outer-field */ public class Nested { public string name; /* nested-field */ } }
+        """;
+
+    [Fact]
+    public void Column_DefaultsToNull()
+    {
+        var @params = new EncapsulateFieldParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            FieldName = "name"
+        };
+
+        Assert.Null(@params.Column);
+    }
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                FieldName = "name",
+                Column = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                FieldName = "name",
+                Column = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Validate_EmptyFieldName_WithColumnAndLine_ThrowsMissingRequiredParam(string fieldName)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                FieldName = fieldName,
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_OmittedColumn_KeepsFieldNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameFieldSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "name"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var (outer, nested) = SplitOuterAndNested(updated);
+        AssertEncapsulatedField(outer, "_name");
+        Assert.Contains("public string Name", outer);
+        Assert.Contains("public string name; /* nested-field */", nested);
+        Assert.DoesNotContain("public string Name", nested);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_OmittedColumn_LineOnNestedIdentifier_PicksNestedField()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameFieldSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "name",
+            Line = FindLine(NestedSameNameFieldSource, "nested-field")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var (outer, nested) = SplitOuterAndNested(updated);
+        Assert.Contains("public string name; /* outer-field */", outer);
+        AssertEncapsulatedField(nested, "_name");
+        Assert.Contains("public string Name", nested);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_ColumnOnNestedIdentifier_PicksNestedField()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedNameFieldSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var line = FindLine(SameLineNestedNameFieldSource, "public class Person { public string name;");
+        var column = ColumnOf(SameLineNestedNameFieldSource, "name; /* nested-field */");
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "name",
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var (outer, nested) = SplitOuterAndNested(updated);
+        Assert.Contains("public string name; /* outer-field */", outer);
+        AssertEncapsulatedField(nested, "_name");
+        Assert.Contains("public string Name", nested);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_ColumnOnOuterIdentifier_PicksOuterField()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedNameFieldSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var line = FindLine(SameLineNestedNameFieldSource, "public class Person { public string name;");
+        var column = ColumnOf(SameLineNestedNameFieldSource, "name; /* outer-field */");
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "name",
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var (outer, nested) = SplitOuterAndNested(updated);
+        AssertEncapsulatedField(outer, "_name");
+        Assert.Contains("public string Name", outer);
+        Assert.Contains("public string name; /* nested-field */", nested);
+        Assert.DoesNotContain("public string Name", nested);
+    }
+
+    [Fact]
+    public void FindFieldDeclarator_OmittedColumn_FirstOrDefaultPicksOuter()
+    {
+        var root = Parse(NestedSameNameFieldSource);
+        var found = EncapsulateFieldOperation.FindFieldDeclarator(root, "name", line: null, column: null);
+
+        Assert.NotNull(found);
+        var type = found.Ancestors().OfType<TypeDeclarationSyntax>().First();
+        Assert.Equal("Person", type.Identifier.Text);
+        Assert.False(type.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindFieldDeclarator_ColumnOnNestedIdentifier_PicksNested()
+    {
+        var root = Parse(SameLineNestedNameFieldSource);
+        var line = FindLine(SameLineNestedNameFieldSource, "public class Person { public string name;");
+        var found = EncapsulateFieldOperation.FindFieldDeclarator(
+            root, "name", line, ColumnOf(SameLineNestedNameFieldSource, "name; /* nested-field */"));
+
+        Assert.NotNull(found);
+        var type = found.Ancestors().OfType<TypeDeclarationSyntax>().First();
+        Assert.Equal("Nested", type.Identifier.Text);
+        Assert.True(type.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Person");
+    }
+
+    [Fact]
+    public void FindFieldDeclarator_ColumnOnOuterIdentifier_PicksOuter()
+    {
+        var root = Parse(SameLineNestedNameFieldSource);
+        var line = FindLine(SameLineNestedNameFieldSource, "public class Person { public string name;");
+        var found = EncapsulateFieldOperation.FindFieldDeclarator(
+            root, "name", line, ColumnOf(SameLineNestedNameFieldSource, "name; /* outer-field */"));
+
+        Assert.NotNull(found);
+        var type = found.Ancestors().OfType<TypeDeclarationSyntax>().First();
+        Assert.Equal("Person", type.Identifier.Text);
+        Assert.False(type.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindFieldDeclarator_ColumnWithoutLine_KeepsFirstMatch()
+    {
+        var root = Parse(SameLineNestedNameFieldSource);
+        var nestedColumn = ColumnOf(SameLineNestedNameFieldSource, "name; /* nested-field */");
+        var found = EncapsulateFieldOperation.FindFieldDeclarator(
+            root, "name", line: null, nestedColumn);
+
+        Assert.NotNull(found);
+        var type = found.Ancestors().OfType<TypeDeclarationSyntax>().First();
+        Assert.Equal("Person", type.Identifier.Text);
+        Assert.False(type.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindFieldDeclarator_ColumnOnContinuationIdentifier_PicksField()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public string
+                    name; /* split-field */
+            }
+            """;
+
+        var root = Parse(source);
+        var startLine = FindLine(source, "public string");
+        var identifierLine = FindLine(source, "split-field");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = EncapsulateFieldOperation.FindFieldDeclarator(
+            root, "name", identifierLine, ColumnOf(source, "name; /* split-field */"));
+
+        Assert.NotNull(found);
+        Assert.Equal("name", found.Identifier.Text);
+        Assert.True(found.Parent?.Parent is FieldDeclarationSyntax);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_ColumnOnContinuationLine_PicksField()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public string
+                    name; /* split-field */
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var identifierLine = FindLine(source, "split-field");
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "name",
+            Line = identifierLine,
+            Column = ColumnOf(source, "name; /* split-field */")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEncapsulatedField(updated, "_name");
+        Assert.Contains("public string Name", updated);
+    }
+
+    [Fact]
+    public void FindFieldDeclarator_ColumnAndLineMiss_DoesNotFallBackToFirst()
+    {
+        var root = Parse(NestedSameNameFieldSource);
+        var found = EncapsulateFieldOperation.FindFieldDeclarator(root, "name", line: 1, column: 1);
+
+        Assert.Null(found);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_ColumnAndLineMiss_ThrowsFieldNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameFieldSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                FieldName = "name",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.FieldNotFound, ex.ErrorCode);
+        Assert.Equal("2008", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_ColumnAndLine_UnknownFieldName_ThrowsFieldNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameFieldSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                FieldName = "missing",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.FieldNotFound, ex.ErrorCode);
+        Assert.Equal("2008", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_Column_Preview_WritesNothing_AndDescribesEncapsulate()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedNameFieldSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var line = FindLine(SameLineNestedNameFieldSource, "public class Person { public string name;");
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "name",
+            Line = line,
+            Column = ColumnOf(SameLineNestedNameFieldSource, "name; /* nested-field */"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change =>
+            change.Description.Contains("Encapsulate field 'name' as property 'Name'", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class Outer { int name; class Nested { int name; } }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var nested = tree.GetRoot().DescendantNodes().OfType<VariableDeclaratorSyntax>()
+            .Last(d => d.Identifier.Text == "name");
+        var span = nested.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(EncapsulateFieldOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(EncapsulateFieldOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(EncapsulateFieldOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(EncapsulateFieldOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_SequentialColumn_ReusedWorkspace_ActsOnSecondSelectedField()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedNameFieldSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var line = FindLine(SameLineNestedNameFieldSource, "public class Person { public string name;");
+
+        var first = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "name",
+            Line = line,
+            Column = ColumnOf(SameLineNestedNameFieldSource, "name; /* outer-field */")
+        });
+        Assert.True(first.Success);
+
+        var afterFirst = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var (outerAfterFirst, nestedAfterFirst) = SplitOuterAndNested(afterFirst);
+        AssertEncapsulatedField(outerAfterFirst, "_name");
+        Assert.Contains("public string Name", outerAfterFirst);
+        Assert.Contains("public string name; /* nested-field */", nestedAfterFirst);
+
+        var second = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "name",
+            Line = FindLine(afterFirst, "nested-field"),
+            Column = ColumnOf(afterFirst, "name; /* nested-field */")
+        });
+        Assert.True(second.Success);
+
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var (outer, nested) = SplitOuterAndNested(updated);
+        AssertEncapsulatedField(outer, "_name");
+        Assert.Contains("public string Name", outer);
+        AssertEncapsulatedField(nested, "_name");
+        Assert.Contains("public string Name", nested);
+        Assert.DoesNotContain("public string name;", updated);
+    }
+
+    [Fact]
+    public void FindFieldDeclarator_ColumnOnLocal_DoesNotPickLocal()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person
+            {
+                public string name; /* field-name */
+
+                public void M()
+                {
+                    string name = "x"; /* local-name */
+                }
+            }
+            """;
+
+        var root = Parse(source);
+        var omitted = EncapsulateFieldOperation.FindFieldDeclarator(root, "name", line: null, column: null);
+        var onLocal = EncapsulateFieldOperation.FindFieldDeclarator(
+            root, "name", FindLine(source, "local-name"), ColumnOf(source, "name = \"x\""));
+
+        Assert.NotNull(omitted);
+        Assert.True(omitted.Parent?.Parent is FieldDeclarationSyntax);
+        Assert.Null(onLocal);
+    }
+
+    #endregion
+
     #region Helpers
 
     private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
@@ -770,6 +1202,18 @@ public class EncapsulateFieldOperationTests
         }
 
         return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
     }
 
     private static (string Outer, string Nested) SplitOuterAndNested(string source)
