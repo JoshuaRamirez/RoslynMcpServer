@@ -32,7 +32,7 @@ public sealed class ExtractBaseClassTool : IToolHandler
     public string Name => "extract_base_class";
 
     /// <inheritdoc />
-    public string Description => "Extract members to a new base class, including indexers as this[...] declarations. When makeAbstract is true, extracted methods, properties, events, and indexers become abstract on the new base and the derived type keeps override implementations. When separateFile is true and targetFile is omitted, the base class is written to {BaseClassName}.cs next to the source file.";
+    public string Description => "Extract members to a new base class, including indexers as this[...] declarations. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. When makeAbstract is true, extracted methods, properties, events, and indexers become abstract on the new base and the derived type keeps override implementations. When separateFile is true and targetFile is omitted, the base class is written to {BaseClassName}.cs next to the source file.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,6 +55,12 @@ public sealed class ExtractBaseClassTool : IToolHandler
             {
                 type = "string",
                 description = "Name of the type to extract base class from"
+            },
+            line = new
+            {
+                type = "integer",
+                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                minimum = 1
             },
             baseClassName = new
             {
@@ -119,6 +125,7 @@ public sealed class ExtractBaseClassTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
+                Line = args.Line,
                 BaseClassName = args.BaseClassName,
                 Members = args.Members ?? new List<string>(),
                 TargetFile = args.TargetFile,
@@ -154,6 +161,7 @@ public sealed class ExtractBaseClassTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
+        public int? Line { get; init; }
         public string BaseClassName { get; init; } = "";
         public List<string>? Members { get; init; }
         public string? TargetFile { get; init; }
