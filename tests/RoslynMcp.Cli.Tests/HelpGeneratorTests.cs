@@ -208,7 +208,9 @@ public class HelpGeneratorTests
 
         Assert.Contains("push-members-down", help);
         Assert.Contains("--line", help);
+        Assert.Contains("--column", help);
         Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("FirstOrDefault", tool.Description, StringComparison.OrdinalIgnoreCase);
 
         var requiredIdx = help.IndexOf("REQUIRED:");
@@ -219,7 +221,9 @@ public class HelpGeneratorTests
         var requiredSection = help[requiredIdx..optionalIdx];
         var optionalSection = help[optionalIdx..];
         Assert.DoesNotContain("--line", requiredSection);
+        Assert.DoesNotContain("--column", requiredSection);
         Assert.Contains("--line", optionalSection);
+        Assert.Contains("--column", optionalSection);
         Assert.Contains("--target-derived-types", optionalSection);
         Assert.Contains("--leave-abstract", optionalSection);
         Assert.Contains("--preview", optionalSection);
