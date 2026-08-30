@@ -163,7 +163,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<PushMembersDownOperation, PushMembersDownParams>(
             "push-members-down", "Move selected members from a base type down onto derived types; line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick");
         r.RegisterRefactoring<UseBaseTypeOperation, UseBaseTypeParams>(
-            "use-base-type", "Replace derived-type references with a compatible base type or interface");
+            "use-base-type", "Replace derived-type references with a compatible base type or interface; line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick (simple name / single match) or FQN semantic narrowing");
         r.RegisterRefactoring<IntroduceFieldOperation, IntroduceFieldParams>(
             "introduce-field", "Turn a selected local variable or expression into a class field");
         r.RegisterRefactoring<SafeDeleteOperation, SafeDeleteParams>(

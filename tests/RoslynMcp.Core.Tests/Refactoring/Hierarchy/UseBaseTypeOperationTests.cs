@@ -1,5 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -11,7 +12,8 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Hierarchy;
 
 /// <summary>
-/// Operation-level tests for <see cref="UseBaseTypeOperation"/>.
+/// Operation-level tests for <see cref="UseBaseTypeOperation"/>, including optional
+/// <c>line</c>, <c>targetBaseType</c>, and <c>preview</c>.
 /// </summary>
 public class UseBaseTypeOperationTests
 {
@@ -67,6 +69,591 @@ public class UseBaseTypeOperationTests
             }));
 
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    #endregion
+
+    #region P0 optional line disambiguation
+
+    private const string NestedSameNameDogSource = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int Eat() => 1;
+        }
+
+        public /* outer-dog */ class Dog : Animal
+        {
+            public /* nested-dog */ class Dog : Animal
+            {
+            }
+        }
+
+        public static class OuterUse
+        {
+            public static int Feed(Dog dog) => dog.Eat();
+        }
+
+        public static class NestedUse
+        {
+            public static int Feed(Dog.Dog dog) => dog.Eat();
+        }
+        """;
+
+    private const string EnumFirstThenSameNamedClassSource = """
+        namespace Other
+        {
+            public /* dog-enum */ enum Dog
+            {
+                Ready
+            }
+        }
+
+        namespace TestApp
+        {
+            public class Animal
+            {
+                public int Eat() => 1;
+            }
+
+            public /* dog-class */ class Dog : Animal
+            {
+            }
+
+            public static class Use
+            {
+                public static int Feed(Dog dog) => dog.Eat();
+            }
+        }
+        """;
+
+    private const string DelegateFirstThenSameNamedClassSource = """
+        namespace Other
+        {
+            public /* dog-delegate */ delegate void Dog();
+        }
+
+        namespace TestApp
+        {
+            public class Animal
+            {
+                public int Eat() => 1;
+            }
+
+            public /* dog-class */ class Dog : Animal
+            {
+            }
+
+            public static class Use
+            {
+                public static int Feed(Dog dog) => dog.Eat();
+            }
+        }
+        """;
+
+    private const string LaterSameNamedDogSource = """
+        namespace Other
+        {
+            public class Animal
+            {
+                public int Eat() => 1;
+            }
+
+            public /* first-dog */ class Dog : Animal
+            {
+            }
+
+            public static class Use
+            {
+                public static int Feed(Dog dog) => dog.Eat();
+            }
+        }
+
+        namespace TestApp
+        {
+            public class Animal
+            {
+                public int Eat() => 1;
+            }
+
+            public /* later-dog */ class Dog : Animal
+            {
+            }
+
+            public static class Use
+            {
+                public static int Feed(Dog dog) => dog.Eat();
+            }
+        }
+        """;
+
+    private const string QualifiedSameNamedDogSource = """
+        namespace A
+        {
+            public class Animal
+            {
+                public int Eat() => 1;
+            }
+
+            public class Dog : Animal
+            {
+            }
+
+            public static class Use
+            {
+                public static int Feed(Dog dog) => dog.Eat();
+            }
+        }
+
+        namespace B
+        {
+            public class Animal
+            {
+                public int Eat() => 1;
+            }
+
+            public class Dog : Animal
+            {
+            }
+
+            public static class Use
+            {
+                public static int Feed(Dog dog) => dog.Eat();
+            }
+        }
+        """;
+
+    [Fact]
+    public void Line_DefaultsToNull()
+    {
+        var @params = new UseBaseTypeParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Dog"
+        };
+
+        Assert.Null(@params.Line);
+    }
+
+    [Fact]
+    public void Validate_InvalidLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            UseBaseTypeOperation.Validate(new UseBaseTypeParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Dog",
+                Line = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            UseBaseTypeOperation.Validate(new UseBaseTypeParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Dog",
+                Line = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_OmittedLine_KeepsTypeNameFirstMatch()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameDogSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public static int Feed(Animal dog) => dog.Eat();", updated);
+        Assert.Contains("public static int Feed(Dog.Dog dog) => dog.Eat();", updated);
+        Assert.DoesNotContain("Feed(Dog dog)", updated);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_OmittedLine_FqnSemanticPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(QualifiedSameNamedDogSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "B.Dog"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace A", updated);
+        Assert.Contains("public static int Feed(Dog dog) => dog.Eat();", updated);
+        Assert.Contains("namespace B", updated);
+        Assert.Contains("public static int Feed(Animal dog) => dog.Eat();", updated);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameDogSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Line = FindLine(NestedSameNameDogSource, "nested-dog")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public static int Feed(Dog dog) => dog.Eat();", updated);
+        Assert.Contains("public static int Feed(Animal dog) => dog.Eat();", updated);
+        Assert.DoesNotContain("Feed(Dog.Dog dog)", updated);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_LineOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameDogSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Line = FindLine(NestedSameNameDogSource, "outer-dog")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public static int Feed(Animal dog) => dog.Eat();", updated);
+        Assert.Contains("public static int Feed(Dog.Dog dog) => dog.Eat();", updated);
+        Assert.DoesNotContain("Feed(Dog dog)", updated);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_LineOnEnumIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                Line = FindLine(EnumFirstThenSameNamedClassSource, "dog-enum")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.Contains("Feed(Dog dog)", NormalizeNewlines(updated));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_LineOnDelegateIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DelegateFirstThenSameNamedClassSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Dog",
+                Line = FindLine(DelegateFirstThenSameNamedClassSource, "dog-delegate")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.Contains("Feed(Dog dog)", NormalizeNewlines(updated));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_SequentialCalls_ReusedWorkspace_ActsOnSecondSelectedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LaterSameNamedDogSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var first = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Line = FindLine(LaterSameNamedDogSource, "first-dog")
+        });
+        Assert.True(first.Success);
+
+        var afterFirst = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace Other", afterFirst);
+        Assert.Contains("public static int Feed(Animal dog) => dog.Eat();", afterFirst);
+        Assert.Contains("namespace TestApp", afterFirst);
+        Assert.Contains("public static int Feed(Dog dog) => dog.Eat();", afterFirst);
+
+        var second = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Line = FindLine(afterFirst, "later-dog")
+        });
+        Assert.True(second.Success);
+
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace Other", updated);
+        Assert.Contains("public static int Feed(Animal dog) => dog.Eat();", updated);
+        Assert.Contains("namespace TestApp", updated);
+        Assert.DoesNotContain("Feed(Dog dog)", updated);
+        var otherStart = updated.IndexOf("namespace Other", StringComparison.Ordinal);
+        var testAppStart = updated.IndexOf("namespace TestApp", StringComparison.Ordinal);
+        var otherUse = updated[otherStart..testAppStart];
+        var testAppUse = updated[testAppStart..];
+        Assert.Contains("Feed(Animal dog)", otherUse);
+        Assert.Contains("Feed(Animal dog)", testAppUse);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_Line_Preview_WritesNothing_AndDescribesRewrite()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameDogSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog",
+            Line = FindLine(NestedSameNameDogSource, "nested-dog"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("Dog", StringComparison.Ordinal)
+            && c.Description.Contains("Animal", StringComparison.Ordinal));
+        Assert.Contains(result.PendingChanges, c =>
+            c.AfterSnippet != null && c.AfterSnippet.Contains("Animal", StringComparison.Ordinal));
+        Assert.Contains(result.PendingChanges, c =>
+            c.BeforeSnippet != null && c.BeforeSnippet.Contains("Dog.Dog", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.PendingChanges, c => c.BeforeSnippet == "Dog");
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_FirstMatchPicksOuter()
+    {
+        var (root, model) = Compile(NestedSameNameDogSource);
+        var found = UseBaseTypeOperation.FindTypeDeclaration(root, model, "Dog", line: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_FqnPicksMatchingNamespace()
+    {
+        var (root, model) = Compile(QualifiedSameNamedDogSource);
+        var found = UseBaseTypeOperation.FindTypeDeclaration(root, model, "B.Dog", line: null);
+
+        Assert.NotNull(found);
+        var type = Assert.IsType<ClassDeclarationSyntax>(found);
+        Assert.Equal("B", type.FirstAncestorOrSelf<BaseNamespaceDeclarationSyntax>()?.Name.ToString());
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnNestedIdentifier_PicksNested()
+    {
+        var (root, model) = Compile(NestedSameNameDogSource);
+        var found = UseBaseTypeOperation.FindTypeDeclaration(
+            root, model, "Dog", FindLine(NestedSameNameDogSource, "nested-dog"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Dog");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnOuterIdentifier_PicksOuter()
+    {
+        var (root, model) = Compile(NestedSameNameDogSource);
+        var found = UseBaseTypeOperation.FindTypeDeclaration(
+            root, model, "Dog", FindLine(NestedSameNameDogSource, "outer-dog"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Dog // split-dog
+            {
+            }
+
+            public class Dog // nested-dog
+            {
+            }
+            """;
+
+        var (root, model) = Compile(source);
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-dog");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = UseBaseTypeOperation.FindTypeDeclaration(root, model, "Dog", identifierLine);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineMiss_KeepsFirstMatch()
+    {
+        var (root, model) = Compile(NestedSameNameDogSource);
+        var found = UseBaseTypeOperation.FindTypeDeclaration(root, model, "Dog", line: 1);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_EnumFirstPicksClass()
+    {
+        var (root, model) = Compile(EnumFirstThenSameNamedClassSource);
+        var found = UseBaseTypeOperation.FindTypeDeclaration(root, model, "Dog", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_StructFirstPicksStruct()
+    {
+        const string source = """
+            namespace Other
+            {
+                public struct Dog
+                {
+                    public int Id;
+                }
+            }
+
+            namespace TestApp
+            {
+                public class Dog
+                {
+                }
+            }
+            """;
+
+        var (root, model) = Compile(source);
+        var found = UseBaseTypeOperation.FindTypeDeclaration(root, model, "Dog", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<StructDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnEnumIdentifier_PicksEnum()
+    {
+        var (root, model) = Compile(EnumFirstThenSameNamedClassSource);
+        var found = UseBaseTypeOperation.FindTypeDeclaration(
+            root, model, "Dog", FindLine(EnumFirstThenSameNamedClassSource, "dog-enum"));
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnClassIdentifier_PicksClass()
+    {
+        var (root, model) = Compile(EnumFirstThenSameNamedClassSource);
+        var found = UseBaseTypeOperation.FindTypeDeclaration(
+            root, model, "Dog", FindLine(EnumFirstThenSameNamedClassSource, "dog-class"));
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_DelegateFirstPicksClass()
+    {
+        var (root, model) = Compile(DelegateFirstThenSameNamedClassSource);
+        var found = UseBaseTypeOperation.FindTypeDeclaration(root, model, "Dog", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnDelegateIdentifier_PicksDelegate()
+    {
+        var (root, model) = Compile(DelegateFirstThenSameNamedClassSource);
+        var found = UseBaseTypeOperation.FindTypeDeclaration(
+            root, model, "Dog", FindLine(DelegateFirstThenSameNamedClassSource, "dog-delegate"));
+
+        Assert.NotNull(found);
+        Assert.IsType<DelegateDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void SpanCoversLine_TreatsEndAsExclusive()
+    {
+        var span = new FileLinePositionSpan(
+            "t.cs",
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
+
+        Assert.True(UseBaseTypeOperation.SpanCoversLine(span, 1));
+        Assert.True(UseBaseTypeOperation.SpanCoversLine(span, 2));
+        Assert.False(UseBaseTypeOperation.SpanCoversLine(span, 3));
+        Assert.False(UseBaseTypeOperation.SpanCoversLine(span, 0));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_OmittedLine_EnumFirstThenSameNamedClass_RewritesClass()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource);
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("enum Dog", updated);
+        Assert.Contains("Feed(Animal dog)", updated);
+        Assert.DoesNotContain("Feed(Dog dog)", updated);
     }
 
     #endregion
@@ -883,6 +1470,35 @@ public class UseBaseTypeOperationTests
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
+
+    private static int FindLine(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
+    private static (SyntaxNode Root, SemanticModel Model) Compile(string source)
+    {
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+            "UseBaseTypeFindType",
+            [tree],
+            [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        return (tree.GetRoot(), compilation.GetSemanticModel(tree));
+    }
 
     private sealed class TempWorkspace : IAsyncDisposable
     {
