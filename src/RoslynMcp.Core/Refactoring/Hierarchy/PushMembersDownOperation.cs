@@ -385,6 +385,75 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             .OfType<TypeDeclarationSyntax>()
             .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
 
+    /// <summary>
+    /// Folds descendant derived-type replacements that
+    /// <c>ReplaceNodes</c> already applied onto <paramref name="rewrittenAncestor"/>
+    /// into the precomputed source rewrite. The source rewrite was built
+    /// before those nested updates (and may use a different node identity
+    /// after the per-execution annotation), so match nested types by
+    /// identifier and enclosing type rather than <c>SpanStart</c>.
+    /// </summary>
+    private static TypeDeclarationSyntax MergeEnclosedDerivedUpdates(
+        TypeDeclarationSyntax sourceReplacement,
+        TypeDeclarationSyntax rewrittenAncestor,
+        TypeDeclarationSyntax originalSource,
+        IReadOnlyDictionary<SyntaxNode, SyntaxNode> map)
+    {
+        var enclosed = map.Keys
+            .OfType<TypeDeclarationSyntax>()
+            .Where(node => node != originalSource && originalSource.Contains(node))
+            .ToList();
+        if (enclosed.Count == 0)
+            return sourceReplacement;
+
+        var stillPresent = enclosed.Where(sourceReplacement.Contains).ToList();
+        if (stillPresent.Count == enclosed.Count)
+        {
+            return (TypeDeclarationSyntax)sourceReplacement.ReplaceNodes(
+                stillPresent,
+                (nested, _) => map[nested]);
+        }
+
+        var transplants = new Dictionary<SyntaxNode, SyntaxNode>();
+        foreach (var nestedOriginal in enclosed)
+        {
+            var inReplacement = FindMatchingNestedType(sourceReplacement, nestedOriginal);
+            if (inReplacement == null || transplants.ContainsKey(inReplacement))
+                continue;
+
+            var updated = RematchTypeDeclaration(rewrittenAncestor, nestedOriginal)
+                ?? FindMatchingNestedType(rewrittenAncestor, nestedOriginal)
+                ?? map[nestedOriginal] as TypeDeclarationSyntax;
+            if (updated != null)
+                transplants[inReplacement] = updated;
+        }
+
+        if (transplants.Count == 0)
+            return sourceReplacement;
+
+        return (TypeDeclarationSyntax)sourceReplacement.ReplaceNodes(
+            transplants.Keys,
+            (node, _) => transplants[node]);
+    }
+
+    private static TypeDeclarationSyntax? FindMatchingNestedType(
+        TypeDeclarationSyntax container,
+        TypeDeclarationSyntax original)
+    {
+        var bySpan = RematchTypeDeclaration(container, original);
+        if (bySpan != null)
+            return bySpan;
+
+        var parentName = (original.Parent as TypeDeclarationSyntax)?.Identifier.Text;
+        return container.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(candidate => candidate.Identifier.Text == original.Identifier.Text)
+            .Where(candidate =>
+                (candidate.Parent as TypeDeclarationSyntax)?.Identifier.Text == parentName)
+            .OrderBy(candidate => candidate.Span.Length)
+            .FirstOrDefault();
+    }
+
     private static IReadOnlyList<DerivedUpdate> RematchDerivedUpdates(
         SyntaxNode sourceRoot,
         Document sourceDocument,
@@ -1853,7 +1922,28 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
             var map = group.ToDictionary(item => item.Original, item => item.Replacement);
-            var newRoot = currentRoot.ReplaceNodes(map.Keys, (original, _) => map[original]);
+            // ReplaceNodes rewrites descendants first, then invokes the
+            // ancestor callback with that rewritten node. Returning the
+            // precomputed source replacement (and discarding `rewritten`)
+            // drops a member added to a nested derived type that lives
+            // inside the source declaration (e.g. Puppy : Animal inside
+            // Animal). Merge those same-tree descendant updates into the
+            // source rewrite.
+            var newRoot = currentRoot.ReplaceNodes(map.Keys, (original, rewritten) =>
+            {
+                var replacement = map[original];
+                if (original != sourceDecl)
+                    return replacement;
+
+                if (rewritten == original)
+                    return replacement;
+
+                return MergeEnclosedDerivedUpdates(
+                    (TypeDeclarationSyntax)replacement,
+                    (TypeDeclarationSyntax)rewritten,
+                    sourceDecl,
+                    map);
+            });
             solution = document.WithSyntaxRoot(newRoot).Project.Solution;
         }
 

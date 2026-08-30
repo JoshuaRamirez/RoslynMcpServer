@@ -156,6 +156,19 @@ public class PushMembersDownOperationTests
         }
         """;
 
+    private const string EnclosedDerivedAnimalSource = """
+        namespace TestApp;
+
+        public /* enclosing-animal */ class Animal
+        {
+            public string Name { get; set; }
+
+            public /* nested-puppy */ class Puppy : Animal
+            {
+            }
+        }
+        """;
+
     private const string LaterSameNamedAnimalSource = """
         namespace Other
         {
@@ -383,6 +396,27 @@ public class PushMembersDownOperationTests
         Assert.Null(FindProperty(updated, "Dog", "Title"));
         Assert.Null(FindPropertyOnNthType(updated, "Animal", 0, "Name"));
         Assert.Null(FindPropertyOnNthType(updated, "Animal", 1, "Title"));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_Line_EnclosedNestedDerived_AddsMemberToNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnclosedDerivedAnimalSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Name"],
+            Line = FindLine(EnclosedDerivedAnimalSource, "enclosing-animal")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Null(FindProperty(updated, "Animal", "Name"));
+        Assert.NotNull(FindProperty(updated, "Puppy", "Name"));
+        Assert.DoesNotContain("abstract", updated, StringComparison.Ordinal);
     }
 
     [SkippableFact]
