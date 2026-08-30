@@ -777,16 +777,17 @@ public class GenerateEqualsHashCodeOperationTests
         Assert.True(TypeHasMethod(types[0], "GetHashCode"));
         Assert.True(TypeHasMethod(types[1], "Equals"));
         Assert.True(TypeHasMethod(types[1], "GetHashCode"));
-        var outerEquals = ExtractMethod(NormalizeNewlines(types[0].ToFullString()), "public override bool Equals(object?");
-        var nestedEquals = ExtractMethod(NormalizeNewlines(types[1].ToFullString()), "public override bool Equals(object?");
+        // Own members only — types[0].ToFullString() also contains the nested Equals.
+        var outerEquals = OwnEquals(types[0]);
+        var nestedEquals = OwnEquals(types[1]);
         Assert.Contains("Name", outerEquals);
         Assert.DoesNotContain("Age", outerEquals);
         Assert.Contains("Age", nestedEquals);
         Assert.DoesNotContain("Name", nestedEquals);
         Assert.DoesNotContain("old-outer", types[0].ToFullString(), StringComparison.Ordinal);
         Assert.DoesNotContain("old-nested", types[1].ToFullString(), StringComparison.Ordinal);
-        Assert.Equal(1, CountOccurrences(NormalizeNewlines(types[0].ToFullString()), "public override bool Equals(object?"));
-        Assert.Equal(1, CountOccurrences(NormalizeNewlines(types[1].ToFullString()), "public override bool Equals(object?"));
+        Assert.Equal(1, types[0].Members.OfType<MethodDeclarationSyntax>().Count(m => m.Identifier.Text == "Equals"));
+        Assert.Equal(1, types[1].Members.OfType<MethodDeclarationSyntax>().Count(m => m.Identifier.Text == "Equals"));
     }
 
     #endregion
@@ -3177,6 +3178,11 @@ public class GenerateEqualsHashCodeOperationTests
     private static bool TypeHasMethod(ClassDeclarationSyntax type, string methodName) =>
         type.Members.OfType<MethodDeclarationSyntax>()
             .Any(m => m.Identifier.Text == methodName);
+
+    private static string OwnEquals(ClassDeclarationSyntax type) =>
+        NormalizeNewlines(type.Members.OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.Text == "Equals")
+            .ToFullString());
 
     // Single-line snippets only — IndexOf of an LF-only snippet missed
     // CRLF checkouts (FindMethod_ColumnOnContinuationLine on #200 / #214).
