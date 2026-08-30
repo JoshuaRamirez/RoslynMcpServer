@@ -32,7 +32,7 @@ public sealed class UseBaseTypeTool : IToolHandler
     public string Name => "use_base_type";
 
     /// <inheritdoc />
-    public string Description => "Replace derived-type references with a compatible base type or interface. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick (simple name / single match) or FQN semantic narrowing.";
+    public string Description => "Replace derived-type references with a compatible base type or interface. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick (simple name / single match) or FQN semantic narrowing. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -60,6 +60,12 @@ public sealed class UseBaseTypeTool : IToolHandler
             {
                 type = "integer",
                 description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick (simple name / single match) or FQN semantic narrowing.",
+                minimum = 1
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter.",
                 minimum = 1
             },
             targetBaseType = new
@@ -103,6 +109,7 @@ public sealed class UseBaseTypeTool : IToolHandler
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
                 Line = args.Line,
+                Column = args.Column,
                 TargetBaseType = args.TargetBaseType,
                 Preview = args.Preview ?? false
             };
@@ -135,6 +142,7 @@ public sealed class UseBaseTypeTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public string? TargetBaseType { get; init; }
         public bool? Preview { get; init; }
     }

@@ -27,6 +27,16 @@ public sealed class UseBaseTypeParams
     public int? Line { get; init; }
 
     /// <summary>
+    /// 1-based column for disambiguation. When set with <see cref="Line"/>,
+    /// selects the type whose identifier or declaration span covers that
+    /// column (identifier preferred, then smallest containing type).
+    /// Omitted keeps today's typeName + optional line pick. Column without
+    /// line keeps today's omitted-line <c>PickOmittedLineMatch</c> after
+    /// the typeName filter (<c>TypeDeclarationSyntax</c> only).
+    /// </summary>
+    public int? Column { get; init; }
+
+    /// <summary>
     /// Target base class or interface name. If omitted, uses the nearest base
     /// class, or the single implemented interface when there is no class base.
     /// </summary>
