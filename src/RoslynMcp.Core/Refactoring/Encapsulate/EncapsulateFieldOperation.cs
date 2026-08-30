@@ -22,7 +22,9 @@ namespace RoslynMcp.Core.Refactoring.Encapsulate;
 /// set and no covering field matches, throw <c>FieldNotFound</c> rather
 /// than falling back to first-match. After the rewrite rematches the
 /// selected field, recover it from a per-execution syntax annotation
-/// and strip the annotation before commit.
+/// and strip the annotation before commit. Same-file outer/sibling
+/// references are external (semantic containment in the selected type,
+/// not file-path equality) and are annotated before the field rewrite.
 /// </summary>
 public sealed class EncapsulateFieldOperation : RefactoringOperationBase<EncapsulateFieldParams>
 {
@@ -147,7 +149,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
         var externalReferences = references
             .SelectMany(r => r.Locations)
-            .Where(loc => !IsInsideContainingType(loc, fieldSymbol.ContainingType, semanticModel))
+            .Where(loc => !IsInsideContainingType(loc, fieldSymbol.ContainingType))
             .ToList();
 
         // Rename field if property name would conflict (computed before preview
@@ -198,17 +200,37 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             property = UpdatePropertyFieldName(property, newFieldName);
         }
 
+        // Redirect to the property when updateReferences is true. When false,
+        // still rewrite to the renamed backing field so callers stay on the
+        // field (`name` → `_name`) instead of a name that no longer exists.
+        var referenceReplacement = @params.UpdateReferences
+            ? propertyName
+            : fieldRenamed ? newFieldName : null;
+
         // Fresh instance per execution. A static annotation is shared
         // across operations; after CommitChanges the in-memory solution
         // can still carry it, so a later encapsulate on another same-named
         // field would recover the stale node via FirstOrDefault.
         // Today's rematch First by fieldName / containing type name is
         // not enough — it retargets a nested same-named field to the
-        // outer declaration. Do not re-find with stale SpanStart or line.
+        // outer declaration. Same-file external identifiers also shift
+        // when the property is inserted; annotate those before the
+        // rewrite rather than rematching a stale SourceSpan.
         var fieldAnnotation = new SyntaxAnnotation("encapsulate-field-target");
+        var refAnnotation = new SyntaxAnnotation("encapsulate-field-external-ref");
         newFieldDeclaration = newFieldDeclaration.WithAdditionalAnnotations(fieldAnnotation);
 
-        var newRoot = root.ReplaceNode(fieldDeclaration, newFieldDeclaration);
+        var replacements = new Dictionary<SyntaxNode, SyntaxNode> { [fieldDeclaration] = newFieldDeclaration };
+        if (referenceReplacement != null)
+        {
+            foreach (var identifier in EnumerateSameFileExternalIdentifiers(
+                         root, document.Id, externalReferences, @params.FieldName))
+            {
+                replacements[identifier] = identifier.WithAdditionalAnnotations(refAnnotation);
+            }
+        }
+
+        var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
 
         var updatedFieldDecl = newRoot.GetAnnotatedNodes(fieldAnnotation)
             .OfType<FieldDeclarationSyntax>()
@@ -233,23 +255,33 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         var newContainingType = updatedContainingType.WithMembers(newMembers);
         newRoot = newRoot.ReplaceNode(updatedContainingType, newContainingType);
 
+        if (referenceReplacement != null)
+        {
+            var annotatedRefs = newRoot.GetAnnotatedNodes(refAnnotation)
+                .OfType<IdentifierNameSyntax>()
+                .ToList();
+            if (annotatedRefs.Count > 0)
+            {
+                newRoot = newRoot.ReplaceNodes(
+                    annotatedRefs,
+                    (original, _) => SyntaxFactory.IdentifierName(referenceReplacement)
+                        .WithTriviaFrom(original));
+            }
+        }
+
         var stillAnnotated = newRoot.GetAnnotatedNodes(fieldAnnotation).FirstOrDefault();
         if (stillAnnotated != null)
             newRoot = newRoot.ReplaceNode(stillAnnotated, stillAnnotated.WithoutAnnotations(fieldAnnotation));
 
         var newSolution = document.WithSyntaxRoot(newRoot).Project.Solution;
 
-        // Redirect to the property when updateReferences is true. When false,
-        // still rewrite to the renamed backing field so callers stay on the
-        // field (`name` → `_name`) instead of a name that no longer exists.
-        var referenceReplacement = @params.UpdateReferences
-            ? propertyName
-            : fieldRenamed ? newFieldName : null;
-
         if (referenceReplacement != null)
         {
             foreach (var reference in externalReferences)
             {
+                if (reference.Document.Id == document.Id)
+                    continue;
+
                 var refDoc = newSolution.GetDocument(reference.Document.Id);
                 if (refDoc == null) continue;
 
@@ -381,14 +413,57 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         return true;
     }
 
-    private static bool IsInsideContainingType(
+    /// <summary>
+    /// True when the reference lives in the selected field's containing
+    /// type (same-class / same-type). File-path equality is not enough:
+    /// an outer or sibling type in the same source file is external.
+    /// Innermost enclosing <c>TypeDeclarationSyntax</c> is matched to
+    /// <paramref name="containingType"/>'s declaring syntax so a nested
+    /// type is not treated as the outer type, and a later partial of the
+    /// selected type still counts as same-type.
+    /// </summary>
+    internal static bool IsInsideContainingType(
         ReferenceLocation location,
-        INamedTypeSymbol containingType,
-        SemanticModel semanticModel)
+        INamedTypeSymbol containingType)
     {
-        // This is a simplified check - in reality we'd need to check if the reference
-        // is inside the same type declaration
-        return location.Document.FilePath == containingType.Locations.FirstOrDefault()?.SourceTree?.FilePath;
+        var source = location.Location;
+        if (!source.IsInSource || source.SourceTree == null)
+            return false;
+
+        var node = source.SourceTree.GetRoot().FindNode(source.SourceSpan, getInnermostNodeForTie: true);
+        var innermost = node.FirstAncestorOrSelf<TypeDeclarationSyntax>();
+        if (innermost == null)
+            return false;
+
+        foreach (var syntaxRef in containingType.DeclaringSyntaxReferences)
+        {
+            if (syntaxRef.SyntaxTree == innermost.SyntaxTree && syntaxRef.Span == innermost.Span)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<IdentifierNameSyntax> EnumerateSameFileExternalIdentifiers(
+        SyntaxNode root,
+        DocumentId documentId,
+        IEnumerable<ReferenceLocation> externalReferences,
+        string fieldName)
+    {
+        var seen = new HashSet<IdentifierNameSyntax>();
+        foreach (var reference in externalReferences)
+        {
+            if (reference.Document.Id != documentId)
+                continue;
+
+            var refNode = root.FindNode(reference.Location.SourceSpan, getInnermostNodeForTie: true);
+            if (refNode is IdentifierNameSyntax identifier &&
+                identifier.Identifier.Text == fieldName &&
+                seen.Add(identifier))
+            {
+                yield return identifier;
+            }
+        }
     }
 
     private static string DerivePropertyName(string fieldName)

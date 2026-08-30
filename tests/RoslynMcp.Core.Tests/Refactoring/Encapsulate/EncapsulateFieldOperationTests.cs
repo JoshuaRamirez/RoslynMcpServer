@@ -551,6 +551,85 @@ public class EncapsulateFieldOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    private const string NestedFieldWithOuterCallerSource = """
+        namespace TestApp;
+
+        public class Person
+        {
+            public class Nested
+            {
+                public string name; /* nested-field */
+            }
+
+            public static string Read(Nested nested) => nested.name;
+        }
+        """;
+
+    private const string NestedFieldWithInternalAndOuterCallerSource = """
+        namespace TestApp;
+
+        public class Person
+        {
+            public class Nested
+            {
+                public string _name; /* nested-field */
+
+                public string Display() => _name;
+            }
+
+            public static string Read(Nested nested) => nested._name;
+        }
+        """;
+
+    [SkippableFact]
+    public async Task EncapsulateField_LineOnNested_SameFileOuterCaller_RewritesToPropertyAndCompiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedFieldWithOuterCallerSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "name",
+            Line = FindLine(NestedFieldWithOuterCallerSource, "nested-field")
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.ReferencesUpdated);
+
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEncapsulatedField(updated, "_name");
+        Assert.Contains("public string Name", updated);
+        Assert.Contains("=> nested.Name", updated);
+        Assert.DoesNotContain("=> nested.name", updated);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_LineOnNested_SameTypeInternalUse_StaysOnField()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedFieldWithInternalAndOuterCallerSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "_name",
+            Line = FindLine(NestedFieldWithInternalAndOuterCallerSource, "nested-field")
+        });
+
+        Assert.True(result.Success);
+
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertEncapsulatedField(updated, "_name");
+        Assert.Contains("public string Name", updated);
+        Assert.Contains("public string Display() => _name", updated);
+        Assert.DoesNotContain("Display() => Name", updated);
+        Assert.Contains("=> nested.Name", updated);
+        Assert.DoesNotContain("=> nested._name", updated);
+        await AssertCompilesAsync(workspace);
+    }
+
     [Fact]
     public void FindFieldDeclarator_OmittedLine_KeepsFirstMatch()
     {
@@ -698,6 +777,19 @@ public class EncapsulateFieldOperationTests
         var nestedStart = source.IndexOf("class Nested", StringComparison.Ordinal);
         Assert.True(nestedStart >= 0, "Expected a Nested type in the source.");
         return (source[..nestedStart], source[nestedStart..]);
+    }
+
+    private static async Task AssertCompilesAsync(TempWorkspace workspace)
+    {
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath);
+        Assert.NotNull(document);
+        var compilation = await document.Project.GetCompilationAsync();
+        Assert.NotNull(compilation);
+        var errors = compilation.GetDiagnostics()
+            .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+            .Select(diagnostic => diagnostic.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, string.Join(Environment.NewLine, errors));
     }
 
     /// <summary>
