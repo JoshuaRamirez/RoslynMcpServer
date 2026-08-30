@@ -33,7 +33,7 @@ public sealed class GeneratePropertyTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Generate a property on a C# type. Creates an auto-property { get; set; }, an init-only property { get; init; }, or a backing-field property { get => field; set => field = value; } when a field is the target. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. replaceExisting (default false) replaces an existing property of the same name instead of failing.";
+        "Generate a property on a C# type. Creates an auto-property { get; set; }, an init-only property { get; init; }, or a backing-field property { get => field; set => field = value; } when a field is the target. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. replaceExisting (default false) replaces an existing property of the same name instead of failing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -61,6 +61,12 @@ public sealed class GeneratePropertyTool : IToolHandler
             {
                 type = "integer",
                 description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                minimum = 1
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter.",
                 minimum = 1
             },
             propertyName = new
@@ -132,6 +138,7 @@ public sealed class GeneratePropertyTool : IToolHandler
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
                 Line = args.Line,
+                Column = args.Column,
                 PropertyName = args.PropertyName,
                 PropertyType = args.PropertyType,
                 FieldName = args.FieldName,
@@ -169,6 +176,7 @@ public sealed class GeneratePropertyTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public string? PropertyName { get; init; }
         public string? PropertyType { get; init; }
         public string? FieldName { get; init; }

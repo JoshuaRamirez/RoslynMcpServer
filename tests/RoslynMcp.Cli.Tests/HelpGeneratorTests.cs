@@ -410,16 +410,19 @@ public class HelpGeneratorTests
         Assert.Contains("--source-file", requiredSection);
         Assert.Contains("--type-name", requiredSection);
         Assert.DoesNotContain("--line", requiredSection);
+        Assert.DoesNotContain("--column", requiredSection);
         Assert.DoesNotContain("--replace-existing", requiredSection);
         Assert.DoesNotContain("--init-only", requiredSection);
         Assert.DoesNotContain("--preview", requiredSection);
 
         Assert.Contains("--line", optionalSection);
+        Assert.Contains("--column", optionalSection);
         Assert.Contains("--replace-existing", optionalSection);
         Assert.Contains("--init-only", optionalSection);
         Assert.Contains("--preview", optionalSection);
         Assert.Contains("replaceExisting", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("FirstOrDefault", tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 

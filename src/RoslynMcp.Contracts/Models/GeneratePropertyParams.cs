@@ -25,6 +25,15 @@ public sealed class GeneratePropertyParams
     public int? Line { get; init; }
 
     /// <summary>
+    /// 1-based column for disambiguation. When set with <see cref="Line"/>,
+    /// selects the type whose identifier or declaration span covers that
+    /// column (identifier preferred, then smallest containing type).
+    /// Omitted keeps today's typeName + optional line pick. Column without
+    /// line keeps today's first-match after the typeName filter.
+    /// </summary>
+    public int? Column { get; init; }
+
+    /// <summary>
     /// Name of the property to generate. When omitted and <see cref="FieldName"/> is set,
     /// the name is derived from the field (leading underscores stripped, first letter capitalized).
     /// </summary>
