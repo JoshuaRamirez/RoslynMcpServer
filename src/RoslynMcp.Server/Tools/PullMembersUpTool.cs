@@ -32,7 +32,7 @@ public sealed class PullMembersUpTool : IToolHandler
     public string Name => "pull_members_up";
 
     /// <inheritdoc />
-    public string Description => "Move selected members from a derived type onto an existing base class or interface.";
+    public string Description => "Move selected members from a derived type onto an existing base class or interface. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,6 +55,12 @@ public sealed class PullMembersUpTool : IToolHandler
             {
                 type = "string",
                 description = "Name of the derived class or struct"
+            },
+            line = new
+            {
+                type = "integer",
+                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                minimum = 1
             },
             members = new
             {
@@ -108,6 +114,7 @@ public sealed class PullMembersUpTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
+                Line = args.Line,
                 Members = args.Members ?? new List<string>(),
                 TargetBaseType = args.TargetBaseType,
                 MakeAbstract = args.MakeAbstract ?? false,
@@ -141,6 +148,7 @@ public sealed class PullMembersUpTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
+        public int? Line { get; init; }
         public List<string>? Members { get; init; }
         public string? TargetBaseType { get; init; }
         public bool? MakeAbstract { get; init; }

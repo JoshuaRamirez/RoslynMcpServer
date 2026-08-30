@@ -159,7 +159,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<IntroduceParameterOperation, IntroduceParameterParams>(
             "introduce-parameter", "Introduce a method parameter from an expression");
         r.RegisterRefactoring<PullMembersUpOperation, PullMembersUpParams>(
-            "pull-members-up", "Move selected members from a derived type onto an existing base class or interface");
+            "pull-members-up", "Move selected members from a derived type onto an existing base class or interface; line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick");
         r.RegisterRefactoring<PushMembersDownOperation, PushMembersDownParams>(
             "push-members-down", "Move selected members from a base type down onto derived types");
         r.RegisterRefactoring<UseBaseTypeOperation, UseBaseTypeParams>(
