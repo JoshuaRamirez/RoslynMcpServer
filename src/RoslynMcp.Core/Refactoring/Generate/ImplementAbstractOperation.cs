@@ -25,8 +25,11 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// (a default return is not a valid ref return).
 /// Honors optional <c>line</c> to disambiguate same-named types in one
 /// file (identifier preferred, then smallest containing type).
-/// Selection uses <c>BaseTypeDeclarationSyntax</c> so an earlier same-named
-/// enum/delegate still reaches <c>InvalidSymbolKind</c>.
+/// Omitted line keeps today's <c>BaseTypeDeclarationSyntax</c>
+/// <c>FirstOrDefault</c> pick (enum participates; delegates do not —
+/// <c>DelegateDeclarationSyntax</c> is not a <c>BaseTypeDeclarationSyntax</c>).
+/// When line is set, a covering delegate is included so it reaches
+/// <c>InvalidSymbolKind</c> rather than retargeting a later class.
 /// Honors <c>replaceExisting</c> to include already-implemented abstract
 /// members, remove those declarations (including across partials) by
 /// signature, and insert a standard generated stub. <c>new</c> hiders,
@@ -114,8 +117,8 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
 
         // Optional line disambiguates same-named types. Omitted keeps
         // today's BaseTypeDeclarationSyntax FirstOrDefault pick
-        // (including enum/delegate). Line set includes those
-        // unsupported candidates so a covering enum still reaches
+        // (enum participates; DelegateDeclarationSyntax does not).
+        // Line set also includes a covering delegate so it reaches
         // InvalidSymbolKind instead of retargeting a later class.
         var typeDecl = FindTypeDeclaration(root, @params.TypeName, @params.Line);
 
@@ -1210,59 +1213,82 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// Finds a type by <paramref name="typeName"/>. Omitted <paramref name="line"/>
     /// keeps today's <c>BaseTypeDeclarationSyntax</c> <c>FirstOrDefault</c>
     /// pick, including when several same-named types exist (nested vs outer,
-    /// two namespaces, or an earlier enum/delegate). When set, picks the
+    /// two namespaces, or an earlier enum). Delegates are not in that set —
+    /// <c>DelegateDeclarationSyntax</c> does not derive from
+    /// <c>BaseTypeDeclarationSyntax</c>, so omitted line still picks a later
+    /// same-named class rather than the delegate. When set, picks the
     /// type whose identifier or declaration span covers that 1-based line
     /// (same exclusive-end coverage as
     /// <c>GeneratePropertyOperation.SpanCoversLine</c>). Prefer the identifier
-    /// hit, then the smallest containing type. Nested types and unsupported
-    /// <c>BaseTypeDeclarationSyntax</c> candidates (enum / delegate) participate
-    /// so a covering enum still reaches <c>InvalidSymbolKind</c> rather than
-    /// retargeting a later class. Do not require the declaration to start on
-    /// <paramref name="line"/> — a split declaration may put the identifier
-    /// on a continuation line. If nothing covers this line, keep today's
-    /// first-match rather than inventing a not-found. After
+    /// hit, then the smallest containing type. Nested types, enums, and
+    /// <c>DelegateDeclarationSyntax</c> participate when line is set so a
+    /// covering enum or delegate still reaches <c>InvalidSymbolKind</c>
+    /// rather than retargeting a later class. Do not require the declaration
+    /// to start on <paramref name="line"/> — a split declaration may put the
+    /// identifier on a continuation line. If nothing covers this line, keep
+    /// today's first-match rather than inventing a not-found. After
     /// <see cref="RemoveExistingImplementationsAcrossPartialsAsync"/>, recover
     /// the selected type from the per-execution syntax annotation — do not
     /// reuse a pre-rewrite SpanStart or line.
     /// </summary>
-    internal static BaseTypeDeclarationSyntax? FindTypeDeclaration(
+    internal static MemberDeclarationSyntax? FindTypeDeclaration(
         SyntaxNode root,
         string typeName,
         int? line)
     {
-        var candidates = root.DescendantNodes()
+        var typeCandidates = root.DescendantNodes()
             .OfType<BaseTypeDeclarationSyntax>()
             .Where(t => t.Identifier.Text == typeName)
             .ToList();
 
-        if (candidates.Count == 0)
-            return null;
-
         if (!line.HasValue)
-            return candidates.FirstOrDefault();
+            return typeCandidates.FirstOrDefault();
 
-        // Do not require the declaration to start on `line` — a split
+        // Line set: include DelegateDeclarationSyntax in the covering-line
+        // set. Do not require the declaration to start on `line` — a split
         // type's identifier may live on a continuation line whose
         // declaration span still covers that line. Prefer the identifier
         // hit, then the smallest containing type (nested over outer).
-        // Include enum/delegate candidates. Do not silently pick the
+        // Include enum and delegate candidates. Do not silently pick the
         // first when a covering node exists elsewhere — scan every
         // candidate. If nothing covers this line, keep today's
-        // first-match rather than inventing a not-found.
-        return candidates
+        // BaseTypeDeclarationSyntax first-match rather than inventing a
+        // not-found (delegates stay out of that omitted-line fallback).
+        var lineCandidates = typeCandidates
+            .Cast<MemberDeclarationSyntax>()
+            .Concat(root.DescendantNodes()
+                .OfType<DelegateDeclarationSyntax>()
+                .Where(d => d.Identifier.Text == typeName))
+            .ToList();
+
+        if (lineCandidates.Count == 0)
+            return null;
+
+        return lineCandidates
             .Where(t => TypeCoversLine(t, line.Value))
             .OrderBy(t => IdentifierCoversLine(t, line.Value) ? 0 : 1)
             .ThenBy(t => t.Span.Length)
             .FirstOrDefault()
-            ?? candidates.FirstOrDefault();
+            ?? typeCandidates.FirstOrDefault();
     }
 
-    private static bool TypeCoversLine(BaseTypeDeclarationSyntax type, int line) =>
+    private static bool TypeCoversLine(MemberDeclarationSyntax type, int line) =>
         IdentifierCoversLine(type, line) ||
         SpanCoversLine(type.GetLocation().GetLineSpan(), line);
 
-    private static bool IdentifierCoversLine(BaseTypeDeclarationSyntax type, int line) =>
-        SpanCoversLine(type.Identifier.GetLocation().GetLineSpan(), line);
+    private static bool IdentifierCoversLine(MemberDeclarationSyntax type, int line)
+    {
+        var identifier = GetTypeIdentifier(type);
+        return identifier != default
+            && SpanCoversLine(identifier.GetLocation().GetLineSpan(), line);
+    }
+
+    private static SyntaxToken GetTypeIdentifier(MemberDeclarationSyntax type) => type switch
+    {
+        BaseTypeDeclarationSyntax named => named.Identifier,
+        DelegateDeclarationSyntax del => del.Identifier,
+        _ => default
+    };
 
     /// <summary>
     /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>

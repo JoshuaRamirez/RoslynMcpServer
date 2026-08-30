@@ -439,6 +439,139 @@ public class ImplementAbstractOperationTests
         Assert.DoesNotContain("override void Draw", updated[..updated.IndexOf("class Widget", StringComparison.Ordinal)]);
     }
 
+    private const string DelegateFirstThenSameNamedClassSource = """
+        namespace Other
+        {
+            public /* widget-delegate */ delegate void Widget();
+        }
+
+        namespace TestApp
+        {
+            public abstract class Shape
+            {
+                public abstract void Draw();
+            }
+
+            public /* widget-class */ class Widget : Shape
+            {
+            }
+        }
+        """;
+
+    private const string DelegateOnlySource = """
+        namespace TestApp;
+
+        public /* widget-delegate */ delegate void Widget();
+        """;
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_DelegateFirstPicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateFirstThenSameNamedClassSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(root, "Widget", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnDelegateIdentifier_PicksDelegate()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateFirstThenSameNamedClassSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(DelegateFirstThenSameNamedClassSource, "widget-delegate"));
+
+        Assert.NotNull(found);
+        Assert.IsType<DelegateDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnDelegateOnly_PicksDelegate()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateOnlySource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(DelegateOnlySource, "widget-delegate"));
+
+        Assert.NotNull(found);
+        Assert.IsType<DelegateDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_DelegateOnly_IsNotFound()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateOnlySource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(root, "Widget", line: null);
+
+        Assert.Null(found);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_OmittedLine_DelegateFirstThenSameNamedClass_ImplementsOnClass()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DelegateFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Widget");
+        Assert.Single(types);
+        Assert.True(TypeHasMethod(types[0], "Draw"));
+        Assert.Contains("public override void Draw()", updated);
+        Assert.Contains("delegate void Widget()", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("override void Draw", updated[..updated.IndexOf("class Widget", StringComparison.Ordinal)]);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_LineOnDelegateIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DelegateFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                Line = FindLine(DelegateFirstThenSameNamedClassSource, "widget-delegate")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("override void Draw", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_LineOnDelegateOnly_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DelegateOnlySource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                Line = FindLine(DelegateOnlySource, "widget-delegate")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.NotEqual(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     [Fact]
     public void SpanCoversLine_TreatsEndAsExclusive()
     {
