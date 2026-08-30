@@ -84,6 +84,7 @@ public class ImplementAbstractOperationTests
         Assert.False(@params.ReplaceExisting);
         Assert.False(@params.Preview);
         Assert.Null(@params.Line);
+        Assert.Null(@params.Column);
     }
 
     [Fact]
@@ -138,6 +139,48 @@ public class ImplementAbstractOperationTests
 
         Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
         Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Column_DefaultsToNull()
+    {
+        var @params = new ImplementAbstractParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Widget"
+        };
+
+        Assert.Null(@params.Column);
+    }
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementAbstractOperation.Validate(new ImplementAbstractParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                Column = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementAbstractOperation.Validate(new ImplementAbstractParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                Column = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
     }
 
     #endregion
@@ -697,6 +740,529 @@ public class ImplementAbstractOperationTests
         Assert.Contains("throw new global::System.NotImplementedException()", beta.ToFullString(), StringComparison.Ordinal);
         Assert.Equal(1, CountOccurrences(NormalizeNewlines(alpha.ToFullString()), "public override void AlphaWork("));
         Assert.Equal(1, CountOccurrences(NormalizeNewlines(beta.ToFullString()), "public override void BetaWork("));
+    }
+
+    #endregion
+
+    #region P0 optional column disambiguation
+
+    private const string SameLineNestedWidgetSource = """
+        namespace TestApp;
+
+        public abstract class Shape
+        {
+            public abstract void Draw();
+        }
+
+        public class Widget : Shape { public class Widget : Shape { } }
+        """;
+
+    [SkippableFact]
+    public async Task ImplementAbstract_OmittedColumn_KeepsTypeNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "Draw"));
+        Assert.False(TypeHasMethod(types[1], "Draw"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_OmittedColumn_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "nested-widget")
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasMethod(types[0], "Draw"));
+        Assert.True(TypeHasMethod(types[1], "Draw"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_OmittedColumn_EnumFirstThenSameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("override void Draw", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ColumnOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : Shape { public class");
+        var column = ColumnOf(SameLineNestedWidgetSource, "Widget : Shape { }");
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasMethod(types[0], "Draw"));
+        Assert.True(TypeHasMethod(types[1], "Draw"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ColumnOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : Shape { public class");
+        var column = ColumnOf(SameLineNestedWidgetSource, "Widget : Shape { public class");
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "Draw"));
+        Assert.False(TypeHasMethod(types[1], "Draw"));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedColumn_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(root, "Widget", line: null, column: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedColumn_EnumFirstPicksEnum()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(root, "Widget", line: null, column: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : Shape { public class");
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", line, ColumnOf(SameLineNestedWidgetSource, "Widget : Shape { }"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Widget");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : Shape { public class");
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", line, ColumnOf(SameLineNestedWidgetSource, "Widget : Shape { public class"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnWithoutLine_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
+        var nestedColumn = ColumnOf(SameLineNestedWidgetSource, "Widget : Shape { }");
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", line: null, nestedColumn);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnWithoutLine_DelegateFirstPicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateFirstThenSameNamedClassSource).GetRoot();
+        var delegateColumn = ColumnOf(DelegateFirstThenSameNamedClassSource, "Widget()");
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", line: null, delegateColumn);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+            }
+
+            public class
+                Widget : Shape // split-widget
+            {
+                public class Widget : Shape // nested-widget
+                {
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-widget");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", identifierLine, ColumnOf(source, "Widget : Shape // split-widget"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ColumnOnContinuationLine_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+            }
+
+            public class
+                Widget : Shape // split-widget
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var startLine = FindLine(source, "public class\n    Widget");
+        var identifierLine = FindLine(source, "split-widget");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = identifierLine,
+            Column = ColumnOf(source, "Widget : Shape // split-widget")
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Single(types);
+        Assert.True(TypeHasMethod(types[0], "Draw"));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnEnumIdentifier_PicksEnum()
+    {
+        const string source = """
+            namespace TestApp { public enum Widget { Ready } public class Widget { } }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var line = FindLine(source, "public enum Widget");
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", line, ColumnOf(source, "Widget { Ready }"));
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ColumnOnEnumIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        const string source = """
+            namespace TestApp { public enum Widget { Ready } public class Widget { } }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var line = FindLine(source, "public enum Widget");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                Line = line,
+                Column = ColumnOf(source, "Widget { Ready }")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("override void Draw", await File.ReadAllTextAsync(workspace.SourcePath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnDelegateIdentifier_PicksDelegate()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateFirstThenSameNamedClassSource).GetRoot();
+        var line = FindLine(DelegateFirstThenSameNamedClassSource, "widget-delegate");
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", line, ColumnOf(DelegateFirstThenSameNamedClassSource, "Widget()"));
+
+        Assert.NotNull(found);
+        Assert.IsType<DelegateDeclarationSyntax>(found);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ColumnOnDelegateIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DelegateFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var line = FindLine(DelegateFirstThenSameNamedClassSource, "widget-delegate");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                Line = line,
+                Column = ColumnOf(DelegateFirstThenSameNamedClassSource, "Widget()")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("override void Draw", updated, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnAndLineMiss_DoesNotFallBackToFirst()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(root, "Widget", line: 1, column: 1);
+
+        Assert.Null(found);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ColumnAndLineMiss_ThrowsTypeNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.TypeNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ColumnAndLine_UnknownTypeName_ThrowsSymbolNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Missing",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_UnknownTypeName_ReportsEmptyCandidateSet()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Missing", line: 1, column: 1, out var hadCandidates);
+
+        Assert.Null(found);
+        Assert.False(hadCandidates);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnAndLineMiss_ReportsCandidatesExisted()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", line: 1, column: 1, out var hadCandidates);
+
+        Assert.Null(found);
+        Assert.True(hadCandidates);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnAndLine_DelegateOnlyMiss_ReportsCandidatesExisted()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateOnlySource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", line: 1, column: 1, out var hadCandidates);
+
+        Assert.Null(found);
+        Assert.True(hadCandidates);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_Column_Preview_WritesNothing_AndDescribesGeneration()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : Shape { public class");
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = ColumnOf(SameLineNestedWidgetSource, "Widget : Shape { }"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Implement abstract members on 'Widget'", result.PendingChanges[0].Description);
+        Assert.Contains("Draw", result.PendingChanges[0].Description);
+        Assert.Contains("void Draw()", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class Outer { class Nested { } }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var nested = tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == "Nested");
+        var span = nested.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(ImplementAbstractOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(ImplementAbstractOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(ImplementAbstractOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(ImplementAbstractOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_SequentialColumn_ReusedWorkspace_InsertsOnSecondSelectedType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+            }
+
+            public class Widget : Shape { public override void Draw() { /* old-outer */ } public class Widget : Shape { public override void Draw() { /* old-nested */ } } }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var line = FindLine(source, "public class Widget : Shape { public override void Draw() { /* old-outer */ }");
+
+        var first = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = ColumnOf(source, "Widget : Shape { public override void Draw() { /* old-outer */ }"),
+            ReplaceExisting = true
+        });
+        Assert.True(first.Success);
+
+        // Recompute from the rewritten file. A per-execution annotation
+        // must not leave the first selected type as the only recover-able
+        // node in a reused workspace.
+        var afterFirst = await File.ReadAllTextAsync(workspace.SourcePath);
+        var second = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(afterFirst, "old-nested"),
+            Column = ColumnOf(afterFirst, "Widget : Shape { public override void Draw() { /* old-nested */ }"),
+            ReplaceExisting = true
+        });
+        Assert.True(second.Success);
+
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "Draw"));
+        Assert.True(TypeHasMethod(types[1], "Draw"));
+        Assert.DoesNotContain("old-outer", types[0].ToFullString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("old-nested", types[1].ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("throw new global::System.NotImplementedException()", types[0].ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("throw new global::System.NotImplementedException()", types[1].ToFullString(), StringComparison.Ordinal);
+        Assert.Single(types[0].Members.OfType<MethodDeclarationSyntax>());
+        Assert.Single(types[1].Members.OfType<MethodDeclarationSyntax>());
     }
 
     #endregion
@@ -3266,6 +3832,18 @@ public class ImplementAbstractOperationTests
         }
 
         return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
     }
 
     private static string NormalizeNewlines(string text) =>

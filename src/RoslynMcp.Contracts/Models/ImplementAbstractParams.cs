@@ -25,6 +25,15 @@ public sealed class ImplementAbstractParams
     public int? Line { get; init; }
 
     /// <summary>
+    /// 1-based column for disambiguation. When set with <see cref="Line"/>,
+    /// selects the type whose identifier or declaration span covers that
+    /// column (identifier preferred, then smallest containing type).
+    /// Omitted keeps today's typeName + optional line pick. Column without
+    /// line keeps today's first-match after the typeName filter.
+    /// </summary>
+    public int? Column { get; init; }
+
+    /// <summary>
     /// Names of specific abstract members to implement. If null or empty,
     /// implements all missing members. When <see cref="ReplaceExisting"/> is
     /// true, omitted / empty also replaces every existing implementable
