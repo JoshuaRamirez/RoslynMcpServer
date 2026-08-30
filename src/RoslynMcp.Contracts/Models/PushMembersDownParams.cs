@@ -25,6 +25,16 @@ public sealed class PushMembersDownParams
     public int? Line { get; init; }
 
     /// <summary>
+    /// 1-based column for disambiguation. When set with <see cref="Line"/>,
+    /// selects the type whose identifier or declaration span covers that
+    /// column (identifier preferred, then smallest containing type).
+    /// Omitted keeps today's typeName + optional line pick. Column without
+    /// line keeps today's first-match after the typeName filter
+    /// (<c>TypeDeclarationSyntax</c> only).
+    /// </summary>
+    public int? Column { get; init; }
+
+    /// <summary>
     /// Names of members to push down. At least one is required. Indexers match
     /// metadata name (<c>Item</c>), Roslyn name (<c>this[]</c>), and
     /// conventional display (<c>this[int i]</c>).
