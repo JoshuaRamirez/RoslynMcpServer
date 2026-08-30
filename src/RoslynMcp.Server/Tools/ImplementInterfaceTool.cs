@@ -32,7 +32,7 @@ public sealed class ImplementInterfaceTool : IToolHandler
     public string Name => "implement_interface";
 
     /// <inheritdoc />
-    public string Description => "Generate interface member implementations for a type. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. throwNotImplemented (default true) throws NotImplementedException in stub bodies; replaceExisting (default false) replaces already-implemented interface members instead of failing; preview returns computed changes without applying.";
+    public string Description => "Generate interface member implementations for a type. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. throwNotImplemented (default true) throws NotImplementedException in stub bodies; replaceExisting (default false) replaces already-implemented interface members instead of failing; preview returns computed changes without applying.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -60,6 +60,12 @@ public sealed class ImplementInterfaceTool : IToolHandler
             {
                 type = "integer",
                 description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                minimum = 1
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter.",
                 minimum = 1
             },
             interfaceName = new
@@ -127,6 +133,7 @@ public sealed class ImplementInterfaceTool : IToolHandler
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
                 Line = args.Line,
+                Column = args.Column,
                 InterfaceName = args.InterfaceName,
                 ExplicitImplementation = args.ExplicitImplementation ?? false,
                 Members = args.Members,
@@ -163,6 +170,7 @@ public sealed class ImplementInterfaceTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public string InterfaceName { get; init; } = "";
         public bool? ExplicitImplementation { get; init; }
         public List<string>? Members { get; init; }

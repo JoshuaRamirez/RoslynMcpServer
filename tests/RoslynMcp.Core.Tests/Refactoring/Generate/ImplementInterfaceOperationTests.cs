@@ -14,7 +14,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
 /// Operation-level tests for <see cref="ImplementInterfaceOperation"/>, including
-/// indexer stubs via <c>SyntaxGenerationHelper.CreateIndexerStub</c>.
+/// optional <c>line</c> / <c>column</c> disambiguation and indexer stubs via
+/// <c>SyntaxGenerationHelper.CreateIndexerStub</c>.
 /// </summary>
 public class ImplementInterfaceOperationTests
 {
@@ -64,6 +65,7 @@ public class ImplementInterfaceOperationTests
         Assert.False(@params.ReplaceExisting);
         Assert.False(@params.Preview);
         Assert.Null(@params.Line);
+        Assert.Null(@params.Column);
     }
 
     [Fact]
@@ -109,6 +111,51 @@ public class ImplementInterfaceOperationTests
 
         Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
         Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Column_DefaultsToNull()
+    {
+        var @params = new ImplementInterfaceParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Lookup",
+            InterfaceName = "ILookup"
+        };
+
+        Assert.Null(@params.Column);
+    }
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementInterfaceOperation.Validate(new ImplementInterfaceParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Lookup",
+                InterfaceName = "ILookup",
+                Column = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementInterfaceOperation.Validate(new ImplementInterfaceParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Lookup",
+                InterfaceName = "ILookup",
+                Column = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
     }
 
     [Fact]
@@ -430,6 +477,356 @@ public class ImplementInterfaceOperationTests
         Assert.DoesNotContain("old-beta", updated, StringComparison.Ordinal);
         Assert.Contains("throw new NotImplementedException()", alpha.ToFullString(), StringComparison.Ordinal);
         Assert.Contains("throw new NotImplementedException()", beta.ToFullString(), StringComparison.Ordinal);
+    }
+
+    #endregion
+
+    #region P0 optional column disambiguation
+
+    private const string SameLineNestedWidgetSource = """
+        namespace TestApp;
+
+        public interface IWidget
+        {
+            void DoWork();
+        }
+
+        public class Widget : IWidget { public class Widget : IWidget { } }
+        """;
+
+    [SkippableFact]
+    public async Task ImplementInterface_OmittedColumn_KeepsTypeNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            InterfaceName = "IWidget"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "DoWork"));
+        Assert.False(TypeHasMethod(types[1], "DoWork"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_OmittedColumn_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "nested-widget"),
+            InterfaceName = "IWidget"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasMethod(types[0], "DoWork"));
+        Assert.True(TypeHasMethod(types[1], "DoWork"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_ColumnOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : IWidget { public class");
+        var column = ColumnOf(SameLineNestedWidgetSource, "Widget : IWidget { }");
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = column,
+            InterfaceName = "IWidget"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasMethod(types[0], "DoWork"));
+        Assert.True(TypeHasMethod(types[1], "DoWork"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_ColumnOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : IWidget { public class");
+        var column = ColumnOf(SameLineNestedWidgetSource, "Widget : IWidget { public class");
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = column,
+            InterfaceName = "IWidget"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "DoWork"));
+        Assert.False(TypeHasMethod(types[1], "DoWork"));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedColumn_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = ImplementInterfaceOperation.FindTypeDeclaration(root, "Widget", line: null, column: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : IWidget { public class");
+        var found = ImplementInterfaceOperation.FindTypeDeclaration(
+            root, "Widget", line, ColumnOf(SameLineNestedWidgetSource, "Widget : IWidget { }"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Widget");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : IWidget { public class");
+        var found = ImplementInterfaceOperation.FindTypeDeclaration(
+            root, "Widget", line, ColumnOf(SameLineNestedWidgetSource, "Widget : IWidget { public class"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnWithoutLine_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
+        var nestedColumn = ColumnOf(SameLineNestedWidgetSource, "Widget : IWidget { }");
+        var found = ImplementInterfaceOperation.FindTypeDeclaration(
+            root, "Widget", line: null, nestedColumn);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWidget
+            {
+                void DoWork();
+            }
+
+            public class
+                Widget : IWidget // split-widget
+            {
+                public class Widget : IWidget // nested-widget
+                {
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-widget");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = ImplementInterfaceOperation.FindTypeDeclaration(
+            root, "Widget", identifierLine, ColumnOf(source, "Widget : IWidget // split-widget"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_ColumnOnContinuationLine_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWidget
+            {
+                void DoWork();
+            }
+
+            public class
+                Widget : IWidget // split-widget
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var startLine = FindLine(source, "public class\n    Widget");
+        var identifierLine = FindLine(source, "split-widget");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = identifierLine,
+            Column = ColumnOf(source, "Widget : IWidget // split-widget"),
+            InterfaceName = "IWidget"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Single(types);
+        Assert.True(TypeHasMethod(types[0], "DoWork"));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnAndLineMiss_DoesNotFallBackToFirst()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = ImplementInterfaceOperation.FindTypeDeclaration(root, "Widget", line: 1, column: 1);
+
+        Assert.Null(found);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_ColumnAndLineMiss_ThrowsTypeNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementInterfaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                Line = 1,
+                Column = 1,
+                InterfaceName = "IWidget"
+            }));
+
+        Assert.Equal(ErrorCodes.TypeNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_Column_Preview_WritesNothing_AndDescribesGeneration()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget : IWidget { public class");
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = ColumnOf(SameLineNestedWidgetSource, "Widget : IWidget { }"),
+            InterfaceName = "IWidget",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Implement IWidget members:", result.PendingChanges[0].Description);
+        Assert.Contains("DoWork", result.PendingChanges[0].Description);
+        Assert.Contains("void DoWork()", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class Outer { class Nested { } }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var nested = tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == "Nested");
+        var span = nested.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(ImplementInterfaceOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(ImplementInterfaceOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(ImplementInterfaceOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(ImplementInterfaceOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_SequentialColumn_ReusedWorkspace_InsertsOnSecondSelectedType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWidget
+            {
+                void DoWork();
+            }
+
+            public class Widget : IWidget { public void DoWork() { /* old-outer */ } public class Widget : IWidget { public void DoWork() { /* old-nested */ } } }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var line = FindLine(source, "public class Widget : IWidget { public void DoWork()");
+
+        var first = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = ColumnOf(source, "Widget : IWidget { public void DoWork() { /* old-outer */ }"),
+            InterfaceName = "IWidget",
+            ReplaceExisting = true
+        });
+        Assert.True(first.Success);
+
+        // Recompute from the rewritten file. A per-execution annotation
+        // must not leave the first selected type as the only recover-able
+        // node in a reused workspace.
+        var afterFirst = await File.ReadAllTextAsync(workspace.SourcePath);
+        var second = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(afterFirst, "old-nested"),
+            Column = ColumnOf(afterFirst, "Widget : IWidget { public void DoWork() { /* old-nested */ }"),
+            InterfaceName = "IWidget",
+            ReplaceExisting = true
+        });
+        Assert.True(second.Success);
+
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "DoWork"));
+        Assert.True(TypeHasMethod(types[1], "DoWork"));
+        Assert.DoesNotContain("old-outer", types[0].ToFullString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("old-nested", types[1].ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("throw new NotImplementedException()", types[0].ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("throw new NotImplementedException()", types[1].ToFullString(), StringComparison.Ordinal);
     }
 
     #endregion
@@ -1914,6 +2311,18 @@ public class ImplementInterfaceOperationTests
         }
 
         return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
     }
 
     private static TypeDeclarationSyntax FindType(string source, string typeName)
