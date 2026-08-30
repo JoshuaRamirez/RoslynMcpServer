@@ -25,6 +25,16 @@ public sealed class GenerateToStringParams
     public int? Line { get; init; }
 
     /// <summary>
+    /// 1-based column for disambiguation. When set with <see cref="Line"/>,
+    /// selects the type whose identifier or declaration span covers that
+    /// column (identifier preferred, then smallest containing type).
+    /// Omitted keeps today's typeName + optional line pick. Column without
+    /// line keeps today's first-match after the typeName filter
+    /// (<c>TypeDeclarationSyntax</c> only).
+    /// </summary>
+    public int? Column { get; init; }
+
+    /// <summary>
     /// Specific field/property names to include. If null or empty, uses instance fields
     /// and, when <see cref="IncludeProperties"/> is true, readable properties.
     /// When <see cref="IncludeInheritedMembers"/> is true, auto-collection and name

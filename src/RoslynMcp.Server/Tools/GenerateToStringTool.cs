@@ -32,7 +32,7 @@ public sealed class GenerateToStringTool : IToolHandler
     public string Name => "generate_tostring";
 
     /// <inheritdoc />
-    public string Description => "Generate a ToString() override for a C# type that formats its fields and properties. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick.";
+    public string Description => "Generate a ToString() override for a C# type that formats its fields and properties. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -60,6 +60,12 @@ public sealed class GenerateToStringTool : IToolHandler
             {
                 type = "integer",
                 description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                minimum = 1
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter.",
                 minimum = 1
             },
             fields = new
@@ -136,6 +142,7 @@ public sealed class GenerateToStringTool : IToolHandler
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
                 Line = args.Line,
+                Column = args.Column,
                 Fields = args.Fields,
                 IncludeProperties = args.IncludeProperties ?? true,
                 Format = args.Format,
@@ -173,6 +180,7 @@ public sealed class GenerateToStringTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public List<string>? Fields { get; init; }
         public bool? IncludeProperties { get; init; }
         public string? Format { get; init; }

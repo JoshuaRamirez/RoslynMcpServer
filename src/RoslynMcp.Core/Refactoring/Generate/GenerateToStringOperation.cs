@@ -13,8 +13,8 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
 /// Generates a ToString() override for a type.
-/// Honors optional <c>line</c> to disambiguate same-named types in one
-/// file (identifier preferred, then smallest containing type).
+/// Honors optional <c>line</c> / <c>column</c> to disambiguate same-named
+/// types in one file (identifier preferred, then smallest containing type).
 /// Omitted line keeps today's <c>TypeDeclarationSyntax</c>
 /// <c>FirstOrDefault</c> pick (enum and
 /// <c>DelegateDeclarationSyntax</c> do not participate).
@@ -63,6 +63,9 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
 
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
+
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
@@ -80,12 +83,12 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        // Optional line disambiguates same-named types. Omitted keeps
-        // today's TypeDeclarationSyntax FirstOrDefault pick (enum and
-        // DelegateDeclarationSyntax do not participate). Line set also
-        // includes a covering enum or delegate so it reaches
-        // InvalidSymbolKind instead of retargeting a later class.
-        var found = FindTypeDeclaration(root, @params.TypeName, @params.Line);
+        // Optional line/column disambiguates same-named types. Omitted
+        // column keeps today's TypeDeclarationSyntax FirstOrDefault
+        // pick (enum and DelegateDeclarationSyntax do not participate).
+        // Line set also includes a covering enum or delegate so it
+        // reaches InvalidSymbolKind instead of retargeting a later class.
+        var found = FindTypeDeclaration(root, @params.TypeName, @params.Line, @params.Column);
 
         if (found == null)
             throw new RefactoringException(ErrorCodes.TypeNotFound, $"Type '{@params.TypeName}' not found.");
@@ -372,36 +375,90 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
             .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
 
     /// <summary>
-    /// Finds a type by <paramref name="typeName"/>. Omitted <paramref name="line"/>
-    /// keeps today's <c>TypeDeclarationSyntax</c> <c>FirstOrDefault</c>
-    /// pick, including when several same-named types exist (nested vs outer
-    /// or two namespaces). Enums and delegates are not in that set, so
-    /// omitted line still picks a later same-named class rather than an
-    /// earlier enum or <c>DelegateDeclarationSyntax</c>. When set, picks the
-    /// type whose identifier or declaration span covers that 1-based line
-    /// (same exclusive-end coverage as
-    /// <c>ImplementAbstractOperation.SpanCoversLine</c> /
-    /// <c>GeneratePropertyOperation.SpanCoversLine</c>). Prefer the identifier
-    /// hit, then the smallest containing type. Nested types, enums, and
-    /// <c>DelegateDeclarationSyntax</c> participate when line is set so a
-    /// covering enum or delegate still reaches <c>InvalidSymbolKind</c>
-    /// rather than retargeting a later class. Do not require the declaration
-    /// to start on <paramref name="line"/> — a split declaration may put the
-    /// identifier on a continuation line. If nothing covers this line, keep
-    /// today's first-match rather than inventing a not-found. After
-    /// <see cref="RemoveExistingToStringOverridesAcrossPartialsAsync"/>, recover
-    /// the selected type from the per-execution syntax annotation — do not
-    /// reuse a pre-rewrite SpanStart or line.
+    /// Finds a type by <paramref name="typeName"/>. Omitted
+    /// <paramref name="column"/> keeps today's typeName + optional
+    /// <paramref name="line"/> pick, including omitted-line
+    /// <c>TypeDeclarationSyntax</c> <c>FirstOrDefault</c> (enum and
+    /// <c>DelegateDeclarationSyntax</c> do not participate) and
+    /// line-only exclusive-end coverage (<see cref="SpanCoversLine"/>).
+    /// Do not force column 1 when omitted. Do not change
+    /// omitted-line/omitted-column to <c>BaseTypeDeclarationSyntax</c>
+    /// FirstOrDefault. Do not add enums or delegates to the omitted-line
+    /// set. Column without line keeps today's first-match after the
+    /// typeName filter (<c>TypeDeclarationSyntax</c> only) rather than
+    /// substituting each candidate's own start line. When column is set
+    /// with line, picks the type whose identifier or declaration span
+    /// covers that 1-based column (same exclusive-end coverage as
+    /// <c>GenerateConstructorOperation.SpanCoversColumn</c> /
+    /// <c>ImplementAbstractOperation.SpanCoversColumn</c> /
+    /// <c>GenerateOverridesOperation.SpanCoversColumn</c>). Prefer the
+    /// identifier hit, then the smallest containing type. Nested types,
+    /// enums, and <c>DelegateDeclarationSyntax</c> participate when line
+    /// is set so a covering enum or delegate still reaches
+    /// <c>InvalidSymbolKind</c> rather than retargeting a later class. Do
+    /// not require the declaration to start on <paramref name="line"/>
+    /// when column is set — a split declaration may put the identifier on
+    /// a continuation line. If column is set with line and nothing covers
+    /// that position, return null (TypeNotFound) rather than falling back
+    /// to first-match. After
+    /// <see cref="RemoveExistingToStringOverridesAcrossPartialsAsync"/>,
+    /// recover the selected type from the per-execution syntax annotation
+    /// — do not reuse a pre-rewrite SpanStart or line.
     /// </summary>
     internal static MemberDeclarationSyntax? FindTypeDeclaration(
         SyntaxNode root,
         string typeName,
-        int? line)
+        int? line,
+        int? column = null)
     {
         var typeCandidates = root.DescendantNodes()
             .OfType<TypeDeclarationSyntax>()
             .Where(t => t.Identifier.Text == typeName)
             .ToList();
+
+        // Line set (including column+line) uses BaseTypeDeclarationSyntax
+        // (enum) plus DelegateDeclarationSyntax so a covering enum or
+        // delegate reaches InvalidSymbolKind rather than retargeting a
+        // later class. Omitted-line / column-without-line stay
+        // TypeDeclarationSyntax only — do not switch that set to
+        // BaseTypeDeclarationSyntax (that would add enums).
+        var lineCandidates = line.HasValue
+            ? root.DescendantNodes()
+                .OfType<BaseTypeDeclarationSyntax>()
+                .Where(t => t.Identifier.Text == typeName)
+                .Cast<MemberDeclarationSyntax>()
+                .Concat(root.DescendantNodes()
+                    .OfType<DelegateDeclarationSyntax>()
+                    .Where(d => d.Identifier.Text == typeName))
+                .ToList()
+            : typeCandidates.Cast<MemberDeclarationSyntax>().ToList();
+
+        // Column without line is not a source position: substituting each
+        // candidate's own start line would match every equally-aligned
+        // same-name type and could silently pick the shortest. Keep
+        // today's FirstOrDefault after the typeName filter
+        // (TypeDeclarationSyntax only).
+        if (column.HasValue && !line.HasValue)
+            return typeCandidates.FirstOrDefault();
+
+        if (column.HasValue)
+        {
+            // Do not require the declaration to start on `line` — a split
+            // type's identifier may live on a continuation line whose
+            // declaration span still covers that column. Prefer the
+            // identifier hit, then the smallest containing type (nested
+            // over outer). Include enum and delegate candidates so a
+            // covering enum or delegate still reaches InvalidSymbolKind.
+            // Do not silently pick the first when a covering node exists
+            // elsewhere — scan every candidate. If nothing covers this
+            // position, keep today's not-found (null) rather than
+            // inventing a first-match.
+            return lineCandidates
+                .Where(t => TypeCoversColumn(t, line!.Value, column.Value))
+                .OrderBy(t => IdentifierCoversColumn(t, line!.Value, column.Value) ? 0 : 1)
+                .ThenBy(t => t.Span.Length)
+                .FirstOrDefault();
+        }
 
         if (!line.HasValue)
             return typeCandidates.FirstOrDefault();
@@ -417,15 +474,6 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         // nothing covers this line, keep today's TypeDeclarationSyntax
         // first-match rather than inventing a not-found (enums and
         // delegates stay out of that omitted-line fallback).
-        var lineCandidates = root.DescendantNodes()
-            .OfType<BaseTypeDeclarationSyntax>()
-            .Where(t => t.Identifier.Text == typeName)
-            .Cast<MemberDeclarationSyntax>()
-            .Concat(root.DescendantNodes()
-                .OfType<DelegateDeclarationSyntax>()
-                .Where(d => d.Identifier.Text == typeName))
-            .ToList();
-
         if (lineCandidates.Count == 0)
             return null;
 
@@ -448,12 +496,49 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
             && SpanCoversLine(identifier.GetLocation().GetLineSpan(), line);
     }
 
+    private static bool TypeCoversColumn(MemberDeclarationSyntax type, int line, int column) =>
+        IdentifierCoversColumn(type, line, column) ||
+        SpanCoversColumn(type.GetLocation().GetLineSpan(), line, column);
+
+    private static bool IdentifierCoversColumn(MemberDeclarationSyntax type, int line, int column)
+    {
+        var identifier = GetTypeIdentifier(type);
+        return identifier != default
+            && SpanCoversColumn(identifier.GetLocation().GetLineSpan(), line, column);
+    }
+
     private static SyntaxToken GetTypeIdentifier(MemberDeclarationSyntax type) => type switch
     {
         BaseTypeDeclarationSyntax named => named.Identifier,
         DelegateDeclarationSyntax del => del.Identifier,
         _ => default
     };
+
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character of an adjacent type also
+    /// match the previous declaration. Same helper as
+    /// <c>GenerateConstructorOperation.SpanCoversColumn</c> /
+    /// <c>ImplementAbstractOperation.SpanCoversColumn</c> /
+    /// <c>GenerateOverridesOperation.SpanCoversColumn</c>.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == startLine && column < startCol)
+            return false;
+        if (line == endLine && column >= endCol)
+            return false;
+        return true;
+    }
 
     /// <summary>
     /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
