@@ -32,6 +32,8 @@ public class PushMembersDownToolTests
     {
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
+        Assert.Contains("line", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("FirstOrDefault", _tool.Description);
     }
 
     [Fact]
@@ -78,6 +80,7 @@ public class PushMembersDownToolTests
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
         Assert.True(properties.TryGetProperty("typeName", out _));
+        Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("members", out _));
         Assert.True(properties.TryGetProperty("targetDerivedTypes", out _));
         Assert.True(properties.TryGetProperty("leaveAbstract", out _));
@@ -88,6 +91,37 @@ public class PushMembersDownToolTests
         Assert.Contains("Item", membersDescription);
         Assert.Contains("this[]", membersDescription);
         Assert.Contains("this[int i]", membersDescription);
+    }
+
+    [Fact]
+    public void GetDefinition_HasOptionalLine()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+        var required = doc.RootElement.GetProperty("required");
+
+        var requiredFields = new List<string>();
+        foreach (var item in required.EnumerateArray())
+            requiredFields.Add(item.GetString()!);
+
+        Assert.True(properties.TryGetProperty("line", out var line));
+        Assert.Equal("integer", line.GetProperty("type").GetString());
+        Assert.Equal(1, line.GetProperty("minimum").GetInt32());
+        Assert.DoesNotContain("line", requiredFields);
+        Assert.DoesNotContain("column", requiredFields);
+        Assert.False(properties.TryGetProperty("column", out _));
+        var description = line.GetProperty("description").GetString();
+        Assert.Contains("1-based", description);
+        Assert.Contains("FirstOrDefault", description);
+    }
+
+    [Fact]
+    public void GetDefinition_Description_MentionsLine()
+    {
+        Assert.Contains("line", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("FirstOrDefault", _tool.Description);
     }
 
     [Fact]

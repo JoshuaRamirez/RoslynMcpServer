@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
@@ -11,7 +12,8 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Hierarchy;
 
 /// <summary>
-/// Operation-level tests for <see cref="PushMembersDownOperation"/>.
+/// Operation-level tests for <see cref="PushMembersDownOperation"/>, including optional
+/// <c>line</c>, <c>targetDerivedTypes</c>, <c>leaveAbstract</c>, and <c>members</c>.
 /// </summary>
 public class PushMembersDownOperationTests
 {
@@ -85,6 +87,522 @@ public class PushMembersDownOperationTests
             }));
 
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    #endregion
+
+    #region P0 optional line disambiguation
+
+    private const string NestedSameNameAnimalSource = """
+        namespace TestApp;
+
+        public /* outer-animal */ class Animal
+        {
+            public string Name { get; set; }
+
+            public class Dog : Animal
+            {
+            }
+
+            public /* nested-animal */ class Animal
+            {
+                public int Age { get; set; }
+
+                public class Puppy : Animal
+                {
+                }
+            }
+        }
+        """;
+
+    private const string EnumFirstThenSameNamedClassSource = """
+        namespace Other
+        {
+            public /* animal-enum */ enum Animal
+            {
+                Ready
+            }
+        }
+
+        namespace TestApp
+        {
+            public /* animal-class */ class Animal
+            {
+                public string Name { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+        }
+        """;
+
+    private const string DelegateFirstThenSameNamedClassSource = """
+        namespace Other
+        {
+            public /* animal-delegate */ delegate void Animal();
+        }
+
+        namespace TestApp
+        {
+            public /* animal-class */ class Animal
+            {
+                public string Name { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+        }
+        """;
+
+    private const string LaterSameNamedAnimalSource = """
+        namespace Other
+        {
+            public /* first-animal */ class Animal
+            {
+                public string Title { get; set; }
+            }
+
+            public class Horse : Animal
+            {
+            }
+        }
+
+        namespace TestApp
+        {
+            public /* later-animal */ class Animal
+            {
+                public string Name { get; set; }
+            }
+
+            public class Dog : Animal
+            {
+            }
+        }
+        """;
+
+    [Fact]
+    public void Line_DefaultsToNull()
+    {
+        var @params = new PushMembersDownParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Animal",
+            Members = ["Name"]
+        };
+
+        Assert.Null(@params.Line);
+    }
+
+    [Fact]
+    public void Validate_InvalidLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PushMembersDownOperation.Validate(new PushMembersDownParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Animal",
+                Members = ["Name"],
+                Line = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PushMembersDownOperation.Validate(new PushMembersDownParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Animal",
+                Members = ["Name"],
+                Line = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_OmittedLine_KeepsTypeNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameAnimalSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Name"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Animal");
+        Assert.Equal(2, types.Count);
+        Assert.Null(FindPropertyOnNthType(updated, "Animal", 0, "Name"));
+        Assert.NotNull(FindPropertyOnNthType(updated, "Animal", 1, "Age"));
+        Assert.NotNull(FindProperty(updated, "Dog", "Name"));
+        Assert.Null(FindProperty(updated, "Puppy", "Age"));
+        Assert.Null(FindProperty(updated, "Puppy", "Name"));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameAnimalSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Age"],
+            Line = FindLine(NestedSameNameAnimalSource, "nested-animal")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Animal");
+        Assert.Equal(2, types.Count);
+        Assert.NotNull(FindPropertyOnNthType(updated, "Animal", 0, "Name"));
+        Assert.Null(FindPropertyOnNthType(updated, "Animal", 1, "Age"));
+        Assert.Null(FindProperty(updated, "Dog", "Name"));
+        Assert.NotNull(FindProperty(updated, "Puppy", "Age"));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LineOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameAnimalSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Name"],
+            Line = FindLine(NestedSameNameAnimalSource, "outer-animal")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Animal");
+        Assert.Equal(2, types.Count);
+        Assert.Null(FindPropertyOnNthType(updated, "Animal", 0, "Name"));
+        Assert.NotNull(FindPropertyOnNthType(updated, "Animal", 1, "Age"));
+        Assert.NotNull(FindProperty(updated, "Dog", "Name"));
+        Assert.Null(FindProperty(updated, "Puppy", "Age"));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LineOnEnumIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Name"],
+                Line = FindLine(EnumFirstThenSameNamedClassSource, "animal-enum")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("Name", ExtractTypeBody(updated, "Dog"));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_LineOnDelegateIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DelegateFirstThenSameNamedClassSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Name"],
+                Line = FindLine(DelegateFirstThenSameNamedClassSource, "animal-delegate")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("Name", ExtractTypeBody(updated, "Dog"));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_SequentialPushes_ReusedWorkspace_ActsOnSecondSelectedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LaterSameNamedAnimalSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var first = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Title"],
+            Line = FindLine(LaterSameNamedAnimalSource, "first-animal")
+        });
+        Assert.True(first.Success);
+
+        var afterFirst = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var second = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Name"],
+            Line = FindLine(afterFirst, "later-animal")
+        });
+        Assert.True(second.Success);
+
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Animal");
+        Assert.Equal(2, types.Count);
+        Assert.Null(FindPropertyOnNthType(updated, "Animal", 0, "Title"));
+        Assert.Null(FindPropertyOnNthType(updated, "Animal", 1, "Name"));
+        Assert.NotNull(FindProperty(updated, "Horse", "Title"));
+        Assert.NotNull(FindProperty(updated, "Dog", "Name"));
+        Assert.Null(FindProperty(updated, "Horse", "Name"));
+        Assert.Null(FindProperty(updated, "Dog", "Title"));
+        Assert.Null(FindPropertyOnNthType(updated, "Animal", 0, "Name"));
+        Assert.Null(FindPropertyOnNthType(updated, "Animal", 1, "Title"));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_Line_Preview_WritesNothing_AndDescribesRewrite()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameAnimalSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Age"],
+            Line = FindLine(NestedSameNameAnimalSource, "nested-animal"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("Age", StringComparison.Ordinal)
+            && c.Description.Contains("Puppy", StringComparison.Ordinal));
+        Assert.Contains(result.PendingChanges, c =>
+            c.AfterSnippet != null && c.AfterSnippet.Contains("Age", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.PendingChanges, c =>
+            c.Description.Contains("Name", StringComparison.Ordinal)
+            && c.Description.Contains("Dog", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameAnimalSource).GetRoot();
+        var found = PushMembersDownOperation.FindTypeDeclaration(root, "Animal", line: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameAnimalSource).GetRoot();
+        var found = PushMembersDownOperation.FindTypeDeclaration(
+            root, "Animal", FindLine(NestedSameNameAnimalSource, "nested-animal"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Animal");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameAnimalSource).GetRoot();
+        var found = PushMembersDownOperation.FindTypeDeclaration(
+            root, "Animal", FindLine(NestedSameNameAnimalSource, "outer-animal"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Animal // split-animal
+            {
+                public string Name { get; set; }
+
+                public class Animal // nested-animal
+                {
+                    public int Age { get; set; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-animal");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = PushMembersDownOperation.FindTypeDeclaration(root, "Animal", identifierLine);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineMiss_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameAnimalSource).GetRoot();
+        var found = PushMembersDownOperation.FindTypeDeclaration(root, "Animal", line: 1);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_EnumFirstPicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = PushMembersDownOperation.FindTypeDeclaration(root, "Animal", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_StructFirstPicksStruct()
+    {
+        const string source = """
+            namespace Other
+            {
+                public struct Animal
+                {
+                    public int Id;
+                }
+            }
+
+            namespace TestApp
+            {
+                public class Animal
+                {
+                    public string Name { get; set; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var found = PushMembersDownOperation.FindTypeDeclaration(root, "Animal", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<StructDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnEnumIdentifier_PicksEnum()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = PushMembersDownOperation.FindTypeDeclaration(
+            root, "Animal", FindLine(EnumFirstThenSameNamedClassSource, "animal-enum"));
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnClassIdentifier_PicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = PushMembersDownOperation.FindTypeDeclaration(
+            root, "Animal", FindLine(EnumFirstThenSameNamedClassSource, "animal-class"));
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_DelegateFirstPicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateFirstThenSameNamedClassSource).GetRoot();
+        var found = PushMembersDownOperation.FindTypeDeclaration(root, "Animal", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnDelegateIdentifier_PicksDelegate()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateFirstThenSameNamedClassSource).GetRoot();
+        var found = PushMembersDownOperation.FindTypeDeclaration(
+            root, "Animal", FindLine(DelegateFirstThenSameNamedClassSource, "animal-delegate"));
+
+        Assert.NotNull(found);
+        Assert.IsType<DelegateDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void SpanCoversLine_TreatsEndAsExclusive()
+    {
+        var span = new FileLinePositionSpan(
+            "t.cs",
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
+
+        Assert.True(PushMembersDownOperation.SpanCoversLine(span, 1));
+        Assert.True(PushMembersDownOperation.SpanCoversLine(span, 2));
+        Assert.False(PushMembersDownOperation.SpanCoversLine(span, 3));
+        Assert.False(PushMembersDownOperation.SpanCoversLine(span, 0));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_OmittedLine_EnumFirstThenSameNamedClass_PushesFromClass()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Name"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Animal");
+        Assert.Single(types);
+        Assert.Null(FindPropertyOnNthType(updated, "Animal", 0, "Name"));
+        Assert.NotNull(FindProperty(updated, "Dog", "Name"));
+        Assert.Contains("enum Animal", updated, StringComparison.Ordinal);
     }
 
     #endregion
@@ -2793,6 +3311,43 @@ public class PushMembersDownOperationTests
             .FirstOrDefault(t => t.Identifier.Text == typeName);
         Assert.True(type != null, $"Generated source did not contain type '{typeName}':\n{source}");
         return type!;
+    }
+
+    private static IReadOnlyList<TypeDeclarationSyntax> GetTypes(string source, string name) =>
+        CSharpSyntaxTree.ParseText(source).GetRoot()
+            .DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == name)
+            .ToList();
+
+    private static PropertyDeclarationSyntax? FindPropertyOnNthType(
+        string source,
+        string typeName,
+        int index,
+        string propertyName)
+    {
+        var types = GetTypes(source, typeName);
+        Assert.True(index < types.Count, $"Expected at least {index + 1} type(s) named '{typeName}'.");
+        return types[index].Members.OfType<PropertyDeclarationSyntax>()
+            .FirstOrDefault(p => p.Identifier.Text == propertyName);
+    }
+
+    private static int FindLine(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
     }
 
     private static IReadOnlyList<IndexerDeclarationSyntax> FindIndexers(string source, string typeName) =>

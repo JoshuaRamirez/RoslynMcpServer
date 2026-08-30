@@ -188,6 +188,32 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_PushMembersDown_ShowsLine()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("push-members-down")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("push-members-down", help);
+        Assert.Contains("--line", help);
+        Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("FirstOrDefault", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+        Assert.DoesNotContain("--line", requiredSection);
+        Assert.Contains("--line", optionalSection);
+        Assert.Contains("--target-derived-types", optionalSection);
+        Assert.Contains("--leave-abstract", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_GenerateEqualsHashCode_ShowsImplementIEquatable()
     {
         var registry = ToolRegistry.BuildDefault();

@@ -16,6 +16,15 @@ public sealed class PushMembersDownParams
     public required string TypeName { get; init; }
 
     /// <summary>
+    /// 1-based line number for disambiguation when several types share
+    /// <see cref="TypeName"/>. When set, selects the type whose identifier
+    /// or declaration span covers that line (identifier preferred, then
+    /// smallest containing type). Omitted keeps today's typeName
+    /// <c>FirstOrDefault</c> pick on <c>TypeDeclarationSyntax</c>.
+    /// </summary>
+    public int? Line { get; init; }
+
+    /// <summary>
     /// Names of members to push down. At least one is required. Indexers match
     /// metadata name (<c>Item</c>), Roslyn name (<c>this[]</c>), and
     /// conventional display (<c>this[int i]</c>).

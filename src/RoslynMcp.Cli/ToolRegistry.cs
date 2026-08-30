@@ -161,7 +161,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<PullMembersUpOperation, PullMembersUpParams>(
             "pull-members-up", "Move selected members from a derived type onto an existing base class or interface; line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick");
         r.RegisterRefactoring<PushMembersDownOperation, PushMembersDownParams>(
-            "push-members-down", "Move selected members from a base type down onto derived types");
+            "push-members-down", "Move selected members from a base type down onto derived types; line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick");
         r.RegisterRefactoring<UseBaseTypeOperation, UseBaseTypeParams>(
             "use-base-type", "Replace derived-type references with a compatible base type or interface");
         r.RegisterRefactoring<IntroduceFieldOperation, IntroduceFieldParams>(
