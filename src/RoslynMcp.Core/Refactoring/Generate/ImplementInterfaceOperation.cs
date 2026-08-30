@@ -15,9 +15,9 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
 /// Generates interface member implementations for a type.
-/// Honors optional <c>line</c> to disambiguate same-named types in one
-/// file (identifier preferred, then smallest containing type). Honors
-/// <c>replaceExisting</c> to include already-implemented interface
+/// Honors optional <c>line</c> / <c>column</c> to disambiguate same-named
+/// types in one file (identifier preferred, then smallest containing type).
+/// Honors <c>replaceExisting</c> to include already-implemented interface
 /// members, remove those declarations (including across partials) by
 /// signature, and insert a standard generated stub. Property/event accessors
 /// are never emitted as ordinary methods. Extra modifiers on the old
@@ -59,6 +59,9 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
 
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
+
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
@@ -78,8 +81,8 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         }
 
-        // Find the type declaration (optional line disambiguates same-named types)
-        var typeDeclaration = FindTypeDeclaration(root, @params.TypeName, @params.Line);
+        // Find the type declaration (optional line/column disambiguates same-named types)
+        var typeDeclaration = FindTypeDeclaration(root, @params.TypeName, @params.Line, @params.Column);
 
         if (typeDeclaration == null)
         {
@@ -922,25 +925,31 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
     }
 
     /// <summary>
-    /// Finds a type by <paramref name="typeName"/>. Omitted <paramref name="line"/>
-    /// keeps today's <c>FirstOrDefault</c> pick, including when several
-    /// same-named types exist (nested vs outer, or two namespaces). When set,
-    /// picks the type whose identifier or declaration span covers that 1-based
-    /// line (same exclusive-end coverage as
-    /// <c>GenerateOverridesOperation.SpanCoversLine</c>). Prefer the identifier
-    /// hit, then the smallest containing type. Nested types participate
-    /// (<c>DescendantNodes</c>). Do not require the declaration to start on
-    /// <paramref name="line"/> — a split declaration may put the identifier
-    /// on a continuation line. If nothing covers this line, keep today's
-    /// first-match rather than inventing a not-found. After
+    /// Finds a type by <paramref name="typeName"/>. Omitted
+    /// <paramref name="column"/> keeps today's typeName + optional
+    /// <paramref name="line"/> pick, including omitted-line
+    /// <c>FirstOrDefault</c> and line-only exclusive-end coverage
+    /// (<see cref="SpanCoversLine"/>). Do not force column 1 when omitted.
+    /// Column without line keeps today's first-match after the typeName
+    /// filter rather than substituting each candidate's own start line.
+    /// When column is set with line, picks the type whose identifier or
+    /// declaration span covers that 1-based column (same exclusive-end
+    /// coverage as <c>GenerateOverridesOperation.SpanCoversColumn</c>). Prefer
+    /// the identifier hit, then the smallest containing type. Nested types
+    /// participate (<c>DescendantNodes</c>). Do not require the declaration
+    /// to start on <paramref name="line"/> when column is set — a split
+    /// declaration may put the identifier on a continuation line. If column
+    /// is set with line and nothing covers that position, return null
+    /// (TypeNotFound) rather than falling back to first-match. After
     /// <see cref="RemoveExistingImplementationsAcrossPartialsAsync"/>, recover
-    /// the selected type from the per-execution syntax annotation — do not
-    /// reuse a pre-rewrite SpanStart or line.
+    /// the selected type from a per-execution annotation — do not reuse a
+    /// pre-rewrite SpanStart or line.
     /// </summary>
     internal static TypeDeclarationSyntax? FindTypeDeclaration(
         SyntaxNode root,
         string typeName,
-        int? line)
+        int? line,
+        int? column = null)
     {
         var candidates = root.DescendantNodes()
             .OfType<TypeDeclarationSyntax>()
@@ -949,6 +958,30 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
 
         if (candidates.Count == 0)
             return null;
+
+        // Column without line is not a source position: substituting each
+        // candidate's own start line would match every equally-aligned
+        // same-name type and could silently pick the shortest. Keep
+        // today's FirstOrDefault after the typeName filter.
+        if (column.HasValue && !line.HasValue)
+            return candidates.FirstOrDefault();
+
+        if (column.HasValue)
+        {
+            // Do not require the declaration to start on `line` — a split
+            // type's identifier may live on a continuation line whose
+            // declaration span still covers that column. Prefer the
+            // identifier hit, then the smallest containing type (nested
+            // over outer). Do not silently pick the first when a covering
+            // node exists elsewhere — scan every candidate. If nothing
+            // covers this position, keep today's not-found (null) rather
+            // than inventing a first-match.
+            return candidates
+                .Where(t => TypeCoversColumn(t, line!.Value, column.Value))
+                .OrderBy(t => IdentifierCoversColumn(t, line!.Value, column.Value) ? 0 : 1)
+                .ThenBy(t => t.Span.Length)
+                .FirstOrDefault();
+        }
 
         if (!line.HasValue)
             return candidates.FirstOrDefault();
@@ -974,6 +1007,37 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
 
     private static bool IdentifierCoversLine(TypeDeclarationSyntax type, int line) =>
         SpanCoversLine(type.Identifier.GetLocation().GetLineSpan(), line);
+
+    private static bool TypeCoversColumn(TypeDeclarationSyntax type, int line, int column) =>
+        IdentifierCoversColumn(type, line, column) ||
+        SpanCoversColumn(type.GetLocation().GetLineSpan(), line, column);
+
+    private static bool IdentifierCoversColumn(TypeDeclarationSyntax type, int line, int column) =>
+        SpanCoversColumn(type.Identifier.GetLocation().GetLineSpan(), line, column);
+
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character of an adjacent type also
+    /// match the previous declaration. Same helper as
+    /// <c>GenerateOverridesOperation.SpanCoversColumn</c>.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == startLine && column < startCol)
+            return false;
+        if (line == endLine && column >= endCol)
+            return false;
+        return true;
+    }
 
     /// <summary>
     /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
