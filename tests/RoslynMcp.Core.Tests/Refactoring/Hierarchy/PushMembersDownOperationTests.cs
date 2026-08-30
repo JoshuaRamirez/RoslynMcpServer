@@ -100,18 +100,18 @@ public class PushMembersDownOperationTests
         {
             public string Name { get; set; }
 
-            public class Dog : Animal
-            {
-            }
-
             public /* nested-animal */ class Animal
             {
                 public int Age { get; set; }
-
-                public class Puppy : Animal
-                {
-                }
             }
+        }
+
+        public class Dog : Animal
+        {
+        }
+
+        public class Puppy : Animal.Animal
+        {
         }
         """;
 
