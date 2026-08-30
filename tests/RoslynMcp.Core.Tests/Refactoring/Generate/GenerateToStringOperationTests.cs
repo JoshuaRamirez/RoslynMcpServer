@@ -1178,16 +1178,19 @@ public class GenerateToStringOperationTests
         Assert.Equal(2, types.Count);
         Assert.True(TypeHasMethod(types[0], "ToString"));
         Assert.True(TypeHasMethod(types[1], "ToString"));
-        var outer = ExtractToStringMethod(NormalizeNewlines(types[0].ToFullString()));
-        var nested = ExtractToStringMethod(NormalizeNewlines(types[1].ToFullString()));
+        // Own members only — types[0].ToFullString() also contains the nested
+        // type's ToString, so ExtractToStringMethod on the outer dump would
+        // see {Age} from the child.
+        var outer = ExtractOwnToString(types[0]);
+        var nested = ExtractOwnToString(types[1]);
         Assert.Contains("{Name}", outer);
         Assert.DoesNotContain("{Age}", outer);
         Assert.Contains("{Age}", nested);
         Assert.DoesNotContain("{Name}", nested);
-        Assert.DoesNotContain("old-outer", types[0].ToFullString(), StringComparison.Ordinal);
-        Assert.DoesNotContain("old-nested", types[1].ToFullString(), StringComparison.Ordinal);
-        Assert.Equal(1, CountOccurrences(NormalizeNewlines(types[0].ToFullString()), "public override string ToString()"));
-        Assert.Equal(1, CountOccurrences(NormalizeNewlines(types[1].ToFullString()), "public override string ToString()"));
+        Assert.DoesNotContain("old-outer", outer, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-nested", nested, StringComparison.Ordinal);
+        Assert.Single(types[0].Members.OfType<MethodDeclarationSyntax>(), m => m.Identifier.Text == "ToString");
+        Assert.Single(types[1].Members.OfType<MethodDeclarationSyntax>(), m => m.Identifier.Text == "ToString");
     }
 
     #endregion
@@ -3005,6 +3008,13 @@ public class GenerateToStringOperationTests
         var start = text.IndexOf("public override string ToString()", StringComparison.Ordinal);
         Assert.True(start >= 0, $"Generated source did not contain ToString:\n{text}");
         return text[start..];
+    }
+
+    private static string ExtractOwnToString(TypeDeclarationSyntax type)
+    {
+        var method = type.Members.OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.Text == "ToString");
+        return NormalizeNewlines(method.ToFullString());
     }
 
     private static void AssertCompiles(string source)
