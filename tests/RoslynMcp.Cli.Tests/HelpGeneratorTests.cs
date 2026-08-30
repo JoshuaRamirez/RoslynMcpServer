@@ -146,6 +146,19 @@ public class HelpGeneratorTests
         var help = HelpGenerator.GenerateToolHelp(tool);
 
         Assert.Contains("--separate-file", help);
+        Assert.Contains("--line", help);
+        Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("FirstOrDefault", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+        Assert.DoesNotContain("--line", requiredSection);
+        Assert.Contains("--line", optionalSection);
     }
 
     [Fact]

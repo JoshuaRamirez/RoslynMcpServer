@@ -3,6 +3,7 @@ using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -17,6 +18,17 @@ namespace RoslynMcp.Core.Refactoring.Extract;
 
 /// <summary>
 /// Extracts members to a new base class.
+/// Honors optional <c>line</c> to disambiguate same-named types in one
+/// file (identifier preferred, then smallest containing type).
+/// Omitted line keeps today's <c>ClassDeclarationSyntax</c>
+/// <c>FirstOrDefault</c> pick (enum, struct, interface, and
+/// <c>DelegateDeclarationSyntax</c> do not participate).
+/// When line is set, a covering enum, struct, interface, or delegate is
+/// included so it reaches <c>InvalidSymbolKind</c> rather than retargeting
+/// a later class.
+/// After the extract (and when adding <c>: BaseClassName</c> to the
+/// derived type), the selected declaration is recovered by a
+/// per-execution syntax annotation (stripped before commit).
 /// </summary>
 public sealed class ExtractBaseClassOperation : RefactoringOperationBase<ExtractBaseClassParams>
 {
@@ -28,7 +40,13 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(ExtractBaseClassParams @params)
+    protected override void ValidateParams(ExtractBaseClassParams @params) => Validate(@params);
+
+    /// <summary>
+    /// Validates extract-base-class parameters. Internal so tests can exercise
+    /// input rules without loading a workspace.
+    /// </summary>
+    internal static void Validate(ExtractBaseClassParams @params)
     {
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
@@ -47,6 +65,9 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+
+        if (@params.Line.HasValue && @params.Line.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -79,12 +100,15 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         }
 
-        // Find the type declaration
-        var typeDeclaration = root.DescendantNodes()
-            .OfType<ClassDeclarationSyntax>()
-            .FirstOrDefault(t => t.Identifier.Text == @params.TypeName);
+        // Optional line disambiguates same-named types. Omitted keeps
+        // today's ClassDeclarationSyntax FirstOrDefault pick (enum,
+        // struct, interface, and DelegateDeclarationSyntax do not
+        // participate). Line set also includes a covering enum, struct,
+        // interface, or delegate so it reaches InvalidSymbolKind instead
+        // of retargeting a later class.
+        var found = FindTypeDeclaration(root, @params.TypeName, @params.Line);
 
-        if (typeDeclaration == null)
+        if (found == null)
         {
             throw new RefactoringException(
                 ErrorCodes.TypeNotFound,
@@ -92,10 +116,17 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         }
 
         // Get the type symbol
-        var typeSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
+        var typeSymbol = semanticModel.GetDeclaredSymbol(found, cancellationToken) as INamedTypeSymbol;
         if (typeSymbol == null)
         {
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve type symbol.");
+        }
+
+        if (found is not ClassDeclarationSyntax typeDeclaration)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolKind,
+                $"Type '{typeSymbol.Name}' is not a supported target for extract_base_class.");
         }
 
         // Check if type already has a base class other than Object
@@ -172,6 +203,35 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 updatedProjectText != null ? projectPath : null);
         }
 
+        // Fresh instance per execution. A static annotation is shared
+        // across operations; after CommitChanges the in-memory solution
+        // can still carry it, so a later extract on another type would
+        // recover the stale node via FirstOrDefault.
+        // Annotate before the rewrite. Same-file extract inserts the
+        // base class before the selected type and then rematches the
+        // derived type to add : BaseClassName — both shift later
+        // same-named types. Do not re-find with stale SpanStart or
+        // line. Today's rematch First by typeName is not enough.
+        var targetTypeAnnotation = new SyntaxAnnotation("extract-base-class-target-type");
+        var previousTree = root.SyntaxTree;
+        root = root.ReplaceNode(
+            typeDeclaration,
+            typeDeclaration.WithAdditionalAnnotations(targetTypeAnnotation));
+        document = document.WithSyntaxRoot(root);
+        var annotatedSolution = document.Project.Solution;
+        // If GetDocument(oldTree) misses after the annotation rewrite,
+        // look up by file path and rematch by span (same as
+        // implement_abstract #226).
+        document = annotatedSolution.GetDocument(previousTree)
+            ?? GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName);
+        root = await document.GetSyntaxRootAsync(cancellationToken)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+        typeDeclaration = RecoverAnnotatedClass(
+            root,
+            targetTypeAnnotation,
+            typeDeclaration,
+            @params.TypeName);
+
         // Apply changes
         Solution newSolution;
         if (targetFile != @params.SourceFile)
@@ -196,59 +256,66 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 baseClass);
         }
 
-        // Update derived class: remove extracted members and add base class
-        var updatedDoc = newSolution.GetDocument(document.Id);
-        if (updatedDoc != null)
+        // Update derived class: remove extracted members and add base class.
+        // Recover the selected declaration from the per-execution
+        // annotation. Do not rematch First by typeName — that attaches
+        // to an earlier same-named type after the rewrite. After insert,
+        // spans have shifted, so do not rematch by SpanStart.
+        var updatedDoc = newSolution.GetDocument(document.Id)
+            ?? GetDocumentForTree(newSolution, root.SyntaxTree, @params.TypeName);
+        var updatedRoot = await updatedDoc.GetSyntaxRootAsync(cancellationToken)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+        var updatedTypeDecl = updatedRoot.GetAnnotatedNodes(targetTypeAnnotation)
+            .OfType<ClassDeclarationSyntax>()
+            .FirstOrDefault()
+            ?? throw new RefactoringException(
+                ErrorCodes.TypeNotFound,
+                $"Class '{@params.TypeName}' not found in file.");
+
+        // Add base class to type
+        var baseType = SyntaxFactory.SimpleBaseType(SyntaxFactory.ParseTypeName(@params.BaseClassName));
+
+        ClassDeclarationSyntax newTypeDecl;
+        if (updatedTypeDecl.BaseList == null)
         {
-            var updatedRoot = await updatedDoc.GetSyntaxRootAsync(cancellationToken);
-            if (updatedRoot != null)
-            {
-                var updatedTypeDecl = updatedRoot.DescendantNodes()
-                    .OfType<ClassDeclarationSyntax>()
-                    .First(t => t.Identifier.Text == @params.TypeName);
-
-                // Add base class to type
-                var baseType = SyntaxFactory.SimpleBaseType(SyntaxFactory.ParseTypeName(@params.BaseClassName));
-
-                ClassDeclarationSyntax newTypeDecl;
-                if (updatedTypeDecl.BaseList == null)
-                {
-                    newTypeDecl = updatedTypeDecl.WithBaseList(
-                        SyntaxFactory.BaseList(SyntaxFactory.SingletonSeparatedList<BaseTypeSyntax>(baseType)));
-                }
-                else
-                {
-                    // Insert base class before interfaces
-                    var newBaseList = SyntaxFactory.BaseList(
-                        SyntaxFactory.SeparatedList(
-                            new[] { baseType }.Concat(updatedTypeDecl.BaseList.Types)));
-                    newTypeDecl = updatedTypeDecl.WithBaseList(newBaseList);
-                }
-
-                // Remove extracted members from derived class. Multi-variable
-                // event fields drop only the selected declarators. Indexers
-                // match by parameter-list signature so Item / this[] /
-                // this[int i] all drop the selected indexer only.
-                var memberNames = @params.Members.ToHashSet();
-                foreach (var extracted in membersToExtract)
-                {
-                    if (extracted is IndexerDeclarationSyntax indexer)
-                        memberNames.Add(GetIndexerRemovalKey(indexer));
-                }
-
-                var newMembers = RebuildDerivedMembers(
-                    newTypeDecl.Members,
-                    memberNames,
-                    @params.MakeAbstract,
-                    extractedSymbols,
-                    typeSymbol);
-
-                newTypeDecl = newTypeDecl.WithMembers(SyntaxFactory.List(newMembers));
-
-                updatedRoot = updatedRoot.ReplaceNode(updatedTypeDecl, newTypeDecl);
-                newSolution = updatedDoc.WithSyntaxRoot(updatedRoot).Project.Solution;
-            }
+            newTypeDecl = updatedTypeDecl.WithBaseList(
+                SyntaxFactory.BaseList(SyntaxFactory.SingletonSeparatedList<BaseTypeSyntax>(baseType)));
         }
+        else
+        {
+            // Insert base class before interfaces
+            var newBaseList = SyntaxFactory.BaseList(
+                SyntaxFactory.SeparatedList(
+                    new[] { baseType }.Concat(updatedTypeDecl.BaseList.Types)));
+            newTypeDecl = updatedTypeDecl.WithBaseList(newBaseList);
+        }
+
+        // Remove extracted members from derived class. Multi-variable
+        // event fields drop only the selected declarators. Indexers
+        // match by parameter-list signature so Item / this[] /
+        // this[int i] all drop the selected indexer only.
+        var memberNames = @params.Members.ToHashSet();
+        foreach (var extracted in membersToExtract)
+        {
+            if (extracted is IndexerDeclarationSyntax indexer)
+                memberNames.Add(GetIndexerRemovalKey(indexer));
+        }
+
+        var newMembers = RebuildDerivedMembers(
+            newTypeDecl.Members,
+            memberNames,
+            @params.MakeAbstract,
+            extractedSymbols,
+            typeSymbol);
+
+        newTypeDecl = newTypeDecl.WithMembers(SyntaxFactory.List(newMembers));
+
+        // Strip the per-execution annotation so it does not linger in the
+        // workspace after commit.
+        newTypeDecl = (ClassDeclarationSyntax)newTypeDecl.WithoutAnnotations(targetTypeAnnotation);
+
+        updatedRoot = updatedRoot.ReplaceNode(updatedTypeDecl, newTypeDecl);
+        newSolution = updatedDoc.WithSyntaxRoot(updatedRoot).Project.Solution;
 
         // Commit changes
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
@@ -1005,4 +1072,153 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         if (!char.IsLetter(name[0]) && name[0] != '_') return false;
         return name.All(c => char.IsLetterOrDigit(c) || c == '_');
     }
+
+    /// <summary>
+    /// Finds a type by <paramref name="typeName"/>. Omitted <paramref name="line"/>
+    /// keeps today's <c>ClassDeclarationSyntax</c> <c>FirstOrDefault</c>
+    /// pick, including when several same-named classes exist (nested vs outer
+    /// or two namespaces). Enums, structs, interfaces, and delegates are not
+    /// in that set, so omitted line still picks a later same-named class
+    /// rather than an earlier enum or <c>DelegateDeclarationSyntax</c>. When
+    /// set, picks the type whose identifier or declaration span covers that
+    /// 1-based line (same exclusive-end coverage as
+    /// <c>ExtractInterfaceOperation.SpanCoversLine</c> /
+    /// <c>ImplementAbstractOperation.SpanCoversLine</c>). Prefer the identifier
+    /// hit, then the smallest containing type. Nested types, enums, structs,
+    /// interfaces, and <c>DelegateDeclarationSyntax</c> participate when line
+    /// is set so a covering enum or delegate still reaches
+    /// <c>InvalidSymbolKind</c> rather than retargeting a later class. Do not
+    /// require the declaration to start on <paramref name="line"/> — a split
+    /// declaration may put the identifier on a continuation line. If nothing
+    /// covers this line, keep today's first-match rather than inventing a
+    /// not-found. After the extract and when adding <c>: BaseClassName</c>,
+    /// recover the selected type from the per-execution syntax annotation —
+    /// do not reuse a pre-rewrite SpanStart or line.
+    /// </summary>
+    internal static MemberDeclarationSyntax? FindTypeDeclaration(
+        SyntaxNode root,
+        string typeName,
+        int? line)
+    {
+        var classCandidates = root.DescendantNodes()
+            .OfType<ClassDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == typeName)
+            .ToList();
+
+        if (!line.HasValue)
+            return classCandidates.FirstOrDefault();
+
+        // Line set: include BaseTypeDeclarationSyntax (enum/struct/interface)
+        // and DelegateDeclarationSyntax in the covering-line set. Do not
+        // require the declaration to start on `line` — a split type's
+        // identifier may live on a continuation line whose declaration
+        // span still covers that line. Prefer the identifier hit, then
+        // the smallest containing type (nested over outer). Include enum
+        // and delegate candidates. Do not silently pick the first when a
+        // covering node exists elsewhere — scan every candidate. If
+        // nothing covers this line, keep today's ClassDeclarationSyntax
+        // first-match rather than inventing a not-found (enums, structs,
+        // interfaces, and delegates stay out of that omitted-line fallback).
+        var lineCandidates = root.DescendantNodes()
+            .OfType<BaseTypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == typeName)
+            .Cast<MemberDeclarationSyntax>()
+            .Concat(root.DescendantNodes()
+                .OfType<DelegateDeclarationSyntax>()
+                .Where(d => d.Identifier.Text == typeName))
+            .ToList();
+
+        if (lineCandidates.Count == 0)
+            return null;
+
+        return lineCandidates
+            .Where(t => TypeCoversLine(t, line.Value))
+            .OrderBy(t => IdentifierCoversLine(t, line.Value) ? 0 : 1)
+            .ThenBy(t => t.Span.Length)
+            .FirstOrDefault()
+            ?? classCandidates.FirstOrDefault();
+    }
+
+    private static bool TypeCoversLine(MemberDeclarationSyntax type, int line) =>
+        IdentifierCoversLine(type, line) ||
+        SpanCoversLine(type.GetLocation().GetLineSpan(), line);
+
+    private static bool IdentifierCoversLine(MemberDeclarationSyntax type, int line)
+    {
+        var identifier = GetTypeIdentifier(type);
+        return identifier != default
+            && SpanCoversLine(identifier.GetLocation().GetLineSpan(), line);
+    }
+
+    private static SyntaxToken GetTypeIdentifier(MemberDeclarationSyntax type) => type switch
+    {
+        BaseTypeDeclarationSyntax named => named.Identifier,
+        DelegateDeclarationSyntax del => del.Identifier,
+        _ => default
+    };
+
+    /// <summary>
+    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so a span that ends at the start of a line does not
+    /// cover that line. Treating the end as inclusive would let the first
+    /// line of an adjacent type also match the previous declaration. Same
+    /// exclusive-end idea as <c>ExtractInterfaceOperation.SpanCoversLine</c>.
+    /// </summary>
+    internal static bool SpanCoversLine(FileLinePositionSpan span, int line)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == endLine && span.EndLinePosition.Character == 0)
+            return false;
+        return true;
+    }
+
+    private static ClassDeclarationSyntax RecoverAnnotatedClass(
+        SyntaxNode root,
+        SyntaxAnnotation targetTypeAnnotation,
+        ClassDeclarationSyntax original,
+        string typeName)
+    {
+        var annotated = root.GetAnnotatedNodes(targetTypeAnnotation)
+            .OfType<ClassDeclarationSyntax>()
+            .FirstOrDefault();
+        if (annotated != null)
+            return annotated;
+
+        return RematchTypeDeclaration(root, original)
+            ?? throw new RefactoringException(
+                ErrorCodes.TypeNotFound,
+                $"Class '{typeName}' not found in file.");
+    }
+
+    private static Document GetDocumentForTree(Solution solution, SyntaxTree tree, string typeName)
+    {
+        var document = solution.GetDocument(tree);
+        if (document != null)
+            return document;
+
+        if (!string.IsNullOrEmpty(tree.FilePath))
+        {
+            foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
+            {
+                document = solution.GetDocument(id);
+                if (document != null)
+                    return document;
+            }
+        }
+
+        throw new RefactoringException(
+            ErrorCodes.DocumentNotEditable,
+            $"Could not locate a declaring document for type '{typeName}'.");
+    }
+
+    private static ClassDeclarationSyntax? RematchTypeDeclaration(
+        SyntaxNode root,
+        ClassDeclarationSyntax original) =>
+        root.DescendantNodes()
+            .OfType<ClassDeclarationSyntax>()
+            .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
 }

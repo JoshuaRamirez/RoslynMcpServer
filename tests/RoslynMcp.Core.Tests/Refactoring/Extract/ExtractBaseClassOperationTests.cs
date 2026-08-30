@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -12,7 +13,8 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Extract;
 
 /// <summary>
-/// Operation-level tests for <see cref="ExtractBaseClassOperation"/>, including <c>separateFile</c>.
+/// Operation-level tests for <see cref="ExtractBaseClassOperation"/>, including optional
+/// <c>line</c>, <c>separateFile</c>, <c>targetFile</c>, and <c>makeAbstract</c>.
 /// </summary>
 public class ExtractBaseClassOperationTests
 {
@@ -28,6 +30,514 @@ public class ExtractBaseClassOperationTests
             public void Work() { }
         }
         """;
+
+    #region P0 optional line disambiguation
+
+    private const string NestedSameNamePersonSource = """
+        namespace TestApp;
+
+        public /* outer-person */ class Person
+        {
+            public string Name { get; set; }
+
+            public /* nested-person */ class Person
+            {
+                public int Age { get; set; }
+            }
+        }
+        """;
+
+    private const string EnumFirstThenSameNamedClassSource = """
+        namespace Other
+        {
+            public /* person-enum */ enum Person
+            {
+                Ready
+            }
+        }
+
+        namespace TestApp
+        {
+            public /* person-class */ class Person
+            {
+                public string Name { get; set; }
+            }
+        }
+        """;
+
+    private const string DelegateFirstThenSameNamedClassSource = """
+        namespace Other
+        {
+            public /* person-delegate */ delegate void Person();
+        }
+
+        namespace TestApp
+        {
+            public /* person-class */ class Person
+            {
+                public string Name { get; set; }
+            }
+        }
+        """;
+
+    private const string LaterSameNamedPersonSource = """
+        namespace Other
+        {
+            public /* first-person */ class Person
+            {
+                public string Title { get; set; }
+            }
+        }
+
+        namespace TestApp
+        {
+            public /* later-person */ class Person
+            {
+                public string Name { get; set; }
+            }
+        }
+        """;
+
+    [Fact]
+    public void Line_DefaultsToNull()
+    {
+        var @params = new ExtractBaseClassParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Person",
+            BaseClassName = "PersonBase",
+            Members = new[] { "Name" }
+        };
+
+        Assert.Null(@params.Line);
+    }
+
+    [Fact]
+    public void Validate_InvalidLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Person",
+                BaseClassName = "PersonBase",
+                Members = new[] { "Name" },
+                Line = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Person",
+                BaseClassName = "PersonBase",
+                Members = new[] { "Name" },
+                Line = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_OmittedLine_KeepsTypeNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            BaseClassName = "PersonBase",
+            Members = new[] { "Name" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Person");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeInheritsFrom(types[0], "PersonBase"));
+        Assert.False(TypeInheritsFrom(types[1], "PersonBase"));
+        Assert.NotNull(FindProperty(updated, "PersonBase", "Name"));
+        Assert.Null(FindProperty(updated, "PersonBase", "Age"));
+        Assert.Null(FindPropertyOnNthType(updated, "Person", 0, "Name"));
+        Assert.NotNull(FindPropertyOnNthType(updated, "Person", 1, "Age"));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            BaseClassName = "NestedPersonBase",
+            Members = new[] { "Age" },
+            Line = FindLine(NestedSameNamePersonSource, "nested-person")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Person");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeInheritsFrom(types[0], "NestedPersonBase"));
+        Assert.True(TypeInheritsFrom(types[1], "NestedPersonBase"));
+        Assert.Null(FindProperty(updated, "NestedPersonBase", "Name"));
+        Assert.NotNull(FindProperty(updated, "NestedPersonBase", "Age"));
+        Assert.NotNull(FindPropertyOnNthType(updated, "Person", 0, "Name"));
+        Assert.Null(FindPropertyOnNthType(updated, "Person", 1, "Age"));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_LineOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            BaseClassName = "PersonBase",
+            Members = new[] { "Name" },
+            Line = FindLine(NestedSameNamePersonSource, "outer-person")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Person");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeInheritsFrom(types[0], "PersonBase"));
+        Assert.False(TypeInheritsFrom(types[1], "PersonBase"));
+        Assert.NotNull(FindProperty(updated, "PersonBase", "Name"));
+        Assert.Null(FindProperty(updated, "PersonBase", "Age"));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_LineOnEnumIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Person.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractBaseClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                BaseClassName = "PersonBase",
+                Members = new[] { "Name" },
+                Line = FindLine(EnumFirstThenSameNamedClassSource, "person-enum")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("class PersonBase", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_LineOnDelegateIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DelegateFirstThenSameNamedClassSource, "Person.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractBaseClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                BaseClassName = "PersonBase",
+                Members = new[] { "Name" },
+                Line = FindLine(DelegateFirstThenSameNamedClassSource, "person-delegate")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("class PersonBase", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_SequentialExtracts_ReusedWorkspace_InsertsOnSecondSelectedClass()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(LaterSameNamedPersonSource, "Person.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var first = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            BaseClassName = "FirstBase",
+            Members = new[] { "Title" },
+            Line = FindLine(LaterSameNamedPersonSource, "first-person")
+        });
+        Assert.True(first.Success);
+
+        var afterFirst = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var second = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            BaseClassName = "SecondBase",
+            Members = new[] { "Name" },
+            Line = FindLine(afterFirst, "later-person")
+        });
+        Assert.True(second.Success);
+
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Person");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeInheritsFrom(types[0], "FirstBase"));
+        Assert.False(TypeInheritsFrom(types[0], "SecondBase"));
+        Assert.True(TypeInheritsFrom(types[1], "SecondBase"));
+        Assert.False(TypeInheritsFrom(types[1], "FirstBase"));
+        Assert.NotNull(FindProperty(updated, "FirstBase", "Title"));
+        Assert.NotNull(FindProperty(updated, "SecondBase", "Name"));
+        Assert.Null(FindProperty(updated, "FirstBase", "Name"));
+        Assert.Null(FindProperty(updated, "SecondBase", "Title"));
+        Assert.Null(FindPropertyOnNthType(updated, "Person", 0, "Title"));
+        Assert.Null(FindPropertyOnNthType(updated, "Person", 1, "Name"));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_Line_Preview_WritesNothing_AndDescribesRewrite()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            BaseClassName = "NestedPersonBase",
+            Members = new[] { "Age" },
+            Line = FindLine(NestedSameNamePersonSource, "nested-person"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Extract base class NestedPersonBase", result.PendingChanges[0].Description);
+        Assert.Contains("Age", result.PendingChanges[0].Description);
+        Assert.DoesNotContain("Name", result.PendingChanges[0].Description);
+        Assert.Contains("Age", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("Update Person to inherit from NestedPersonBase", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = ExtractBaseClassOperation.FindTypeDeclaration(root, "Person", line: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = ExtractBaseClassOperation.FindTypeDeclaration(
+            root, "Person", FindLine(NestedSameNamePersonSource, "nested-person"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Person");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = ExtractBaseClassOperation.FindTypeDeclaration(
+            root, "Person", FindLine(NestedSameNamePersonSource, "outer-person"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Person // split-person
+            {
+                public string Name { get; set; }
+
+                public class Person // nested-person
+                {
+                    public int Age { get; set; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-person");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = ExtractBaseClassOperation.FindTypeDeclaration(root, "Person", identifierLine);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineMiss_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = ExtractBaseClassOperation.FindTypeDeclaration(root, "Person", line: 1);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_EnumFirstPicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = ExtractBaseClassOperation.FindTypeDeclaration(root, "Person", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_StructFirstPicksClass()
+    {
+        const string source = """
+            namespace Other
+            {
+                public struct Person
+                {
+                    public int Id;
+                }
+            }
+
+            namespace TestApp
+            {
+                public class Person
+                {
+                    public string Name { get; set; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var found = ExtractBaseClassOperation.FindTypeDeclaration(root, "Person", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnEnumIdentifier_PicksEnum()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = ExtractBaseClassOperation.FindTypeDeclaration(
+            root, "Person", FindLine(EnumFirstThenSameNamedClassSource, "person-enum"));
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnClassIdentifier_PicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = ExtractBaseClassOperation.FindTypeDeclaration(
+            root, "Person", FindLine(EnumFirstThenSameNamedClassSource, "person-class"));
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_DelegateFirstPicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateFirstThenSameNamedClassSource).GetRoot();
+        var found = ExtractBaseClassOperation.FindTypeDeclaration(root, "Person", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnDelegateIdentifier_PicksDelegate()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateFirstThenSameNamedClassSource).GetRoot();
+        var found = ExtractBaseClassOperation.FindTypeDeclaration(
+            root, "Person", FindLine(DelegateFirstThenSameNamedClassSource, "person-delegate"));
+
+        Assert.NotNull(found);
+        Assert.IsType<DelegateDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void SpanCoversLine_TreatsEndAsExclusive()
+    {
+        var span = new FileLinePositionSpan(
+            "t.cs",
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
+
+        Assert.True(ExtractBaseClassOperation.SpanCoversLine(span, 1));
+        Assert.True(ExtractBaseClassOperation.SpanCoversLine(span, 2));
+        Assert.False(ExtractBaseClassOperation.SpanCoversLine(span, 3));
+        Assert.False(ExtractBaseClassOperation.SpanCoversLine(span, 0));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_OmittedLine_EnumFirstThenSameNamedClass_ExtractsFromClass()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Person.cs");
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            BaseClassName = "PersonBase",
+            Members = new[] { "Name" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Person");
+        Assert.Single(types);
+        Assert.True(TypeInheritsFrom(types[0], "PersonBase"));
+        Assert.Contains("class PersonBase", updated);
+        Assert.Contains("enum Person", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("class PersonBase", updated[..updated.IndexOf("enum Person", StringComparison.Ordinal)]);
+    }
+
+    #endregion
 
     [SkippableFact]
     public async Task ExtractBaseClass_Default_WritesBaseClassIntoSourceFile()
@@ -1864,6 +2374,49 @@ public class ExtractBaseClassOperationTests
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
+
+    private static string AbsoluteTestPath() =>
+        Path.Combine(Path.GetTempPath(), "RoslynMcpExtractBaseClassMissing.cs");
+
+    private static IReadOnlyList<TypeDeclarationSyntax> GetTypes(string source, string name) =>
+        CSharpSyntaxTree.ParseText(source).GetRoot()
+            .DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == name)
+            .ToList();
+
+    private static bool TypeInheritsFrom(TypeDeclarationSyntax type, string baseClassName) =>
+        type.BaseList?.Types.Any(t => t.Type.ToString() == baseClassName) == true;
+
+    private static int FindLine(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
+    private static PropertyDeclarationSyntax? FindPropertyOnNthType(
+        string source,
+        string typeName,
+        int index,
+        string propertyName)
+    {
+        var types = GetTypes(source, typeName);
+        Assert.True(index < types.Count, $"Expected at least {index + 1} type(s) named '{typeName}'.");
+        return types[index].Members.OfType<PropertyDeclarationSyntax>()
+            .FirstOrDefault(p => p.Identifier.Text == propertyName);
+    }
 
     /// <summary>
     /// Base-list trivia from <c>WithBaseList</c> may omit spaces; compare a compacted form.
