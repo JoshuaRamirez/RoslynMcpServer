@@ -1,5 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
@@ -10,8 +12,9 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
-/// Operation-level tests for <see cref="GenerateToStringOperation"/>, including <c>format</c>,
-/// <c>includeProperties</c>, <c>includeInheritedMembers</c>, <c>replaceExisting</c>, and <c>callSuper</c>.
+/// Operation-level tests for <see cref="GenerateToStringOperation"/>, including optional
+/// <c>line</c>, <c>format</c>, <c>includeProperties</c>, <c>includeInheritedMembers</c>,
+/// <c>replaceExisting</c>, and <c>callSuper</c>.
 /// </summary>
 public class GenerateToStringOperationTests
 {
@@ -135,6 +138,511 @@ public class GenerateToStringOperationTests
             }));
 
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Line_DefaultsToNull()
+    {
+        var @params = new GenerateToStringParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Person"
+        };
+
+        Assert.Null(@params.Line);
+    }
+
+    [Fact]
+    public void Validate_InvalidLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateToStringOperation.Validate(new GenerateToStringParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Person",
+                Line = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateToStringOperation.Validate(new GenerateToStringParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Person",
+                Line = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    #endregion
+
+    #region P0 optional line disambiguation
+
+    private const string NestedSameNamePersonSource = """
+        namespace TestApp;
+
+        public /* outer-person */ class Person
+        {
+            public string Name { get; set; }
+
+            public /* nested-person */ class Person
+            {
+                public int Age { get; set; }
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GenerateToString_OmittedLine_KeepsTypeNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Person");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "ToString"));
+        Assert.False(TypeHasMethod(types[1], "ToString"));
+        var outer = ExtractToStringMethod(NormalizeNewlines(types[0].ToFullString()));
+        Assert.Contains("{Name}", outer);
+        Assert.DoesNotContain("{Age}", outer);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Line = FindLine(NestedSameNamePersonSource, "nested-person")
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Person");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasMethod(types[0], "ToString"));
+        Assert.True(TypeHasMethod(types[1], "ToString"));
+        var nested = ExtractToStringMethod(NormalizeNewlines(types[1].ToFullString()));
+        Assert.Contains("{Age}", nested);
+        Assert.DoesNotContain("{Name}", nested);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_LineOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Line = FindLine(NestedSameNamePersonSource, "outer-person")
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Person");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "ToString"));
+        Assert.False(TypeHasMethod(types[1], "ToString"));
+        var outer = ExtractToStringMethod(NormalizeNewlines(types[0].ToFullString()));
+        Assert.Contains("{Name}", outer);
+        Assert.DoesNotContain("{Age}", outer);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_Line_Preview_WritesNothing_AndDescribesGeneration()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Line = FindLine(NestedSameNamePersonSource, "nested-person"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Generate ToString", result.PendingChanges[0].Description);
+        Assert.Contains("Person", result.PendingChanges[0].Description);
+        Assert.Contains("Age", result.PendingChanges[0].Description);
+        Assert.Contains("public override string ToString()", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("{Age}", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = GenerateToStringOperation.FindTypeDeclaration(root, "Person", line: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = GenerateToStringOperation.FindTypeDeclaration(
+            root, "Person", FindLine(NestedSameNamePersonSource, "nested-person"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Person");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = GenerateToStringOperation.FindTypeDeclaration(
+            root, "Person", FindLine(NestedSameNamePersonSource, "outer-person"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Person // split-person
+            {
+                public string Name { get; set; }
+
+                public class Person // nested-person
+                {
+                    public int Age { get; set; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-person");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = GenerateToStringOperation.FindTypeDeclaration(root, "Person", identifierLine);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineMiss_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = GenerateToStringOperation.FindTypeDeclaration(root, "Person", line: 1);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    private const string EnumFirstThenSameNamedClassSource = """
+        namespace Other
+        {
+            public /* person-enum */ enum Person
+            {
+                Ready
+            }
+        }
+
+        namespace TestApp
+        {
+            public /* person-class */ class Person
+            {
+                public string Name { get; set; }
+            }
+        }
+        """;
+
+    private const string DelegateFirstThenSameNamedClassSource = """
+        namespace Other
+        {
+            public /* person-delegate */ delegate void Person();
+        }
+
+        namespace TestApp
+        {
+            public /* person-class */ class Person
+            {
+                public string Name { get; set; }
+            }
+        }
+        """;
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_EnumFirstPicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = GenerateToStringOperation.FindTypeDeclaration(root, "Person", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnEnumIdentifier_PicksEnum()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = GenerateToStringOperation.FindTypeDeclaration(
+            root, "Person", FindLine(EnumFirstThenSameNamedClassSource, "person-enum"));
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnClassIdentifier_PicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = GenerateToStringOperation.FindTypeDeclaration(
+            root, "Person", FindLine(EnumFirstThenSameNamedClassSource, "person-class"));
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_DelegateFirstPicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateFirstThenSameNamedClassSource).GetRoot();
+        var found = GenerateToStringOperation.FindTypeDeclaration(root, "Person", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnDelegateIdentifier_PicksDelegate()
+    {
+        var root = CSharpSyntaxTree.ParseText(DelegateFirstThenSameNamedClassSource).GetRoot();
+        var found = GenerateToStringOperation.FindTypeDeclaration(
+            root, "Person", FindLine(DelegateFirstThenSameNamedClassSource, "person-delegate"));
+
+        Assert.NotNull(found);
+        Assert.IsType<DelegateDeclarationSyntax>(found);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_OmittedLine_EnumFirstThenSameNamedClass_GeneratesOnClass()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Person.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Person");
+        Assert.Single(types);
+        Assert.True(TypeHasMethod(types[0], "ToString"));
+        Assert.Contains("public override string ToString()", updated);
+        Assert.Contains("enum Person", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("override string ToString", updated[..updated.IndexOf("class Person", StringComparison.Ordinal)]);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_LineOnEnumIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Person.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateToStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                Line = FindLine(EnumFirstThenSameNamedClassSource, "person-enum")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("override string ToString", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_LineOnDelegateIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DelegateFirstThenSameNamedClassSource, "Person.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateToStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                Line = FindLine(DelegateFirstThenSameNamedClassSource, "person-delegate")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("override string ToString", updated, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SpanCoversLine_TreatsEndAsExclusive()
+    {
+        var span = new FileLinePositionSpan(
+            "t.cs",
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
+
+        Assert.True(GenerateToStringOperation.SpanCoversLine(span, 1));
+        Assert.True(GenerateToStringOperation.SpanCoversLine(span, 2));
+        Assert.False(GenerateToStringOperation.SpanCoversLine(span, 3));
+        Assert.False(GenerateToStringOperation.SpanCoversLine(span, 0));
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_LineOnLaterSameFilePartial_ReplaceExisting_InsertsOnSelectedPartial()
+    {
+        const string source = """
+            namespace Other
+            {
+                public class Person
+                {
+                    public string Title { get; set; }
+                }
+            }
+
+            namespace TestApp
+            {
+                public partial class Person
+                {
+                    public string Name { get; set; }
+
+                    public override string ToString() => "old"; /* old-body */
+                }
+
+                public /* later-partial */ partial class Person
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Person.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Line = FindLine(source, "later-partial"),
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Person");
+        Assert.Equal(3, types.Count);
+        Assert.False(TypeHasMethod(types[0], "ToString"));
+        Assert.False(TypeHasMethod(types[1], "ToString"));
+        Assert.True(TypeHasMethod(types[2], "ToString"));
+        Assert.DoesNotContain("old-body", types[2].ToFullString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("=> \"old\"", types[2].ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("{Name}", types[2].ToFullString(), StringComparison.Ordinal);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(1, CountOccurrences(updated, "public override string ToString()"));
+        Assert.DoesNotContain("old-body", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_SequentialReplaceExisting_ReusedWorkspace_InsertsOnSecondSelectedType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Alpha
+            {
+                public string Name { get; set; }
+
+                public override string ToString() => "old-alpha";
+            }
+
+            public class Beta
+            {
+                public string Title { get; set; }
+
+                public override string ToString() => "old-beta";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Types.cs");
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var first = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Alpha",
+            ReplaceExisting = true
+        });
+        Assert.True(first.Success);
+
+        var second = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Beta",
+            ReplaceExisting = true
+        });
+        Assert.True(second.Success);
+
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var types = GetTypes(updated, "Alpha").Concat(GetTypes(updated, "Beta")).ToList();
+        var alpha = types.Single(t => t.Identifier.Text == "Alpha");
+        var beta = types.Single(t => t.Identifier.Text == "Beta");
+        Assert.True(TypeHasMethod(alpha, "ToString"));
+        Assert.True(TypeHasMethod(beta, "ToString"));
+        var alphaToString = ExtractToStringMethod(NormalizeNewlines(alpha.ToFullString()));
+        var betaToString = ExtractToStringMethod(NormalizeNewlines(beta.ToFullString()));
+        Assert.Contains("{Name}", alphaToString);
+        Assert.DoesNotContain("{Title}", alphaToString);
+        Assert.Contains("{Title}", betaToString);
+        Assert.DoesNotContain("{Name}", betaToString);
+        Assert.DoesNotContain("old-alpha", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-beta", updated, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(NormalizeNewlines(alpha.ToFullString()), "public override string ToString()"));
+        Assert.Equal(1, CountOccurrences(NormalizeNewlines(beta.ToFullString()), "public override string ToString()"));
     }
 
     #endregion
@@ -2003,8 +2511,40 @@ public class GenerateToStringOperationTests
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateToStringMissing.cs");
 
+    private static IReadOnlyList<TypeDeclarationSyntax> GetTypes(string source, string name) =>
+        CSharpSyntaxTree.ParseText(source).GetRoot()
+            .DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == name)
+            .ToList();
+
+    private static bool TypeHasMethod(TypeDeclarationSyntax type, string methodName) =>
+        type.Members.OfType<MethodDeclarationSyntax>()
+            .Any(m => m.Identifier.Text == methodName);
+
+    // Single-line snippets only — IndexOf of an LF-only snippet missed
+    // CRLF checkouts (FindMethod_ColumnOnContinuationLine on #200 / #214).
+    private static int FindLine(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
     private static string NormalizeNewlines(string text) =>
-        text.Replace("\r\n", "\n", StringComparison.Ordinal);
+        text.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
 
     private sealed class TempWorkspace : IAsyncDisposable
     {

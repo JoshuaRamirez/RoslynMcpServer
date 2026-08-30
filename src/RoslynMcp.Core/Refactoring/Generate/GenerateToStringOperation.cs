@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
@@ -12,6 +13,13 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 
 /// <summary>
 /// Generates a ToString() override for a type.
+/// Honors optional <c>line</c> to disambiguate same-named types in one
+/// file (identifier preferred, then smallest containing type).
+/// Omitted line keeps today's <c>TypeDeclarationSyntax</c>
+/// <c>FirstOrDefault</c> pick (enum and
+/// <c>DelegateDeclarationSyntax</c> do not participate).
+/// When line is set, a covering enum or delegate is included so it
+/// reaches <c>InvalidSymbolKind</c> rather than retargeting a later class.
 /// Honors <c>format</c> for interpolated vs StringBuilder bodies,
 /// <c>includeProperties</c> when collecting ToString members,
 /// <c>includeInheritedMembers</c> to append accessible base-type members,
@@ -52,6 +60,9 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
 
         ValidateFormat(@params.Format);
 
+        if (@params.Line.HasValue && @params.Line.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
+
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
@@ -69,15 +80,26 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var typeDecl = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault(t => t.Identifier.Text == @params.TypeName);
+        // Optional line disambiguates same-named types. Omitted keeps
+        // today's TypeDeclarationSyntax FirstOrDefault pick (enum and
+        // DelegateDeclarationSyntax do not participate). Line set also
+        // includes a covering enum or delegate so it reaches
+        // InvalidSymbolKind instead of retargeting a later class.
+        var found = FindTypeDeclaration(root, @params.TypeName, @params.Line);
 
-        if (typeDecl == null)
+        if (found == null)
             throw new RefactoringException(ErrorCodes.TypeNotFound, $"Type '{@params.TypeName}' not found.");
 
-        var typeSymbol = semanticModel.GetDeclaredSymbol(typeDecl, cancellationToken) as INamedTypeSymbol;
+        var typeSymbol = semanticModel.GetDeclaredSymbol(found, cancellationToken) as INamedTypeSymbol;
         if (typeSymbol == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve type symbol.");
+
+        if (found is not TypeDeclarationSyntax typeDecl)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolKind,
+                $"Type '{typeSymbol.Name}' is not a supported target for generate_tostring.");
+        }
 
         if (@params.CallSuper && IsObjectOrValueTypeBase(typeSymbol))
         {
@@ -128,8 +150,25 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         }
 
         var solution = document.Project.Solution;
+        // Fresh instance per execution. A static annotation is shared
+        // across operations; after CommitChanges the in-memory solution
+        // can still carry it, so a later replaceExisting on another type
+        // would recover the stale node via FirstOrDefault.
+        SyntaxAnnotation? targetTypeAnnotation = null;
         if (@params.ReplaceExisting)
         {
+            // Annotate before the rewrite. Removing ToString from an
+            // earlier same-file partial shifts both SpanStart and the
+            // physical line of a later selected partial — do not re-find
+            // with those stale values. Today's FindTypeDeclaration(root,
+            // typeName, preferredSpanStart) is not enough.
+            targetTypeAnnotation = new SyntaxAnnotation("generate-tostring-target-type");
+            root = root.ReplaceNode(
+                typeDecl,
+                typeDecl.WithAdditionalAnnotations(targetTypeAnnotation));
+            document = document.WithSyntaxRoot(root);
+            solution = document.Project.Solution;
+
             solution = await RemoveExistingToStringOverridesAcrossPartialsAsync(
                 solution, typeSymbol, cancellationToken);
             document = solution.GetDocument(document.Id)
@@ -138,12 +177,18 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
                     $"Could not locate the document for type '{@params.TypeName}'.");
             root = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
-            typeDecl = FindTypeDeclaration(root, @params.TypeName, typeDecl.SpanStart)
+            typeDecl = root.GetAnnotatedNodes(targetTypeAnnotation)
+                .OfType<TypeDeclarationSyntax>()
+                .FirstOrDefault()
                 ?? throw new RefactoringException(ErrorCodes.TypeNotFound, $"Type '{@params.TypeName}' not found.");
         }
 
         var newTypeDecl = typeDecl.AddMembers(
             toStringMethod.WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed));
+        // Strip the per-execution annotation so it does not linger in the
+        // workspace after commit.
+        if (targetTypeAnnotation != null)
+            newTypeDecl = (TypeDeclarationSyntax)newTypeDecl.WithoutAnnotations(targetTypeAnnotation);
 
         var newRoot = root.ReplaceNode(typeDecl, newTypeDecl);
         var newDocument = document.WithSyntaxRoot(newRoot);
@@ -247,19 +292,23 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
 
         foreach (var (tree, byPart) in membersByTreeAndPart)
         {
-            var document = solution.GetDocument(tree)
-                ?? throw new RefactoringException(
-                    ErrorCodes.DocumentNotEditable,
-                    $"Could not locate a declaring document for type '{typeSymbol.Name}'.");
+            var document = GetDocumentForTree(solution, tree, typeSymbol.Name);
             var root = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
             var replacements = new Dictionary<TypeDeclarationSyntax, TypeDeclarationSyntax>();
             foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
             {
-                if (reference.SyntaxTree != tree)
+                if (!SameSyntaxTree(reference.SyntaxTree, tree))
                     continue;
-                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax part)
+                if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax originalPart)
+                    continue;
+                // The solution root may already carry a target-type
+                // annotation (new tree). Rematch by span — annotation does
+                // not change SpanStart — so ReplaceNodes sees nodes from
+                // this root and keeps the annotation on the selected type.
+                var part = RematchTypeDeclaration(root, originalPart);
+                if (part == null)
                     continue;
                 if (!byPart.TryGetValue(part.SpanStart, out var keys) || keys.Count == 0)
                     continue;
@@ -291,12 +340,138 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
     private static IEnumerable<IMethodSymbol> CollectToStringOverridesToReplace(INamedTypeSymbol typeSymbol) =>
         typeSymbol.GetMembers("ToString").OfType<IMethodSymbol>().Where(IsParameterlessToString);
 
-    private static TypeDeclarationSyntax? FindTypeDeclaration(SyntaxNode root, string typeName, int preferredSpanStart)
+    private static Document GetDocumentForTree(Solution solution, SyntaxTree tree, string typeName)
     {
-        var matches = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+        var document = solution.GetDocument(tree);
+        if (document != null)
+            return document;
+
+        if (!string.IsNullOrEmpty(tree.FilePath))
+        {
+            foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
+            {
+                document = solution.GetDocument(id);
+                if (document != null)
+                    return document;
+            }
+        }
+
+        throw new RefactoringException(
+            ErrorCodes.DocumentNotEditable,
+            $"Could not locate a declaring document for type '{typeName}'.");
+    }
+
+    private static bool SameSyntaxTree(SyntaxTree left, SyntaxTree right) =>
+        left == right
+        || (!string.IsNullOrEmpty(left.FilePath)
+            && string.Equals(left.FilePath, right.FilePath, StringComparison.OrdinalIgnoreCase));
+
+    private static TypeDeclarationSyntax? RematchTypeDeclaration(SyntaxNode root, TypeDeclarationSyntax original) =>
+        root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
+
+    /// <summary>
+    /// Finds a type by <paramref name="typeName"/>. Omitted <paramref name="line"/>
+    /// keeps today's <c>TypeDeclarationSyntax</c> <c>FirstOrDefault</c>
+    /// pick, including when several same-named types exist (nested vs outer
+    /// or two namespaces). Enums and delegates are not in that set, so
+    /// omitted line still picks a later same-named class rather than an
+    /// earlier enum or <c>DelegateDeclarationSyntax</c>. When set, picks the
+    /// type whose identifier or declaration span covers that 1-based line
+    /// (same exclusive-end coverage as
+    /// <c>ImplementAbstractOperation.SpanCoversLine</c> /
+    /// <c>GeneratePropertyOperation.SpanCoversLine</c>). Prefer the identifier
+    /// hit, then the smallest containing type. Nested types, enums, and
+    /// <c>DelegateDeclarationSyntax</c> participate when line is set so a
+    /// covering enum or delegate still reaches <c>InvalidSymbolKind</c>
+    /// rather than retargeting a later class. Do not require the declaration
+    /// to start on <paramref name="line"/> — a split declaration may put the
+    /// identifier on a continuation line. If nothing covers this line, keep
+    /// today's first-match rather than inventing a not-found. After
+    /// <see cref="RemoveExistingToStringOverridesAcrossPartialsAsync"/>, recover
+    /// the selected type from the per-execution syntax annotation — do not
+    /// reuse a pre-rewrite SpanStart or line.
+    /// </summary>
+    internal static MemberDeclarationSyntax? FindTypeDeclaration(
+        SyntaxNode root,
+        string typeName,
+        int? line)
+    {
+        var typeCandidates = root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
             .Where(t => t.Identifier.Text == typeName)
             .ToList();
-        return matches.FirstOrDefault(t => t.SpanStart == preferredSpanStart) ?? matches.FirstOrDefault();
+
+        if (!line.HasValue)
+            return typeCandidates.FirstOrDefault();
+
+        // Line set: include BaseTypeDeclarationSyntax (enum) and
+        // DelegateDeclarationSyntax in the covering-line set. Do not
+        // require the declaration to start on `line` — a split type's
+        // identifier may live on a continuation line whose declaration
+        // span still covers that line. Prefer the identifier hit, then
+        // the smallest containing type (nested over outer). Include enum
+        // and delegate candidates. Do not silently pick the first when a
+        // covering node exists elsewhere — scan every candidate. If
+        // nothing covers this line, keep today's TypeDeclarationSyntax
+        // first-match rather than inventing a not-found (enums and
+        // delegates stay out of that omitted-line fallback).
+        var lineCandidates = root.DescendantNodes()
+            .OfType<BaseTypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == typeName)
+            .Cast<MemberDeclarationSyntax>()
+            .Concat(root.DescendantNodes()
+                .OfType<DelegateDeclarationSyntax>()
+                .Where(d => d.Identifier.Text == typeName))
+            .ToList();
+
+        if (lineCandidates.Count == 0)
+            return null;
+
+        return lineCandidates
+            .Where(t => TypeCoversLine(t, line.Value))
+            .OrderBy(t => IdentifierCoversLine(t, line.Value) ? 0 : 1)
+            .ThenBy(t => t.Span.Length)
+            .FirstOrDefault()
+            ?? typeCandidates.FirstOrDefault();
+    }
+
+    private static bool TypeCoversLine(MemberDeclarationSyntax type, int line) =>
+        IdentifierCoversLine(type, line) ||
+        SpanCoversLine(type.GetLocation().GetLineSpan(), line);
+
+    private static bool IdentifierCoversLine(MemberDeclarationSyntax type, int line)
+    {
+        var identifier = GetTypeIdentifier(type);
+        return identifier != default
+            && SpanCoversLine(identifier.GetLocation().GetLineSpan(), line);
+    }
+
+    private static SyntaxToken GetTypeIdentifier(MemberDeclarationSyntax type) => type switch
+    {
+        BaseTypeDeclarationSyntax named => named.Identifier,
+        DelegateDeclarationSyntax del => del.Identifier,
+        _ => default
+    };
+
+    /// <summary>
+    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so a span that ends at the start of a line does not
+    /// cover that line. Treating the end as inclusive would let the first
+    /// line of an adjacent type also match the previous declaration. Same
+    /// exclusive-end idea as <c>GeneratePropertyOperation.SpanCoversLine</c>.
+    /// </summary>
+    internal static bool SpanCoversLine(FileLinePositionSpan span, int line)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == endLine && span.EndLinePosition.Character == 0)
+            return false;
+        return true;
     }
 
     private static MethodDeclarationSyntax GenerateToString(
