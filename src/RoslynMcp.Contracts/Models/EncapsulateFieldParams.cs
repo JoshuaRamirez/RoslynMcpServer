@@ -16,6 +16,17 @@ public sealed class EncapsulateFieldParams
     public required string FieldName { get; init; }
 
     /// <summary>
+    /// 1-based line number for disambiguation when several fields share
+    /// <see cref="FieldName"/>. When set, selects the field whose identifier
+    /// or declaration span covers that line (identifier preferred, then
+    /// smallest covering declarator/field). Nested types participate.
+    /// Omitted keeps today's fieldName first-match on field
+    /// <c>VariableDeclaratorSyntax</c>. Locals and other non-field
+    /// declarators stay excluded.
+    /// </summary>
+    public int? Line { get; init; }
+
+    /// <summary>
     /// Name for the property. If null, derives from field name.
     /// </summary>
     public string? PropertyName { get; init; }
