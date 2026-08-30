@@ -14,6 +14,15 @@ namespace RoslynMcp.Core.Refactoring.Encapsulate;
 
 /// <summary>
 /// Encapsulates a field by converting it to a property.
+/// Honors optional <c>line</c> to disambiguate same-named fields in one
+/// file (identifier preferred, then smallest covering declarator/field).
+/// Omitted line keeps today's field <c>VariableDeclaratorSyntax</c>
+/// <c>FirstOrDefault</c> pick. Locals and other non-field declarators
+/// stay excluded. Nested types participate when line is set. If line is
+/// set and no covering field matches, throw <c>FieldNotFound</c> rather
+/// than falling back to first-match. After the rewrite rematches the
+/// selected field, recover it from a per-execution syntax annotation
+/// and strip the annotation before commit.
 /// </summary>
 public sealed class EncapsulateFieldOperation : RefactoringOperationBase<EncapsulateFieldParams>
 {
@@ -25,7 +34,13 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(EncapsulateFieldParams @params)
+    protected override void ValidateParams(EncapsulateFieldParams @params) => Validate(@params);
+
+    /// <summary>
+    /// Validates encapsulate-field parameters. Internal so tests can
+    /// exercise input rules without loading a workspace.
+    /// </summary>
+    internal static void Validate(EncapsulateFieldParams @params)
     {
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
@@ -38,6 +53,9 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+
+        if (@params.Line.HasValue && @params.Line.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -61,16 +79,13 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         }
 
-        // Find field declaration
-        var fieldDeclarator = root.DescendantNodes()
-            .OfType<VariableDeclaratorSyntax>()
-            .FirstOrDefault(v =>
-            {
-                if (v.Identifier.Text != @params.FieldName) return false;
-                // Must be a field, not a local variable
-                return v.Parent?.Parent is FieldDeclarationSyntax;
-            });
-
+        // Optional line disambiguates same-named fields. Omitted keeps
+        // today's field VariableDeclaratorSyntax FirstOrDefault. Line
+        // set picks the covering field (identifier preferred, then
+        // smallest covering declarator/field). Nested types participate.
+        // Locals stay excluded. Do not fall back to first-match when
+        // line is set and nothing covers that line.
+        var fieldDeclarator = FindFieldDeclarator(root, @params.FieldName, @params.Line);
         if (fieldDeclarator == null)
         {
             throw new RefactoringException(
@@ -183,24 +198,31 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             property = UpdatePropertyFieldName(property, newFieldName);
         }
 
-        // Build new type with property added after field
-        var newRoot = root;
+        // Fresh instance per execution. A static annotation is shared
+        // across operations; after CommitChanges the in-memory solution
+        // can still carry it, so a later encapsulate on another same-named
+        // field would recover the stale node via FirstOrDefault.
+        // Today's rematch First by fieldName / containing type name is
+        // not enough — it retargets a nested same-named field to the
+        // outer declaration. Do not re-find with stale SpanStart or line.
+        var fieldAnnotation = new SyntaxAnnotation("encapsulate-field-target");
+        newFieldDeclaration = newFieldDeclaration.WithAdditionalAnnotations(fieldAnnotation);
 
-        // Replace field declaration
-        newRoot = newRoot.ReplaceNode(
-            newRoot.DescendantNodes().OfType<FieldDeclarationSyntax>()
-                .First(f => f.Declaration.Variables.Any(v => v.Identifier.Text == @params.FieldName)),
-            newFieldDeclaration);
+        var newRoot = root.ReplaceNode(fieldDeclaration, newFieldDeclaration);
 
-        // Insert property after field
-        var updatedContainingType = newRoot.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .First(t => t.Identifier.Text == containingType.Identifier.Text);
-
-        var updatedFieldDecl = updatedContainingType.Members
+        var updatedFieldDecl = newRoot.GetAnnotatedNodes(fieldAnnotation)
             .OfType<FieldDeclarationSyntax>()
-            .First(f => f.Declaration.Variables.Any(v =>
-                v.Identifier.Text == @params.FieldName || v.Identifier.Text == newFieldName));
+            .FirstOrDefault()
+            ?? throw new RefactoringException(
+                ErrorCodes.RoslynError,
+                "Could not recover the selected field after rewrite.");
+
+        var updatedContainingType = updatedFieldDecl.Ancestors()
+            .OfType<TypeDeclarationSyntax>()
+            .FirstOrDefault()
+            ?? throw new RefactoringException(
+                ErrorCodes.RoslynError,
+                "Could not recover the selected field's containing type after rewrite.");
 
         var fieldIndex = updatedContainingType.Members.IndexOf(updatedFieldDecl);
         var newMembers = updatedContainingType.Members.Insert(
@@ -210,6 +232,10 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
         var newContainingType = updatedContainingType.WithMembers(newMembers);
         newRoot = newRoot.ReplaceNode(updatedContainingType, newContainingType);
+
+        var stillAnnotated = newRoot.GetAnnotatedNodes(fieldAnnotation).FirstOrDefault();
+        if (stillAnnotated != null)
+            newRoot = newRoot.ReplaceNode(stillAnnotated, stillAnnotated.WithoutAnnotations(fieldAnnotation));
 
         var newSolution = document.WithSyntaxRoot(newRoot).Project.Solution;
 
@@ -263,6 +289,96 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             },
             referencesUpdated,
             0);
+    }
+
+    /// <summary>
+    /// Finds a field by <paramref name="fieldName"/>. Omitted
+    /// <paramref name="line"/> keeps today's field
+    /// <c>VariableDeclaratorSyntax</c> <c>FirstOrDefault</c> pick,
+    /// including when several same-named fields exist (nested vs outer).
+    /// Locals and other non-field declarators stay excluded. When set,
+    /// picks the field whose identifier or declaration span covers that
+    /// 1-based line (same exclusive-end coverage as
+    /// <c>UseBaseTypeOperation.SpanCoversLine</c> /
+    /// <c>PullMembersUpOperation.SpanCoversLine</c> /
+    /// <c>PushMembersDownOperation.SpanCoversLine</c>). Prefer the
+    /// identifier hit, then the smallest covering declarator or field.
+    /// Nested types participate. Do not require the declaration to start
+    /// on <paramref name="line"/> — a split declaration may put the
+    /// identifier on a continuation line. If nothing covers this line,
+    /// return null rather than falling back to first-match. After the
+    /// rewrite rematches the selected field, recover it from the
+    /// per-execution syntax annotation — do not reuse a pre-rewrite
+    /// SpanStart or line.
+    /// </summary>
+    internal static VariableDeclaratorSyntax? FindFieldDeclarator(
+        SyntaxNode root,
+        string fieldName,
+        int? line)
+    {
+        var matches = root.DescendantNodes()
+            .OfType<VariableDeclaratorSyntax>()
+            .Where(IsMatchingFieldDeclarator)
+            .ToList();
+
+        if (!line.HasValue)
+            return matches.FirstOrDefault();
+
+        return matches
+            .Where(declarator => FieldCoversLine(declarator, line.Value))
+            .OrderBy(declarator => IdentifierCoversLine(declarator, line.Value) ? 0 : 1)
+            .ThenBy(declarator => SmallestCoveringSpanLength(declarator, line.Value))
+            .FirstOrDefault();
+
+        bool IsMatchingFieldDeclarator(VariableDeclaratorSyntax declarator) =>
+            declarator.Identifier.Text == fieldName &&
+            declarator.Parent?.Parent is FieldDeclarationSyntax;
+    }
+
+    private static bool FieldCoversLine(VariableDeclaratorSyntax declarator, int line) =>
+        IdentifierCoversLine(declarator, line) ||
+        SpanCoversLine(declarator.GetLocation().GetLineSpan(), line) ||
+        (GetFieldDeclaration(declarator) is { } field &&
+         SpanCoversLine(field.GetLocation().GetLineSpan(), line));
+
+    private static bool IdentifierCoversLine(VariableDeclaratorSyntax declarator, int line) =>
+        SpanCoversLine(declarator.Identifier.GetLocation().GetLineSpan(), line);
+
+    private static int SmallestCoveringSpanLength(VariableDeclaratorSyntax declarator, int line)
+    {
+        var smallest = int.MaxValue;
+        if (SpanCoversLine(declarator.GetLocation().GetLineSpan(), line))
+            smallest = Math.Min(smallest, declarator.Span.Length);
+
+        if (GetFieldDeclaration(declarator) is { } field &&
+            SpanCoversLine(field.GetLocation().GetLineSpan(), line))
+        {
+            smallest = Math.Min(smallest, field.Span.Length);
+        }
+
+        return smallest;
+    }
+
+    private static FieldDeclarationSyntax? GetFieldDeclaration(VariableDeclaratorSyntax declarator) =>
+        declarator.Parent?.Parent as FieldDeclarationSyntax;
+
+    /// <summary>
+    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so a span that ends at the start of a line does not
+    /// cover that line. Treating the end as inclusive would let the first
+    /// line of an adjacent field also match the previous declaration. Same
+    /// exclusive-end idea as <c>UseBaseTypeOperation.SpanCoversLine</c>.
+    /// </summary>
+    internal static bool SpanCoversLine(FileLinePositionSpan span, int line)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == endLine && span.EndLinePosition.Character == 0)
+            return false;
+        return true;
     }
 
     private static bool IsInsideContainingType(

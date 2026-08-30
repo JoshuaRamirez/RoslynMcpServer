@@ -587,6 +587,9 @@ public class HelpGeneratorTests
         var help = HelpGenerator.GenerateToolHelp(tool);
 
         Assert.Contains("encapsulate-field", help);
+        Assert.Contains("--line", help);
+        Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("FirstOrDefault", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("updateReferences", tool.Description, StringComparison.OrdinalIgnoreCase);
 
         var requiredIdx = help.IndexOf("REQUIRED:");
@@ -599,11 +602,13 @@ public class HelpGeneratorTests
 
         Assert.Contains("--source-file", requiredSection);
         Assert.Contains("--field-name", requiredSection);
+        Assert.DoesNotContain("--line", requiredSection);
         Assert.DoesNotContain("--update-references", requiredSection);
         Assert.DoesNotContain("--property-name", requiredSection);
         Assert.DoesNotContain("--read-only", requiredSection);
         Assert.DoesNotContain("--preview", requiredSection);
 
+        Assert.Contains("--line", optionalSection);
         Assert.Contains("--update-references", optionalSection);
         Assert.Contains("--property-name", optionalSection);
         Assert.Contains("--read-only", optionalSection);

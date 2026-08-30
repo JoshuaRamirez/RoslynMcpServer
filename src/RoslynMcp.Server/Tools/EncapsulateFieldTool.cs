@@ -33,7 +33,7 @@ public sealed class EncapsulateFieldTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a field to a property with backing field. updateReferences (default true) rewrites external references to the new property; false still encapsulates (private field + property) but leaves external callers on the field. Same-class references stay on the field. Preview describes whether references will be updated and writes nothing.";
+        "Convert a field to a property with backing field. line (optional) picks the field whose identifier or declaration span covers that line when several fields share the name; omitted keeps today's fieldName FirstOrDefault pick. updateReferences (default true) rewrites external references to the new property; false still encapsulates (private field + property) but leaves external callers on the field. Same-class references stay on the field. Preview describes whether references will be updated and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -56,6 +56,12 @@ public sealed class EncapsulateFieldTool : IToolHandler
             {
                 type = "string",
                 description = "Name of the field to encapsulate"
+            },
+            line = new
+            {
+                type = "integer",
+                description = "1-based line number for disambiguation when several fields share the name. When set, selects the field whose identifier or declaration span covers that line (identifier preferred, then smallest covering declarator/field). Omitted keeps today's fieldName FirstOrDefault pick.",
+                minimum = 1
             },
             propertyName = new
             {
@@ -109,6 +115,7 @@ public sealed class EncapsulateFieldTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 FieldName = args.FieldName,
+                Line = args.Line,
                 PropertyName = args.PropertyName,
                 ReadOnly = args.ReadOnly ?? false,
                 UpdateReferences = args.UpdateReferences ?? true,
@@ -142,6 +149,7 @@ public sealed class EncapsulateFieldTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public string FieldName { get; init; } = "";
+        public int? Line { get; init; }
         public string? PropertyName { get; init; }
         public bool? ReadOnly { get; init; }
         public bool? UpdateReferences { get; init; }
