@@ -12,7 +12,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
-/// Operation-level tests for <see cref="GenerateEqualsHashCodeOperation"/>, including optional <c>line</c>, <c>implementIEquatable</c>, <c>generateOperators</c>, <c>replaceExisting</c>, <c>useHashCodeCombine</c>, <c>includeProperties</c>, <c>callSuper</c>, and <c>includeInheritedMembers</c>.
+/// Operation-level tests for <see cref="GenerateEqualsHashCodeOperation"/>, including optional <c>line</c> / <c>column</c>, <c>implementIEquatable</c>, <c>generateOperators</c>, <c>replaceExisting</c>, <c>useHashCodeCombine</c>, <c>includeProperties</c>, <c>callSuper</c>, and <c>includeInheritedMembers</c>.
 /// </summary>
 public class GenerateEqualsHashCodeOperationTests
 {
@@ -395,6 +395,399 @@ public class GenerateEqualsHashCodeOperationTests
         Assert.DoesNotContain("old-beta", updated, StringComparison.Ordinal);
         Assert.Equal(1, CountOccurrences(NormalizeNewlines(alpha.ToFullString()), "public override bool Equals(object?"));
         Assert.Equal(1, CountOccurrences(NormalizeNewlines(beta.ToFullString()), "public override bool Equals(object?"));
+    }
+
+    #endregion
+
+    #region P0 optional column disambiguation
+
+    private const string SameLineNestedPersonSource = """
+        namespace TestApp;
+
+        public class Person { public string Name { get; set; } public class Person { public int Age { get; set; } } }
+        """;
+
+    [Fact]
+    public void Column_DefaultsToNull()
+    {
+        var @params = new GenerateEqualsHashCodeParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Person"
+        };
+
+        Assert.Null(@params.Column);
+    }
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateEqualsHashCodeOperation.Validate(new GenerateEqualsHashCodeParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Person",
+                Column = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateEqualsHashCodeOperation.Validate(new GenerateEqualsHashCodeParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Person",
+                Column = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_OmittedColumn_KeepsTypeNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Person");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "Equals"));
+        Assert.True(TypeHasMethod(types[0], "GetHashCode"));
+        Assert.False(TypeHasMethod(types[1], "Equals"));
+        Assert.False(TypeHasMethod(types[1], "GetHashCode"));
+        Assert.Contains("Name", types[0].ToFullString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("Age", ExtractMethod(NormalizeNewlines(types[0].ToFullString()), "public override bool Equals(object?"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_OmittedColumn_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Line = FindLine(NestedSameNamePersonSource, "nested-person")
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Person");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasMethod(types[0], "Equals"));
+        Assert.True(TypeHasMethod(types[1], "Equals"));
+        Assert.True(TypeHasMethod(types[1], "GetHashCode"));
+        var nestedEquals = ExtractMethod(NormalizeNewlines(types[1].ToFullString()), "public override bool Equals(object?");
+        Assert.Contains("Age", nestedEquals);
+        Assert.DoesNotContain("Name", nestedEquals);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ColumnOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedPersonSource, "Person.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
+        var column = ColumnOf(SameLineNestedPersonSource, "Person { public int Age");
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Person");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasMethod(types[0], "Equals"));
+        Assert.True(TypeHasMethod(types[1], "Equals"));
+        Assert.True(TypeHasMethod(types[1], "GetHashCode"));
+        var nestedEquals = ExtractMethod(NormalizeNewlines(types[1].ToFullString()), "public override bool Equals(object?");
+        Assert.Contains("Age", nestedEquals);
+        Assert.DoesNotContain("Name", nestedEquals);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ColumnOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedPersonSource, "Person.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
+        var column = ColumnOf(SameLineNestedPersonSource, "Person { public string Name");
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Person");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "Equals"));
+        Assert.False(TypeHasMethod(types[1], "Equals"));
+        var outerEquals = ExtractMethod(NormalizeNewlines(types[0].ToFullString()), "public override bool Equals(object?");
+        Assert.Contains("Name", outerEquals);
+        Assert.DoesNotContain("Age", outerEquals);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedColumn_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(root, "Person", line: null, column: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedPersonSource).GetRoot();
+        var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
+        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(
+            root, "Person", line, ColumnOf(SameLineNestedPersonSource, "Person { public int Age"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Person");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedPersonSource).GetRoot();
+        var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
+        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(
+            root, "Person", line, ColumnOf(SameLineNestedPersonSource, "Person { public string Name"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnWithoutLine_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedPersonSource).GetRoot();
+        var nestedColumn = ColumnOf(SameLineNestedPersonSource, "Person { public int Age");
+        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(
+            root, "Person", line: null, nestedColumn);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Person // split-person
+            {
+                public string Name { get; set; }
+
+                public class Person // nested-person
+                {
+                    public int Age { get; set; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-person");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(
+            root, "Person", identifierLine, ColumnOf(source, "Person // split-person"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ColumnOnContinuationLine_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Person // split-person
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Person.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var startLine = FindLine(source, "public class\n    Person");
+        var identifierLine = FindLine(source, "split-person");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Line = identifierLine,
+            Column = ColumnOf(source, "Person // split-person")
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Person");
+        Assert.Single(types);
+        Assert.True(TypeHasMethod(types[0], "Equals"));
+        Assert.True(TypeHasMethod(types[0], "GetHashCode"));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnAndLineMiss_DoesNotFallBackToFirst()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(root, "Person", line: 1, column: 1);
+
+        Assert.Null(found);
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_ColumnAndLineMiss_ThrowsTypeNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNamePersonSource, "Person.cs");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Person",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.TypeNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_Column_Preview_WritesNothing_AndDescribesGeneration()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedPersonSource, "Person.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
+
+        var result = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Line = line,
+            Column = ColumnOf(SameLineNestedPersonSource, "Person { public int Age"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Generate Equals and GetHashCode", result.PendingChanges[0].Description);
+        Assert.Contains("Person", result.PendingChanges[0].Description);
+        Assert.Contains("public override bool Equals(object?", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("public override int GetHashCode()", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class Outer { class Nested { } }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var nested = tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == "Nested");
+        var span = nested.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(GenerateEqualsHashCodeOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(GenerateEqualsHashCodeOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(GenerateEqualsHashCodeOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(GenerateEqualsHashCodeOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [SkippableFact]
+    public async Task GenerateEquals_SequentialColumn_ReusedWorkspace_InsertsOnSecondSelectedType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Person { public string Name { get; set; } public override bool Equals(object? obj) => false; /* old-outer */ public override int GetHashCode() => 1; public class Person { public int Age { get; set; } public override bool Equals(object? obj) => false; /* old-nested */ public override int GetHashCode() => 2; } }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Person.cs");
+        var operation = new GenerateEqualsHashCodeOperation(workspace.Context);
+        var line = FindLine(source, "public class Person { public string Name");
+
+        var first = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Line = line,
+            Column = ColumnOf(source, "Person { public string Name"),
+            ReplaceExisting = true
+        });
+        Assert.True(first.Success);
+
+        // Recompute from the rewritten file. A per-execution annotation
+        // must not leave the first selected type as the only recover-able
+        // node in a reused workspace.
+        var afterFirst = await File.ReadAllTextAsync(workspace.SourcePath);
+        var second = await operation.ExecuteAsync(new GenerateEqualsHashCodeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Person",
+            Line = FindLine(afterFirst, "old-nested"),
+            Column = ColumnOf(afterFirst, "Person { public int Age"),
+            ReplaceExisting = true
+        });
+        Assert.True(second.Success);
+
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Person");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "Equals"));
+        Assert.True(TypeHasMethod(types[0], "GetHashCode"));
+        Assert.True(TypeHasMethod(types[1], "Equals"));
+        Assert.True(TypeHasMethod(types[1], "GetHashCode"));
+        // Own members only — types[0].ToFullString() also contains the nested Equals.
+        var outerEquals = OwnEquals(types[0]);
+        var nestedEquals = OwnEquals(types[1]);
+        Assert.Contains("Name", outerEquals);
+        Assert.DoesNotContain("Age", outerEquals);
+        Assert.Contains("Age", nestedEquals);
+        Assert.DoesNotContain("Name", nestedEquals);
+        Assert.DoesNotContain("old-outer", types[0].ToFullString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("old-nested", types[1].ToFullString(), StringComparison.Ordinal);
+        Assert.Equal(1, types[0].Members.OfType<MethodDeclarationSyntax>().Count(m => m.Identifier.Text == "Equals"));
+        Assert.Equal(1, types[1].Members.OfType<MethodDeclarationSyntax>().Count(m => m.Identifier.Text == "Equals"));
     }
 
     #endregion
@@ -2786,6 +3179,11 @@ public class GenerateEqualsHashCodeOperationTests
         type.Members.OfType<MethodDeclarationSyntax>()
             .Any(m => m.Identifier.Text == methodName);
 
+    private static string OwnEquals(ClassDeclarationSyntax type) =>
+        NormalizeNewlines(type.Members.OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.Text == "Equals")
+            .ToFullString());
+
     // Single-line snippets only — IndexOf of an LF-only snippet missed
     // CRLF checkouts (FindMethod_ColumnOnContinuationLine on #200 / #214).
     private static int FindLine(string source, string snippet)
@@ -2804,6 +3202,18 @@ public class GenerateEqualsHashCodeOperationTests
         }
 
         return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
     }
 
     private static string NormalizeNewlines(string text) =>
