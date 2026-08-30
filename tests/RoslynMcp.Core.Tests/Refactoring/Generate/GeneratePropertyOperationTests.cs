@@ -1073,6 +1073,50 @@ public class GeneratePropertyOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateProperty_ColumnAndLine_UnknownTypeName_ThrowsSymbolNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Missing",
+                Line = 1,
+                Column = 1,
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_UnknownTypeName_ReportsEmptyCandidateSet()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GeneratePropertyOperation.FindTypeDeclaration(
+            root, "Missing", line: 1, column: 1, out var hadCandidates);
+
+        Assert.Null(found);
+        Assert.False(hadCandidates);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnAndLineMiss_ReportsCandidatesExisted()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GeneratePropertyOperation.FindTypeDeclaration(
+            root, "Widget", line: 1, column: 1, out var hadCandidates);
+
+        Assert.Null(found);
+        Assert.True(hadCandidates);
+    }
+
+    [SkippableFact]
     public async Task GenerateProperty_Column_Preview_WritesNothing_AndDescribesGeneration()
     {
         await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");

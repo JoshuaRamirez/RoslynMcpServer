@@ -126,14 +126,16 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         // pick (including enum/delegate). Line/column set includes those
         // unsupported candidates so a covering enum still reaches
         // InvalidSymbolKind instead of retargeting a later class.
-        var typeDecl = FindTypeDeclaration(root, @params.TypeName, @params.Line, @params.Column);
+        var typeDecl = FindTypeDeclaration(
+            root, @params.TypeName, @params.Line, @params.Column, out var hadCandidates);
 
         if (typeDecl == null)
         {
-            // column + line with no covering span is TypeNotFound — do
-            // not silently first-match. A missing typeName (no candidates)
-            // keeps today's SymbolNotFound.
-            if (@params.Column.HasValue && @params.Line.HasValue)
+            // Empty typeName set is today's SymbolNotFound, even when
+            // column+line is supplied. A positional miss (name exists,
+            // nothing covers that column+line) is TypeNotFound — do not
+            // silently first-match.
+            if (hadCandidates && @params.Column.HasValue && @params.Line.HasValue)
             {
                 throw new RefactoringException(
                     ErrorCodes.TypeNotFound,
@@ -734,7 +736,8 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
     /// when column is set — a split declaration may put the identifier on
     /// a continuation line. If column is set with line and nothing covers
     /// that position, return null (TypeNotFound) rather than falling back
-    /// to first-match. After
+    /// to first-match. An empty typeName candidate set also returns null
+    /// (<c>hadCandidates</c> false → SymbolNotFound). After
     /// <see cref="RemoveExistingPropertiesAcrossPartialsAsync"/>, recover
     /// the selected type from the per-execution syntax annotation — do not
     /// reuse a pre-rewrite SpanStart or line.
@@ -743,14 +746,24 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         SyntaxNode root,
         string typeName,
         int? line,
-        int? column = null)
+        int? column = null) =>
+        FindTypeDeclaration(root, typeName, line, column, out _);
+
+    /// <inheritdoc cref="FindTypeDeclaration(SyntaxNode, string, int?, int?)"/>
+    internal static BaseTypeDeclarationSyntax? FindTypeDeclaration(
+        SyntaxNode root,
+        string typeName,
+        int? line,
+        int? column,
+        out bool hadCandidates)
     {
         var candidates = root.DescendantNodes()
             .OfType<BaseTypeDeclarationSyntax>()
             .Where(t => t.Identifier.Text == typeName)
             .ToList();
 
-        if (candidates.Count == 0)
+        hadCandidates = candidates.Count > 0;
+        if (!hadCandidates)
             return null;
 
         // Column without line is not a source position: substituting each
