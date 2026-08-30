@@ -32,7 +32,7 @@ public sealed class UseBaseTypeTool : IToolHandler
     public string Name => "use_base_type";
 
     /// <inheritdoc />
-    public string Description => "Replace derived-type references with a compatible base type or interface.";
+    public string Description => "Replace derived-type references with a compatible base type or interface. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick (simple name / single match) or FQN semantic narrowing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,6 +55,12 @@ public sealed class UseBaseTypeTool : IToolHandler
             {
                 type = "string",
                 description = "Name of the derived class, struct, or interface"
+            },
+            line = new
+            {
+                type = "integer",
+                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick (simple name / single match) or FQN semantic narrowing.",
+                minimum = 1
             },
             targetBaseType = new
             {
@@ -96,6 +102,7 @@ public sealed class UseBaseTypeTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
+                Line = args.Line,
                 TargetBaseType = args.TargetBaseType,
                 Preview = args.Preview ?? false
             };
@@ -127,6 +134,7 @@ public sealed class UseBaseTypeTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
+        public int? Line { get; init; }
         public string? TargetBaseType { get; init; }
         public bool? Preview { get; init; }
     }

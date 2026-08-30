@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -14,6 +15,17 @@ namespace RoslynMcp.Core.Refactoring.Hierarchy;
 /// <summary>
 /// Replaces selected derived-type references with a compatible base type or
 /// interface where every used member exists on that base.
+/// Honors optional <c>line</c> to disambiguate same-named types in one
+/// file (identifier preferred, then smallest containing type).
+/// Omitted line keeps today's <c>TypeDeclarationSyntax</c> first-match
+/// (<c>matches[0]</c> when the name has no <c>.</c> or there is a single
+/// match; otherwise semantic <c>TypeNameMatches</c> for FQN). Enum and
+/// <c>DelegateDeclarationSyntax</c> do not participate on omitted line.
+/// When line is set, a covering enum or delegate is included so it
+/// reaches <c>InvalidSymbolKind</c> rather than retargeting a later class.
+/// After resolving the derived symbol, reference discovery keys off
+/// <c>FindTypeReferencesAsync</c> — there is no post-rewrite rematch of
+/// the derived declaration.
 /// </summary>
 public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeParams>
 {
@@ -45,6 +57,9 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
+        if (@params.Line.HasValue && @params.Line.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
+
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
@@ -62,17 +77,29 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var derivedDecl = FindTypeDeclaration(root, semanticModel, @params.TypeName, cancellationToken);
-        if (derivedDecl == null)
+        // Optional line disambiguates same-named types. Omitted keeps
+        // today's TypeDeclarationSyntax first-match / FQN semantic pick
+        // (enum and DelegateDeclarationSyntax do not participate). Line
+        // set also includes a covering enum or delegate so it reaches
+        // InvalidSymbolKind instead of retargeting a later class.
+        var found = FindTypeDeclaration(root, semanticModel, @params.TypeName, @params.Line, cancellationToken);
+        if (found == null)
         {
             throw new RefactoringException(
                 ErrorCodes.TypeNotFound,
                 $"Type '{@params.TypeName}' not found in file.");
         }
 
-        var derivedSymbol = semanticModel.GetDeclaredSymbol(derivedDecl, cancellationToken) as INamedTypeSymbol;
+        var derivedSymbol = semanticModel.GetDeclaredSymbol(found, cancellationToken) as INamedTypeSymbol;
         if (derivedSymbol == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve type symbol.");
+
+        if (found is not TypeDeclarationSyntax)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSymbolKind,
+                $"Type '{derivedSymbol.Name}' is not a supported target for use_base_type.");
+        }
 
         var target = GetTargetBaseType(derivedSymbol, @params.TargetBaseType);
         var candidates = await FindTypeReferencesAsync(derivedSymbol, cancellationToken);
@@ -141,21 +168,87 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
             0);
     }
 
-    private static TypeDeclarationSyntax? FindTypeDeclaration(
+    /// <summary>
+    /// Finds a type by <paramref name="typeName"/>. Omitted <paramref name="line"/>
+    /// keeps today's <c>TypeDeclarationSyntax</c> first-match: <c>matches[0]</c>
+    /// when the name has no <c>.</c> or there is a single match; otherwise
+    /// semantic <c>TypeNameMatches</c> for FQN. Several same-named types still
+    /// succeed on omitted line (do not invent a new enum pick). Enums and
+    /// delegates are not in that set, so omitted line still picks a later
+    /// same-named class rather than an earlier enum or
+    /// <c>DelegateDeclarationSyntax</c>. When set, picks the type whose
+    /// identifier or declaration span covers that 1-based line (same
+    /// exclusive-end coverage as
+    /// <c>PushMembersDownOperation.SpanCoversLine</c> /
+    /// <c>PullMembersUpOperation.SpanCoversLine</c>). Prefer the identifier
+    /// hit, then the smallest containing type. Nested types, enums, and
+    /// <c>DelegateDeclarationSyntax</c> participate when line is set so a
+    /// covering enum or delegate still reaches <c>InvalidSymbolKind</c>
+    /// rather than retargeting a later class. Do not require the declaration
+    /// to start on <paramref name="line"/> — a split declaration may put the
+    /// identifier on a continuation line. If nothing covers this line, keep
+    /// today's first-match / FQN semantic pick rather than inventing a
+    /// not-found. After resolving the derived symbol, reference discovery
+    /// keys off that symbol — do not rematch the derived declaration by
+    /// stale SpanStart or line.
+    /// </summary>
+    internal static MemberDeclarationSyntax? FindTypeDeclaration(
         SyntaxNode root,
         SemanticModel model,
         string typeName,
-        CancellationToken cancellationToken)
+        int? line,
+        CancellationToken cancellationToken = default)
     {
         var simpleName = typeName.Contains('.')
             ? typeName[(typeName.LastIndexOf('.') + 1)..]
             : typeName;
 
-        var matches = root.DescendantNodes()
+        var typeCandidates = root.DescendantNodes()
             .OfType<TypeDeclarationSyntax>()
             .Where(type => type.Identifier.Text == simpleName)
             .ToList();
 
+        if (!line.HasValue)
+            return PickOmittedLineMatch(typeCandidates, model, typeName, cancellationToken);
+
+        // Line set: include BaseTypeDeclarationSyntax (enum) and
+        // DelegateDeclarationSyntax in the covering-line set. Do not
+        // require the declaration to start on `line` — a split type's
+        // identifier may live on a continuation line whose declaration
+        // span still covers that line. Prefer the identifier hit, then
+        // the smallest containing type (nested over outer). Include enum
+        // and delegate candidates. Do not silently pick the first when a
+        // covering node exists elsewhere — scan every candidate. If
+        // nothing covers this line, keep today's TypeDeclarationSyntax
+        // first-match / FQN semantic pick rather than inventing a
+        // not-found (enums and delegates stay out of that omitted-line
+        // fallback).
+        var lineCandidates = root.DescendantNodes()
+            .OfType<BaseTypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == simpleName)
+            .Cast<MemberDeclarationSyntax>()
+            .Concat(root.DescendantNodes()
+                .OfType<DelegateDeclarationSyntax>()
+                .Where(d => d.Identifier.Text == simpleName))
+            .ToList();
+
+        if (lineCandidates.Count == 0)
+            return null;
+
+        return lineCandidates
+            .Where(t => TypeCoversLine(t, line.Value))
+            .OrderBy(t => IdentifierCoversLine(t, line.Value) ? 0 : 1)
+            .ThenBy(t => t.Span.Length)
+            .FirstOrDefault()
+            ?? PickOmittedLineMatch(typeCandidates, model, typeName, cancellationToken);
+    }
+
+    private static TypeDeclarationSyntax? PickOmittedLineMatch(
+        List<TypeDeclarationSyntax> matches,
+        SemanticModel model,
+        string typeName,
+        CancellationToken cancellationToken)
+    {
         if (matches.Count == 0)
             return null;
 
@@ -172,6 +265,43 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         }
 
         return null;
+    }
+
+    private static bool TypeCoversLine(MemberDeclarationSyntax type, int line) =>
+        IdentifierCoversLine(type, line) ||
+        SpanCoversLine(type.GetLocation().GetLineSpan(), line);
+
+    private static bool IdentifierCoversLine(MemberDeclarationSyntax type, int line)
+    {
+        var identifier = GetTypeIdentifier(type);
+        return identifier != default
+            && SpanCoversLine(identifier.GetLocation().GetLineSpan(), line);
+    }
+
+    private static SyntaxToken GetTypeIdentifier(MemberDeclarationSyntax type) => type switch
+    {
+        BaseTypeDeclarationSyntax named => named.Identifier,
+        DelegateDeclarationSyntax del => del.Identifier,
+        _ => default
+    };
+
+    /// <summary>
+    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so a span that ends at the start of a line does not
+    /// cover that line. Treating the end as inclusive would let the first
+    /// line of an adjacent type also match the previous declaration. Same
+    /// exclusive-end idea as <c>PushMembersDownOperation.SpanCoversLine</c>.
+    /// </summary>
+    internal static bool SpanCoversLine(FileLinePositionSpan span, int line)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == endLine && span.EndLinePosition.Character == 0)
+            return false;
+        return true;
     }
 
     internal static bool TypeNameMatches(INamedTypeSymbol symbol, string typeName)
