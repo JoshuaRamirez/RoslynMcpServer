@@ -13,7 +13,7 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
 /// Unit tests for GenerateConstructorOperation semantic validation,
-/// plus operation-level tests for optional <c>line</c>,
+/// plus operation-level tests for optional <c>line</c> / <c>column</c>,
 /// <c>includeProperties</c>,
 /// <c>includeInheritedMembers</c>, <c>replaceExisting</c>,
 /// <c>visibility</c>, <c>copyConstructor</c>, <c>classBaseCopy</c>, and <c>callBase</c>.
@@ -401,6 +401,396 @@ public class GenerateConstructorOperationTests
         Assert.DoesNotContain("old-beta", updated, StringComparison.Ordinal);
         Assert.Equal(1, CountOccurrences(NormalizeNewlines(alpha.ToFullString()), "public Alpha("));
         Assert.Equal(1, CountOccurrences(NormalizeNewlines(beta.ToFullString()), "public Beta("));
+    }
+
+    #endregion
+
+    #region P0 optional column disambiguation
+
+    private const string SameLineNestedWidgetSource = """
+        namespace TestApp;
+
+        public class Widget { public string Name { get; set; } public class Widget { public int Age { get; set; } } }
+        """;
+
+    [Fact]
+    public void Column_DefaultsToNull()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Widget"
+        };
+
+        Assert.Null(@params.Column);
+    }
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                Column = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                Column = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_OmittedColumn_KeepsTypeNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasConstructor(types[0]));
+        Assert.False(TypeHasConstructor(types[1]));
+        var outerCtor = ExtractConstructorFromType(types[0]);
+        Assert.Contains("Name", outerCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Age", outerCtor, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_OmittedColumn_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "nested-widget")
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasConstructor(types[0]));
+        Assert.True(TypeHasConstructor(types[1]));
+        var nestedCtor = ExtractConstructorFromType(types[1]);
+        Assert.Contains("Age", nestedCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Name", nestedCtor, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ColumnOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget { public string Name");
+        var column = ColumnOf(SameLineNestedWidgetSource, "Widget { public int Age");
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasConstructor(types[0]));
+        Assert.True(TypeHasConstructor(types[1]));
+        var nestedCtor = ExtractConstructorFromType(types[1]);
+        Assert.Contains("Age", nestedCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Name", nestedCtor, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ColumnOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget { public string Name");
+        var column = ColumnOf(SameLineNestedWidgetSource, "Widget { public string Name");
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasConstructor(types[0]));
+        Assert.False(TypeHasConstructor(types[1]));
+        var outerCtor = ExtractConstructorFromType(types[0]);
+        Assert.Contains("Name", outerCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Age", outerCtor, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedColumn_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GenerateConstructorOperation.FindTypeDeclaration(root, "Widget", line: null, column: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget { public string Name");
+        var found = GenerateConstructorOperation.FindTypeDeclaration(
+            root, "Widget", line, ColumnOf(SameLineNestedWidgetSource, "Widget { public int Age"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Widget");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget { public string Name");
+        var found = GenerateConstructorOperation.FindTypeDeclaration(
+            root, "Widget", line, ColumnOf(SameLineNestedWidgetSource, "Widget { public string Name"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnWithoutLine_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
+        var nestedColumn = ColumnOf(SameLineNestedWidgetSource, "Widget { public int Age");
+        var found = GenerateConstructorOperation.FindTypeDeclaration(
+            root, "Widget", line: null, nestedColumn);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Widget // split-widget
+            {
+                public string Name { get; set; }
+
+                public class Widget // nested-widget
+                {
+                    public int Age { get; set; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-widget");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = GenerateConstructorOperation.FindTypeDeclaration(
+            root, "Widget", identifierLine, ColumnOf(source, "Widget // split-widget"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ColumnOnContinuationLine_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Widget // split-widget
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var startLine = FindLine(source, "public class\n    Widget");
+        var identifierLine = FindLine(source, "split-widget");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = identifierLine,
+            Column = ColumnOf(source, "Widget // split-widget")
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Single(types);
+        Assert.True(TypeHasConstructor(types[0]));
+        var ctor = ExtractConstructorFromType(types[0]);
+        Assert.Contains("Name", ctor, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnAndLineMiss_DoesNotFallBackToFirst()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = GenerateConstructorOperation.FindTypeDeclaration(root, "Widget", line: 1, column: 1);
+
+        Assert.Null(found);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_ColumnAndLineMiss_ThrowsTypeNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.TypeNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_Column_Preview_WritesNothing_AndDescribesGeneration()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedWidgetSource, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var line = FindLine(SameLineNestedWidgetSource, "public class Widget { public string Name");
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = ColumnOf(SameLineNestedWidgetSource, "Widget { public int Age"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Generate constructor", result.PendingChanges[0].Description);
+        Assert.Contains("Widget", result.PendingChanges[0].Description);
+        Assert.Contains("Age", result.PendingChanges[0].Description);
+        Assert.Contains("public Widget(", result.PendingChanges[0].AfterSnippet);
+        Assert.Contains("this.Age = age", result.PendingChanges[0].AfterSnippet);
+        Assert.DoesNotContain("Name", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class Outer { class Nested { } }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var nested = tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == "Nested");
+        var span = nested.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(GenerateConstructorOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(GenerateConstructorOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(GenerateConstructorOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(GenerateConstructorOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_SequentialColumn_ReusedWorkspace_InsertsOnSecondSelectedType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget { public string Name { get; set; } public Widget(string name) { Name = "old"; /* old-outer */ } public class Widget { public int Age { get; set; } public Widget(int age) { Age = 0; /* old-nested */ } } }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+        var line = FindLine(source, "public class Widget { public string Name");
+
+        var first = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = line,
+            Column = ColumnOf(source, "Widget { public string Name"),
+            ReplaceExisting = true
+        });
+        Assert.True(first.Success);
+
+        // Recompute from the rewritten file. A per-execution annotation
+        // must not leave the first selected type as the only recover-able
+        // node in a reused workspace.
+        var afterFirst = await File.ReadAllTextAsync(workspace.SourcePath);
+        var second = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(afterFirst, "old-nested"),
+            Column = ColumnOf(afterFirst, "Widget { public int Age"),
+            ReplaceExisting = true
+        });
+        Assert.True(second.Success);
+
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasConstructor(types[0]));
+        Assert.True(TypeHasConstructor(types[1]));
+        var outerCtor = ExtractConstructorFromType(types[0]);
+        var nestedCtor = ExtractConstructorFromType(types[1]);
+        Assert.Contains("this.Name = name", outerCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Age", outerCtor, StringComparison.Ordinal);
+        Assert.Contains("this.Age = age", nestedCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("Name", nestedCtor, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-outer", types[0].ToFullString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("old-nested", types[1].ToFullString(), StringComparison.Ordinal);
+        Assert.Single(types[0].Members.OfType<ConstructorDeclarationSyntax>());
+        Assert.Single(types[1].Members.OfType<ConstructorDeclarationSyntax>());
     }
 
     #endregion
@@ -5016,6 +5406,18 @@ public class GenerateConstructorOperationTests
         }
 
         return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
     }
 
     private static string NormalizeNewlines(string text) =>

@@ -368,6 +368,7 @@ public class HelpGeneratorTests
         Assert.Contains("--source-file", requiredSection);
         Assert.Contains("--type-name", requiredSection);
         Assert.DoesNotContain("--line", requiredSection);
+        Assert.DoesNotContain("--column", requiredSection);
         Assert.DoesNotContain("--include-properties", requiredSection);
         Assert.DoesNotContain("--include-inherited-members", requiredSection);
         Assert.DoesNotContain("--replace-existing", requiredSection);
@@ -377,6 +378,7 @@ public class HelpGeneratorTests
         Assert.DoesNotContain("--call-base", requiredSection);
 
         Assert.Contains("--line", optionalSection);
+        Assert.Contains("--column", optionalSection);
         Assert.Contains("--include-properties", optionalSection);
         Assert.Contains("--include-inherited-members", optionalSection);
         Assert.Contains("--replace-existing", optionalSection);
@@ -386,6 +388,7 @@ public class HelpGeneratorTests
         Assert.Contains("--call-base", optionalSection);
         Assert.Contains("record class", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("FirstOrDefault", tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 

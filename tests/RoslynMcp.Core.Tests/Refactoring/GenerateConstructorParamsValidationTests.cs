@@ -129,6 +129,52 @@ public class GenerateConstructorParamsValidationTests
     }
 
     [Fact]
+    public void Column_DefaultsToNull()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass"
+        };
+
+        Assert.Null(@params.Column);
+    }
+
+    [Fact]
+    public void ValidateParams_InvalidColumn_ThrowsInvalidColumnNumber()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass",
+            Column = 0
+        };
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(@params));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void ValidateParams_NegativeColumn_ThrowsInvalidColumnNumber()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass",
+            Column = -1
+        };
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(@params));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
     public void IncludeProperties_DefaultsToTrue()
     {
         var @params = new GenerateConstructorParams
