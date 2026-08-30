@@ -423,17 +423,21 @@ public class HelpGeneratorTests
 
         Assert.Contains("--source-file", requiredSection);
         Assert.Contains("--type-name", requiredSection);
+        Assert.DoesNotContain("--line", requiredSection);
         Assert.DoesNotContain("--throw-not-implemented", requiredSection);
         Assert.DoesNotContain("--members", requiredSection);
         Assert.DoesNotContain("--replace-existing", requiredSection);
         Assert.DoesNotContain("--preview", requiredSection);
 
+        Assert.Contains("--line", optionalSection);
         Assert.Contains("--throw-not-implemented", optionalSection);
         Assert.Contains("--members", optionalSection);
         Assert.Contains("--replace-existing", optionalSection);
         Assert.Contains("--preview", optionalSection);
         Assert.Contains("throwNotImplemented", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("replaceExisting", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("FirstOrDefault", tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

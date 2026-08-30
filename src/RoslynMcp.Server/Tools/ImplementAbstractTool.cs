@@ -33,7 +33,7 @@ public sealed class ImplementAbstractTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Generate implementation stubs for unimplemented abstract members inherited by a selected class. throwNotImplemented (default true) throws NotImplementedException in stub bodies; replaceExisting (default false) replaces already-implemented abstract members instead of failing; preview returns computed changes without applying.";
+        "Generate implementation stubs for unimplemented abstract members inherited by a selected class. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. throwNotImplemented (default true) throws NotImplementedException in stub bodies; replaceExisting (default false) replaces already-implemented abstract members instead of failing; preview returns computed changes without applying.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -56,6 +56,12 @@ public sealed class ImplementAbstractTool : IToolHandler
             {
                 type = "string",
                 description = "Name of the class to implement inherited abstract members on"
+            },
+            line = new
+            {
+                type = "integer",
+                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                minimum = 1
             },
             members = new
             {
@@ -110,6 +116,7 @@ public sealed class ImplementAbstractTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 TypeName = args.TypeName,
+                Line = args.Line,
                 Members = args.Members,
                 ThrowNotImplemented = args.ThrowNotImplemented ?? true,
                 ReplaceExisting = args.ReplaceExisting ?? false,
@@ -143,6 +150,7 @@ public sealed class ImplementAbstractTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public string TypeName { get; init; } = "";
+        public int? Line { get; init; }
         public List<string>? Members { get; init; }
         public bool? ThrowNotImplemented { get; init; }
         public bool? ReplaceExisting { get; init; }
