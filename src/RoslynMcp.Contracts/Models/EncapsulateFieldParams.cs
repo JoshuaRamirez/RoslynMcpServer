@@ -27,6 +27,16 @@ public sealed class EncapsulateFieldParams
     public int? Line { get; init; }
 
     /// <summary>
+    /// 1-based column for disambiguation. When set with <see cref="Line"/>,
+    /// selects the field whose identifier or declaration span covers that
+    /// column (identifier preferred, then smallest covering declarator/field).
+    /// Omitted keeps today's fieldName + optional line pick. Column without
+    /// line keeps today's omitted-line <c>FirstOrDefault</c> after the
+    /// fieldName filter (field <c>VariableDeclaratorSyntax</c> only).
+    /// </summary>
+    public int? Column { get; init; }
+
+    /// <summary>
     /// Name for the property. If null, derives from field name.
     /// </summary>
     public string? PropertyName { get; init; }
