@@ -1,5 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
@@ -82,6 +83,7 @@ public class ImplementAbstractOperationTests
         Assert.True(@params.ThrowNotImplemented);
         Assert.False(@params.ReplaceExisting);
         Assert.False(@params.Preview);
+        Assert.Null(@params.Line);
     }
 
     [Fact]
@@ -94,6 +96,474 @@ public class ImplementAbstractOperationTests
         };
 
         Assert.False(@params.ReplaceExisting);
+    }
+
+    [Fact]
+    public void Line_DefaultsToNull()
+    {
+        var @params = new ImplementAbstractParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Widget"
+        };
+
+        Assert.Null(@params.Line);
+    }
+
+    [Fact]
+    public void Validate_InvalidLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementAbstractOperation.Validate(new ImplementAbstractParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                Line = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementAbstractOperation.Validate(new ImplementAbstractParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget",
+                Line = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    #endregion
+
+    #region P0 optional line disambiguation
+
+    private const string NestedSameNameWidgetSource = """
+        namespace TestApp;
+
+        public abstract class Shape
+        {
+            public abstract void Draw();
+        }
+
+        public /* outer-widget */ class Widget : Shape
+        {
+            public /* nested-widget */ class Widget : Shape
+            {
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task ImplementAbstract_OmittedLine_KeepsTypeNameFirstOrDefaultPick()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget"
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "Draw"));
+        Assert.False(TypeHasMethod(types[1], "Draw"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_LineOnNestedIdentifier_PicksNestedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "nested-widget")
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.False(TypeHasMethod(types[0], "Draw"));
+        Assert.True(TypeHasMethod(types[1], "Draw"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_LineOnOuterIdentifier_PicksOuterType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "outer-widget")
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(2, types.Count);
+        Assert.True(TypeHasMethod(types[0], "Draw"));
+        Assert.False(TypeHasMethod(types[1], "Draw"));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_Line_Preview_WritesNothing_AndDescribesGeneration()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameWidgetSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(NestedSameNameWidgetSource, "nested-widget"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains("Implement abstract members on 'Widget'", result.PendingChanges[0].Description);
+        Assert.Contains("Draw", result.PendingChanges[0].Description);
+        Assert.Contains("void Draw()", result.PendingChanges[0].AfterSnippet);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(root, "Widget", line: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(NestedSameNameWidgetSource, "nested-widget"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Widget");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(NestedSameNameWidgetSource, "outer-widget"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class Shape
+            {
+                public abstract void Draw();
+            }
+
+            public class
+                Widget : Shape // split-widget
+            {
+                public class Widget : Shape // nested-widget
+                {
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-widget");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = ImplementAbstractOperation.FindTypeDeclaration(root, "Widget", identifierLine);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineMiss_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(root, "Widget", line: 1);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    private const string EnumFirstThenSameNamedClassSource = """
+        namespace Other
+        {
+            public /* widget-enum */ enum Widget
+            {
+                Ready
+            }
+        }
+
+        namespace TestApp
+        {
+            public abstract class Shape
+            {
+                public abstract void Draw();
+            }
+
+            public /* widget-class */ class Widget : Shape
+            {
+            }
+        }
+        """;
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_EnumFirstPicksEnum()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(root, "Widget", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnEnumIdentifier_PicksEnum()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(EnumFirstThenSameNamedClassSource, "widget-enum"));
+
+        Assert.NotNull(found);
+        Assert.IsType<EnumDeclarationSyntax>(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnClassIdentifier_PicksClass()
+    {
+        var root = CSharpSyntaxTree.ParseText(EnumFirstThenSameNamedClassSource).GetRoot();
+        var found = ImplementAbstractOperation.FindTypeDeclaration(
+            root, "Widget", FindLine(EnumFirstThenSameNamedClassSource, "widget-class"));
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_OmittedLine_EnumFirstThenSameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("override void Draw", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_LineOnEnumIdentifier_SameNamedClass_ThrowsInvalidSymbolKind()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Widget",
+                Line = FindLine(EnumFirstThenSameNamedClassSource, "widget-enum")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.Equal("2020", ex.ErrorCode);
+        Assert.Contains("not a supported target", ex.Message);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(before, updated);
+        Assert.DoesNotContain("override void Draw", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_LineOnClassIdentifier_SameNamedEnum_ImplementsOnClass()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EnumFirstThenSameNamedClassSource, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(EnumFirstThenSameNamedClassSource, "widget-class")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var types = GetTypes(updated, "Widget");
+        Assert.Single(types);
+        Assert.True(TypeHasMethod(types[0], "Draw"));
+        Assert.Contains("public override void Draw()", updated);
+        Assert.Contains("enum Widget", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("override void Draw", updated[..updated.IndexOf("class Widget", StringComparison.Ordinal)]);
+    }
+
+    [Fact]
+    public void SpanCoversLine_TreatsEndAsExclusive()
+    {
+        var span = new FileLinePositionSpan(
+            "t.cs",
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
+
+        Assert.True(ImplementAbstractOperation.SpanCoversLine(span, 1));
+        Assert.True(ImplementAbstractOperation.SpanCoversLine(span, 2));
+        Assert.False(ImplementAbstractOperation.SpanCoversLine(span, 3));
+        Assert.False(ImplementAbstractOperation.SpanCoversLine(span, 0));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_LineOnLaterSameFilePartial_ReplaceExisting_InsertsOnSelectedPartial()
+    {
+        const string source = """
+            public abstract class Shape
+            {
+                public abstract void Draw();
+            }
+
+            namespace Other
+            {
+                public class Widget : Shape
+                {
+                }
+            }
+
+            namespace TestApp
+            {
+                public partial class Widget : Shape
+                {
+                    public override void Draw() { /* old-body */ }
+                }
+
+                public /* later-partial */ partial class Widget
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Widget.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Widget",
+            Line = FindLine(source, "later-partial"),
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var types = GetTypes(await File.ReadAllTextAsync(workspace.SourcePath), "Widget");
+        Assert.Equal(3, types.Count);
+        Assert.False(TypeHasMethod(types[0], "Draw"));
+        Assert.False(TypeHasMethod(types[1], "Draw"));
+        Assert.True(TypeHasMethod(types[2], "Draw"));
+        Assert.DoesNotContain("old-body", types[2].ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("throw new global::System.NotImplementedException()", types[2].ToFullString(), StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(await File.ReadAllTextAsync(workspace.SourcePath), "public override void Draw("));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_SequentialReplaceExisting_ReusedWorkspace_InsertsOnSecondSelectedType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public abstract class AlphaBase
+            {
+                public abstract void AlphaWork();
+            }
+
+            public abstract class BetaBase
+            {
+                public abstract void BetaWork();
+            }
+
+            public class Alpha : AlphaBase
+            {
+                public override void AlphaWork() { /* old-alpha */ }
+            }
+
+            public class Beta : BetaBase
+            {
+                public override void BetaWork() { /* old-beta */ }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Types.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var first = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Alpha",
+            ReplaceExisting = true
+        });
+        Assert.True(first.Success);
+
+        var second = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Beta",
+            ReplaceExisting = true
+        });
+        Assert.True(second.Success);
+
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var types = GetTypes(updated, "Alpha").Concat(GetTypes(updated, "Beta")).ToList();
+        var alpha = types.Single(t => t.Identifier.Text == "Alpha");
+        var beta = types.Single(t => t.Identifier.Text == "Beta");
+        Assert.True(TypeHasMethod(alpha, "AlphaWork"));
+        Assert.True(TypeHasMethod(beta, "BetaWork"));
+        Assert.False(TypeHasMethod(alpha, "BetaWork"));
+        Assert.False(TypeHasMethod(beta, "AlphaWork"));
+        Assert.DoesNotContain("old-alpha", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("old-beta", updated, StringComparison.Ordinal);
+        Assert.Contains("throw new global::System.NotImplementedException()", alpha.ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("throw new global::System.NotImplementedException()", beta.ToFullString(), StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(NormalizeNewlines(alpha.ToFullString()), "public override void AlphaWork("));
+        Assert.Equal(1, CountOccurrences(NormalizeNewlines(beta.ToFullString()), "public override void BetaWork("));
     }
 
     #endregion
@@ -2634,8 +3104,40 @@ public class ImplementAbstractOperationTests
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpImplementAbstractMissing.cs");
 
+    private static IReadOnlyList<TypeDeclarationSyntax> GetTypes(string source, string name) =>
+        CSharpSyntaxTree.ParseText(source).GetRoot()
+            .DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == name)
+            .ToList();
+
+    private static bool TypeHasMethod(TypeDeclarationSyntax type, string methodName) =>
+        type.Members.OfType<MethodDeclarationSyntax>()
+            .Any(m => m.Identifier.Text == methodName);
+
+    // Single-line snippets only — IndexOf of an LF-only snippet missed
+    // CRLF checkouts (FindMethod_ColumnOnContinuationLine on #200 / #214).
+    private static int FindLine(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
     private static string NormalizeNewlines(string text) =>
-        text.Replace("\r\n", "\n", StringComparison.Ordinal);
+        text.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
 
     private static int CountOccurrences(string text, string value)
     {
