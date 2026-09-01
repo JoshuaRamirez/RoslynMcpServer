@@ -977,6 +977,33 @@ public class SimplifyNameOperationTests
     }
 
     [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_AmbiguousFile_ReportsSkipsWithoutWritingThatFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("QualifiedA.cs", QualifiedA),
+            ("Ambiguous.cs", AllAmbiguous));
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var beforeAmbiguous = await File.ReadAllTextAsync(workspace.SourcePaths["Ambiguous.cs"]);
+
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedA.cs"]));
+        Assert.DoesNotContain("System.Collections.Generic.List", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeAmbiguous, await File.ReadAllTextAsync(workspace.SourcePaths["Ambiguous.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["QualifiedA.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Ambiguous.cs"]));
+        Assert.True(result.SimplificationsSkipped >= 1);
+        Assert.NotNull(result.SkippedReasons);
+        Assert.Contains(result.SkippedReasons, skip =>
+            skip.Name.Contains("Widget", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
     public async Task SimplifyName_PreviewAllFiles_DoesNotWriteFiles()
     {
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
@@ -1062,6 +1089,30 @@ public class SimplifyNameOperationTests
         }
         """;
 
+    private const string AllAmbiguous = """
+        namespace Other
+        {
+            public class Widget
+            {
+            }
+        }
+
+        namespace TestApp
+        {
+            public class Widget
+            {
+            }
+
+            public class AmbiguousProcessor
+            {
+                public Other.Widget Create()
+                {
+                    return new Other.Widget();
+                }
+            }
+        }
+        """;
+
     private const string AlreadySimpleB = """
         using System.Text;
 
@@ -1119,7 +1170,7 @@ public class SimplifyNameOperationTests
             CreateWithFilesAsync(implicitUsings, (fileName, source));
 
         public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
-            CreateWithFilesAsync(implicitUsings: true, files);
+            CreateWithFilesAsync(implicitUsings: true, files: files);
 
         public static async Task<TempWorkspace> CreateWithFilesAsync(
             bool implicitUsings,

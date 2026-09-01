@@ -264,6 +264,8 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
                 continue;
 
             var outcome = await TrySimplifyAsync(currentDocument, root, model, candidates, cancellationToken);
+            skippedTotal += outcome.Skipped.Count;
+            skippedReasons.AddRange(outcome.Skipped);
             if (outcome.Applied.Count == 0)
                 continue;
 
@@ -274,8 +276,6 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
                 continue;
 
             appliedTotal += outcome.Applied.Count;
-            skippedTotal += outcome.Skipped.Count;
-            skippedReasons.AddRange(outcome.Skipped);
 
             if (@params.Preview)
             {
@@ -347,7 +347,8 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
             },
             Scope = ScopeFile,
             SimplificationsApplied = 0,
-            SimplificationsSkipped = 0
+            SimplificationsSkipped = skippedTotal,
+            SkippedReasons = skippedReasons
         };
     }
 
