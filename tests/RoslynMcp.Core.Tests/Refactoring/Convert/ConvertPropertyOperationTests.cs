@@ -1083,6 +1083,37 @@ public class ConvertPropertyOperationTests
         Assert.Equal("Concrete", collected[0].Identifier.Text);
     }
 
+    [Fact]
+    public void CollectEligibleProperties_ToAutoProperty_SkipsInterfaceAndAbstract()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IHasValue
+            {
+                int Value { get; set; }
+            }
+
+            public abstract class BaseType
+            {
+                public abstract int Abs { get; set; }
+                private int _concrete;
+                public int Concrete
+                {
+                    get { return _concrete; }
+                    set { _concrete = value; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var collected = ConvertPropertyOperation.CollectEligibleProperties(
+            root, ConversionDirection.ToAutoProperty);
+
+        Assert.Single(collected);
+        Assert.Equal("Concrete", collected[0].Identifier.Text);
+    }
+
     [SkippableFact]
     public async Task Convert_AllFilesTrue_SkipsInterfaceAndAbstract_ConvertsConcrete()
     {
