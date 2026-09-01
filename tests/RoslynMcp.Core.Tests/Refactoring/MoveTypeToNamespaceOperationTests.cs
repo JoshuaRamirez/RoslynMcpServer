@@ -1,8 +1,12 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
 
@@ -10,11 +14,113 @@ namespace RoslynMcp.Core.Tests.Refactoring;
 
 /// <summary>
 /// Operation-level tests for <see cref="MoveTypeToNamespaceOperation"/>,
-/// including <c>updateFileLocation</c>.
+/// including optional <c>line</c>, <c>column</c>, <c>updateFileLocation</c>,
+/// and <c>preview</c>.
 /// </summary>
 public class MoveTypeToNamespaceOperationTests
 {
     #region Input Validation
+
+    [Fact]
+    public void Column_DefaultsToNull()
+    {
+        var @params = new MoveTypeToNamespaceParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            SymbolName = "Widget",
+            TargetNamespace = "New.Ns"
+        };
+
+        Assert.Null(@params.Column);
+    }
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                SymbolName = "Widget",
+                TargetNamespace = "New.Ns",
+                Column = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+        Assert.Equal("column must be >= 1.", ex.Message);
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                SymbolName = "Widget",
+                TargetNamespace = "New.Ns",
+                Column = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+        Assert.Equal("column must be >= 1.", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Validate_EmptySymbolName_WithColumnAndLine_ThrowsMissingRequiredParam(string symbolName)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                SymbolName = symbolName,
+                TargetNamespace = "New.Ns",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Validate_EmptySourceFile_WithColumnAndLine_ThrowsMissingRequiredParam(string sourceFile)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                SourceFile = sourceFile,
+                SymbolName = "Widget",
+                TargetNamespace = "New.Ns",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Validate_EmptyTargetNamespace_WithColumnAndLine_ThrowsMissingRequiredParam(string targetNamespace)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                SymbolName = "Widget",
+                TargetNamespace = targetNamespace,
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
 
     [Fact]
     public void Validate_MissingSourceFile_Throws()
@@ -651,7 +757,532 @@ public class MoveTypeToNamespaceOperationTests
 
     #endregion
 
+    #region P0 optional column disambiguation
+
+    private const string SameLineDualTopLevelWidgetSource =
+        "namespace A { public class Widget { } /* a-widget */ } namespace B { public class Widget { } /* b-widget */ }\n";
+
+    private const string SeparateLineDualTopLevelWidgetSource = """
+        namespace A
+        {
+            public class Widget { } // a-widget
+        }
+
+        namespace B
+        {
+            public class Widget { } // b-widget
+        }
+        """;
+
+    private const string SingleWidgetSource = """
+        namespace TestApp;
+
+        public class Widget
+        {
+        }
+        """;
+
+    private const string NestedWidgetSource = """
+        namespace TestApp;
+
+        public class Outer
+        {
+            public class Widget { } // nested-widget
+        }
+        """;
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_OmittedColumn_LinePicksStartLineType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SeparateLineDualTopLevelWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            Line = FindLine(SeparateLineDualTopLevelWidgetSource, "a-widget"),
+            TargetNamespace = "Moved.A"
+        });
+
+        Assert.True(result.Success);
+        var source = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace Moved.A", source);
+        Assert.Contains("a-widget", source);
+        Assert.Contains("b-widget", source);
+        Assert.Contains("namespace B", source);
+        Assert.DoesNotContain("namespace A\n", source);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_OmittedColumn_MultipleMatches_ThrowsSymbolAmbiguous()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SeparateLineDualTopLevelWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Widget",
+                TargetNamespace = "Moved.A"
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_OmittedColumn_SingleMatch_IgnoresLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            Line = 1,
+            TargetNamespace = "New.Ns"
+        });
+
+        Assert.True(result.Success);
+        var source = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace New.Ns;", source);
+        Assert.Contains("class Widget", source);
+        Assert.DoesNotContain("namespace TestApp;", source);
+    }
+
+    [Fact]
+    public void FindCoveringType_OmittedColumn_StartLineEqualityPicksFirstOnSharedLine()
+    {
+        var root = Parse(SameLineDualTopLevelWidgetSource);
+        var matches = TopLevelNamed(root, "Widget");
+        Assert.Equal(2, matches.Count);
+
+        var line = FindLine(SameLineDualTopLevelWidgetSource, "a-widget");
+        var a = matches.First(t => NamespaceOf(t) == "A");
+        var startLine = a.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        Assert.Equal(line, startLine);
+
+        var firstStartLine = matches.First(t =>
+            t.GetLocation().GetLineSpan().StartLinePosition.Line + 1 == line);
+        Assert.Equal("A", NamespaceOf(firstStartLine));
+    }
+
+    [Fact]
+    public void FindCoveringType_ColumnOnAIdentifier_PicksA()
+    {
+        var root = Parse(SameLineDualTopLevelWidgetSource);
+        var matches = TopLevelNamed(root, "Widget");
+        var line = FindLine(SameLineDualTopLevelWidgetSource, "a-widget");
+        var found = TypeSymbolResolver.FindCoveringType(
+            matches, line, ColumnOf(SameLineDualTopLevelWidgetSource, "Widget { } /* a-widget */"));
+
+        Assert.NotNull(found);
+        Assert.Equal("A", NamespaceOf(found));
+    }
+
+    [Fact]
+    public void FindCoveringType_ColumnOnBIdentifier_PicksB()
+    {
+        var root = Parse(SameLineDualTopLevelWidgetSource);
+        var matches = TopLevelNamed(root, "Widget");
+        var line = FindLine(SameLineDualTopLevelWidgetSource, "b-widget");
+        var found = TypeSymbolResolver.FindCoveringType(
+            matches, line, ColumnOf(SameLineDualTopLevelWidgetSource, "Widget { } /* b-widget */"));
+
+        Assert.NotNull(found);
+        Assert.Equal("B", NamespaceOf(found));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_ColumnOnAIdentifier_PicksA()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineDualTopLevelWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var line = FindLine(SameLineDualTopLevelWidgetSource, "a-widget");
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            Line = line,
+            Column = ColumnOf(SameLineDualTopLevelWidgetSource, "Widget { } /* a-widget */"),
+            TargetNamespace = "Moved.A"
+        });
+
+        Assert.True(result.Success);
+        var source = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace Moved.A", source);
+        Assert.Contains("a-widget", source);
+        Assert.Contains("b-widget", source);
+        Assert.Contains("namespace B", source);
+        Assert.DoesNotContain("namespace A {", source);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_ColumnOnBIdentifier_PicksB()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineDualTopLevelWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var line = FindLine(SameLineDualTopLevelWidgetSource, "b-widget");
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            Line = line,
+            Column = ColumnOf(SameLineDualTopLevelWidgetSource, "Widget { } /* b-widget */"),
+            TargetNamespace = "Moved.B"
+        });
+
+        Assert.True(result.Success);
+        var source = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace Moved.B", source);
+        Assert.Contains("a-widget", source);
+        Assert.Contains("b-widget", source);
+        Assert.Contains("namespace A", source);
+        Assert.DoesNotContain("namespace B {", source);
+    }
+
+    [Fact]
+    public void FindCoveringType_ColumnWithoutLine_IsNotInvokedForOmittedLinePath()
+    {
+        var root = Parse(SameLineDualTopLevelWidgetSource);
+        var matches = TopLevelNamed(root, "Widget");
+        var bColumn = ColumnOf(SameLineDualTopLevelWidgetSource, "Widget { } /* b-widget */");
+        var line = FindLine(SameLineDualTopLevelWidgetSource, "b-widget");
+        var coveringB = TypeSymbolResolver.FindCoveringType(matches, line, bColumn);
+
+        Assert.NotNull(coveringB);
+        Assert.Equal("B", NamespaceOf(coveringB));
+        Assert.Equal(2, matches.Count);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_ColumnWithoutLine_KeepsOmittedLinePath_SymbolAmbiguous()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineDualTopLevelWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Widget",
+                Column = ColumnOf(SameLineDualTopLevelWidgetSource, "Widget { } /* b-widget */"),
+                TargetNamespace = "Moved.B"
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void FindCoveringType_ColumnOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace A
+            {
+                public class
+                    Widget /* split-type */
+                {
+                }
+            }
+
+            namespace B
+            {
+                public class Widget { } /* other-widget */
+            }
+            """;
+
+        var root = Parse(source);
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-type");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var matches = TopLevelNamed(root, "Widget");
+        var found = TypeSymbolResolver.FindCoveringType(
+            matches, identifierLine, ColumnOf(source, "Widget /* split-type */"));
+
+        Assert.NotNull(found);
+        Assert.Equal("A", NamespaceOf(found));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_ColumnOnContinuationLine_PicksType()
+    {
+        const string source = """
+            namespace A
+            {
+                public class
+                    Widget /* split-type */
+                {
+                }
+            }
+
+            namespace B
+            {
+                public class Widget { } /* other-widget */
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var identifierLine = FindLine(source, "split-type");
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            Line = identifierLine,
+            Column = ColumnOf(source, "Widget /* split-type */"),
+            TargetNamespace = "Moved.A"
+        });
+
+        Assert.True(result.Success);
+        var remaining = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace Moved.A", remaining);
+        Assert.Contains("split-type", remaining);
+        Assert.Contains("other-widget", remaining);
+        Assert.Contains("namespace B", remaining);
+    }
+
+    [Fact]
+    public void FindCoveringType_ColumnAndLineMiss_DoesNotFallBackToFirst()
+    {
+        var root = Parse(SeparateLineDualTopLevelWidgetSource);
+        var matches = TopLevelNamed(root, "Widget");
+        var found = TypeSymbolResolver.FindCoveringType(matches, line: 1, column: 1);
+
+        Assert.Null(found);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_ColumnAndLineMiss_ThrowsSymbolNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SeparateLineDualTopLevelWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Widget",
+                Line = 1,
+                Column = 1,
+                TargetNamespace = "Moved.A"
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        Assert.Equal("2003", ex.ErrorCode);
+        Assert.Contains("line 1, column 1", ex.Message);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_ColumnAndLine_UnknownSymbolName_ThrowsSymbolNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Missing",
+                Line = 1,
+                Column = 1,
+                TargetNamespace = "Moved.A"
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        Assert.Equal("2003", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_NestedType_StaysUnmoveable()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var line = FindLine(NestedWidgetSource, "nested-widget");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                SymbolName = "Widget",
+                Line = line,
+                Column = ColumnOf(NestedWidgetSource, "Widget { } // nested-widget"),
+                TargetNamespace = "Moved.Nested"
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_Column_Preview_WritesNothing_AndDescribesMove()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineDualTopLevelWidgetSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var line = FindLine(SameLineDualTopLevelWidgetSource, "a-widget");
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            Line = line,
+            Column = ColumnOf(SameLineDualTopLevelWidgetSource, "Widget { } /* a-widget */"),
+            TargetNamespace = "Moved.A",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change =>
+            change.Description.Contains("Moved.A", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "namespace A { class Widget { } } namespace B { class Widget { } }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var first = tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == "Widget");
+        var span = first.Identifier.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(TypeSymbolResolver.SpanCoversColumn(span, line, startCol));
+        Assert.True(TypeSymbolResolver.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(TypeSymbolResolver.SpanCoversColumn(span, line, endCol));
+        Assert.False(TypeSymbolResolver.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_SequentialColumn_ReusedWorkspace_ActsOnSecondSelectedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineDualTopLevelWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var line = FindLine(SameLineDualTopLevelWidgetSource, "a-widget");
+
+        var first = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            Line = line,
+            Column = ColumnOf(SameLineDualTopLevelWidgetSource, "Widget { } /* a-widget */"),
+            TargetNamespace = "Moved.A"
+        });
+        Assert.True(first.Success);
+
+        var afterFirst = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace Moved.A", afterFirst);
+        Assert.Contains("b-widget", afterFirst);
+
+        var second = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            Line = FindLine(afterFirst, "b-widget"),
+            Column = ColumnOf(afterFirst, "Widget { } /* b-widget */"),
+            TargetNamespace = "Moved.B"
+        });
+        Assert.True(second.Success);
+
+        var afterSecond = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace Moved.A", afterSecond);
+        Assert.Contains("namespace Moved.B", afterSecond);
+        Assert.Contains("a-widget", afterSecond);
+        Assert.Contains("b-widget", afterSecond);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_Preview_WithoutColumn_WritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            TargetNamespace = "New.Ns",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Helpers
+
+    private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
+
+    private static string AbsoluteTestPath(string name = "Missing.cs") =>
+        Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToNamespace_" + name);
+
+    private static SyntaxNode Parse(string source) =>
+        CSharpSyntaxTree.ParseText(NormalizeNewlines(source)).GetRoot();
+
+    private static List<TypeDeclarationSyntax> TopLevelNamed(SyntaxNode root, string name) =>
+        root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Parent is CompilationUnitSyntax or BaseNamespaceDeclarationSyntax)
+            .Where(t => t.Identifier.Text == name)
+            .ToList();
+
+    private static string NamespaceOf(TypeDeclarationSyntax type) =>
+        type.Ancestors().OfType<BaseNamespaceDeclarationSyntax>().First().Name.ToString();
+
+    private static int FindLine(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
+    }
 
     private static MoveTypeToNamespaceParams ValidParams(
         string? sourceFile = null,

@@ -277,7 +277,7 @@ public sealed class ToolRegistry
             });
 
         r.RegisterManual("move-type-to-namespace",
-            "Move a type to a different namespace",
+            "Move a type to a different namespace; line (optional) disambiguates same-named top-level types by start-line equality; omitted with several matches is SymbolAmbiguous; a single match ignores line; column (optional) picks the top-level type whose identifier or declaration span covers that column when set with line; omitted keeps today's symbolName + optional line pick; column without line keeps today's omitted-line path",
             typeof(MoveTypeToNamespaceParams), "Refactoring",
             async (ctx, json, ct) =>
             {

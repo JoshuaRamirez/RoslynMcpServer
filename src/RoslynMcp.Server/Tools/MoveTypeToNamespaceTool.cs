@@ -31,7 +31,8 @@ public sealed class MoveTypeToNamespaceTool : IToolHandler
     public string Name => "move_type_to_namespace";
 
     /// <inheritdoc />
-    public string Description => "Change the namespace of a C# type. Updates all using directives and qualified references. When updateFileLocation is true, also moves the source file to a folder matching the target namespace.";
+    public string Description =>
+        "Change the namespace of a C# type. Updates all using directives and qualified references. When updateFileLocation is true, also moves the source file to a folder matching the target namespace. line (optional) disambiguates same-named top-level types by start-line equality; omitted with several matches is SymbolAmbiguous; a single match ignores line. column (optional) picks the top-level type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering type); omitted keeps today's symbolName + optional line pick; column without line keeps today's omitted-line path.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -58,7 +59,13 @@ public sealed class MoveTypeToNamespaceTool : IToolHandler
             line = new
             {
                 type = "integer",
-                description = "1-based line number for disambiguation if multiple types match",
+                description = "1-based line number for disambiguation if multiple types match. When column is omitted, matching stays today's start-line equality. A single match ignores line.",
+                minimum = 1
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set with line, selects the top-level type whose identifier or declaration span covers that column (identifier preferred, then smallest covering type). Omitted keeps today's symbolName + optional line pick. Column without line keeps today's omitted-line path.",
                 minimum = 1
             },
             targetNamespace = new
@@ -110,6 +117,7 @@ public sealed class MoveTypeToNamespaceTool : IToolHandler
                 SourceFile = args.SourceFile,
                 SymbolName = args.SymbolName,
                 Line = args.Line,
+                Column = args.Column,
                 TargetNamespace = args.TargetNamespace,
                 UpdateFileLocation = args.UpdateFileLocation ?? false,
                 Preview = args.Preview ?? false
@@ -143,6 +151,7 @@ public sealed class MoveTypeToNamespaceTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string SymbolName { get; init; } = "";
         public int? Line { get; init; }
+        public int? Column { get; init; }
         public string TargetNamespace { get; init; } = "";
         public bool? UpdateFileLocation { get; init; }
         public bool? Preview { get; init; }
