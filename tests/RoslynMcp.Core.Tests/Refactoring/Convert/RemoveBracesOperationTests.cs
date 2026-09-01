@@ -31,6 +31,58 @@ public class RemoveBracesOperationTests
     }
 
     [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RemoveBracesOperation.Validate(new RemoveBracesParams
+            {
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFile_DoesNotThrow()
+    {
+        RemoveBracesOperation.Validate(new RemoveBracesParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithStatementScope_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RemoveBracesOperation.Validate(new RemoveBracesParams
+            {
+                AllFiles = true,
+                Scope = "statement"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("statement", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeScope_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RemoveBracesOperation.Validate(new RemoveBracesParams
+            {
+                AllFiles = true,
+                Scope = "type",
+                TypeName = "Gate"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("type", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Validate_RelativePath_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -1543,6 +1595,171 @@ public class RemoveBracesOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    [SkippableFact]
+    public async Task RemoveBraces_AllFilesFalse_UnwrapsOnlySpecifiedFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("BracedA.cs", BracedA),
+            ("BracedB.cs", BracedB),
+            ("AlreadyUnbraced.cs", AlreadyUnbraced));
+        var operation = new RemoveBracesOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["BracedB.cs"]);
+        var beforeUnbraced = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyUnbraced.cs"]);
+
+        var result = await operation.ExecuteAsync(new RemoveBracesParams
+        {
+            SourceFile = workspace.SourcePaths["BracedA.cs"],
+            AllFiles = false,
+            Scope = "file"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["BracedA.cs"]));
+        AssertIfBodyIsNotBlock(updatedA, "flag");
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["BracedB.cs"]));
+        Assert.Equal(beforeUnbraced, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyUnbraced.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["BracedA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task RemoveBraces_AllFilesTrue_WithoutSourceFile_UnwrapsMultipleFiles_LeavesAlreadyUnbracedUntouched()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("BracedA.cs", BracedA),
+            ("BracedB.cs", BracedB),
+            ("AlreadyUnbraced.cs", AlreadyUnbraced));
+        var operation = new RemoveBracesOperation(workspace.Context);
+        var beforeUnbraced = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyUnbraced.cs"]);
+
+        var result = await operation.ExecuteAsync(new RemoveBracesParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["BracedA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["BracedB.cs"]));
+        AssertIfBodyIsNotBlock(updatedA, "flag");
+        AssertIfBodyIsNotBlock(updatedB, "ready");
+        Assert.Equal(beforeUnbraced, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyUnbraced.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["BracedA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["BracedB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["AlreadyUnbraced.cs"]));
+        Assert.Equal("file", result.Scope);
+    }
+
+    [SkippableFact]
+    public async Task RemoveBraces_AllFilesTrue_EveryFileAlreadyUnbraced_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("AlreadyUnbraced.cs", AlreadyUnbraced),
+            ("AlreadyUnbracedB.cs", AlreadyUnbracedB));
+        var operation = new RemoveBracesOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyUnbraced.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyUnbracedB.cs"]);
+
+        var result = await operation.ExecuteAsync(new RemoveBracesParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyUnbraced.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyUnbracedB.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task RemoveBraces_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(BracedA);
+        var operation = new RemoveBracesOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RemoveBracesParams
+            {
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task RemoveBraces_AllFilesTrue_WithStatementScope_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(BracedA);
+        var operation = new RemoveBracesOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RemoveBracesParams
+            {
+                AllFiles = true,
+                Scope = "statement",
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("statement", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task RemoveBraces_AllFilesTrue_WithTypeScope_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(BracedA);
+        var operation = new RemoveBracesOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RemoveBracesParams
+            {
+                AllFiles = true,
+                Scope = "type",
+                TypeName = "GateA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("type", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task RemoveBraces_PreviewAllFiles_DoesNotWriteFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("BracedA.cs", BracedA),
+            ("BracedB.cs", BracedB),
+            ("AlreadyUnbraced.cs", AlreadyUnbraced));
+        var operation = new RemoveBracesOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["BracedA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["BracedB.cs"]);
+        var beforeUnbraced = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyUnbraced.cs"]);
+
+        var result = await operation.ExecuteAsync(new RemoveBracesParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["BracedA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["BracedB.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["AlreadyUnbraced.cs"]));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["BracedA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["BracedB.cs"]));
+        Assert.Equal(beforeUnbraced, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyUnbraced.cs"]));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static void AssertIfBodyIsNotBlock(string updated, string condition)
@@ -1566,6 +1783,73 @@ public class RemoveBracesOperationTests
             .ToList();
         Assert.True(errors.Count == 0, string.Join(Environment.NewLine, errors));
     }
+
+    private const string BracedA = """
+        namespace TestApp;
+
+        public class GateA
+        {
+            public void Run(bool flag)
+            {
+                if (flag)
+                {
+                    Work();
+                }
+            }
+
+            private static void Work() { }
+        }
+        """;
+
+    private const string BracedB = """
+        namespace TestApp;
+
+        public class GateB
+        {
+            public void Run(bool ready)
+            {
+                if (ready)
+                {
+                    Work();
+                }
+            }
+
+            private static void Work() { }
+        }
+        """;
+
+    private const string AlreadyUnbraced = """
+        namespace TestApp;
+
+        public class AlreadyUnbraced
+        {
+            public void Run(bool flag)
+            {
+                if (flag)
+                    Work();
+            }
+
+            private static void Work() { }
+        }
+        """;
+
+    private const string AlreadyUnbracedB = """
+        namespace TestApp;
+
+        public class AlreadyUnbracedB
+        {
+            public void Run(bool ready)
+            {
+                if (ready)
+                    Work();
+            }
+
+            private static void Work() { }
+        }
+        """;
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpRemoveBracesMissing.cs");
@@ -1594,9 +1878,13 @@ public class RemoveBracesOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateWithFilesAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1604,33 +1892,47 @@ public class RemoveBracesOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = sourcePaths.Values.First(),
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }
