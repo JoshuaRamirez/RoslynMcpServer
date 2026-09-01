@@ -177,17 +177,20 @@ public sealed class AnalyzeControlFlowOperation : QueryOperationBase<AnalyzeCont
         var startLineInfo = text.Lines[startLine];
         var endLineInfo = text.Lines[endLine];
 
-        // Omitted startColumn: today's start of startLine. Set: column-1
-        // on that line. Do not force column 1 when omitted.
+        // Omitted startColumn: today's start of startLine. Set: that
+        // 1-based column on startLine (Character = column - 1). Do not
+        // force column 1 when omitted. A column past TextLine.End would
+        // leak into later lines — reject as InvalidColumnNumber (same
+        // line-local bound as SymbolResolver / ExtractMethod).
         var startPosition = startLineInfo.Start;
         if (@params.StartColumn is int startColumn)
-            startPosition = startLineInfo.Start + (startColumn - 1);
+            startPosition = GetColumnPosition(startLineInfo, @params.StartLine, startColumn);
 
         // Omitted endColumn: today's TextLine.End of endLine (exclusive-ish
-        // of the line break). Set: column-1 on that line.
+        // of the line break). Set: that 1-based column on endLine.
         var endPosition = endLineInfo.End;
         if (@params.EndColumn is int endColumn)
-            endPosition = endLineInfo.Start + (endColumn - 1);
+            endPosition = GetColumnPosition(endLineInfo, @params.EndLine, endColumn);
 
         if (startPosition < 0 || endPosition < 0 ||
             startPosition > text.Length || endPosition > text.Length ||
@@ -197,5 +200,25 @@ public sealed class AnalyzeControlFlowOperation : QueryOperationBase<AnalyzeCont
         }
 
         return TextSpan.FromBounds(startPosition, endPosition);
+    }
+
+    /// <summary>
+    /// Converts a 1-based column on <paramref name="lineInfo"/> to an
+    /// absolute position. Valid columns are 1 through
+    /// <c>lineLength + 1</c> (the exclusive <see cref="TextLine.End"/>).
+    /// Past that would cross the line break into later lines.
+    /// </summary>
+    private static int GetColumnPosition(TextLine lineInfo, int lineNumber, int column)
+    {
+        var columnIndex = column - 1;
+        var lineLength = lineInfo.End - lineInfo.Start;
+        if (columnIndex < 0 || columnIndex > lineLength)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidColumnNumber,
+                $"Column {column} is out of range for line {lineNumber} (line has {lineLength} characters).");
+        }
+
+        return lineInfo.Start + columnIndex;
     }
 }

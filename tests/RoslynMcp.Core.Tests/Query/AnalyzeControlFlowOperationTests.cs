@@ -264,15 +264,65 @@ int a = 1; return a;
     {
         var text = SourceText.From(SameLineNeighborSource);
         var line = StatementLine(SameLineNeighborSource, out _, out _);
-        var lineInfo = text.Lines[line - 1];
-        var pastEnd = (lineInfo.End - lineInfo.Start) + 4;
 
         var ex = Assert.Throws<RefactoringException>(() =>
             AnalyzeControlFlowOperation.BuildRegionSpan(
                 text,
-                Params(line, line, startColumn: pastEnd, endColumn: 1)));
+                Params(line, line, startColumn: 8, endColumn: 2)));
 
         Assert.Equal(ErrorCodes.InvalidRegion, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void BuildRegionSpan_StartColumnPastLineEnd_ThrowsInvalidColumnNumber()
+    {
+        var text = SourceText.From(SameLineNeighborSource);
+        var line = StatementLine(SameLineNeighborSource, out _, out _);
+        var lineInfo = text.Lines[line - 1];
+        var pastEnd = (lineInfo.End - lineInfo.Start) + 2;
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AnalyzeControlFlowOperation.BuildRegionSpan(
+                text,
+                Params(line, line, startColumn: pastEnd)));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+        Assert.Contains("out of range", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildRegionSpan_EndColumnPastLineEnd_ThrowsInvalidColumnNumber()
+    {
+        var text = SourceText.From(SameLineNeighborSource);
+        var line = StatementLine(SameLineNeighborSource, out _, out _);
+        var lineInfo = text.Lines[line - 1];
+        var pastEnd = (lineInfo.End - lineInfo.Start) + 2;
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AnalyzeControlFlowOperation.BuildRegionSpan(
+                text,
+                Params(line, line, endColumn: pastEnd)));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+        Assert.Contains("out of range", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildRegionSpan_EndColumnAtTextLineEnd_EqualsOmittedEnd()
+    {
+        var text = SourceText.From(SameLineNeighborSource);
+        var line = StatementLine(SameLineNeighborSource, out _, out _);
+        var lineInfo = text.Lines[line - 1];
+        var exclusiveEndColumn = (lineInfo.End - lineInfo.Start) + 1;
+
+        var omitted = AnalyzeControlFlowOperation.BuildRegionSpan(text, Params(line, line));
+        var atLineEnd = AnalyzeControlFlowOperation.BuildRegionSpan(
+            text, Params(line, line, endColumn: exclusiveEndColumn));
+
+        Assert.Equal(omitted, atLineEnd);
+        Assert.Equal(lineInfo.End, atLineEnd.End);
     }
 
     #endregion
