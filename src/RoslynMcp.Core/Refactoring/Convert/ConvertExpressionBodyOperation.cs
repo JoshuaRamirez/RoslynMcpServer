@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -29,11 +30,30 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
     /// </summary>
     internal static void Validate(ConvertExpressionBodyParams @params)
     {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-
         if (string.IsNullOrWhiteSpace(@params.Direction))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "direction is required.");
+
+        if (!Enum.TryParse<ConversionDirection>(@params.Direction, ignoreCase: true, out var dir) ||
+            (dir != ConversionDirection.ToExpressionBody && dir != ConversionDirection.ToBlockBody))
+        {
+            throw new RefactoringException(ErrorCodes.CannotConvert,
+                "direction must be 'ToExpressionBody' or 'ToBlockBody'.");
+        }
+
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.MemberName) || @params.Line.HasValue || @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with memberName, line, or column.");
+            }
+
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (!PathResolver.IsAbsolutePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
@@ -50,13 +70,6 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!Enum.TryParse<ConversionDirection>(@params.Direction, ignoreCase: true, out var dir) ||
-            (dir != ConversionDirection.ToExpressionBody && dir != ConversionDirection.ToBlockBody))
-        {
-            throw new RefactoringException(ErrorCodes.CannotConvert,
-                "direction must be 'ToExpressionBody' or 'ToBlockBody'.");
-        }
-
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
@@ -67,7 +80,10 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         ConvertExpressionBodyParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
 
         if (root == null)
@@ -96,7 +112,8 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         }
         else
         {
-            (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member);
+            var model = await document.GetSemanticModelAsync(cancellationToken);
+            (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member, model);
         }
 
         if (@params.Preview)
@@ -105,7 +122,7 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
             {
                 new()
                 {
-                    File = @params.SourceFile,
+                    File = @params.SourceFile!,
                     ChangeType = ChangeKind.Modify,
                     Description = $"Convert member to {direction}",
                     BeforeSnippet = beforeSnippet,
@@ -125,6 +142,106 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
     }
 
     /// <summary>
+    /// Converts every eligible supported member in every C# document
+    /// (same document filter as <c>AddBracesOperation.ExecuteAllFilesAsync</c> /
+    /// <c>RemoveBracesOperation.ExecuteAllFilesAsync</c> /
+    /// <c>SimplifyNameOperation.ExecuteAllFilesAsync</c>: <c>FilePath</c> ends
+    /// with <c>.cs</c>). Already-in-target-form and otherwise ineligible
+    /// members or documents are skipped. When every file is a no-op, succeeds
+    /// with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ConvertExpressionBodyParams @params,
+        CancellationToken cancellationToken)
+    {
+        var direction = Enum.Parse<ConversionDirection>(@params.Direction, ignoreCase: true);
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            if (currentDocument is SourceGeneratedDocument)
+                continue;
+
+            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+            if (root == null)
+                continue;
+
+            var model = await currentDocument.GetSemanticModelAsync(cancellationToken);
+            var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
+            foreach (var member in CollectSupportedMembers(root))
+            {
+                if (TryConvert(member, direction, model, out var newMember, out _, out _))
+                    replacements[member] = newMember;
+            }
+
+            if (replacements.Count == 0)
+                continue;
+
+            var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+            var afterText = await newDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var span = root.GetLocation().GetLineSpan();
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = currentDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = BuildAllFilesDescription(direction, replacements.Count),
+                    BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            currentSolution = newDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    internal static string BuildAllFilesDescription(ConversionDirection direction, int convertedCount) =>
+        convertedCount == 1
+            ? $"Convert member to {direction}"
+            : $"Convert {convertedCount} members to {direction}";
+
+    /// <summary>
     /// Finds a convertible member. When <paramref name="column"/> is omitted,
     /// keeps today's first-match (memberName and/or line). When set, picks
     /// the member whose identifier or declaration span covers that 1-based
@@ -136,6 +253,8 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         int? line,
         int? column)
     {
+        // FindMember keeps today's kind set (including indexers / operators)
+        // so single-member selection and CannotConvert errors stay unchanged.
         var members = root.DescendantNodes().OfType<MemberDeclarationSyntax>()
             .Where(m => m is MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
                         or OperatorDeclarationSyntax or ConversionOperatorDeclarationSyntax);
@@ -222,6 +341,43 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         _ => null
     };
 
+    /// <summary>
+    /// Members the allFiles walk will attempt to convert. Indexers, operators,
+    /// and conversion operators stay out of this set (they are not supported
+    /// by the converters) so the walk skips them without throw+catch.
+    /// </summary>
+    private static IEnumerable<MemberDeclarationSyntax> CollectSupportedMembers(SyntaxNode root) =>
+        root.DescendantNodes().OfType<MemberDeclarationSyntax>()
+            .Where(m => m is MethodDeclarationSyntax or PropertyDeclarationSyntax);
+
+    /// <summary>
+    /// Attempts a conversion without throwing. Used by allFiles so already-
+    /// converted and otherwise ineligible members stay no-ops.
+    /// </summary>
+    internal static bool TryConvert(
+        MemberDeclarationSyntax member,
+        ConversionDirection direction,
+        SemanticModel? model,
+        out SyntaxNode newMember,
+        out string beforeSnippet,
+        out string afterSnippet)
+    {
+        try
+        {
+            (newMember, beforeSnippet, afterSnippet) = direction == ConversionDirection.ToExpressionBody
+                ? ConvertToExpressionBody(member)
+                : ConvertToBlockBody(member, model);
+            return true;
+        }
+        catch (RefactoringException)
+        {
+            newMember = member;
+            beforeSnippet = string.Empty;
+            afterSnippet = string.Empty;
+            return false;
+        }
+    }
+
     private static (SyntaxNode newNode, string before, string after) ConvertToExpressionBody(MemberDeclarationSyntax member)
     {
         switch (member)
@@ -282,7 +438,9 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         }
     }
 
-    private static (SyntaxNode newNode, string before, string after) ConvertToBlockBody(MemberDeclarationSyntax member)
+    private static (SyntaxNode newNode, string before, string after) ConvertToBlockBody(
+        MemberDeclarationSyntax member,
+        SemanticModel? model)
     {
         switch (member)
         {
@@ -290,14 +448,10 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
                 if (method.ExpressionBody == null)
                     throw new RefactoringException(ErrorCodes.CannotConvert, "Method does not have an expression body.");
 
-                var isVoid = method.ReturnType is PredefinedTypeSyntax predefined &&
-                             predefined.Keyword.IsKind(SyntaxKind.VoidKeyword);
+                var expr = method.ExpressionBody.Expression;
+                var stmt = CreateBlockStatement(expr, useReturn: !IsNonReturning(method, model));
 
-                StatementSyntax stmt = isVoid
-                    ? SyntaxFactory.ExpressionStatement(method.ExpressionBody.Expression)
-                    : SyntaxFactory.ReturnStatement(method.ExpressionBody.Expression);
-
-                var methodBefore = $"=> {method.ExpressionBody.Expression.NormalizeWhitespace()};";
+                var methodBefore = $"=> {expr.NormalizeWhitespace()};";
                 var newMethod = method
                     .WithExpressionBody(null)
                     .WithSemicolonToken(default)
@@ -309,11 +463,12 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
                 if (prop.ExpressionBody == null)
                     throw new RefactoringException(ErrorCodes.CannotConvert, "Property does not have an expression body.");
 
-                var returnStmt = SyntaxFactory.ReturnStatement(prop.ExpressionBody.Expression);
+                var propExpr = prop.ExpressionBody.Expression;
+                var propStmt = CreateBlockStatement(propExpr, useReturn: true);
                 var accessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                    .WithBody(SyntaxFactory.Block(returnStmt));
+                    .WithBody(SyntaxFactory.Block(propStmt));
 
-                var propBefore = $"=> {prop.ExpressionBody.Expression.NormalizeWhitespace()};";
+                var propBefore = $"=> {propExpr.NormalizeWhitespace()};";
                 var newProp = prop
                     .WithExpressionBody(null)
                     .WithSemicolonToken(default)
@@ -325,6 +480,59 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
                 throw new RefactoringException(ErrorCodes.CannotConvert, "Member type does not support block body conversion.");
         }
     }
+
+    /// <summary>
+    /// Inverse of <see cref="ExtractExpression"/> for throw: a throw
+    /// expression becomes a throw statement, never <c>return throw</c>.
+    /// Void and async non-generic Task/ValueTask emit an expression
+    /// statement; other returns stay return statements.
+    /// </summary>
+    private static StatementSyntax CreateBlockStatement(ExpressionSyntax expression, bool useReturn)
+    {
+        if (expression is ThrowExpressionSyntax throwExpression)
+            return SyntaxFactory.ThrowStatement(throwExpression.Expression);
+
+        if (useReturn)
+            return SyntaxFactory.ReturnStatement(expression);
+
+        return SyntaxFactory.ExpressionStatement(expression);
+    }
+
+    private static bool IsNonReturning(MethodDeclarationSyntax method, SemanticModel? model)
+    {
+        if (model?.GetDeclaredSymbol(method) is IMethodSymbol { ReturnType.TypeKind: not TypeKind.Error } symbol)
+        {
+            if (symbol.ReturnsVoid)
+                return true;
+
+            return method.Modifiers.Any(SyntaxKind.AsyncKeyword) &&
+                   IsNonGenericTaskLikeSymbol(symbol.ReturnType);
+        }
+
+        return IsVoidReturn(method.ReturnType) ||
+               (method.Modifiers.Any(SyntaxKind.AsyncKeyword) && IsNonGenericTaskLike(method.ReturnType));
+    }
+
+    private static bool IsVoidReturn(TypeSyntax returnType) =>
+        returnType is PredefinedTypeSyntax predefined && predefined.Keyword.IsKind(SyntaxKind.VoidKeyword);
+
+    private static bool IsNonGenericTaskLikeSymbol(ITypeSymbol type)
+    {
+        if (type is INamedTypeSymbol { IsGenericType: true })
+            return false;
+
+        return type.Name is "Task" or "ValueTask" &&
+               type.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks";
+    }
+
+    private static bool IsNonGenericTaskLike(TypeSyntax returnType) => returnType switch
+    {
+        GenericNameSyntax => false,
+        QualifiedNameSyntax qualified => IsNonGenericTaskLike(qualified.Right),
+        AliasQualifiedNameSyntax alias => IsNonGenericTaskLike(alias.Name),
+        IdentifierNameSyntax identifier => identifier.Identifier.Text is "Task" or "ValueTask",
+        _ => false
+    };
 
     private static ExpressionSyntax? ExtractExpression(StatementSyntax statement) => statement switch
     {

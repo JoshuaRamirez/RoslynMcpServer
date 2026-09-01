@@ -209,7 +209,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ConvertToAsyncOperation, ConvertToAsyncParams>(
             "convert-to-async", "Convert a synchronous method to async; column (optional) picks the method whose identifier or declaration span covers that column; updateCallers (default false) awaits already-async callers and skips sync callers that cannot legally await");
         r.RegisterRefactoring<ConvertExpressionBodyOperation, ConvertExpressionBodyParams>(
-            "convert-expression-body", "Toggle between expression body and block body; column (optional) picks the member whose identifier or declaration span covers that column on the given line");
+            "convert-expression-body", "Toggle between expression body and block body; column (optional) picks the member whose identifier or declaration span covers that column on the given line; allFiles (default false) converts every eligible supported member in every C# file (sourceFile optional when true; cannot be combined with memberName, line, or column)");
         r.RegisterRefactoring<ConvertToBlockBodyOperation, ConvertToBlockBodyParams>(
             "convert-to-block-body", "Convert an expression-bodied member to a block body; column (optional) picks the member whose identifier or declaration span covers that column on the given line");
         r.RegisterRefactoring<InvertIfOperation, InvertIfParams>(

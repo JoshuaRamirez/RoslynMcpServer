@@ -33,13 +33,13 @@ public sealed class ConvertExpressionBodyTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a C# member between expression body (=>) and block body forms. Direction is ToExpressionBody or ToBlockBody. column (optional) picks the member whose identifier or declaration span covers that column on the given line. Omitted keeps today's first-match on the line. Preview describes the rewrite and writes nothing.";
+        "Convert a C# member between expression body (=>) and block body forms. Direction is ToExpressionBody or ToBlockBody. column (optional) picks the member whose identifier or declaration span covers that column on the given line. Omitted keeps today's first-match on the line. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every eligible supported member (sourceFile optional when true; cannot be combined with memberName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "direction" },
+        required = new[] { "solutionPath", "direction" },
         properties = new
         {
             solutionPath = new
@@ -50,7 +50,13 @@ public sealed class ConvertExpressionBodyTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with memberName, line, or column.",
+                @default = false
             },
             direction = new
             {
@@ -60,18 +66,18 @@ public sealed class ConvertExpressionBodyTool : IToolHandler
             memberName = new
             {
                 type = "string",
-                description = "Name of the member to convert"
+                description = "Name of the member to convert. Single-member only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "Line number for disambiguation if multiple members have the same name (1-based)",
+                description = "Line number for disambiguation if multiple members have the same name (1-based). Single-member only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set, selects the member whose identifier or declaration span covers that column on the given line."
+                description = "1-based column for disambiguation. When set, selects the member whose identifier or declaration span covers that column on the given line. Single-member only; cannot be combined with allFiles."
             },
             preview = new
             {
@@ -107,6 +113,7 @@ public sealed class ConvertExpressionBodyTool : IToolHandler
             var @params = new ConvertExpressionBodyParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 Direction = args.Direction,
                 MemberName = args.MemberName,
                 Line = args.Line,
@@ -139,7 +146,8 @@ public sealed class ConvertExpressionBodyTool : IToolHandler
     private sealed class ConvertExpressionBodyArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public string Direction { get; init; } = "";
         public string? MemberName { get; init; }
         public int? Line { get; init; }
