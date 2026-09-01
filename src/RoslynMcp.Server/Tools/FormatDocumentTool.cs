@@ -32,7 +32,7 @@ public sealed class FormatDocumentTool : IToolHandler
     public string Name => "format_document";
 
     /// <inheritdoc />
-    public string Description => "Format a C# source file using Roslyn's built-in formatter.";
+    public string Description => "Format a C# source file using Roslyn's built-in formatter. preview returns computed changes without applying.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,6 +50,12 @@ public sealed class FormatDocumentTool : IToolHandler
             {
                 type = "string",
                 description = "Absolute path to the source file to format"
+            },
+            preview = new
+            {
+                type = "boolean",
+                description = "Return computed changes without applying",
+                @default = false
             }
         },
         additionalProperties = false
@@ -80,7 +86,8 @@ public sealed class FormatDocumentTool : IToolHandler
             var operation = new FormatDocumentOperation(context);
             var @params = new FormatDocumentParams
             {
-                SourceFile = args.SourceFile
+                SourceFile = args.SourceFile,
+                Preview = args.Preview ?? false
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -109,5 +116,6 @@ public sealed class FormatDocumentTool : IToolHandler
     {
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
+        public bool? Preview { get; init; }
     }
 }

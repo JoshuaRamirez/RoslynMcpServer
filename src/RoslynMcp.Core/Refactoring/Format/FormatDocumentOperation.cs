@@ -1,5 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Formatting;
+using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
@@ -42,6 +43,17 @@ public sealed class FormatDocumentOperation : RefactoringOperationBase<FormatDoc
     {
         var document = GetDocumentOrThrow(@params.SourceFile);
         var formattedDocument = await Formatter.FormatAsync(document, cancellationToken: cancellationToken);
+
+        if (@params.Preview)
+        {
+            return await CreatePreviewResultAsync(
+                operationId,
+                @params.SourceFile,
+                document,
+                formattedDocument,
+                cancellationToken);
+        }
+
         var newSolution = formattedDocument.Project.Solution;
 
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
@@ -54,5 +66,39 @@ public sealed class FormatDocumentOperation : RefactoringOperationBase<FormatDoc
                 FilesDeleted = commitResult.FilesDeleted
             },
             null, 0, 0);
+    }
+
+    /// <summary>
+    /// Builds a preview result from the original vs formatted document text without writing.
+    /// </summary>
+    private static async Task<RefactoringResult> CreatePreviewResultAsync(
+        Guid operationId,
+        string filePath,
+        Document originalDocument,
+        Document formattedDocument,
+        CancellationToken cancellationToken)
+    {
+        var before = (await originalDocument.GetTextAsync(cancellationToken)).ToString();
+        var after = (await formattedDocument.GetTextAsync(cancellationToken)).ToString();
+
+        if (before == after)
+        {
+            return RefactoringResult.PreviewResult(operationId, []);
+        }
+
+        var pendingChanges = new List<PendingChange>
+        {
+            new()
+            {
+                File = filePath,
+                ChangeType = ChangeKind.Modify,
+                Description = "Format document according to conventions",
+                StartLine = 1,
+                BeforeSnippet = before,
+                AfterSnippet = after
+            }
+        };
+
+        return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
 }

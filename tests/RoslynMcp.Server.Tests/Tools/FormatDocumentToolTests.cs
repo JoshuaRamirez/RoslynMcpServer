@@ -70,6 +70,38 @@ public class FormatDocumentToolTests
 
         Assert.Contains("solutionPath", requiredFields);
         Assert.Contains("sourceFile", requiredFields);
+        Assert.Equal(2, requiredFields.Count);
+    }
+
+    [Fact]
+    public void GetDefinition_HasProperties_ForAllParameters()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("solutionPath", out _));
+        Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("preview", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_PreviewProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var preview = doc.RootElement.GetProperty("properties").GetProperty("preview");
+
+        Assert.Equal("boolean", preview.GetProperty("type").GetString());
+        Assert.False(preview.GetProperty("default").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_Description_MentionsPreview()
+    {
+        Assert.Contains("preview", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion
