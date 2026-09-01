@@ -22,8 +22,14 @@ public sealed class FormatDocumentOperation : RefactoringOperationBase<FormatDoc
     /// <inheritdoc />
     protected override void ValidateParams(FormatDocumentParams @params)
     {
+        if (@params.AllFiles)
+        {
+            // When processing all files, sourceFile is optional
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required when allFiles is false.");
 
         if (!PathResolver.IsAbsolutePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
@@ -41,14 +47,31 @@ public sealed class FormatDocumentOperation : RefactoringOperationBase<FormatDoc
         FormatDocumentParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+        {
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+        }
+
+        return await ExecuteSingleFileAsync(operationId, @params.SourceFile!, @params.Preview, cancellationToken);
+    }
+
+    /// <summary>
+    /// Formats a single document.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteSingleFileAsync(
+        Guid operationId,
+        string sourceFile,
+        bool preview,
+        CancellationToken cancellationToken)
+    {
+        var document = GetDocumentOrThrow(sourceFile);
         var formattedDocument = await Formatter.FormatAsync(document, cancellationToken: cancellationToken);
 
-        if (@params.Preview)
+        if (preview)
         {
             return await CreatePreviewResultAsync(
                 operationId,
-                @params.SourceFile,
+                sourceFile,
                 document,
                 formattedDocument,
                 cancellationToken);
@@ -66,6 +89,93 @@ public sealed class FormatDocumentOperation : RefactoringOperationBase<FormatDoc
                 FilesDeleted = commitResult.FilesDeleted
             },
             null, 0, 0);
+    }
+
+    /// <summary>
+    /// Formats every C# document in the solution.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        FormatDocumentParams @params,
+        CancellationToken cancellationToken)
+    {
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            var formattedDocument = await Formatter.FormatAsync(currentDocument, cancellationToken: cancellationToken);
+
+            var before = (await currentDocument.GetTextAsync(cancellationToken)).ToString();
+            var after = (await formattedDocument.GetTextAsync(cancellationToken)).ToString();
+
+            if (before == after)
+                continue;
+
+            if (@params.Preview)
+            {
+                var previewResult = await CreatePreviewResultAsync(
+                    operationId,
+                    currentDocument.FilePath!,
+                    currentDocument,
+                    formattedDocument,
+                    cancellationToken);
+                if (previewResult.PendingChanges != null)
+                    allPendingChanges.AddRange(previewResult.PendingChanges);
+                continue;
+            }
+
+            currentSolution = formattedDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+        {
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Preview = true,
+                PendingChanges = allPendingChanges
+            };
+        }
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Changes = new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                }
+            };
+        }
+
+        return RefactoringResult.Succeeded(
+            operationId,
+            new FileChanges
+            {
+                FilesModified = [],
+                FilesCreated = [],
+                FilesDeleted = []
+            },
+            null,
+            0,
+            0);
     }
 
     /// <summary>

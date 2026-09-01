@@ -263,7 +263,7 @@ public sealed class ToolRegistry
 
         // ── Refactoring: Format (1) ───────────────────────────────────
         r.RegisterRefactoring<FormatDocumentOperation, FormatDocumentParams>(
-            "format-document", "Format a C# document according to conventions; preview returns computed changes without applying");
+            "format-document", "Format a C# document according to conventions; preview returns computed changes without applying; allFiles (default false) formats every C# file (sourceFile optional when true)");
 
         // ── Refactoring: Move (2) — non-standard base class ──────────
         r.RegisterManual("move-type-to-file",

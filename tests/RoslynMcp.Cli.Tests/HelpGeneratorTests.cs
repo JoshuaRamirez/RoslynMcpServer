@@ -116,16 +116,33 @@ public class HelpGeneratorTests
         Assert.Contains("preview", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("without applying", tool.Description, StringComparison.OrdinalIgnoreCase);
 
-        var requiredIdx = help.IndexOf("REQUIRED:");
         var optionalIdx = help.IndexOf("OPTIONAL:");
-        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
-        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
-
-        var requiredSection = help[requiredIdx..optionalIdx];
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
-        Assert.DoesNotContain("--preview", requiredSection);
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+    }
+
+    [Fact]
+    public void GenerateToolHelp_FormatDocument_ShowsAllFiles()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("format-document")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("format-document", help);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
         Assert.Contains("--preview", optionalSection);
     }
 

@@ -32,13 +32,13 @@ public sealed class FormatDocumentTool : IToolHandler
     public string Name => "format_document";
 
     /// <inheritdoc />
-    public string Description => "Format a C# source file using Roslyn's built-in formatter. preview returns computed changes without applying.";
+    public string Description => "Format a C# source file using Roslyn's built-in formatter. Process a single file or all files in the solution. preview returns computed changes without applying.";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -49,7 +49,13 @@ public sealed class FormatDocumentTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file to format"
+                description = "Absolute path to the source file. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional.",
+                @default = false
             },
             preview = new
             {
@@ -87,6 +93,7 @@ public sealed class FormatDocumentTool : IToolHandler
             var @params = new FormatDocumentParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -115,7 +122,8 @@ public sealed class FormatDocumentTool : IToolHandler
     private sealed class FormatDocumentArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public bool? Preview { get; init; }
     }
 }
