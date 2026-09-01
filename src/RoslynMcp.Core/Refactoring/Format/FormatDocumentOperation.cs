@@ -115,22 +115,18 @@ public sealed class FormatDocumentOperation : RefactoringOperationBase<FormatDoc
             var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
             var formattedDocument = await Formatter.FormatAsync(currentDocument, cancellationToken: cancellationToken);
 
-            var before = (await currentDocument.GetTextAsync(cancellationToken)).ToString();
-            var after = (await formattedDocument.GetTextAsync(cancellationToken)).ToString();
+            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+            var afterText = await formattedDocument.GetTextAsync(cancellationToken);
 
-            if (before == after)
+            if (beforeText.ContentEquals(afterText))
                 continue;
 
             if (@params.Preview)
             {
-                var previewResult = await CreatePreviewResultAsync(
-                    operationId,
+                allPendingChanges.Add(CreatePendingChange(
                     currentDocument.FilePath!,
-                    currentDocument,
-                    formattedDocument,
-                    cancellationToken);
-                if (previewResult.PendingChanges != null)
-                    allPendingChanges.AddRange(previewResult.PendingChanges);
+                    beforeText.ToString(),
+                    afterText.ToString()));
                 continue;
             }
 
@@ -196,19 +192,17 @@ public sealed class FormatDocumentOperation : RefactoringOperationBase<FormatDoc
             return RefactoringResult.PreviewResult(operationId, []);
         }
 
-        var pendingChanges = new List<PendingChange>
-        {
-            new()
-            {
-                File = filePath,
-                ChangeType = ChangeKind.Modify,
-                Description = "Format document according to conventions",
-                StartLine = 1,
-                BeforeSnippet = before,
-                AfterSnippet = after
-            }
-        };
-
-        return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        return RefactoringResult.PreviewResult(operationId, [CreatePendingChange(filePath, before, after)]);
     }
+
+    private static PendingChange CreatePendingChange(string filePath, string before, string after) =>
+        new()
+        {
+            File = filePath,
+            ChangeType = ChangeKind.Modify,
+            Description = "Format document according to conventions",
+            StartLine = 1,
+            BeforeSnippet = before,
+            AfterSnippet = after
+        };
 }
