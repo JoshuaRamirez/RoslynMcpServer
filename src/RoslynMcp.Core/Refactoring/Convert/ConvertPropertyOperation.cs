@@ -237,14 +237,16 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
     /// <summary>
     /// Collects every distinct eligible property in <paramref name="root"/>
     /// using the same missing-accessors / already-auto / already-full
-    /// eligibility as the single-site helpers (skip, not throw).
+    /// eligibility as the single-site helpers (skip, not throw), plus
+    /// allFiles-only skips for interface and abstract properties that
+    /// cannot legally own a generated backing field or accessor bodies.
     /// </summary>
     internal static IReadOnlyList<PropertyDeclarationSyntax> CollectEligibleProperties(
         SyntaxNode root,
         ConversionDirection direction) =>
         root.DescendantNodes()
             .OfType<PropertyDeclarationSyntax>()
-            .Where(property => IsEligible(property, direction))
+            .Where(property => IsEligibleForAllFiles(property, direction))
             .ToList();
 
     /// <summary>
@@ -264,10 +266,20 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
         return rewritten ?? root;
     }
 
-    private static bool IsEligible(PropertyDeclarationSyntax property, ConversionDirection direction) =>
-        direction == ConversionDirection.ToFullProperty
+    private static bool IsEligibleForAllFiles(PropertyDeclarationSyntax property, ConversionDirection direction) =>
+        CanOwnGeneratedMembers(property) &&
+        (direction == ConversionDirection.ToFullProperty
             ? CanConvertToFullProperty(property)
-            : CanConvertToAutoProperty(property);
+            : CanConvertToAutoProperty(property));
+
+    /// <summary>
+    /// Interface and abstract properties cannot legally receive a private
+    /// backing field or accessor bodies. allFiles skips them; single-site
+    /// conversion is unchanged.
+    /// </summary>
+    private static bool CanOwnGeneratedMembers(PropertyDeclarationSyntax property) =>
+        property.Parent is not InterfaceDeclarationSyntax &&
+        !property.Modifiers.Any(SyntaxKind.AbstractKeyword);
 
     private static bool CanConvertToFullProperty(PropertyDeclarationSyntax property) =>
         property.AccessorList != null && IsAutoProperty(property);
@@ -348,12 +360,19 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
         // Generate backing field name
         var fieldName = "_" + char.ToLower(property.Identifier.Text[0]) + property.Identifier.Text.Substring(1);
 
+        var declarator = SyntaxFactory.VariableDeclarator(fieldName);
+        if (property.Initializer != null)
+            declarator = declarator.WithInitializer(property.Initializer);
+
+        var modifiers = new List<SyntaxToken> { SyntaxFactory.Token(SyntaxKind.PrivateKeyword) };
+        if (property.Modifiers.Any(SyntaxKind.StaticKeyword))
+            modifiers.Add(SyntaxFactory.Token(SyntaxKind.StaticKeyword));
+
         // Create backing field
         backingField = SyntaxFactory.FieldDeclaration(
             SyntaxFactory.VariableDeclaration(property.Type)
-                .WithVariables(SyntaxFactory.SingletonSeparatedList(
-                    SyntaxFactory.VariableDeclarator(fieldName))))
-            .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PrivateKeyword)))
+                .WithVariables(SyntaxFactory.SingletonSeparatedList(declarator)))
+            .WithModifiers(SyntaxFactory.TokenList(modifiers))
             .NormalizeWhitespace();
 
         // Create full property with getter and setter
@@ -569,7 +588,8 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
 
             foreach (var member in type.Members)
             {
-                if (member is PropertyDeclarationSyntax property)
+                if (member is PropertyDeclarationSyntax property &&
+                    IsEligibleForAllFiles(property, _direction))
                 {
                     if (_direction == ConversionDirection.ToFullProperty &&
                         TryBuildFullProperty(property, out var backingField, out var newProperty, out _, out _))

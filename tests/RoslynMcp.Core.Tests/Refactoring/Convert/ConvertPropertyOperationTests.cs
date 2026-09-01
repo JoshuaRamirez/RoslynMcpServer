@@ -745,6 +745,31 @@ public class ConvertPropertyOperationTests
         }
         """;
 
+    private const string InterfaceAbstractAndConcrete = """
+        namespace TestApp;
+
+        public interface IHasValue
+        {
+            int Value { get; set; }
+        }
+
+        public abstract class BaseType
+        {
+            public abstract int Abs { get; set; }
+            public int Concrete { get; set; }
+        }
+        """;
+
+    private const string StaticAndInitializedAutos = """
+        namespace TestApp;
+
+        public class Config
+        {
+            public static int Count { get; set; }
+            public int Port { get; set; } = 8080;
+        }
+        """;
+
     [SkippableFact]
     public async Task Convert_AllFilesFalse_ConvertsOnlySpecifiedProperty()
     {
@@ -1045,6 +1070,63 @@ public class ConvertPropertyOperationTests
 
         Assert.Single(collected);
         Assert.Equal("Eligible", collected[0].Identifier.Text);
+    }
+
+    [Fact]
+    public void CollectEligibleProperties_SkipsInterfaceAndAbstract()
+    {
+        var root = CSharpSyntaxTree.ParseText(InterfaceAbstractAndConcrete).GetRoot();
+        var collected = ConvertPropertyOperation.CollectEligibleProperties(
+            root, ConversionDirection.ToFullProperty);
+
+        Assert.Single(collected);
+        Assert.Equal("Concrete", collected[0].Identifier.Text);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_SkipsInterfaceAndAbstract_ConvertsConcrete()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Types.cs", InterfaceAbstractAndConcrete));
+        var operation = new ConvertPropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertPropertyParams
+        {
+            AllFiles = true,
+            Direction = "ToFullProperty"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("int Value { get; set; }", updated, StringComparison.Ordinal);
+        Assert.Contains("public abstract int Abs { get; set; }", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public int Concrete { get; set; }", updated, StringComparison.Ordinal);
+        Assert.Contains("_concrete", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private int _value", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private int _abs", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_ToFullProperty_CopiesStaticAndInitializer()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Config.cs", StaticAndInitializedAutos));
+        var operation = new ConvertPropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertPropertyParams
+        {
+            AllFiles = true,
+            Direction = "ToFullProperty"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private static int _count", updated, StringComparison.Ordinal);
+        Assert.Contains("private int _port = 8080", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public static int Count { get; set; }", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public int Port { get; set; } = 8080", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
     }
 
     [Fact]
