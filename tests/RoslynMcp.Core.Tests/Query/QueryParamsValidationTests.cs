@@ -1331,19 +1331,8 @@ public class QueryParamsValidationTests
 
     #region M5 Validation Helpers
 
-    private static void ValidateConvertForeachLinqParams(ConvertForeachLinqParams p)
-    {
-        if (string.IsNullOrWhiteSpace(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-        if (!PathResolver.IsAbsolutePath(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-        if (!PathResolver.IsValidCSharpFilePath(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-        if (p.Line < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
-        if (!File.Exists(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
-    }
+    private static void ValidateConvertForeachLinqParams(ConvertForeachLinqParams p) =>
+        ConvertForeachLinqOperation.Validate(p);
 
     private static void ValidateConvertToPatternMatchingParams(ConvertToPatternMatchingParams p) =>
         ConvertToPatternMatchingOperation.Validate(p);

@@ -60,6 +60,18 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     /// </summary>
     internal static void Validate(ConvertForeachLinqParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (@params.Line.HasValue || @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with line or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -69,7 +81,10 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
-        if (@params.Line < 1)
+        if (!@params.Line.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "line is required.");
+
+        if (@params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
@@ -85,13 +100,16 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         ConvertForeachLinqParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
 
         if (root == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var foreachStmt = FindForeachStatement(root, @params.Line, @params.Column);
+        var foreachStmt = FindForeachStatement(root, @params.Line!.Value, @params.Column);
         if (foreachStmt == null)
         {
             var location = @params.Column.HasValue
@@ -100,18 +118,13 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             throw new RefactoringException(ErrorCodes.CannotConvert, $"No foreach statement found at {location}.");
         }
 
-        var body = foreachStmt.Statement;
-        var statements = body is BlockSyntax block ? block.Statements.ToList() : new List<StatementSyntax> { body };
-
-        if (!TryAnalyzeAddPattern(foreachStmt, statements, out var conversion) &&
-            !TryAnalyzeFilterPattern(foreachStmt, statements, out conversion))
+        if (!TryConvert(foreachStmt, @params.PreferQuerySyntax, out var conversion, out var assignment))
         {
             throw new RefactoringException(ErrorCodes.CannotConvert,
                 "Could not identify a convertible foreach pattern. Supported: foreach+Add, foreach+if+Add.");
         }
 
-        var assignment = BuildLinqAssignment(conversion!, @params.PreferQuerySyntax);
-        var description = DescribeRewrite(conversion!.Kind, @params.PreferQuerySyntax);
+        var description = DescribeRewrite(conversion.Kind, @params.PreferQuerySyntax);
 
         if (@params.Preview)
         {
@@ -119,7 +132,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             {
                 new()
                 {
-                    File = @params.SourceFile,
+                    File = @params.SourceFile!,
                     ChangeType = ChangeKind.Modify,
                     Description = description,
                     BeforeSnippet = conversion.BeforeSnippet,
@@ -136,6 +149,157 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         return RefactoringResult.Succeeded(operationId,
             new FileChanges { FilesModified = commitResult.FilesModified, FilesCreated = commitResult.FilesCreated, FilesDeleted = commitResult.FilesDeleted },
             null, 0, 0);
+    }
+
+    /// <summary>
+    /// Converts every distinct eligible foreach in every C# document (same
+    /// document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ConvertToInterpolatedStringOperation.ExecuteAllFilesAsync</c>:
+    /// <c>FilePath</c> ends with <c>.cs</c>). Foreach statements that cannot
+    /// convert and documents whose text is unchanged are skipped. When every
+    /// file is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ConvertForeachLinqParams @params,
+        CancellationToken cancellationToken)
+    {
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            if (currentDocument is SourceGeneratedDocument)
+                continue;
+
+            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+            if (root == null)
+                continue;
+
+            var replacements = CollectConvertibleReplacements(root, @params.PreferQuerySyntax);
+
+            if (replacements.Count == 0)
+                continue;
+
+            var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+            var afterText = await newDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var span = root.GetLocation().GetLineSpan();
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = currentDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = BuildAllFilesDescription(replacements.Count),
+                    BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            currentSolution = newDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    internal static string BuildAllFilesDescription(int convertedCount) =>
+        convertedCount == 1
+            ? "Convert foreach to LINQ"
+            : $"Convert {convertedCount} foreach loops to LINQ";
+
+    /// <summary>
+    /// Collects every distinct eligible foreach in <paramref name="root"/>
+    /// using the existing conversion helpers (not first-on-a-line). Nested
+    /// convertible foreach keep the innermost so <c>ReplaceNodes</c> does
+    /// not rewrite an ancestor and descendant together. Each foreach is
+    /// analyzed once.
+    /// </summary>
+    internal static IReadOnlyList<ForEachStatementSyntax> CollectConvertibleForeach(
+        SyntaxNode root,
+        bool preferQuerySyntax) =>
+        CollectConvertibleReplacements(root, preferQuerySyntax).Keys.ToList();
+
+    /// <summary>
+    /// Builds replacements for every distinct eligible foreach. Used by
+    /// allFiles so <see cref="TryConvert"/> runs once per statement.
+    /// </summary>
+    internal static IReadOnlyDictionary<ForEachStatementSyntax, SyntaxNode> CollectConvertibleReplacements(
+        SyntaxNode root,
+        bool preferQuerySyntax)
+    {
+        var replacements = new Dictionary<ForEachStatementSyntax, SyntaxNode>();
+        foreach (var statement in root.DescendantNodes().OfType<ForEachStatementSyntax>())
+        {
+            if (TryConvert(statement, preferQuerySyntax, out _, out var assignment))
+                replacements[statement] = ReplaceForeachWithLinqStatement(statement, assignment);
+        }
+
+        return replacements
+            .Where(pair => !replacements.Keys.Any(other => other != pair.Key && pair.Key.Contains(other)))
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
+    }
+
+    /// <summary>
+    /// Attempts a conversion without throwing. Used by allFiles so foreach
+    /// that cannot convert stay no-ops.
+    /// </summary>
+    internal static bool TryConvert(
+        ForEachStatementSyntax foreachStmt,
+        bool preferQuerySyntax,
+        out ForeachLinqConversion conversion,
+        out ExpressionSyntax assignment)
+    {
+        conversion = null!;
+        assignment = null!;
+
+        var body = foreachStmt.Statement;
+        var statements = body is BlockSyntax block ? block.Statements.ToList() : new List<StatementSyntax> { body };
+
+        if (!TryAnalyzeAddPattern(foreachStmt, statements, out var analyzed) &&
+            !TryAnalyzeFilterPattern(foreachStmt, statements, out analyzed))
+        {
+            return false;
+        }
+
+        conversion = analyzed!;
+        assignment = BuildLinqAssignment(conversion, preferQuerySyntax);
+        return true;
     }
 
     /// <summary>
@@ -359,14 +523,15 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         return SyntaxFactory.FromClause(identifier, conversion.Collection);
     }
 
-    private static SyntaxNode ReplaceForeachWithLinq(SyntaxNode root, ForEachStatementSyntax foreach_, ExpressionSyntax linqExpr)
-    {
-        var replacement = SyntaxFactory.ExpressionStatement(linqExpr)
+    private static SyntaxNode ReplaceForeachWithLinq(SyntaxNode root, ForEachStatementSyntax foreach_, ExpressionSyntax linqExpr) =>
+        root.ReplaceNode(foreach_, ReplaceForeachWithLinqStatement(foreach_, linqExpr));
+
+    private static ExpressionStatementSyntax ReplaceForeachWithLinqStatement(
+        ForEachStatementSyntax foreach_,
+        ExpressionSyntax linqExpr) =>
+        SyntaxFactory.ExpressionStatement(linqExpr)
             .WithLeadingTrivia(foreach_.GetLeadingTrivia())
             .WithTrailingTrivia(foreach_.GetTrailingTrivia());
-
-        return root.ReplaceNode(foreach_, replacement);
-    }
 
     private static bool KeywordIsOnLine(ForEachStatementSyntax statement, int line)
     {
