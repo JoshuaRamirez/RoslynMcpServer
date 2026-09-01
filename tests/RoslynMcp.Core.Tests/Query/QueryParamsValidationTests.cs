@@ -954,6 +954,29 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void ConvertExpressionBody_AllFilesTrue_WithoutSourceFile_DoesNotThrow()
+    {
+        ValidateConvertExpressionBodyParams(new ConvertExpressionBodyParams
+        {
+            AllFiles = true,
+            Direction = "ToExpressionBody"
+        });
+    }
+
+    [Fact]
+    public void ConvertExpressionBody_AllFilesTrue_WithMemberName_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateConvertExpressionBodyParams(new ConvertExpressionBodyParams
+            {
+                AllFiles = true,
+                MemberName = "Foo",
+                Direction = "ToExpressionBody"
+            }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
     #endregion
 
     #region ConvertPropertyParams Validation
@@ -1136,30 +1159,8 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
     }
 
-    private static void ValidateConvertExpressionBodyParams(ConvertExpressionBodyParams p)
-    {
-        if (string.IsNullOrWhiteSpace(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-        if (string.IsNullOrWhiteSpace(p.Direction))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "direction is required.");
-        if (!PathResolver.IsAbsolutePath(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-        if (!PathResolver.IsValidCSharpFilePath(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-        if (!p.Line.HasValue && string.IsNullOrWhiteSpace(p.MemberName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Either memberName or line must be provided.");
-        if (p.Line.HasValue && p.Line.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
-        if (p.Column.HasValue && p.Column.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
-        if (!Enum.TryParse<RoslynMcp.Contracts.Enums.ConversionDirection>(p.Direction, ignoreCase: true, out var dir) ||
-            (dir != RoslynMcp.Contracts.Enums.ConversionDirection.ToExpressionBody && dir != RoslynMcp.Contracts.Enums.ConversionDirection.ToBlockBody))
-        {
-            throw new RefactoringException(ErrorCodes.CannotConvert, "direction must be 'ToExpressionBody' or 'ToBlockBody'.");
-        }
-        if (!File.Exists(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
-    }
+    private static void ValidateConvertExpressionBodyParams(ConvertExpressionBodyParams p) =>
+        ConvertExpressionBodyOperation.Validate(p);
 
     private static void ValidateConvertPropertyParams(ConvertPropertyParams p) =>
         ConvertPropertyOperation.Validate(p);

@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -29,11 +30,30 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
     /// </summary>
     internal static void Validate(ConvertExpressionBodyParams @params)
     {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-
         if (string.IsNullOrWhiteSpace(@params.Direction))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "direction is required.");
+
+        if (!Enum.TryParse<ConversionDirection>(@params.Direction, ignoreCase: true, out var dir) ||
+            (dir != ConversionDirection.ToExpressionBody && dir != ConversionDirection.ToBlockBody))
+        {
+            throw new RefactoringException(ErrorCodes.CannotConvert,
+                "direction must be 'ToExpressionBody' or 'ToBlockBody'.");
+        }
+
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.MemberName) || @params.Line.HasValue || @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with memberName, line, or column.");
+            }
+
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (!PathResolver.IsAbsolutePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
@@ -50,13 +70,6 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!Enum.TryParse<ConversionDirection>(@params.Direction, ignoreCase: true, out var dir) ||
-            (dir != ConversionDirection.ToExpressionBody && dir != ConversionDirection.ToBlockBody))
-        {
-            throw new RefactoringException(ErrorCodes.CannotConvert,
-                "direction must be 'ToExpressionBody' or 'ToBlockBody'.");
-        }
-
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
@@ -67,7 +80,10 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         ConvertExpressionBodyParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
 
         if (root == null)
@@ -105,7 +121,7 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
             {
                 new()
                 {
-                    File = @params.SourceFile,
+                    File = @params.SourceFile!,
                     ChangeType = ChangeKind.Modify,
                     Description = $"Convert member to {direction}",
                     BeforeSnippet = beforeSnippet,
@@ -125,6 +141,105 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
     }
 
     /// <summary>
+    /// Converts every eligible supported member in every C# document
+    /// (same document filter as <c>AddBracesOperation.ExecuteAllFilesAsync</c> /
+    /// <c>RemoveBracesOperation.ExecuteAllFilesAsync</c> /
+    /// <c>SimplifyNameOperation.ExecuteAllFilesAsync</c>: <c>FilePath</c> ends
+    /// with <c>.cs</c>). Already-in-target-form and otherwise ineligible
+    /// members or documents are skipped. When every file is a no-op, succeeds
+    /// with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ConvertExpressionBodyParams @params,
+        CancellationToken cancellationToken)
+    {
+        var direction = Enum.Parse<ConversionDirection>(@params.Direction, ignoreCase: true);
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            if (currentDocument is SourceGeneratedDocument)
+                continue;
+
+            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+            if (root == null)
+                continue;
+
+            var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
+            foreach (var member in CollectSupportedMembers(root))
+            {
+                if (TryConvert(member, direction, out var newMember, out _, out _))
+                    replacements[member] = newMember;
+            }
+
+            if (replacements.Count == 0)
+                continue;
+
+            var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+            var afterText = await newDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var span = root.GetLocation().GetLineSpan();
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = currentDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = BuildAllFilesDescription(direction, replacements.Count),
+                    BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            currentSolution = newDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    internal static string BuildAllFilesDescription(ConversionDirection direction, int convertedCount) =>
+        convertedCount == 1
+            ? $"Convert member to {direction}"
+            : $"Convert {convertedCount} members to {direction}";
+
+    /// <summary>
     /// Finds a convertible member. When <paramref name="column"/> is omitted,
     /// keeps today's first-match (memberName and/or line). When set, picks
     /// the member whose identifier or declaration span covers that 1-based
@@ -136,9 +251,7 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         int? line,
         int? column)
     {
-        var members = root.DescendantNodes().OfType<MemberDeclarationSyntax>()
-            .Where(m => m is MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
-                        or OperatorDeclarationSyntax or ConversionOperatorDeclarationSyntax);
+        var members = CollectSupportedMembers(root);
 
         if (!string.IsNullOrWhiteSpace(memberName))
         {
@@ -221,6 +334,38 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         ConversionOperatorDeclarationSyntax c => $"implicit/explicit operator",
         _ => null
     };
+
+    private static IEnumerable<MemberDeclarationSyntax> CollectSupportedMembers(SyntaxNode root) =>
+        root.DescendantNodes().OfType<MemberDeclarationSyntax>()
+            .Where(m => m is MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
+                        or OperatorDeclarationSyntax or ConversionOperatorDeclarationSyntax);
+
+    /// <summary>
+    /// Attempts a conversion without throwing. Used by allFiles so already-
+    /// converted and otherwise ineligible members stay no-ops.
+    /// </summary>
+    internal static bool TryConvert(
+        MemberDeclarationSyntax member,
+        ConversionDirection direction,
+        out SyntaxNode newMember,
+        out string beforeSnippet,
+        out string afterSnippet)
+    {
+        try
+        {
+            (newMember, beforeSnippet, afterSnippet) = direction == ConversionDirection.ToExpressionBody
+                ? ConvertToExpressionBody(member)
+                : ConvertToBlockBody(member);
+            return true;
+        }
+        catch (RefactoringException)
+        {
+            newMember = member;
+            beforeSnippet = string.Empty;
+            afterSnippet = string.Empty;
+            return false;
+        }
+    }
 
     private static (SyntaxNode newNode, string before, string after) ConvertToExpressionBody(MemberDeclarationSyntax member)
     {
