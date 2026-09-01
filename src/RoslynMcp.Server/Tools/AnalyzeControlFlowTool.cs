@@ -32,7 +32,7 @@ public sealed class AnalyzeControlFlowTool : IToolHandler
     public string Name => "analyze_control_flow";
 
     /// <inheritdoc />
-    public string Description => "Analyze control flow for a region of C# code. Returns reachability information, return statements, and exit points (break, continue, goto, throw).";
+    public string Description => "Analyze control flow for a region of C# code. Returns reachability information, return statements, and exit points (break, continue, goto, throw). startColumn / endColumn (optional) trim the region (1-based; Roslyn Character = column - 1); omitted keeps today's whole-line span (start of startLine through end of endLine). Do not force column 1 when omitted.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -62,6 +62,18 @@ public sealed class AnalyzeControlFlowTool : IToolHandler
                 type = "integer",
                 description = "1-based end line of the region to analyze",
                 minimum = 1
+            },
+            startColumn = new
+            {
+                type = "integer",
+                description = "Optional 1-based start column on startLine (Roslyn Character = column - 1). When set, the region starts at that column. Omitted keeps today's start-of-line. Do not force column 1 when omitted.",
+                minimum = 1
+            },
+            endColumn = new
+            {
+                type = "integer",
+                description = "Optional 1-based end column on endLine (Roslyn Character = column - 1; exclusive-ish as TextLine.End). When set, the region ends at that column. Omitted keeps today's end-of-line. Do not force column 1 when omitted.",
+                minimum = 1
             }
         },
         additionalProperties = false
@@ -86,7 +98,9 @@ public sealed class AnalyzeControlFlowTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 StartLine = args.StartLine,
-                EndLine = args.EndLine
+                EndLine = args.EndLine,
+                StartColumn = args.StartColumn,
+                EndColumn = args.EndColumn
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -116,5 +130,7 @@ public sealed class AnalyzeControlFlowTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public int StartLine { get; init; }
         public int EndLine { get; init; }
+        public int? StartColumn { get; init; }
+        public int? EndColumn { get; init; }
     }
 }
