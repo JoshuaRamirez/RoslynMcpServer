@@ -13,21 +13,26 @@ namespace RoslynMcp.Core.Tests.Query;
 /// </summary>
 public class GetCodeMetricsOperationTests
 {
-    private const string SameLineDualProcessSource = """
-        class Container
-        {
-            void Unique() { }
-            void Process(int x) { } /* a-process */ void Process(string s) { if (true) { } } /* b-process */
-        }
-        """;
+    // Methods start at column 1 so today's Line-only path (SymbolResolver column ?? 1)
+    // lands on `void` and walks up to the declaration instead of indent trivia.
+    // Closing """ is at column 0 so raw-string dedent does not re-indent these lines.
+    private const string SameLineDualProcessSource =
+        """
+class Container
+{
+void Unique() { }
+void Process(int x) { } /* a-process */ void Process(string s) { if (true) { } } /* b-process */
+}
+""";
 
-    private const string SeparateLineDualProcessSource = """
-        class Container
-        {
-            void Process(int x) { } // a-process
-            void Process(string s) { if (true) { } } // b-process
-        }
-        """;
+    private const string SeparateLineDualProcessSource =
+        """
+class Container
+{
+void Process(int x) { } // a-process
+void Process(string s) { if (true) { } } // b-process
+}
+""";
 
     #region Input Validation
 
@@ -78,7 +83,7 @@ public class GetCodeMetricsOperationTests
     }
 
     [SkippableFact]
-    public async Task GetCodeMetrics_LineOnly_PicksMethodOnThatLine()
+    public async Task GetCodeMetrics_LineOnly_PicksTypeOnClassLine()
     {
         await using var workspace = await TempWorkspace.CreateAsync(SeparateLineDualProcessSource);
         var operation = new GetCodeMetricsOperation(workspace.Context);
@@ -86,14 +91,13 @@ public class GetCodeMetricsOperationTests
         var result = await operation.ExecuteAsync(new GetCodeMetricsParams
         {
             SourceFile = workspace.SourcePath,
-            Line = FindLine(SeparateLineDualProcessSource, "b-process")
+            Line = FindLine(SeparateLineDualProcessSource, "class Container")
         });
 
         Assert.True(result.Success);
         Assert.NotNull(result.Data);
-        Assert.Equal("Process", result.Data.SymbolName);
-        Assert.Contains("string", result.Data.FullyQualifiedName, StringComparison.Ordinal);
-        Assert.Equal(2, result.Data.CyclomaticComplexity);
+        Assert.Equal("Container", result.Data.SymbolName);
+        Assert.Contains("Container", result.Data.FullyQualifiedName, StringComparison.Ordinal);
     }
 
     #endregion
@@ -148,57 +152,68 @@ public class GetCodeMetricsOperationTests
     {
         await using var workspace = await TempWorkspace.CreateAsync(SameLineDualProcessSource);
         var operation = new GetCodeMetricsOperation(workspace.Context);
-        var line = FindLine(SameLineDualProcessSource, "a-process");
+        var classLine = FindLine(SameLineDualProcessSource, "class Container");
+        var processLine = FindLine(SameLineDualProcessSource, "a-process");
 
-        var omitted = await operation.ExecuteAsync(new GetCodeMetricsParams
+        var omittedClass = await operation.ExecuteAsync(new GetCodeMetricsParams
         {
             SourceFile = workspace.SourcePath,
-            Line = line
+            Line = classLine
         });
-        var lineOnlyEquivalent = await operation.ExecuteAsync(new GetCodeMetricsParams
+        var nullColumnClass = await operation.ExecuteAsync(new GetCodeMetricsParams
         {
             SourceFile = workspace.SourcePath,
-            Line = line,
+            Line = classLine,
             Column = null
         });
 
-        Assert.True(omitted.Success);
-        Assert.True(lineOnlyEquivalent.Success);
-        Assert.NotNull(omitted.Data);
-        Assert.NotNull(lineOnlyEquivalent.Data);
-        Assert.Equal(lineOnlyEquivalent.Data.SymbolName, omitted.Data.SymbolName);
-        Assert.Equal(lineOnlyEquivalent.Data.FullyQualifiedName, omitted.Data.FullyQualifiedName);
-        Assert.Equal(lineOnlyEquivalent.Data.CyclomaticComplexity, omitted.Data.CyclomaticComplexity);
-        Assert.Equal(lineOnlyEquivalent.Data.LinesOfCode, omitted.Data.LinesOfCode);
+        Assert.True(omittedClass.Success);
+        Assert.True(nullColumnClass.Success);
+        Assert.NotNull(omittedClass.Data);
+        Assert.NotNull(nullColumnClass.Data);
+        Assert.Equal(nullColumnClass.Data.SymbolName, omittedClass.Data.SymbolName);
+        Assert.Equal(nullColumnClass.Data.FullyQualifiedName, omittedClass.Data.FullyQualifiedName);
+        Assert.Equal(nullColumnClass.Data.CyclomaticComplexity, omittedClass.Data.CyclomaticComplexity);
+        Assert.Equal("Container", omittedClass.Data.SymbolName);
+
+        // Same-line dual Process: today's Line-only path is column ?? 1 on `void`,
+        // which resolves to System.Void (no declaring syntax). Do not invent a
+        // covering-span / FirstOrDefault pick of Process(string).
+        var omittedProcess = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GetCodeMetricsParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = processLine
+            }));
+        var nullColumnProcess = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GetCodeMetricsParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = processLine,
+                Column = null
+            }));
+
+        Assert.Equal(nullColumnProcess.ErrorCode, omittedProcess.ErrorCode);
+        Assert.Equal(nullColumnProcess.Message, omittedProcess.Message);
+        Assert.Equal(ErrorCodes.SymbolNotFound, omittedProcess.ErrorCode);
+        Assert.Contains("no syntax declaration", omittedProcess.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [SkippableFact]
-    public async Task GetCodeMetrics_OmittedColumn_LinePicksMethodOnSeparateLine()
+    public async Task GetCodeMetrics_OmittedColumn_DoesNotInventLineFirstOrDefault()
     {
         await using var workspace = await TempWorkspace.CreateAsync(SeparateLineDualProcessSource);
         var operation = new GetCodeMetricsOperation(workspace.Context);
 
-        var first = await operation.ExecuteAsync(new GetCodeMetricsParams
-        {
-            SourceFile = workspace.SourcePath,
-            Line = FindLine(SeparateLineDualProcessSource, "a-process")
-        });
-        var second = await operation.ExecuteAsync(new GetCodeMetricsParams
-        {
-            SourceFile = workspace.SourcePath,
-            Line = FindLine(SeparateLineDualProcessSource, "b-process")
-        });
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GetCodeMetricsParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = FindLine(SeparateLineDualProcessSource, "b-process")
+            }));
 
-        Assert.True(first.Success);
-        Assert.True(second.Success);
-        Assert.NotNull(first.Data);
-        Assert.NotNull(second.Data);
-        Assert.Equal("Process", first.Data.SymbolName);
-        Assert.Equal("Process", second.Data.SymbolName);
-        Assert.Contains("int", first.Data.FullyQualifiedName, StringComparison.Ordinal);
-        Assert.Contains("string", second.Data.FullyQualifiedName, StringComparison.Ordinal);
-        Assert.Equal(1, first.Data.CyclomaticComplexity);
-        Assert.Equal(2, second.Data.CyclomaticComplexity);
+        Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        Assert.Contains("no syntax declaration", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [SkippableFact]
