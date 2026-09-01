@@ -1175,6 +1175,40 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_InlineConstant_ShowsLineAndColumn()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("inline-constant")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("inline-constant", help);
+        Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("SymbolAmbiguous", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("omitted-line", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.Contains("--constant-name", requiredSection);
+        Assert.DoesNotContain("--line", requiredSection);
+        Assert.DoesNotContain("--column", requiredSection);
+        Assert.DoesNotContain("--type-name", requiredSection);
+        Assert.DoesNotContain("--preview", requiredSection);
+
+        Assert.Contains("--line", optionalSection);
+        Assert.Contains("--column", optionalSection);
+        Assert.Contains("--type-name", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_SimplifyName_ShowsScopeLineAndPreview()
     {
         var registry = ToolRegistry.BuildDefault();

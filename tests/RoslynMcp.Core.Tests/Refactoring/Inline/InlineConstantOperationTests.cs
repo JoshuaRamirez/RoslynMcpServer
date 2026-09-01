@@ -1,4 +1,6 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -99,6 +101,94 @@ public class InlineConstantOperationTests
         Assert.True(InlineConstantOperation.IsValidIdentifier("MaxRetries"));
         Assert.False(InlineConstantOperation.IsValidIdentifier("123bad"));
         Assert.False(InlineConstantOperation.IsValidIdentifier("class"));
+    }
+
+    [Fact]
+    public void LineAndColumn_DefaultToNull()
+    {
+        var @params = new InlineConstantParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            ConstantName = "Max"
+        };
+
+        Assert.Null(@params.Line);
+        Assert.Null(@params.Column);
+    }
+
+    [Fact]
+    public void Validate_InvalidLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.Validate(new InlineConstantParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                ConstantName = "Max",
+                Line = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.Validate(new InlineConstantParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                ConstantName = "Max",
+                Line = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.Validate(new InlineConstantParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                ConstantName = "Max",
+                Column = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.Validate(new InlineConstantParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                ConstantName = "Max",
+                Column = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_MissingConstantName_WithLineAndColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.Validate(new InlineConstantParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                ConstantName = "",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
     #endregion
@@ -778,10 +868,627 @@ public class InlineConstantOperationTests
 
     #endregion
 
+    #region Line / Column
+
+    private const string SameNameConstSource = """
+        namespace TestApp;
+
+        public class Alpha
+        {
+            private const int MaxRetries = 3; /* alpha-const */
+
+            public int Run() => MaxRetries;
+        }
+
+        public class Beta
+        {
+            private const int MaxRetries = 7; /* beta-const */
+
+            public int Run() => MaxRetries;
+        }
+        """;
+
+    private const string NestedSameNameConstSource = """
+        namespace TestApp;
+
+        public class Limits
+        {
+            private const int MaxRetries = 3; /* outer-const */
+
+            public int Run() => MaxRetries;
+
+            public class Nested
+            {
+                private const int MaxRetries = 7; /* nested-const */
+
+                public int Run() => MaxRetries;
+            }
+        }
+        """;
+
+    private const string SameLineNestedConstSource = """
+        namespace TestApp;
+
+        public class Limits { private const int MaxRetries = 3; /* outer-const */ public int Run() => MaxRetries; public class Nested { private const int MaxRetries = 7; /* nested-const */ public int Run() => MaxRetries; } }
+        """;
+
+    [SkippableFact]
+    public async Task InlineConstant_OmittedLine_SameName_ThrowsSymbolAmbiguous()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameNameConstSource);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                ConstantName = "MaxRetries"
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_LineOnBetaIdentifier_PicksBeta()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameNameConstSource);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "MaxRetries",
+            Line = FindLine(SameNameConstSource, "beta-const")
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("private const int MaxRetries = 3;", text);
+        Assert.DoesNotContain("private const int MaxRetries = 7;", text);
+        Assert.Contains("public int Run() => 7;", text);
+        Assert.DoesNotContain("public int Run() => 3;", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_LineOnNestedIdentifier_PicksNested()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameConstSource);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "MaxRetries",
+            Line = FindLine(NestedSameNameConstSource, "nested-const")
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var (outer, nested) = SplitOuterAndNested(text);
+        Assert.Contains("private const int MaxRetries = 3;", outer);
+        Assert.Contains("public int Run() => MaxRetries;", outer);
+        Assert.DoesNotContain("private const int MaxRetries = 7;", nested);
+        Assert.Contains("public int Run() => 7;", nested);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_LineOnOuterIdentifier_PicksOuter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NestedSameNameConstSource);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "MaxRetries",
+            Line = FindLine(NestedSameNameConstSource, "outer-const")
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        var (outer, nested) = SplitOuterAndNested(text);
+        Assert.DoesNotContain("private const int MaxRetries = 3;", outer);
+        Assert.Contains("public int Run() => 3;", outer);
+        Assert.Contains("private const int MaxRetries = 7;", nested);
+        Assert.Contains("public int Run() => MaxRetries;", nested);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_LineSetWithNoCoveringMatch_ThrowsFieldNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameNameConstSource);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                ConstantName = "MaxRetries",
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.FieldNotFound, ex.ErrorCode);
+        Assert.Equal("2008", ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_TypeNameAndLineMiss_ThrowsFieldNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameNameConstSource);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                ConstantName = "MaxRetries",
+                TypeName = "Beta",
+                Line = FindLine(SameNameConstSource, "alpha-const")
+            }));
+
+        Assert.Equal(ErrorCodes.FieldNotFound, ex.ErrorCode);
+        Assert.Contains("Beta", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_ColumnOnNestedIdentifier_PicksNested()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedConstSource);
+        var operation = new InlineConstantOperation(workspace.Context);
+        var line = FindLine(SameLineNestedConstSource, "public class Limits { private const int MaxRetries");
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "MaxRetries",
+            Line = line,
+            Column = ColumnOf(SameLineNestedConstSource, "MaxRetries = 7; /* nested-const */")
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("private const int MaxRetries = 3;", text);
+        Assert.DoesNotContain("private const int MaxRetries = 7;", text);
+        Assert.Contains("public int Run() => 7;", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_ColumnOnOuterIdentifier_PicksOuter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineNestedConstSource);
+        var operation = new InlineConstantOperation(workspace.Context);
+        var line = FindLine(SameLineNestedConstSource, "public class Limits { private const int MaxRetries");
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "MaxRetries",
+            Line = line,
+            Column = ColumnOf(SameLineNestedConstSource, "MaxRetries = 3; /* outer-const */")
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.DoesNotContain("private const int MaxRetries = 3;", text);
+        Assert.Contains("public int Run() => 3;", text);
+        Assert.Contains("private const int MaxRetries = 7;", text);
+        Assert.Contains("public int Run() => MaxRetries;", text);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_ColumnWithoutLine_KeepsOmittedLineSymbolAmbiguous()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameNameConstSource);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                ConstantName = "MaxRetries",
+                Column = ColumnOf(SameNameConstSource, "MaxRetries = 7; /* beta-const */")
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_ColumnAndLineMiss_ThrowsFieldNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameNameConstSource);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                ConstantName = "MaxRetries",
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.FieldNotFound, ex.ErrorCode);
+        Assert.Equal("2008", ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_Preview_LineOnBeta_WritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameNameConstSource);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "MaxRetries",
+            Line = FindLine(SameNameConstSource, "beta-const"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => c.AfterSnippet != null && c.AfterSnippet.Contains("=> 7"));
+
+        var after = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(original, after);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_ColumnOnContinuationLine_PicksField()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                private const int
+                    MaxRetries = 5; /* split-const */
+
+                public int Run() => MaxRetries;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var startLine = FindLine(source, "private const int");
+        var identifierLine = FindLine(source, "split-const");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var operation = new InlineConstantOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "MaxRetries",
+            Line = identifierLine,
+            Column = ColumnOf(source, "MaxRetries = 5; /* split-const */")
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.DoesNotContain("MaxRetries", text);
+        Assert.Contains("public int Run() => 5;", text);
+    }
+
+    [Fact]
+    public void FindConstantDeclarator_OmittedLine_ThrowsSymbolAmbiguous()
+    {
+        var root = Parse(SameNameConstSource);
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.FindConstantDeclarator(
+                root,
+                semanticModel: null,
+                new InlineConstantParams
+                {
+                    SourceFile = AbsoluteTestPath(),
+                    ConstantName = "MaxRetries"
+                },
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindConstantDeclarator_LineOnNestedIdentifier_PicksNested()
+    {
+        var root = Parse(NestedSameNameConstSource);
+        var found = InlineConstantOperation.FindConstantDeclarator(
+            root,
+            semanticModel: null,
+            new InlineConstantParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                ConstantName = "MaxRetries",
+                Line = FindLine(NestedSameNameConstSource, "nested-const")
+            },
+            CancellationToken.None);
+
+        var type = found.Ancestors().OfType<TypeDeclarationSyntax>().First();
+        Assert.Equal("Nested", type.Identifier.Text);
+        Assert.True(type.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Limits");
+    }
+
+    [Fact]
+    public void FindConstantDeclarator_LineOnOuterIdentifier_PicksOuter()
+    {
+        var root = Parse(NestedSameNameConstSource);
+        var found = InlineConstantOperation.FindConstantDeclarator(
+            root,
+            semanticModel: null,
+            new InlineConstantParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                ConstantName = "MaxRetries",
+                Line = FindLine(NestedSameNameConstSource, "outer-const")
+            },
+            CancellationToken.None);
+
+        var type = found.Ancestors().OfType<TypeDeclarationSyntax>().First();
+        Assert.Equal("Limits", type.Identifier.Text);
+        Assert.False(type.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindConstantDeclarator_LineMiss_ThrowsFieldNotFound()
+    {
+        var root = Parse(NestedSameNameConstSource);
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.FindConstantDeclarator(
+                root,
+                semanticModel: null,
+                new InlineConstantParams
+                {
+                    SourceFile = AbsoluteTestPath(),
+                    ConstantName = "MaxRetries",
+                    Line = 1
+                },
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.FieldNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindConstantDeclarator_LineOnLocal_DoesNotPickLocal()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                private const int MaxRetries = 3; /* field-const */
+
+                public int Run()
+                {
+                    const int MaxRetries = 9; /* local-const */
+                    return MaxRetries;
+                }
+            }
+            """;
+
+        var root = Parse(source);
+        var omitted = InlineConstantOperation.FindConstantDeclarator(
+            root,
+            semanticModel: null,
+            new InlineConstantParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                ConstantName = "MaxRetries"
+            },
+            CancellationToken.None);
+        var onLocal = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.FindConstantDeclarator(
+                root,
+                semanticModel: null,
+                new InlineConstantParams
+                {
+                    SourceFile = AbsoluteTestPath(),
+                    ConstantName = "MaxRetries",
+                    Line = FindLine(source, "local-const")
+                },
+                CancellationToken.None));
+
+        Assert.True(omitted.Parent?.Parent is FieldDeclarationSyntax);
+        Assert.Equal(ErrorCodes.FieldNotFound, onLocal.ErrorCode);
+    }
+
+    [Fact]
+    public void FindConstantDeclarator_LineOnContinuationIdentifier_PicksField()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Limits
+            {
+                private const int
+                    MaxRetries = 5; /* split-const */
+            }
+            """;
+
+        var root = Parse(source);
+        var startLine = FindLine(source, "private const int");
+        var identifierLine = FindLine(source, "split-const");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = InlineConstantOperation.FindConstantDeclarator(
+            root,
+            semanticModel: null,
+            new InlineConstantParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                ConstantName = "MaxRetries",
+                Line = identifierLine
+            },
+            CancellationToken.None);
+
+        Assert.Equal("MaxRetries", found.Identifier.Text);
+        Assert.True(found.Parent?.Parent is FieldDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindConstantDeclarator_ColumnOnNestedIdentifier_PicksNested()
+    {
+        var root = Parse(SameLineNestedConstSource);
+        var line = FindLine(SameLineNestedConstSource, "public class Limits { private const int MaxRetries");
+        var found = InlineConstantOperation.FindConstantDeclarator(
+            root,
+            semanticModel: null,
+            new InlineConstantParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                ConstantName = "MaxRetries",
+                Line = line,
+                Column = ColumnOf(SameLineNestedConstSource, "MaxRetries = 7; /* nested-const */")
+            },
+            CancellationToken.None);
+
+        var type = found.Ancestors().OfType<TypeDeclarationSyntax>().First();
+        Assert.Equal("Nested", type.Identifier.Text);
+    }
+
+    [Fact]
+    public void FindConstantDeclarator_ColumnOnOuterIdentifier_PicksOuter()
+    {
+        var root = Parse(SameLineNestedConstSource);
+        var line = FindLine(SameLineNestedConstSource, "public class Limits { private const int MaxRetries");
+        var found = InlineConstantOperation.FindConstantDeclarator(
+            root,
+            semanticModel: null,
+            new InlineConstantParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                ConstantName = "MaxRetries",
+                Line = line,
+                Column = ColumnOf(SameLineNestedConstSource, "MaxRetries = 3; /* outer-const */")
+            },
+            CancellationToken.None);
+
+        var type = found.Ancestors().OfType<TypeDeclarationSyntax>().First();
+        Assert.Equal("Limits", type.Identifier.Text);
+        Assert.False(type.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindConstantDeclarator_ColumnWithoutLine_ThrowsSymbolAmbiguous()
+    {
+        var root = Parse(SameNameConstSource);
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.FindConstantDeclarator(
+                root,
+                semanticModel: null,
+                new InlineConstantParams
+                {
+                    SourceFile = AbsoluteTestPath(),
+                    ConstantName = "MaxRetries",
+                    Column = ColumnOf(SameNameConstSource, "MaxRetries = 7; /* beta-const */")
+                },
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindConstantDeclarator_ColumnAndLineMiss_ThrowsFieldNotFound()
+    {
+        var root = Parse(SameNameConstSource);
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.FindConstantDeclarator(
+                root,
+                semanticModel: null,
+                new InlineConstantParams
+                {
+                    SourceFile = AbsoluteTestPath(),
+                    ConstantName = "MaxRetries",
+                    Line = 1,
+                    Column = 1
+                },
+                CancellationToken.None));
+
+        Assert.Equal(ErrorCodes.FieldNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void SpanCoversLine_TreatsEndAsExclusive()
+    {
+        var span = new FileLinePositionSpan(
+            "",
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
+
+        Assert.True(InlineConstantOperation.SpanCoversLine(span, 1));
+        Assert.True(InlineConstantOperation.SpanCoversLine(span, 2));
+        Assert.False(InlineConstantOperation.SpanCoversLine(span, 3));
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        var root = Parse(SameLineNestedConstSource);
+        var nested = root.DescendantNodes()
+            .OfType<VariableDeclaratorSyntax>()
+            .Last(v => v.Identifier.Text == "MaxRetries");
+        var span = nested.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(InlineConstantOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(InlineConstantOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(InlineConstantOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(InlineConstantOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpInlineConstantMissing.cs");
+
+    private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
+
+    private static SyntaxNode Parse(string source) =>
+        CSharpSyntaxTree.ParseText(NormalizeNewlines(source)).GetRoot();
+
+    private static int FindLine(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
+    }
+
+    private static (string Outer, string Nested) SplitOuterAndNested(string source)
+    {
+        var nestedStart = source.IndexOf("class Nested", StringComparison.Ordinal);
+        Assert.True(nestedStart >= 0, "Expected a Nested type in the source.");
+        return (source[..nestedStart], source[nestedStart..]);
+    }
 
     private sealed class TempWorkspace : IAsyncDisposable
     {
