@@ -213,7 +213,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ConvertToBlockBodyOperation, ConvertToBlockBodyParams>(
             "convert-to-block-body", "Convert an expression-bodied member to a block body; column (optional) picks the member whose identifier or declaration span covers that column on the given line");
         r.RegisterRefactoring<InvertIfOperation, InvertIfParams>(
-            "invert-if", "Flip an if-statement condition and swap the if/else branches");
+            "invert-if", "Flip an if-statement condition and swap the if/else branches; column (optional) picks the if whose keyword covers that column on the given line; allFiles (default false) inverts every distinct eligible if in every C# file (sourceFile optional when true; cannot be combined with line or column)");
         r.RegisterRefactoring<AddBracesOperation, AddBracesParams>(
             "add-braces", "Add braces to control statements (if, else, for, foreach, while, using) that have a single-statement body; scope is statement (default; single-file only), file, or type (single-file only); allFiles (default false) wraps every C# file at file scope (sourceFile optional when true; omitted scope uses file; cannot combine with scope=statement or scope=type)");
         r.RegisterRefactoring<RemoveBracesOperation, RemoveBracesParams>(

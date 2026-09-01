@@ -33,13 +33,13 @@ public sealed class InvertIfTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Flip an if-statement condition and swap the if/else branches, preserving semantics. Comparison operators are inverted; && / || use De Morgan. An if without else gets an empty if body and the original body as else.";
+        "Flip an if-statement condition and swap the if/else branches, preserving semantics. Comparison operators are inverted; && / || use De Morgan. An if without else gets an empty if body and the original body as else. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and inverts every distinct eligible if (sourceFile optional when true; cannot be combined with line or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "line" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,18 +50,24 @@ public sealed class InvertIfTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the if statement"
+                description = "Absolute path to the source file containing the if statement. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with line or column.",
+                @default = false
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number of the if keyword",
+                description = "1-based line number of the if keyword. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column on the if keyword (optional; disambiguates multiple ifs on the same line)",
+                description = "1-based column on the if keyword (optional; disambiguates multiple ifs on the same line). Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             preview = new
@@ -98,6 +104,7 @@ public sealed class InvertIfTool : IToolHandler
             var @params = new InvertIfParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 Line = args.Line,
                 Column = args.Column,
                 Preview = args.Preview ?? false
@@ -128,8 +135,9 @@ public sealed class InvertIfTool : IToolHandler
     private sealed class InvertIfArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public int Line { get; init; }
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public int? Line { get; init; }
         public int? Column { get; init; }
         public bool? Preview { get; init; }
     }
