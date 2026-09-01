@@ -59,6 +59,21 @@ public sealed class TypeSymbolResolver
     }
 
     /// <summary>
+    /// Finds a type symbol in a specific file, optionally at a specific line.
+    /// </summary>
+    /// <param name="filePath">Path to the source file.</param>
+    /// <param name="symbolName">Symbol name (simple or qualified).</param>
+    /// <param name="line">Optional 1-based line number for disambiguation.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Resolution result with the symbol and its declaration.</returns>
+    public Task<SymbolResolutionResult> FindTypeInFileAsync(
+        string filePath,
+        string symbolName,
+        int? line = null,
+        CancellationToken cancellationToken = default)
+        => FindTypeInFileAsync(filePath, symbolName, line, column: null, cancellationToken);
+
+    /// <summary>
     /// Finds a type symbol in a specific file, optionally at a specific line
     /// and column. Omitted <paramref name="column"/> keeps today's
     /// <paramref name="symbolName"/> + optional <paramref name="line"/>
@@ -79,8 +94,8 @@ public sealed class TypeSymbolResolver
     public async Task<SymbolResolutionResult> FindTypeInFileAsync(
         string filePath,
         string symbolName,
-        int? line = null,
-        int? column = null,
+        int? line,
+        int? column,
         CancellationToken cancellationToken = default)
     {
         var normalizedPath = PathResolver.NormalizePath(filePath);
