@@ -79,8 +79,11 @@ public sealed class IntroduceParameterOperation : RefactoringOperationBase<Intro
 
         if (localDecl == null)
         {
+            var location = @params.Column.HasValue
+                ? $"line {@params.Line}, column {@params.Column.Value}"
+                : $"line {@params.Line}";
             throw new RefactoringException(ErrorCodes.SymbolNotFound,
-                $"Local variable '{@params.VariableName}' not found at line {@params.Line}.");
+                $"Local variable '{@params.VariableName}' not found at {location}.");
         }
 
         // Get the containing method

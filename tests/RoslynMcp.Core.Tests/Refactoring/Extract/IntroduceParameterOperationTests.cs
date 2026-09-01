@@ -490,6 +490,7 @@ public class IntroduceParameterOperationTests
 
         Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
         Assert.Equal("2003", ex.ErrorCode);
+        Assert.Contains("line 1, column 1", ex.Message, StringComparison.Ordinal);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
@@ -512,6 +513,7 @@ public class IntroduceParameterOperationTests
 
         Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
         Assert.Equal("2003", ex.ErrorCode);
+        Assert.Contains($"line {line}, column", ex.Message, StringComparison.Ordinal);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
@@ -532,6 +534,8 @@ public class IntroduceParameterOperationTests
 
         Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
         Assert.Equal("2003", ex.ErrorCode);
+        Assert.Contains("line 1", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("column", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
@@ -607,8 +611,9 @@ public class IntroduceParameterOperationTests
         Path.Combine(Path.GetTempPath(), "RoslynMcpIntroduceParameterMissing.cs");
 
     /// <summary>
-    /// 1-based line of a single-line snippet. Normalize to <c>\n</c> first
-    /// so a lone <c>\r</c> is not treated as a line break.
+    /// 1-based line of a single-line snippet. Normalize CRLF to <c>\n</c>
+    /// first so <c>\r\n</c> counts as one line break (a remaining lone
+    /// <c>\r</c> is then converted to <c>\n</c>).
     /// </summary>
     private static int FindLine(string source, string snippet)
     {
@@ -632,8 +637,9 @@ public class IntroduceParameterOperationTests
     }
 
     /// <summary>
-    /// 1-based column of a single-line snippet. Normalize to <c>\n</c>
-    /// first so a lone <c>\r</c> is not treated as a line break.
+    /// 1-based column of a single-line snippet. Normalize CRLF to <c>\n</c>
+    /// first so <c>\r\n</c> counts as one line break (a remaining lone
+    /// <c>\r</c> is then converted to <c>\n</c>).
     /// </summary>
     private static int ColumnOf(string source, string snippet)
     {
