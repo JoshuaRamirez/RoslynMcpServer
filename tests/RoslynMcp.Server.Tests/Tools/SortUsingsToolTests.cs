@@ -69,7 +69,7 @@ public class SortUsingsToolTests
         Assert.Contains("solutionPath", requiredFields);
         Assert.DoesNotContain("sourceFile", requiredFields);
         Assert.DoesNotContain("allFiles", requiredFields);
-        Assert.Equal(1, requiredFields.Count);
+        Assert.Single(requiredFields);
     }
 
     [Fact]
