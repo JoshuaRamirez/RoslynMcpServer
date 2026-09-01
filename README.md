@@ -188,7 +188,7 @@ All tools accept a `solutionPath` parameter (absolute path to a `.sln`, `.slnx`,
 
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
-| `move_type_to_file` | Move a C# type declaration to a different file. Updates all references automatically. | `sourceFile`, `symbolName`, `targetFile`, `createTargetFile` |
+| `move_type_to_file` | Move a C# type declaration to a different file. Updates all references automatically. (`line` disambiguates same-named top-level types by start-line equality when several share the name; omitted with several matches is `SymbolAmbiguous`; a single match ignores line; `column` picks the top-level type whose identifier or declaration span covers that 1-based column when set with `line` — identifier preferred, then smallest covering type; omitted keeps today's symbolName + optional line pick so indented types still move; `column` without `line` keeps today's omitted-line path rather than substituting each candidate's own start line; nested types stay unmoveable). | `sourceFile`, `symbolName`, `targetFile`, `createTargetFile`, `line`, `column` |
 | `move_type_to_namespace` | Change the namespace of a C# type. Updates all using directives and qualified references. | `sourceFile`, `symbolName`, `targetNamespace`, `updateFileLocation` |
 | `rename_symbol` | Rename any C# symbol (type, method, property, field, variable, etc.) with automatic reference updates across the solution. | `sourceFile`, `symbolName`, `newName`, `line`, `column`, `renameOverloads`, `renameFile` |
 | `rename_file_to_match_type` | Rename a source file so its name matches the primary type declared in it, without renaming the type or its references. | `sourceFile`, `typeName`, `line`, `column` |

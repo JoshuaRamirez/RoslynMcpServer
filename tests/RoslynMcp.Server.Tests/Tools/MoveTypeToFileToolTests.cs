@@ -33,6 +33,9 @@ public class MoveTypeToFileToolTests
     {
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
+        Assert.Contains("line", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("omitted-line", _tool.Description);
     }
 
     [Fact]
@@ -89,8 +92,11 @@ public class MoveTypeToFileToolTests
 
         // Assert - Optional properties
         Assert.True(properties.TryGetProperty("line", out _));
+        Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("createTargetFile", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+        Assert.False(RequiredFieldsContains(doc, "line"));
+        Assert.False(RequiredFieldsContains(doc, "column"));
     }
 
     [Fact]
@@ -119,6 +125,35 @@ public class MoveTypeToFileToolTests
         // Assert
         Assert.Equal("integer", line.GetProperty("type").GetString());
         Assert.Equal(1, line.GetProperty("minimum").GetInt32());
+    }
+
+    [Fact]
+    public void GetDefinition_HasOptionalColumn()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+        var required = doc.RootElement.GetProperty("required");
+
+        var requiredFields = new List<string>();
+        foreach (var item in required.EnumerateArray())
+            requiredFields.Add(item.GetString()!);
+
+        Assert.True(properties.TryGetProperty("column", out var column));
+        Assert.Equal("integer", column.GetProperty("type").GetString());
+        Assert.Equal(1, column.GetProperty("minimum").GetInt32());
+        Assert.DoesNotContain("column", requiredFields);
+        var description = column.GetProperty("description").GetString();
+        Assert.Contains("1-based", description);
+        Assert.Contains("column", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_Description_MentionsColumn()
+    {
+        Assert.Contains("column", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("omitted-line", _tool.Description);
     }
 
     #endregion
@@ -166,6 +201,17 @@ public class MoveTypeToFileToolTests
     private static string GetResultText(ToolResult result)
     {
         return result.Content.FirstOrDefault()?.Text ?? string.Empty;
+    }
+
+    private static bool RequiredFieldsContains(JsonDocument doc, string name)
+    {
+        foreach (var item in doc.RootElement.GetProperty("required").EnumerateArray())
+        {
+            if (item.GetString() == name)
+                return true;
+        }
+
+        return false;
     }
 
     #endregion
