@@ -32,7 +32,8 @@ public sealed class InlineConstantTool : IToolHandler
     public string Name => "inline_constant";
 
     /// <inheritdoc />
-    public string Description => "Inline a const field by replacing references with its literal value. Optionally remove the constant.";
+    public string Description =>
+        "Inline a const field by replacing references with its literal value. Optionally remove the constant. line (optional) picks the matching const field whose identifier or declaration span covers that line when several constants share the name; omitted keeps today's constantName + optional typeName path including SymbolAmbiguous. column (optional) picks the matching const field whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering declarator/field); omitted keeps today's constantName + optional typeName + optional line pick; column without line keeps today's omitted-line path after the name/typeName filter.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -59,7 +60,19 @@ public sealed class InlineConstantTool : IToolHandler
             typeName = new
             {
                 type = "string",
-                description = "Containing type name for disambiguation when multiple constants share a name"
+                description = "Containing type name for disambiguation when multiple constants share a name. Additive filter when supplied; line/column do not replace it."
+            },
+            line = new
+            {
+                type = "integer",
+                description = "1-based line number for disambiguation when several constants share the name. When set, selects the const field whose identifier or declaration span covers that line (identifier preferred, then smallest covering declarator/field). Omitted keeps today's constantName + optional typeName path including SymbolAmbiguous.",
+                minimum = 1
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set with line, selects the const field whose identifier or declaration span covers that column (identifier preferred, then smallest covering declarator/field). Omitted keeps today's constantName + optional typeName + optional line pick. Column without line keeps today's omitted-line path after the name/typeName filter.",
+                minimum = 1
             },
             removeConstant = new
             {
@@ -103,6 +116,8 @@ public sealed class InlineConstantTool : IToolHandler
                 SourceFile = args.SourceFile,
                 ConstantName = args.ConstantName,
                 TypeName = args.TypeName,
+                Line = args.Line,
+                Column = args.Column,
                 RemoveConstant = args.RemoveConstant ?? true,
                 Preview = args.Preview ?? false
             };
@@ -135,6 +150,8 @@ public sealed class InlineConstantTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string ConstantName { get; init; } = "";
         public string? TypeName { get; init; }
+        public int? Line { get; init; }
+        public int? Column { get; init; }
         public bool? RemoveConstant { get; init; }
         public bool? Preview { get; init; }
     }

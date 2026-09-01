@@ -49,6 +49,12 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
+        if (@params.Line.HasValue && @params.Line.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
+
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
+
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
@@ -170,9 +176,30 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             0);
     }
 
-    private static VariableDeclaratorSyntax FindConstantDeclarator(
+    /// <summary>
+    /// Resolves the target const field. Omitted line/column keeps today's
+    /// name + optional typeName path, including <c>SymbolAmbiguous</c> when
+    /// several constants share the name. Column without line is not a
+    /// source position: substituting each candidate's own start line would
+    /// invent a new omitted-line FirstOrDefault across types — keep today's
+    /// omitted-line path after the name/typeName filter. When line is set,
+    /// picks the matching field whose identifier or declaration span covers
+    /// that 1-based line (identifier preferred, then smallest covering
+    /// declarator/field — same exclusive-end coverage as
+    /// <c>EncapsulateFieldOperation.FindFieldDeclarator</c> /
+    /// <see cref="SpanCoversLine"/>). When column is set with line, same
+    /// covering-span rules as encapsulate_field (<see cref="SpanCoversColumn"/>,
+    /// exclusive end). Nested types participate. Do not require the
+    /// declaration to start on line — a split declaration may put the
+    /// identifier on a continuation line. If line is set (with or without
+    /// column) and nothing covers that position,
+    /// <c>FieldNotFound</c> rather than falling back to first-match.
+    /// <see cref="InlineConstantParams.TypeName"/> stays an additive filter.
+    /// Locals and other non-field declarators stay excluded.
+    /// </summary>
+    internal static VariableDeclaratorSyntax FindConstantDeclarator(
         SyntaxNode root,
-        SemanticModel semanticModel,
+        SemanticModel? semanticModel,
         InlineConstantParams @params,
         CancellationToken cancellationToken)
     {
@@ -184,23 +211,67 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         if (!string.IsNullOrWhiteSpace(@params.TypeName))
         {
             candidates = candidates
-                .Where(v => MatchesTypeName(semanticModel.GetDeclaredSymbol(v, cancellationToken) as IFieldSymbol, @params.TypeName))
+                .Where(v => MatchesTypeName(semanticModel?.GetDeclaredSymbol(v, cancellationToken) as IFieldSymbol, @params.TypeName))
                 .ToList();
         }
 
-        if (candidates.Count == 0)
+        // Column without line is not a source position: substituting each
+        // candidate's own start line would match every equally-aligned
+        // same-name constant and invent a new omitted-line FirstOrDefault.
+        // Keep today's omitted-line path after the name/typeName filter.
+        if (@params.Column.HasValue && !@params.Line.HasValue)
+            return PickOmittedLineMatch(candidates, semanticModel, @params, cancellationToken);
+
+        if (@params.Column.HasValue)
         {
-            throw new RefactoringException(
-                ErrorCodes.FieldNotFound,
-                string.IsNullOrWhiteSpace(@params.TypeName)
-                    ? $"Constant '{@params.ConstantName}' not found."
-                    : $"Constant '{@params.ConstantName}' not found on type '{@params.TypeName}'.");
+            // Do not require the declaration to start on `line` — a split
+            // field's identifier may live on a continuation line whose
+            // declaration span still covers that column. Prefer the
+            // identifier hit, then the smallest covering declarator or
+            // field (nested over outer). Do not silently pick the first
+            // when a covering node exists elsewhere — scan every
+            // candidate. If nothing covers this position, keep today's
+            // not-found rather than inventing a first-match.
+            var covering = candidates
+                .Where(declarator => FieldCoversColumn(declarator, @params.Line!.Value, @params.Column.Value))
+                .OrderBy(declarator => IdentifierCoversColumn(declarator, @params.Line!.Value, @params.Column.Value) ? 0 : 1)
+                .ThenBy(declarator => SmallestCoveringSpanLength(declarator, @params.Line!.Value, @params.Column.Value))
+                .ToList();
+
+            if (covering.Count == 0)
+                throw FieldNotFound(@params);
+
+            return covering[0];
         }
+
+        if (!@params.Line.HasValue)
+            return PickOmittedLineMatch(candidates, semanticModel, @params, cancellationToken);
+
+        var lineCovering = candidates
+            .Where(declarator => FieldCoversLine(declarator, @params.Line.Value))
+            .OrderBy(declarator => IdentifierCoversLine(declarator, @params.Line.Value) ? 0 : 1)
+            .ThenBy(declarator => SmallestCoveringSpanLength(declarator, @params.Line.Value))
+            .ToList();
+
+        if (lineCovering.Count == 0)
+            throw FieldNotFound(@params);
+
+        return lineCovering[0];
+    }
+
+    private static VariableDeclaratorSyntax PickOmittedLineMatch(
+        List<VariableDeclaratorSyntax> candidates,
+        SemanticModel? semanticModel,
+        InlineConstantParams @params,
+        CancellationToken cancellationToken)
+    {
+        if (candidates.Count == 0)
+            throw FieldNotFound(@params);
 
         if (candidates.Count > 1)
         {
             var types = candidates
-                .Select(v => (semanticModel.GetDeclaredSymbol(v, cancellationToken) as IFieldSymbol)?.ContainingType.Name)
+                .Select(v => (semanticModel?.GetDeclaredSymbol(v, cancellationToken) as IFieldSymbol)?.ContainingType.Name)
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .Distinct()
                 .ToList();
@@ -210,6 +281,107 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         }
 
         return candidates[0];
+    }
+
+    private static RefactoringException FieldNotFound(InlineConstantParams @params) =>
+        new(
+            ErrorCodes.FieldNotFound,
+            string.IsNullOrWhiteSpace(@params.TypeName)
+                ? $"Constant '{@params.ConstantName}' not found."
+                : $"Constant '{@params.ConstantName}' not found on type '{@params.TypeName}'.");
+
+    private static bool FieldCoversLine(VariableDeclaratorSyntax declarator, int line) =>
+        IdentifierCoversLine(declarator, line) ||
+        SpanCoversLine(declarator.GetLocation().GetLineSpan(), line) ||
+        (GetFieldDeclaration(declarator) is { } field &&
+         SpanCoversLine(field.GetLocation().GetLineSpan(), line));
+
+    private static bool IdentifierCoversLine(VariableDeclaratorSyntax declarator, int line) =>
+        SpanCoversLine(declarator.Identifier.GetLocation().GetLineSpan(), line);
+
+    private static bool FieldCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
+        IdentifierCoversColumn(declarator, line, column) ||
+        SpanCoversColumn(declarator.GetLocation().GetLineSpan(), line, column) ||
+        (GetFieldDeclaration(declarator) is { } field &&
+         SpanCoversColumn(field.GetLocation().GetLineSpan(), line, column));
+
+    private static bool IdentifierCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
+        SpanCoversColumn(declarator.Identifier.GetLocation().GetLineSpan(), line, column);
+
+    private static int SmallestCoveringSpanLength(VariableDeclaratorSyntax declarator, int line)
+    {
+        var smallest = int.MaxValue;
+        if (SpanCoversLine(declarator.GetLocation().GetLineSpan(), line))
+            smallest = Math.Min(smallest, declarator.Span.Length);
+
+        if (GetFieldDeclaration(declarator) is { } field &&
+            SpanCoversLine(field.GetLocation().GetLineSpan(), line))
+        {
+            smallest = Math.Min(smallest, field.Span.Length);
+        }
+
+        return smallest;
+    }
+
+    private static int SmallestCoveringSpanLength(VariableDeclaratorSyntax declarator, int line, int column)
+    {
+        var smallest = int.MaxValue;
+        if (SpanCoversColumn(declarator.GetLocation().GetLineSpan(), line, column))
+            smallest = Math.Min(smallest, declarator.Span.Length);
+
+        if (GetFieldDeclaration(declarator) is { } field &&
+            SpanCoversColumn(field.GetLocation().GetLineSpan(), line, column))
+        {
+            smallest = Math.Min(smallest, field.Span.Length);
+        }
+
+        return smallest;
+    }
+
+    private static FieldDeclarationSyntax? GetFieldDeclaration(VariableDeclaratorSyntax declarator) =>
+        declarator.Parent?.Parent as FieldDeclarationSyntax;
+
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character of an adjacent field also
+    /// match the previous declaration. Same helper as
+    /// <c>EncapsulateFieldOperation.SpanCoversColumn</c>.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == startLine && column < startCol)
+            return false;
+        if (line == endLine && column >= endCol)
+            return false;
+        return true;
+    }
+
+    /// <summary>
+    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so a span that ends at the start of a line does not
+    /// cover that line. Treating the end as inclusive would let the first
+    /// line of an adjacent field also match the previous declaration. Same
+    /// exclusive-end idea as <c>EncapsulateFieldOperation.SpanCoversLine</c>.
+    /// </summary>
+    internal static bool SpanCoversLine(FileLinePositionSpan span, int line)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == endLine && span.EndLinePosition.Character == 0)
+            return false;
+        return true;
     }
 
     private static bool MatchesTypeName(IFieldSymbol? field, string typeName)

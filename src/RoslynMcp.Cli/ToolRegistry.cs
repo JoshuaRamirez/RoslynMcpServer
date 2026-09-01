@@ -187,7 +187,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<InlineMethodOperation, InlineMethodParams>(
             "inline-method", "Inline a method by replacing call sites with the method body");
         r.RegisterRefactoring<InlineConstantOperation, InlineConstantParams>(
-            "inline-constant", "Inline a const field by replacing references with its literal value");
+            "inline-constant", "Inline a const field by replacing references with its literal value; line (optional) picks the matching const field whose identifier or declaration span covers that line when several constants share the name; omitted keeps today's constantName + optional typeName path including SymbolAmbiguous; column (optional) picks the matching const field whose identifier or declaration span covers that column when set with line; omitted keeps today's constantName + optional typeName + optional line pick; column without line keeps today's omitted-line path after the name/typeName filter");
 
         // ── Refactoring: Signature (5) ────────────────────────────────
         r.RegisterRefactoring<ChangeSignatureOperation, ChangeSignatureParams>(
