@@ -215,7 +215,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<InvertIfOperation, InvertIfParams>(
             "invert-if", "Flip an if-statement condition and swap the if/else branches");
         r.RegisterRefactoring<AddBracesOperation, AddBracesParams>(
-            "add-braces", "Add braces to control statements (if, else, for, foreach, while, using) that have a single-statement body");
+            "add-braces", "Add braces to control statements (if, else, for, foreach, while, using) that have a single-statement body; scope is statement (default; single-file only), file, or type (single-file only); allFiles (default false) wraps every C# file at file scope (sourceFile optional when true; cannot combine with scope=statement or scope=type)");
         r.RegisterRefactoring<RemoveBracesOperation, RemoveBracesParams>(
             "remove-braces", "Remove braces from control statements (if, else, for, foreach, while, using) that have a single-statement braced body");
         r.RegisterRefactoring<SimplifyNameOperation, SimplifyNameParams>(

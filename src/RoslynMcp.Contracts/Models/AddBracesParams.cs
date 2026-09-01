@@ -6,9 +6,16 @@ namespace RoslynMcp.Contracts.Models;
 public sealed class AddBracesParams
 {
     /// <summary>
-    /// Absolute path to the source file.
+    /// Absolute path to the source file. Required when <see cref="AllFiles"/> is false.
     /// </summary>
-    public required string SourceFile { get; init; }
+    public string? SourceFile { get; init; }
+
+    /// <summary>
+    /// When true, process all C# documents in the solution instead of a single file.
+    /// When true, <see cref="SourceFile"/> is optional. Cannot be combined with
+    /// <see cref="Scope"/> <c>statement</c> or <c>type</c>.
+    /// </summary>
+    public bool AllFiles { get; init; }
 
     /// <summary>
     /// 1-based line of the control-statement keyword. Required when

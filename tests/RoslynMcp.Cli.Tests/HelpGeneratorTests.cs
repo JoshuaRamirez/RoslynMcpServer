@@ -1226,6 +1226,32 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_AddBraces_ShowsAllFiles()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("add-braces")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("add-braces", help);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--line", optionalSection);
+        Assert.Contains("--column", optionalSection);
+        Assert.Contains("--scope", optionalSection);
+        Assert.Contains("--type-name", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_SimplifyName_ShowsAllFiles()
     {
         var registry = ToolRegistry.BuildDefault();
