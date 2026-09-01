@@ -822,29 +822,24 @@ public class HelpGeneratorTests
     }
 
     [Fact]
-    public void GenerateToolHelp_RemoveBraces_ShowsScopeLineAndPreview()
+    public void GenerateToolHelp_RemoveBraces_ShowsAllFiles()
     {
         var registry = ToolRegistry.BuildDefault();
         var tool = registry.GetTool("remove-braces")!;
         var help = HelpGenerator.GenerateToolHelp(tool);
 
         Assert.Contains("remove-braces", help);
-        Assert.Contains("single-statement", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
 
-        var requiredIdx = help.IndexOf("REQUIRED:");
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
+
         var optionalIdx = help.IndexOf("OPTIONAL:");
-        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
-        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
-
-        var requiredSection = help[requiredIdx..optionalIdx];
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
-        Assert.DoesNotContain("--line", requiredSection);
-        Assert.DoesNotContain("--scope", requiredSection);
-        Assert.DoesNotContain("--type-name", requiredSection);
-        Assert.DoesNotContain("--preview", requiredSection);
-
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
         Assert.Contains("--line", optionalSection);
         Assert.Contains("--column", optionalSection);
         Assert.Contains("--scope", optionalSection);

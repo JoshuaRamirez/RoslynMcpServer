@@ -6,9 +6,17 @@ namespace RoslynMcp.Contracts.Models;
 public sealed class RemoveBracesParams
 {
     /// <summary>
-    /// Absolute path to the source file.
+    /// Absolute path to the source file. Required when <see cref="AllFiles"/> is false.
     /// </summary>
-    public required string SourceFile { get; init; }
+    public string? SourceFile { get; init; }
+
+    /// <summary>
+    /// When true, process all C# documents in the solution instead of a single file.
+    /// When true, <see cref="SourceFile"/> is optional. Omitted <see cref="Scope"/>
+    /// uses file-scope. Cannot be combined with <see cref="Scope"/> <c>statement</c>
+    /// or <c>type</c>.
+    /// </summary>
+    public bool AllFiles { get; init; }
 
     /// <summary>
     /// 1-based line of the control-statement keyword. Required when
@@ -23,9 +31,11 @@ public sealed class RemoveBracesParams
     public int? Column { get; init; }
 
     /// <summary>
-    /// Scope of the operation: <c>statement</c> (default), <c>file</c>, or <c>type</c>.
+    /// Scope of the operation: <c>statement</c> (default for single-file),
+    /// <c>file</c>, or <c>type</c>. When <see cref="AllFiles"/> is true, omitted
+    /// scope uses file-scope.
     /// </summary>
-    public string Scope { get; init; } = "statement";
+    public string? Scope { get; init; }
 
     /// <summary>
     /// Type name when <see cref="Scope"/> is <c>type</c>.

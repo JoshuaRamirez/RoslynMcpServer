@@ -38,16 +38,47 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
     /// </summary>
     internal static void Validate(RemoveBracesParams @params)
     {
+        var scope = NormalizeScope(@params.Scope);
+
+        // Mirror AddBracesOperation: AllFiles cannot be combined with a
+        // location/name scope. statement and type stay single-file only.
+        // Omitted scope (null/whitespace) is not an explicit statement pick —
+        // AllFiles treats that as a file-scope walk so CLI --all-files and
+        // sibling-style AllFiles=true succeed. Default single-file scope
+        // remains statement via NormalizeScope.
+        if (@params.AllFiles && !string.IsNullOrWhiteSpace(@params.Scope) && scope == ScopeStatement)
+        {
+            throw new RefactoringException(
+                ErrorCodes.MissingRequiredParam,
+                "allFiles cannot be combined with scope=statement.");
+        }
+
+        if (@params.AllFiles && scope == ScopeType)
+        {
+            throw new RefactoringException(
+                ErrorCodes.MissingRequiredParam,
+                "allFiles cannot be combined with scope=type.");
+        }
+
+        if (@params.AllFiles)
+        {
+            if (@params.Line.HasValue && @params.Line.Value < 1)
+                throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
+
+            if (@params.Column.HasValue && @params.Column.Value < 1)
+                throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required when allFiles is false.");
 
         if (!PathResolver.IsAbsolutePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
 
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-
-        var scope = NormalizeScope(@params.Scope);
 
         if (scope == ScopeStatement)
         {
@@ -105,7 +136,10 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
         RemoveBracesParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -211,7 +245,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
             {
                 new()
                 {
-                    File = @params.SourceFile,
+                    File = @params.SourceFile!,
                     ChangeType = ChangeKind.Modify,
                     Description = description,
                     BeforeSnippet = beforeSnippet,
@@ -264,6 +298,126 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
             },
             StatementsModified = rewriter.UnwrappedCount,
             Scope = scope
+        };
+    }
+
+    /// <summary>
+    /// Applies file-scope brace removal to every C# document in the solution
+    /// (same document filter as <c>FormatDocumentOperation</c> /
+    /// <c>SimplifyNameOperation.ExecuteAllFilesAsync</c> /
+    /// <c>AddBracesOperation.ExecuteAllFilesAsync</c>: <c>FilePath</c> ends
+    /// with <c>.cs</c>). Files with nothing to unwrap are skipped. When every
+    /// file is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        RemoveBracesParams @params,
+        CancellationToken cancellationToken)
+    {
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var unwrappedTotal = 0;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            if (currentDocument is SourceGeneratedDocument)
+                continue;
+
+            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+            if (root == null)
+                continue;
+
+            var rewriter = new BraceRewriter(onlyThese: null, typeScope: null, unwrapElseIf: false, previewOwner: null);
+            var newRoot = rewriter.Visit(root) ?? root;
+            if (rewriter.UnwrappedCount == 0)
+                continue;
+
+            newRoot = Formatter.Format(
+                newRoot,
+                BraceRewriter.FormatAnnotation,
+                Context.Workspace,
+                cancellationToken: cancellationToken);
+
+            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+            var afterText = await newDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            unwrappedTotal += rewriter.UnwrappedCount;
+
+            if (@params.Preview)
+            {
+                var span = root.GetLocation().GetLineSpan();
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = currentDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = BuildDescription(ScopeFile, rewriter.UnwrappedCount, null),
+                    BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            currentSolution = newDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+        {
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Preview = true,
+                PendingChanges = allPendingChanges,
+                StatementsModified = unwrappedTotal,
+                Scope = ScopeFile
+            };
+        }
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Changes = new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                StatementsModified = unwrappedTotal,
+                Scope = ScopeFile
+            };
+        }
+
+        return new RefactoringResult
+        {
+            Success = true,
+            OperationId = operationId,
+            Changes = new FileChanges
+            {
+                FilesModified = [],
+                FilesCreated = [],
+                FilesDeleted = []
+            },
+            StatementsModified = 0,
+            Scope = ScopeFile
         };
     }
 

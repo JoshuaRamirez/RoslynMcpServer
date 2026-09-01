@@ -33,13 +33,13 @@ public sealed class RemoveBracesTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Remove braces from control statements (if, else, for, foreach, while, using) that have a single-statement braced body, preserving semantics. scope is statement (default; unwrap the body at line/column), file (every eligible single-statement braced control body in the file), or type (bodies inside typeName).";
+        "Remove braces from control statements (if, else, for, foreach, while, using) that have a single-statement braced body, preserving semantics. Process a single file or all files in the solution. scope is statement (default; unwrap the body at line/column; single-file only), file (every eligible single-statement braced control body in the file), or type (bodies inside typeName; single-file only). allFiles: true walks every C# file at file scope (omitted scope uses file) and cannot be combined with scope=statement or scope=type.";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,7 +50,13 @@ public sealed class RemoveBracesTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with scope=statement or scope=type.",
+                @default = false
             },
             line = new
             {
@@ -67,7 +73,7 @@ public sealed class RemoveBracesTool : IToolHandler
             scope = new
             {
                 type = "string",
-                description = "Scope of the operation: statement (default), file, or type",
+                description = "Scope of the operation: statement (default; single-file only), file, or type (single-file only)",
                 @enum = new[] { "statement", "file", "type" },
                 @default = "statement"
             },
@@ -110,9 +116,10 @@ public sealed class RemoveBracesTool : IToolHandler
             var @params = new RemoveBracesParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 Line = args.Line,
                 Column = args.Column,
-                Scope = args.Scope ?? "statement",
+                Scope = args.Scope,
                 TypeName = args.TypeName,
                 Preview = args.Preview ?? false
             };
@@ -142,7 +149,8 @@ public sealed class RemoveBracesTool : IToolHandler
     private sealed class RemoveBracesArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
         public string? Scope { get; init; }
