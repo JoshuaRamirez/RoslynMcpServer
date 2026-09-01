@@ -357,6 +357,39 @@ public class QueryParamsValidationTests
     }
 
     [Fact]
+    public void GetCodeMetrics_InvalidColumn_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetCodeMetricsParams(new GetCodeMetricsParams { SourceFile = AbsoluteTestPath(), Column = 0 }));
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GetCodeMetrics_NegativeColumn_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetCodeMetricsParams(new GetCodeMetricsParams { SourceFile = AbsoluteTestPath(), Column = -1 }));
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void GetCodeMetrics_EmptySourceFile_WithColumnAndLine_ThrowsMissingRequiredParam(string sourceFile)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetCodeMetricsParams(new GetCodeMetricsParams
+            {
+                SourceFile = sourceFile,
+                Line = 1,
+                Column = 1
+            }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
     public void GetCodeMetrics_ValidParams_PassesValidation()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -533,6 +566,8 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
         if (p.Line.HasValue && p.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
+        if (p.Column.HasValue && p.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
         if (!File.Exists(p.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
     }

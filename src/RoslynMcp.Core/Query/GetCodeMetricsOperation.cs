@@ -36,6 +36,9 @@ public sealed class GetCodeMetricsOperation : QueryOperationBase<GetCodeMetricsP
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
 
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
+
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
@@ -62,7 +65,7 @@ public sealed class GetCodeMetricsOperation : QueryOperationBase<GetCodeMetricsP
         {
             // Resolve specific symbol
             var resolved = await SymbolResolver.ResolveSymbolAsync(
-                @params.SourceFile!, @params.SymbolName, @params.Line, null, cancellationToken);
+                @params.SourceFile!, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
 
             var symbol = resolved.Symbol;
             symbolName = symbol.Name;

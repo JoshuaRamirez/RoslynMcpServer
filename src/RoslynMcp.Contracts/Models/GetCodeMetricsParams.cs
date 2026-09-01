@@ -19,4 +19,9 @@ public sealed class GetCodeMetricsParams
     /// 1-based line number for position-based resolution.
     /// </summary>
     public int? Line { get; init; }
+
+    /// <summary>
+    /// 1-based column number for position-based resolution.
+    /// </summary>
+    public int? Column { get; init; }
 }

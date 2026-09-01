@@ -32,7 +32,7 @@ public sealed class GetCodeMetricsTool : IToolHandler
     public string Name => "get_code_metrics";
 
     /// <inheritdoc />
-    public string Description => "Calculate code quality metrics for a C# symbol or file: cyclomatic complexity, lines of code, maintainability index, class coupling, and depth of inheritance.";
+    public string Description => "Calculate code quality metrics for a C# symbol or file: cyclomatic complexity, lines of code, maintainability index, class coupling, and depth of inheritance. Optional column disambiguates same-named symbols the same way find_callers does when set with line; omitted keeps today's Line-only or file-level path; column without line keeps today's SymbolResolver omitted-line path.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -61,6 +61,12 @@ public sealed class GetCodeMetricsTool : IToolHandler
                 type = "integer",
                 description = "1-based line number for position-based resolution",
                 minimum = 1
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column number for position-based resolution",
+                minimum = 1
             }
         },
         additionalProperties = false
@@ -85,7 +91,8 @@ public sealed class GetCodeMetricsTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 SymbolName = args.SymbolName,
-                Line = args.Line
+                Line = args.Line,
+                Column = args.Column
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -115,5 +122,6 @@ public sealed class GetCodeMetricsTool : IToolHandler
         public string? SourceFile { get; init; }
         public string? SymbolName { get; init; }
         public int? Line { get; init; }
+        public int? Column { get; init; }
     }
 }

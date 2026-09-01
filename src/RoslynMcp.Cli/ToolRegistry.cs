@@ -302,7 +302,7 @@ public sealed class ToolRegistry
         r.RegisterQuery<GetDiagnosticsOperation, GetDiagnosticsParams, GetDiagnosticsResult>(
             "get-diagnostics", "Get compiler diagnostics for the solution or a file");
         r.RegisterQuery<GetCodeMetricsOperation, GetCodeMetricsParams, GetCodeMetricsResult>(
-            "get-code-metrics", "Calculate code metrics (complexity, coupling, etc.)");
+            "get-code-metrics", "Calculate code metrics (complexity, coupling, etc.); column (optional) disambiguates same-named symbols the same way find_callers does when set with line; omitted keeps today's Line-only / file-level path; column without line keeps today's SymbolResolver omitted-line path");
         r.RegisterQuery<AnalyzeControlFlowOperation, AnalyzeControlFlowParams, AnalyzeControlFlowResult>(
             "analyze-control-flow", "Analyze control flow paths in a method");
         r.RegisterQuery<AnalyzeDataFlowOperation, AnalyzeDataFlowParams, AnalyzeDataFlowResult>(

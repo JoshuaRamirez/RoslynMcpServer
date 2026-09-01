@@ -331,6 +331,34 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_GetCodeMetrics_ShowsColumn()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-code-metrics")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("get-code-metrics", help);
+        Assert.Contains("--line", help);
+        Assert.Contains("--column", help);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("omitted-line", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+
+        var optionalSection = optionalIdx >= 0 ? help[optionalIdx..] : help;
+        var requiredSection = requiredIdx >= 0 && optionalIdx > requiredIdx
+            ? help[requiredIdx..optionalIdx]
+            : string.Empty;
+
+        Assert.DoesNotContain("--column", requiredSection);
+        Assert.DoesNotContain("--line", requiredSection);
+        Assert.Contains("--column", optionalSection);
+        Assert.Contains("--line", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_GenerateEqualsHashCode_ShowsImplementIEquatable()
     {
         var registry = ToolRegistry.BuildDefault();
