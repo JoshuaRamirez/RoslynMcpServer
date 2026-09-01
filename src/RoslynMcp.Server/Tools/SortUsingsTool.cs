@@ -32,13 +32,13 @@ public sealed class SortUsingsTool : IToolHandler
     public string Name => "sort_usings";
 
     /// <inheritdoc />
-    public string Description => "Sort using directives in a C# file. When systemFirst is true (default), System / System.* namespaces are placed first within regular and static groups.";
+    public string Description => "Sort using directives in a C# file. When systemFirst is true (default), System / System.* namespaces are placed first within regular and static groups. Process a single file or all files in the solution.";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -49,7 +49,13 @@ public sealed class SortUsingsTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional.",
+                @default = false
             },
             systemFirst = new
             {
@@ -93,6 +99,7 @@ public sealed class SortUsingsTool : IToolHandler
             var @params = new SortUsingsParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 SystemFirst = args.SystemFirst ?? true,
                 Preview = args.Preview ?? false
             };
@@ -122,7 +129,8 @@ public sealed class SortUsingsTool : IToolHandler
     private sealed class SortUsingsArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public bool? SystemFirst { get; init; }
         public bool? Preview { get; init; }
     }
