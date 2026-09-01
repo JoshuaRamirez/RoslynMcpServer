@@ -42,7 +42,11 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
 
         // Mirror SimplifyNameOperation: AllFiles cannot be combined with a
         // location/name scope. statement and type stay single-file only.
-        if (@params.AllFiles && scope == ScopeStatement)
+        // Omitted scope (null/whitespace) is not an explicit statement pick —
+        // AllFiles treats that as a file-scope walk so CLI --all-files and
+        // sibling-style AllFiles=true succeed. Default single-file scope
+        // remains statement via NormalizeScope.
+        if (@params.AllFiles && !string.IsNullOrWhiteSpace(@params.Scope) && scope == ScopeStatement)
         {
             throw new RefactoringException(
                 ErrorCodes.MissingRequiredParam,

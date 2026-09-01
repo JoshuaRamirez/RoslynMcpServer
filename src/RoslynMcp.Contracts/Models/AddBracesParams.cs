@@ -12,8 +12,9 @@ public sealed class AddBracesParams
 
     /// <summary>
     /// When true, process all C# documents in the solution instead of a single file.
-    /// When true, <see cref="SourceFile"/> is optional. Cannot be combined with
-    /// <see cref="Scope"/> <c>statement</c> or <c>type</c>.
+    /// When true, <see cref="SourceFile"/> is optional. Omitted <see cref="Scope"/>
+    /// uses file-scope. Cannot be combined with <see cref="Scope"/> <c>statement</c>
+    /// or <c>type</c>.
     /// </summary>
     public bool AllFiles { get; init; }
 
@@ -30,9 +31,11 @@ public sealed class AddBracesParams
     public int? Column { get; init; }
 
     /// <summary>
-    /// Scope of the operation: <c>statement</c> (default), <c>file</c>, or <c>type</c>.
+    /// Scope of the operation: <c>statement</c> (default for single-file),
+    /// <c>file</c>, or <c>type</c>. When <see cref="AllFiles"/> is true, omitted
+    /// scope uses file-scope.
     /// </summary>
-    public string Scope { get; init; } = "statement";
+    public string? Scope { get; init; }
 
     /// <summary>
     /// Type name when <see cref="Scope"/> is <c>type</c>.

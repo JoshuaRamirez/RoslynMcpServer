@@ -33,7 +33,7 @@ public sealed class AddBracesTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Add braces to control statements (if, else, for, foreach, while, using) that have a single-statement body, preserving semantics. Process a single file or all files in the solution. scope is statement (default; wrap the body at line/column; single-file only), file (every braceless control body in the file), or type (bodies inside typeName; single-file only). allFiles: true walks every C# file at file scope and cannot be combined with scope=statement or scope=type.";
+        "Add braces to control statements (if, else, for, foreach, while, using) that have a single-statement body, preserving semantics. Process a single file or all files in the solution. scope is statement (default; wrap the body at line/column; single-file only), file (every braceless control body in the file), or type (bodies inside typeName; single-file only). allFiles: true walks every C# file at file scope (omitted scope uses file) and cannot be combined with scope=statement or scope=type.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -119,7 +119,7 @@ public sealed class AddBracesTool : IToolHandler
                 AllFiles = args.AllFiles ?? false,
                 Line = args.Line,
                 Column = args.Column,
-                Scope = args.Scope ?? (args.AllFiles == true ? "file" : "statement"),
+                Scope = args.Scope,
                 TypeName = args.TypeName,
                 Preview = args.Preview ?? false
             };

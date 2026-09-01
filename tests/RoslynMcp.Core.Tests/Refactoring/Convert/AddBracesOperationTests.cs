@@ -47,22 +47,8 @@ public class AddBracesOperationTests
     {
         AddBracesOperation.Validate(new AddBracesParams
         {
-            AllFiles = true,
-            Scope = "file"
+            AllFiles = true
         });
-    }
-
-    [Fact]
-    public void Validate_AllFilesTrue_DefaultStatementScope_Throws()
-    {
-        var ex = Assert.Throws<RefactoringException>(() =>
-            AddBracesOperation.Validate(new AddBracesParams
-            {
-                AllFiles = true
-            }));
-
-        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
-        Assert.Contains("statement", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -72,8 +58,7 @@ public class AddBracesOperationTests
             AddBracesOperation.Validate(new AddBracesParams
             {
                 AllFiles = true,
-                Scope = "statement",
-                Line = 1
+                Scope = "statement"
             }));
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
@@ -1062,8 +1047,7 @@ public class AddBracesOperationTests
 
         var result = await operation.ExecuteAsync(new AddBracesParams
         {
-            AllFiles = true,
-            Scope = "file"
+            AllFiles = true
         });
 
         Assert.True(result.Success);
@@ -1092,8 +1076,7 @@ public class AddBracesOperationTests
 
         var result = await operation.ExecuteAsync(new AddBracesParams
         {
-            AllFiles = true,
-            Scope = "file"
+            AllFiles = true
         });
 
         Assert.True(result.Success);
@@ -1170,7 +1153,6 @@ public class AddBracesOperationTests
         var result = await operation.ExecuteAsync(new AddBracesParams
         {
             AllFiles = true,
-            Scope = "file",
             Preview = true
         });
 
