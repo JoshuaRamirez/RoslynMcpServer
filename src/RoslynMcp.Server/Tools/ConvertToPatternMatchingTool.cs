@@ -33,13 +33,13 @@ public sealed class ConvertToPatternMatchingTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert if/is chains and switch statements to switch expressions with pattern matching. column (optional) picks the smallest switch or if whose span covers that column on the given line. Omitted keeps today's first start-line switch-then-if pick. Preview describes the rewrite and writes nothing.";
+        "Convert if/is chains and switch statements to switch expressions with pattern matching. column (optional) picks the smallest switch or if whose span covers that column on the given line. Omitted keeps today's first start-line switch-then-if pick. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct eligible switch/if-chain (sourceFile optional when true; cannot be combined with line or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "line" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,17 +50,23 @@ public sealed class ConvertToPatternMatchingTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with line or column.",
+                @default = false
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number of the target statement"
+                description = "1-based line number of the target statement. Single-site only; cannot be combined with allFiles."
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set, selects the smallest switch or if whose span covers that column on the given line. Omitted keeps today's first start-line switch-then-if pick."
+                description = "1-based column for disambiguation. When set, selects the smallest switch or if whose span covers that column on the given line. Omitted keeps today's first start-line switch-then-if pick. Single-site only; cannot be combined with allFiles."
             },
             preview = new
             {
@@ -96,7 +102,8 @@ public sealed class ConvertToPatternMatchingTool : IToolHandler
             var @params = new ConvertToPatternMatchingParams
             {
                 SourceFile = args.SourceFile,
-                Line = args.Line ?? 0,
+                AllFiles = args.AllFiles ?? false,
+                Line = args.Line,
                 Column = args.Column,
                 Preview = args.Preview ?? false
             };
@@ -126,7 +133,8 @@ public sealed class ConvertToPatternMatchingTool : IToolHandler
     private sealed class ConvertToPatternMatchingArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
         public bool? Preview { get; init; }

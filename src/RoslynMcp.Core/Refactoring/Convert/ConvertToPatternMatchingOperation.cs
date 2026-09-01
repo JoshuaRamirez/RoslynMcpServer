@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -29,6 +30,18 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
     /// </summary>
     internal static void Validate(ConvertToPatternMatchingParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (@params.Line.HasValue || @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with line or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -38,7 +51,10 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
-        if (@params.Line < 1)
+        if (!@params.Line.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "line is required.");
+
+        if (@params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
@@ -54,13 +70,16 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
         ConvertToPatternMatchingParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
 
         if (root == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var target = FindConvertibleStatement(root, @params.Line, @params.Column);
+        var target = FindConvertibleStatement(root, @params.Line!.Value, @params.Column);
 
         if (target is SwitchStatementSyntax switchStmt)
         {
@@ -77,6 +96,158 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
             : $"line {@params.Line}";
         throw new RefactoringException(ErrorCodes.CannotConvert,
             $"No switch statement or if/is chain found at {location}.");
+    }
+
+    /// <summary>
+    /// Converts every distinct eligible switch or if-chain in every C# document
+    /// (same document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
+    /// / <c>ConvertForeachLinqOperation.ExecuteAllFilesAsync</c>:
+    /// <c>FilePath</c> ends with <c>.cs</c>). Statements that cannot convert
+    /// and documents whose text is unchanged are skipped. When every file is
+    /// a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ConvertToPatternMatchingParams @params,
+        CancellationToken cancellationToken)
+    {
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            if (currentDocument is SourceGeneratedDocument)
+                continue;
+
+            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+            if (root == null)
+                continue;
+
+            var replacements = CollectConvertibleReplacements(root);
+
+            if (replacements.Count == 0)
+                continue;
+
+            var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+            var afterText = await newDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var span = root.GetLocation().GetLineSpan();
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = currentDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = BuildAllFilesDescription(replacements.Count),
+                    BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            currentSolution = newDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    internal static string BuildAllFilesDescription(int convertedCount) =>
+        convertedCount == 1
+            ? "Convert switch/if to switch expression"
+            : $"Convert {convertedCount} switch/if statements to switch expressions";
+
+    /// <summary>
+    /// Collects every distinct eligible switch or if-chain in
+    /// <paramref name="root"/> using the existing conversion helpers (not
+    /// first-on-a-line). Nested convertible statements keep the outermost so
+    /// an if/else-if chain is one rewrite and <c>ReplaceNodes</c> does not
+    /// rewrite an ancestor and descendant together.
+    /// </summary>
+    internal static IReadOnlyList<StatementSyntax> CollectConvertibleStatements(SyntaxNode root) =>
+        CollectConvertibleReplacements(root).Keys.ToList();
+
+    /// <summary>
+    /// Builds replacements for every distinct eligible switch or if-chain.
+    /// Used by allFiles so <see cref="TryConvert"/> runs once per statement.
+    /// </summary>
+    internal static IReadOnlyDictionary<StatementSyntax, SyntaxNode> CollectConvertibleReplacements(SyntaxNode root)
+    {
+        var replacements = new Dictionary<StatementSyntax, SyntaxNode>();
+        foreach (var statement in root.DescendantNodes().OfType<SwitchStatementSyntax>().Cast<StatementSyntax>()
+                     .Concat(root.DescendantNodes().OfType<IfStatementSyntax>()))
+        {
+            if (TryConvert(statement, out var replacement))
+                replacements[statement] = replacement;
+        }
+
+        return replacements
+            .Where(pair => !replacements.Keys.Any(other => other != pair.Key && other.Contains(pair.Key)))
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
+    }
+
+    /// <summary>
+    /// Attempts a conversion without throwing. Used by allFiles so switch/if
+    /// statements that cannot convert stay no-ops. Eligibility is the same
+    /// CannotConvert paths as the single-site helpers.
+    /// </summary>
+    internal static bool TryConvert(StatementSyntax statement, out StatementSyntax replacement)
+    {
+        try
+        {
+            if (statement is SwitchStatementSyntax switchStmt)
+            {
+                replacement = WrapAsReturn(switchStmt, BuildSwitchExpression(switchStmt));
+                return true;
+            }
+
+            if (statement is IfStatementSyntax ifStmt)
+            {
+                replacement = WrapAsReturn(ifStmt, BuildIfChainSwitch(ifStmt));
+                return true;
+            }
+
+            replacement = statement;
+            return false;
+        }
+        catch (RefactoringException)
+        {
+            replacement = statement;
+            return false;
+        }
     }
 
     /// <summary>
@@ -141,6 +312,77 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
         SwitchStatementSyntax switchStmt, ConvertToPatternMatchingParams @params,
         CancellationToken cancellationToken)
     {
+        var switchExpr = BuildSwitchExpression(switchStmt);
+
+        var before = switchStmt.NormalizeWhitespace().ToFullString();
+        var after = switchExpr.NormalizeWhitespace().ToFullString();
+
+        if (@params.Preview)
+        {
+            var pendingChanges = new List<PendingChange>
+            {
+                new()
+                {
+                    File = @params.SourceFile!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = "Convert switch statement to switch expression",
+                    BeforeSnippet = before.Length > 200 ? before[..200] + "..." : before,
+                    AfterSnippet = after.Length > 200 ? after[..200] + "..." : after
+                }
+            };
+            return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        }
+
+        var newRoot = root.ReplaceNode(switchStmt, WrapAsReturn(switchStmt, switchExpr));
+        var newDocument = document.WithSyntaxRoot(newRoot);
+        var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = commitResult.FilesModified, FilesCreated = commitResult.FilesCreated, FilesDeleted = commitResult.FilesDeleted },
+            null, 0, 0);
+    }
+
+    private async Task<RefactoringResult> ConvertIfChainToSwitch(
+        Guid operationId, Document document, SyntaxNode root,
+        IfStatementSyntax ifStmt, ConvertToPatternMatchingParams @params,
+        CancellationToken cancellationToken)
+    {
+        var switchExpr = BuildIfChainSwitch(ifStmt);
+
+        var before = ifStmt.NormalizeWhitespace().ToFullString();
+        var after = switchExpr.NormalizeWhitespace().ToFullString();
+
+        if (@params.Preview)
+        {
+            var pendingChanges = new List<PendingChange>
+            {
+                new()
+                {
+                    File = @params.SourceFile!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = "Convert if/is chain to switch expression",
+                    BeforeSnippet = before.Length > 200 ? before[..200] + "..." : before,
+                    AfterSnippet = after.Length > 200 ? after[..200] + "..." : after
+                }
+            };
+            return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        }
+
+        var newRoot = root.ReplaceNode(ifStmt, WrapAsReturn(ifStmt, switchExpr));
+        var newDocument = document.WithSyntaxRoot(newRoot);
+        var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = commitResult.FilesModified, FilesCreated = commitResult.FilesCreated, FilesDeleted = commitResult.FilesDeleted },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Builds a switch expression from a switch statement. Throws the same
+    /// CannotConvert errors as today's single-site path.
+    /// </summary>
+    private static SwitchExpressionSyntax BuildSwitchExpression(SwitchStatementSyntax switchStmt)
+    {
         var arms = new List<SwitchExpressionArmSyntax>();
 
         foreach (var section in switchStmt.Sections)
@@ -184,54 +426,17 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
         if (arms.Count == 0)
             throw new RefactoringException(ErrorCodes.CannotConvert, "No convertible switch sections found.");
 
-        var switchExpr = SyntaxFactory.SwitchExpression(
+        return SyntaxFactory.SwitchExpression(
             switchStmt.Expression,
             SyntaxFactory.SeparatedList(arms));
-
-        var before = switchStmt.NormalizeWhitespace().ToFullString();
-        var after = switchExpr.NormalizeWhitespace().ToFullString();
-
-        if (@params.Preview)
-        {
-            var pendingChanges = new List<PendingChange>
-            {
-                new()
-                {
-                    File = @params.SourceFile,
-                    ChangeType = ChangeKind.Modify,
-                    Description = "Convert switch statement to switch expression",
-                    BeforeSnippet = before.Length > 200 ? before[..200] + "..." : before,
-                    AfterSnippet = after.Length > 200 ? after[..200] + "..." : after
-                }
-            };
-            return RefactoringResult.PreviewResult(operationId, pendingChanges);
-        }
-
-        // Determine how to replace: if parent is a method with return, wrap accordingly
-        var parentStatement = switchStmt.Parent;
-        SyntaxNode newRoot;
-
-        // Simple replacement: replace switch statement with return switchExpr
-        var returnStmt = SyntaxFactory.ReturnStatement(switchExpr)
-            .WithLeadingTrivia(switchStmt.GetLeadingTrivia())
-            .WithTrailingTrivia(switchStmt.GetTrailingTrivia());
-
-        newRoot = root.ReplaceNode(switchStmt, returnStmt);
-
-        var newDocument = document.WithSyntaxRoot(newRoot);
-        var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
-
-        return RefactoringResult.Succeeded(operationId,
-            new FileChanges { FilesModified = commitResult.FilesModified, FilesCreated = commitResult.FilesCreated, FilesDeleted = commitResult.FilesDeleted },
-            null, 0, 0);
     }
 
-    private async Task<RefactoringResult> ConvertIfChainToSwitch(
-        Guid operationId, Document document, SyntaxNode root,
-        IfStatementSyntax ifStmt, ConvertToPatternMatchingParams @params,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// Builds a switch expression from an if/is chain. Throws the same
+    /// CannotConvert errors as today's single-site path.
+    /// </summary>
+    private static SwitchExpressionSyntax BuildIfChainSwitch(IfStatementSyntax ifStmt)
     {
-        // Collect the if/else-if chain
         var arms = new List<SwitchExpressionArmSyntax>();
         var current = ifStmt;
 
@@ -299,41 +504,15 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
             throw new RefactoringException(ErrorCodes.CannotConvert,
                 "Need at least 2 branches in the if/is chain to convert.");
 
-        var switchExpr = SyntaxFactory.SwitchExpression(
+        return SyntaxFactory.SwitchExpression(
             governingExpr,
             SyntaxFactory.SeparatedList(arms));
-
-        var before = ifStmt.NormalizeWhitespace().ToFullString();
-        var after = switchExpr.NormalizeWhitespace().ToFullString();
-
-        if (@params.Preview)
-        {
-            var pendingChanges = new List<PendingChange>
-            {
-                new()
-                {
-                    File = @params.SourceFile,
-                    ChangeType = ChangeKind.Modify,
-                    Description = "Convert if/is chain to switch expression",
-                    BeforeSnippet = before.Length > 200 ? before[..200] + "..." : before,
-                    AfterSnippet = after.Length > 200 ? after[..200] + "..." : after
-                }
-            };
-            return RefactoringResult.PreviewResult(operationId, pendingChanges);
-        }
-
-        var returnStmt = SyntaxFactory.ReturnStatement(switchExpr)
-            .WithLeadingTrivia(ifStmt.GetLeadingTrivia())
-            .WithTrailingTrivia(ifStmt.GetTrailingTrivia());
-
-        var newRoot = root.ReplaceNode(ifStmt, returnStmt);
-        var newDocument = document.WithSyntaxRoot(newRoot);
-        var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
-
-        return RefactoringResult.Succeeded(operationId,
-            new FileChanges { FilesModified = commitResult.FilesModified, FilesCreated = commitResult.FilesCreated, FilesDeleted = commitResult.FilesDeleted },
-            null, 0, 0);
     }
+
+    private static ReturnStatementSyntax WrapAsReturn(StatementSyntax original, SwitchExpressionSyntax switchExpr) =>
+        SyntaxFactory.ReturnStatement(switchExpr)
+            .WithLeadingTrivia(original.GetLeadingTrivia())
+            .WithTrailingTrivia(original.GetTrailingTrivia());
 
     private static ExpressionSyntax? ExtractSectionExpression(SwitchSectionSyntax section)
     {
