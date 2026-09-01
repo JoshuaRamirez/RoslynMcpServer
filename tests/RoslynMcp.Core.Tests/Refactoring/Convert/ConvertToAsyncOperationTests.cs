@@ -1357,6 +1357,206 @@ public class ConvertToAsyncOperationTests
         await AssertCompilesAsync(workspace);
     }
 
+    private const string MainAndWorkSource = """
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class Program
+        {
+            public static void Main()
+            {
+                Task.Delay(1);
+            }
+
+            public static void Work()
+            {
+                Task.Delay(2);
+            }
+        }
+        """;
+
+    private const string OverrideAndEligibleSource = """
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public abstract class BaseWorker
+        {
+            public abstract void OnStart();
+        }
+
+        public class Worker : BaseWorker
+        {
+            public override void OnStart()
+            {
+                Task.Delay(1);
+            }
+
+            public void Eligible()
+            {
+                Task.Delay(2);
+            }
+        }
+        """;
+
+    private const string NestedCallSitesSource = """
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class Nested
+        {
+            public int B()
+            {
+                Task.Delay(1);
+                return 1;
+            }
+
+            public void A(int n)
+            {
+                Task.Delay(n);
+            }
+
+            public async Task CallerAsync()
+            {
+                A(B());
+            }
+        }
+        """;
+
+    private const string MethodGroupAndNameOfSource = """
+        using System;
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class Groups
+        {
+            public void Process()
+            {
+                Task.Delay(1);
+            }
+
+            public void Eligible()
+            {
+                Task.Delay(2);
+                Func<Task> a = Process;
+                var n = nameof(Process);
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_PreservesMainEntryPointName()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Program.cs", MainAndWorkSource));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]));
+        Assert.Contains("async Task Main()", updated);
+        Assert.DoesNotContain("MainAsync", updated);
+        Assert.Contains("async Task WorkAsync()", updated);
+        Assert.Contains("await Task.Delay(1)", updated);
+        Assert.Contains("await Task.Delay(2)", updated);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_SingleSite_RenameToAsync_StillRenamesMain()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Program.cs", MainAndWorkSource));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePaths["Program.cs"],
+            MethodName = "Main"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]));
+        Assert.Contains("async Task MainAsync()", updated);
+        Assert.Contains("public static void Work()", updated);
+        Assert.DoesNotContain("async Task Work", updated);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_SkipsOverrideMethods()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Worker.cs", OverrideAndEligibleSource));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Worker.cs"]));
+        Assert.Contains("public override void OnStart()", updated);
+        Assert.DoesNotContain("OnStartAsync", updated);
+        Assert.DoesNotContain("async Task OnStart", updated);
+        Assert.Contains("async Task EligibleAsync()", updated);
+        Assert.Contains("await Task.Delay(2)", updated);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_NestedCallSites_ComposeInnerAndOuterRewrites()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Nested.cs", NestedCallSitesSource));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true,
+            UpdateCallers = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Nested.cs"]));
+        Assert.Contains("async Task<int> BAsync()", updated);
+        Assert.Contains("async Task AAsync(int n)", updated);
+        var caller = GetMethodBody(updated, "CallerAsync");
+        Assert.Contains("await AAsync(await BAsync())", caller);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_RenamesMethodGroupAndNameOfInsideConvertedMethod()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Groups.cs", MethodGroupAndNameOfSource));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Groups.cs"]));
+        Assert.Contains("async Task ProcessAsync()", updated);
+        Assert.Contains("async Task EligibleAsync()", updated);
+        var eligible = GetMethodBody(updated, "EligibleAsync");
+        Assert.Contains("Func<Task> a = ProcessAsync", eligible);
+        Assert.Contains("nameof(ProcessAsync)", eligible);
+        Assert.DoesNotContain("Func<Task> a = Process;", eligible);
+        Assert.DoesNotContain("nameof(Process)", eligible);
+        await AssertCompilesAsync(workspace);
+    }
+
     [Fact]
     public void BuildAllFilesDescription_SingularAndPlural()
     {
