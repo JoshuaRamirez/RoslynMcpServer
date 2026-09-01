@@ -62,7 +62,7 @@ public sealed class MoveTypeToNamespaceOperation
                 @params.SourceFile,
                 @params.SymbolName,
                 @params.Line,
-                cancellationToken);
+                cancellationToken: cancellationToken);
 
             // Validate namespace change
             await ValidateNamespaceChangeAsync(@params, resolution, cancellationToken);

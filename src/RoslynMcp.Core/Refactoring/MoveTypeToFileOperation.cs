@@ -14,6 +14,13 @@ namespace RoslynMcp.Core.Refactoring;
 /// <summary>
 /// Moves a type declaration to a different file.
 /// Handles file creation, using directive updates, and reference preservation.
+/// Honors optional <c>line</c> and <c>column</c> to disambiguate
+/// same-named top-level types in one file. Omitted column keeps today's
+/// symbolName + optional line pick (start-line equality /
+/// <c>SymbolAmbiguous</c> / single-match ignores line). Column without
+/// line keeps that omitted-line path. When column is set with line, picks
+/// the covering top-level type (identifier preferred, then smallest
+/// covering type). Nested types stay unmoveable.
 /// </summary>
 public sealed class MoveTypeToFileOperation
 {
@@ -48,13 +55,20 @@ public sealed class MoveTypeToFileOperation
         try
         {
             // Validate inputs
-            ValidateInputs(@params);
+            Validate(@params);
 
-            // Resolve symbol
+            // Resolve symbol. Optional line/column disambiguates
+            // same-named top-level types. Omitted column keeps today's
+            // symbolName + optional line pick (start-line equality /
+            // SymbolAmbiguous / single-match ignores line). Column
+            // without line keeps that omitted-line path. Column set
+            // with line picks the covering top-level type (identifier
+            // preferred, then smallest covering type).
             var resolution = await _symbolResolver.FindTypeInFileAsync(
                 @params.SourceFile,
                 @params.SymbolName,
                 @params.Line,
+                @params.Column,
                 cancellationToken);
 
             // Validate target
@@ -115,7 +129,11 @@ public sealed class MoveTypeToFileOperation
         }
     }
 
-    private void ValidateInputs(MoveTypeToFileParams @params)
+    /// <summary>
+    /// Validates move-type-to-file parameters. Internal so tests can
+    /// exercise input rules without loading a workspace.
+    /// </summary>
+    internal static void Validate(MoveTypeToFileParams @params)
     {
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
@@ -138,11 +156,14 @@ public sealed class MoveTypeToFileOperation
         if (!PathResolver.IsValidCSharpFilePath(@params.TargetFile))
             throw new RefactoringException(ErrorCodes.InvalidTargetPath, "targetFile must be a .cs file.");
 
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
-
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
+
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
+
+        if (!File.Exists(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
         // Check source != target
         if (PathResolver.NormalizePath(@params.SourceFile) == PathResolver.NormalizePath(@params.TargetFile))
