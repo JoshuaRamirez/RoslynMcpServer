@@ -32,7 +32,7 @@ public sealed class IntroduceParameterTool : IToolHandler
     public string Name => "introduce_parameter";
 
     /// <inheritdoc />
-    public string Description => "Promote a local variable to a method parameter and update all call sites.";
+    public string Description => "Promote a local variable to a method parameter and update all call sites. column (optional) picks the matching local whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering declarator); omitted keeps today's start-line equality on the local declaration statement, then variableName FirstOrDefault; a continuation-line identifier is eligible when column is set — do not require the declaration statement to start on line.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -60,6 +60,12 @@ public sealed class IntroduceParameterTool : IToolHandler
             {
                 type = "integer",
                 description = "1-based line number where the variable is declared",
+                minimum = 1
+            },
+            column = new
+            {
+                type = "integer",
+                description = "1-based column for disambiguation. When set with line, selects the matching local whose identifier or declaration span covers that column (identifier preferred, then smallest covering declarator). A continuation-line identifier is eligible — do not require the declaration statement to start on line. Omitted keeps today's start-line equality on the local declaration statement, then variableName FirstOrDefault.",
                 minimum = 1
             },
             preview = new
@@ -98,6 +104,7 @@ public sealed class IntroduceParameterTool : IToolHandler
                 SourceFile = args.SourceFile,
                 VariableName = args.VariableName,
                 Line = args.Line,
+                Column = args.Column,
                 Preview = args.Preview ?? false
             };
 
@@ -129,6 +136,7 @@ public sealed class IntroduceParameterTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public string VariableName { get; init; } = "";
         public int Line { get; init; }
+        public int? Column { get; init; }
         public bool? Preview { get; init; }
     }
 }

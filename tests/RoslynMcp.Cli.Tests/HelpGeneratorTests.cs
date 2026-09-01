@@ -106,6 +106,31 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_IntroduceParameter_ShowsColumn()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("introduce-parameter")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("introduce-parameter", help);
+        Assert.Contains("--line", help);
+        Assert.Contains("--column", help);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("FirstOrDefault", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+        Assert.Contains("--line", requiredSection);
+        Assert.DoesNotContain("--column", requiredSection);
+        Assert.Contains("--column", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ExtractVariable_ShowsReplaceAll()
     {
         var registry = ToolRegistry.BuildDefault();
