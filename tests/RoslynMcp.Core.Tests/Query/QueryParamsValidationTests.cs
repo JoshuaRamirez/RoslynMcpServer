@@ -3,6 +3,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
+using RoslynMcp.Core.Refactoring.Extract;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Query;
@@ -843,6 +844,68 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void IntroduceParameter_InvalidColumn_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateIntroduceParameterParams(new IntroduceParameterParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                VariableName = "x",
+                Line = 5,
+                Column = 0
+            }));
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void IntroduceParameter_EmptySourceFile_WithColumn_ThrowsMissingRequiredParam(string sourceFile)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateIntroduceParameterParams(new IntroduceParameterParams
+            {
+                SourceFile = sourceFile,
+                VariableName = "x",
+                Line = 5,
+                Column = 1
+            }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void IntroduceParameter_EmptyVariableName_WithColumn_ThrowsMissingRequiredParam(string variableName)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateIntroduceParameterParams(new IntroduceParameterParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                VariableName = variableName,
+                Line = 5,
+                Column = 1
+            }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void IntroduceParameter_InvalidLine_WithColumn_ThrowsInvalidLineNumber()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateIntroduceParameterParams(new IntroduceParameterParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                VariableName = "x",
+                Line = 0,
+                Column = 1
+            }));
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
     #endregion
 
     #region M4 Validation Helpers
@@ -893,21 +956,8 @@ public class QueryParamsValidationTests
     private static void ValidateConvertPropertyParams(ConvertPropertyParams p) =>
         ConvertPropertyOperation.Validate(p);
 
-    private static void ValidateIntroduceParameterParams(IntroduceParameterParams p)
-    {
-        if (string.IsNullOrWhiteSpace(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-        if (string.IsNullOrWhiteSpace(p.VariableName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "variableName is required.");
-        if (!PathResolver.IsAbsolutePath(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-        if (!PathResolver.IsValidCSharpFilePath(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-        if (p.Line < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
-        if (!File.Exists(p.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
-    }
+    private static void ValidateIntroduceParameterParams(IntroduceParameterParams p) =>
+        IntroduceParameterOperation.Validate(p);
 
     #endregion
 
