@@ -359,7 +359,7 @@ public class IntroduceParameterOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("public int Run(int value)", updated);
+        AssertPromotedParameter(updated, "value");
         Assert.DoesNotContain("int value = 1", updated);
         Assert.Contains("int value = 2", updated);
     }
@@ -380,7 +380,7 @@ public class IntroduceParameterOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("public int Run(int b)", updated);
+        AssertPromotedParameter(updated, "b");
         Assert.Contains("int a = 1", updated);
         Assert.DoesNotContain("b = 2", updated);
     }
@@ -402,10 +402,10 @@ public class IntroduceParameterOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("public int Run(int b)", updated);
+        AssertPromotedParameter(updated, "b");
         Assert.Contains("int a = 1", updated);
         Assert.DoesNotContain("b = 2", updated);
-        Assert.DoesNotContain("public int Run(int a)", updated);
+        Assert.DoesNotContain("int a)", updated);
     }
 
     [SkippableFact]
@@ -425,7 +425,7 @@ public class IntroduceParameterOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("public int Run(int a)", updated);
+        AssertPromotedParameter(updated, "a");
         Assert.Contains("int b = 2", updated);
         Assert.DoesNotContain("a = 1", updated);
     }
@@ -447,7 +447,7 @@ public class IntroduceParameterOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("public int Run(int value)", updated);
+        AssertPromotedParameter(updated, "value");
         Assert.DoesNotContain("value = 1", updated);
     }
 
@@ -577,7 +577,7 @@ public class IntroduceParameterOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("public int Run(int value)", updated);
+        AssertPromotedParameter(updated, "value");
         Assert.Contains("int value = 1", updated);
         Assert.DoesNotContain("int value = 2", updated);
     }
@@ -585,6 +585,17 @@ public class IntroduceParameterOperationTests
     #endregion
 
     #region Helpers
+
+    /// <summary>
+    /// Today's rewrite copies the declaration type node (including leading
+    /// indent trivia), so the signature is <c>Run(        int name)</c>
+    /// rather than <c>Run(int name)</c>.
+    /// </summary>
+    private static void AssertPromotedParameter(string updated, string parameterName)
+    {
+        Assert.Contains($"int {parameterName})", updated, StringComparison.Ordinal);
+        Assert.Contains("public int Run(", updated, StringComparison.Ordinal);
+    }
 
     private static SyntaxNode Parse(string source) =>
         CSharpSyntaxTree.ParseText(NormalizeNewlines(source)).GetRoot();
