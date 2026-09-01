@@ -958,22 +958,18 @@ public class HelpGeneratorTests
         Assert.Contains("convert-to-async", help);
         Assert.Contains("updateCallers", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
 
-        var requiredIdx = help.IndexOf("REQUIRED:");
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
+
         var optionalIdx = help.IndexOf("OPTIONAL:");
-        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
-        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
-
-        var requiredSection = help[requiredIdx..optionalIdx];
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
-        Assert.Contains("--method-name", requiredSection);
-        Assert.DoesNotContain("--update-callers", requiredSection);
-        Assert.DoesNotContain("--rename-to-async", requiredSection);
-        Assert.DoesNotContain("--column", requiredSection);
-        Assert.DoesNotContain("--preview", requiredSection);
-
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--method-name", optionalSection);
         Assert.Contains("--line", optionalSection);
         Assert.Contains("--column", optionalSection);
         Assert.Contains("--rename-to-async", optionalSection);

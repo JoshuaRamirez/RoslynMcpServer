@@ -66,10 +66,11 @@ public class ConvertToAsyncToolTests
             requiredFields.Add(item.GetString()!);
         }
 
-        // Assert
+        // Assert - solutionPath is required; sourceFile / methodName are optional (allFiles mode)
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("methodName", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+        Assert.DoesNotContain("methodName", requiredFields);
+        Assert.DoesNotContain("allFiles", requiredFields);
     }
 
     [Fact]
@@ -92,7 +93,33 @@ public class ConvertToAsyncToolTests
         Assert.True(properties.TryGetProperty("renameToAsync", out _));
         Assert.True(properties.TryGetProperty("updateCallers", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.False(RequiredFieldsContains(doc, "column"));
+        Assert.False(RequiredFieldsContains(doc, "allFiles"));
+    }
+
+    [Fact]
+    public void GetDefinition_AllFilesProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var allFiles = doc.RootElement.GetProperty("properties").GetProperty("allFiles");
+
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("sourceFile is optional", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("methodName", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsAllFiles()
+    {
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool RequiredFieldsContains(JsonDocument doc, string name)
@@ -167,6 +194,24 @@ public class ConvertToAsyncToolTests
         var result = await _tool.ExecuteAsync(args);
 
         Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        // ThrowingWorkspaceProvider rejects workspace creation; args including allFiles parsed.
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Failed to parse arguments", GetResultText(result));
+        Assert.DoesNotContain("Arguments required", GetResultText(result));
     }
 
     #endregion

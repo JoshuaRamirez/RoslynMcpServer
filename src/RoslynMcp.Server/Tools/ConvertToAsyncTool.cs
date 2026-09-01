@@ -33,13 +33,13 @@ public sealed class ConvertToAsyncTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a synchronous method to async/await pattern. column (optional) picks the method whose identifier or declaration span covers that column. Omitted keeps today's MethodName + Line pick. renameToAsync (default true) rewrites call-site identifiers to the Async name. updateCallers (default false) wraps already-async callers in await and skips synchronous callers that cannot legally await. Preview describes caller updates and writes nothing.";
+        "Convert a synchronous method to async/await pattern. column (optional) picks the method whose identifier or declaration span covers that column. Omitted keeps today's MethodName + Line pick. renameToAsync (default true) rewrites call-site identifiers to the Async name. updateCallers (default false) wraps already-async callers in await and skips synchronous callers that cannot legally await. Preview describes caller updates and writes nothing. allFiles: true walks every C# file and converts every distinct eligible sync method (sourceFile optional when true; cannot be combined with methodName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "methodName" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,22 +50,28 @@ public sealed class ConvertToAsyncTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with methodName, line, or column.",
+                @default = false
             },
             methodName = new
             {
                 type = "string",
-                description = "Name of the method to convert"
+                description = "Name of the method to convert. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "Line number for disambiguation if multiple methods have the same name (1-based)"
+                description = "Line number for disambiguation if multiple methods have the same name (1-based). Single-site only; cannot be combined with allFiles."
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set, selects the method whose identifier or declaration span covers that column. Omitted keeps today's MethodName + Line pick."
+                description = "1-based column for disambiguation. When set, selects the method whose identifier or declaration span covers that column. Omitted keeps today's MethodName + Line pick. Single-site only; cannot be combined with allFiles."
             },
             renameToAsync = new
             {
@@ -113,6 +119,7 @@ public sealed class ConvertToAsyncTool : IToolHandler
             var @params = new ConvertToAsyncParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 MethodName = args.MethodName,
                 Line = args.Line,
                 Column = args.Column,
@@ -146,8 +153,9 @@ public sealed class ConvertToAsyncTool : IToolHandler
     private sealed class ConvertToAsyncArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string MethodName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? MethodName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
         public bool? RenameToAsync { get; init; }
