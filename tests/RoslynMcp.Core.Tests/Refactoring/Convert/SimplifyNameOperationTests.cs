@@ -1140,6 +1140,8 @@ public class SimplifyNameOperationTests
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
                     <ImplicitUsings>{implicitUsingsValue}</ImplicitUsings>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
