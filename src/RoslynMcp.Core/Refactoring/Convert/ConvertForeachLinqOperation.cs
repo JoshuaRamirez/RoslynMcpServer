@@ -185,12 +185,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             if (root == null)
                 continue;
 
-            var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
-            foreach (var foreachStmt in CollectConvertibleForeach(root, @params.PreferQuerySyntax))
-            {
-                if (TryConvert(foreachStmt, @params.PreferQuerySyntax, out _, out var assignment))
-                    replacements[foreachStmt] = ReplaceForeachWithLinqStatement(foreachStmt, assignment);
-            }
+            var replacements = CollectConvertibleReplacements(root, @params.PreferQuerySyntax);
 
             if (replacements.Count == 0)
                 continue;
@@ -252,20 +247,32 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     /// Collects every distinct eligible foreach in <paramref name="root"/>
     /// using the existing conversion helpers (not first-on-a-line). Nested
     /// convertible foreach keep the innermost so <c>ReplaceNodes</c> does
-    /// not rewrite an ancestor and descendant together.
+    /// not rewrite an ancestor and descendant together. Each foreach is
+    /// analyzed once.
     /// </summary>
     internal static IReadOnlyList<ForEachStatementSyntax> CollectConvertibleForeach(
         SyntaxNode root,
+        bool preferQuerySyntax) =>
+        CollectConvertibleReplacements(root, preferQuerySyntax).Keys.ToList();
+
+    /// <summary>
+    /// Builds replacements for every distinct eligible foreach. Used by
+    /// allFiles so <see cref="TryConvert"/> runs once per statement.
+    /// </summary>
+    internal static IReadOnlyDictionary<ForEachStatementSyntax, SyntaxNode> CollectConvertibleReplacements(
+        SyntaxNode root,
         bool preferQuerySyntax)
     {
-        var convertible = root.DescendantNodes()
-            .OfType<ForEachStatementSyntax>()
-            .Where(statement => TryConvert(statement, preferQuerySyntax, out _, out _))
-            .ToList();
+        var replacements = new Dictionary<ForEachStatementSyntax, SyntaxNode>();
+        foreach (var statement in root.DescendantNodes().OfType<ForEachStatementSyntax>())
+        {
+            if (TryConvert(statement, preferQuerySyntax, out _, out var assignment))
+                replacements[statement] = ReplaceForeachWithLinqStatement(statement, assignment);
+        }
 
-        return convertible
-            .Where(statement => !convertible.Any(other => other != statement && statement.Contains(other)))
-            .ToList();
+        return replacements
+            .Where(pair => !replacements.Keys.Any(other => other != pair.Key && pair.Key.Contains(other)))
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
     }
 
     /// <summary>
