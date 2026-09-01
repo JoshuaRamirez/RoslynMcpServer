@@ -161,7 +161,7 @@ public sealed class TypeSymbolResolver
             declaration = FindCoveringType(matchingDeclarations, line.Value, column.Value)
                 ?? throw new RefactoringException(
                     ErrorCodes.SymbolNotFound,
-                    $"No type named '{symbolName}' found at line {line}.");
+                    $"No type named '{symbolName}' found at line {line}, column {column}.");
         }
         else if (matchingDeclarations.Count > 1)
         {

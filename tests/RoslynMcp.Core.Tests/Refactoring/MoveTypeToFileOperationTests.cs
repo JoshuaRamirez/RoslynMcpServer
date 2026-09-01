@@ -456,6 +456,7 @@ public class MoveTypeToFileOperationTests
 
         Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
         Assert.Equal("2003", ex.ErrorCode);
+        Assert.Contains("line 1, column 1", ex.Message);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
