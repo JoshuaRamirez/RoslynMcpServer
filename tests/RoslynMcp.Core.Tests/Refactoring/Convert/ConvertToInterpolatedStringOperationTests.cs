@@ -158,6 +158,73 @@ public class ConvertToInterpolatedStringOperationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToInterpolatedStringOperation.Validate(new ConvertToInterpolatedStringParams
+            {
+                AllFiles = false,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToInterpolatedStringOperation.Validate(new ConvertToInterpolatedStringParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFile_DoesNotThrow()
+    {
+        ConvertToInterpolatedStringOperation.Validate(new ConvertToInterpolatedStringParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToInterpolatedStringOperation.Validate(new ConvertToInterpolatedStringParams
+            {
+                AllFiles = true,
+                Line = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToInterpolatedStringOperation.Validate(new ConvertToInterpolatedStringParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     #endregion
 
     #region Existing Format / concatenation cases
@@ -516,6 +583,422 @@ public class ConvertToInterpolatedStringOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string FormatFileA = """
+        namespace TestApp;
+
+        public class FileA
+        {
+            public string Hello(string name)
+            {
+                return string.Format("Hello {0}", name);
+            }
+        }
+        """;
+
+    private const string ConcatFileB = """
+        namespace TestApp;
+
+        public class FileB
+        {
+            public string Bye(string name)
+            {
+                return "Bye " + name;
+            }
+        }
+        """;
+
+    private const string NothingFileC = """
+        namespace TestApp;
+
+        public class FileC
+        {
+            public string Already(string name) => $"Hi {name}";
+            public string Literal() => "plain";
+        }
+        """;
+
+    private const string MixedFile = """
+        namespace TestApp;
+
+        public class Mixed
+        {
+            public string Both(string first, string second)
+            {
+                var a = string.Format("{0}", first);
+                var b = "Hi " + second;
+                return b;
+            }
+        }
+        """;
+
+    private const string TripleConcatFile = """
+        namespace TestApp;
+
+        public class Triple
+        {
+            public string Hello(string name, string suffix)
+            {
+                return "Hello " + name + suffix;
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task Convert_AllFilesFalse_ConvertsOnlySpecifiedExpression()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", FormatFileA),
+            ("FileB.cs", ConcatFileB),
+            ("FileC.cs", NothingFileC));
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            AllFiles = false,
+            Line = FindLine(FormatFileA, "string.Format")
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain("string.Format", updatedA, StringComparison.Ordinal);
+        Assert.Contains("$\"Hello {name}\"", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_ConvertsFormatAndConcatAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", FormatFileA),
+            ("FileB.cs", ConcatFileB),
+            ("FileC.cs", NothingFileC));
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain("string.Format", updatedA, StringComparison.Ordinal);
+        Assert.Contains("$\"Hello {name}\"", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"Bye \" + name", updatedB, StringComparison.Ordinal);
+        Assert.Contains("$\"Bye {name}\"", updatedB, StringComparison.Ordinal);
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_WithoutSourceFileOrLine_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", FormatFileA),
+            ("FileB.cs", ConcatFileB));
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleFormatSource);
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+            {
+                AllFiles = false,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesFalse_WithoutLine_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleFormatSource);
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+            {
+                SourceFile = workspace.SourcePath,
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleFormatSource);
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+            {
+                AllFiles = true,
+                Line = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleFormatSource);
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task Convert_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", FormatFileA),
+            ("FileB.cs", ConcatFileB),
+            ("FileC.cs", NothingFileC));
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("interpolated string", StringComparison.Ordinal) &&
+            c.AfterSnippet != null &&
+            (c.AfterSnippet.Contains("{name}", StringComparison.Ordinal) ||
+             c.AfterSnippet.Contains("$\"", StringComparison.Ordinal)));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_EveryFileAlreadyInterpolated_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", NothingFileC),
+            ("FileC2.cs", NothingFileC.Replace("FileC", "FileC2", StringComparison.Ordinal)));
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_MixedFormatAndConcatInOneFile_ConvertsEachDistinctExpression()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(("Mixed.cs", MixedFile));
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Mixed.cs"]));
+        Assert.DoesNotContain("string.Format", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"Hi \" + second", updated, StringComparison.Ordinal);
+        Assert.Contains("{first}", updated, StringComparison.Ordinal);
+        Assert.Contains("{second}", updated, StringComparison.Ordinal);
+        Assert.Contains("return b;", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_TripleConcat_UsesOuterConcatenation()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(("Triple.cs", TripleConcatFile));
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Triple.cs"]));
+        AssertKeepsTripleConcatOperands(updated);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [Fact]
+    public void CollectConvertibleExpressions_TripleConcat_ReturnsOuterOnly()
+    {
+        var (root, model) = Compile(TripleConcatSource);
+        var collected = ConvertToInterpolatedStringOperation.CollectConvertibleExpressions(root, model);
+
+        Assert.Single(collected);
+        Assert.IsType<BinaryExpressionSyntax>(collected[0]);
+        Assert.Equal(
+            ConvertToInterpolatedStringOperation.OuterConcatenation((BinaryExpressionSyntax)collected[0]),
+            collected[0]);
+        Assert.Contains("suffix", collected[0].ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CollectConvertibleExpressions_MixedFile_ReturnsFormatAndConcat()
+    {
+        var (root, model) = Compile(MixedFile);
+        var collected = ConvertToInterpolatedStringOperation.CollectConvertibleExpressions(root, model);
+
+        Assert.Equal(2, collected.Count);
+        Assert.Contains(collected, e => e is InvocationExpressionSyntax);
+        Assert.Contains(collected, e => e is BinaryExpressionSyntax);
+    }
+
+    private const string NestedUnconvertibleOuterFormat = """
+        namespace TestApp;
+
+        public class Nested
+        {
+            public string Wrap(string format, string value)
+            {
+                return string.Format(format, string.Format("{0}", value));
+            }
+        }
+        """;
+
+    private const string FormatInsideConcat = """
+        namespace TestApp;
+
+        public class Nested
+        {
+            public string Mix(string x, string y)
+            {
+                return string.Format("{0}", x) + y;
+            }
+        }
+        """;
+
+    [Fact]
+    public void CollectConvertibleExpressions_UnconvertibleOuterFormat_KeepsInnerFormat()
+    {
+        var (root, model) = Compile(NestedUnconvertibleOuterFormat);
+        var collected = ConvertToInterpolatedStringOperation.CollectConvertibleExpressions(root, model);
+
+        Assert.Single(collected);
+        Assert.IsType<InvocationExpressionSyntax>(collected[0]);
+        Assert.Contains("value", collected[0].ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("format,", collected[0].ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CollectConvertibleExpressions_FormatInsideConcat_PrefersFormat()
+    {
+        var (root, model) = Compile(FormatInsideConcat);
+        var collected = ConvertToInterpolatedStringOperation.CollectConvertibleExpressions(root, model);
+
+        Assert.Single(collected);
+        Assert.IsType<InvocationExpressionSyntax>(collected[0]);
+        Assert.Contains("string.Format", collected[0].ToString(), StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_UnconvertibleOuterFormat_ConvertsInnerFormat()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Nested.cs", NestedUnconvertibleOuterFormat));
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Nested.cs"]));
+        Assert.Contains("string.Format(format,", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("string.Format(\"{0}\", value)", updated, StringComparison.Ordinal);
+        Assert.Contains("{value}", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_FormatInsideConcat_ConvertsFormatThenConcat()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(("Nested.cs", FormatInsideConcat));
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Nested.cs"]));
+        Assert.DoesNotContain("string.Format", updated, StringComparison.Ordinal);
+        Assert.Contains("{x}", updated, StringComparison.Ordinal);
+        Assert.Contains("{y}", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    #endregion
+
     #region Helpers
 
     private static void AssertKeepsTripleConcatOperands(string updated)
@@ -551,6 +1034,9 @@ public class ConvertToInterpolatedStringOperationTests
         Assert.True(errors.Count == 0, string.Join(Environment.NewLine, errors));
     }
 
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpConvertToInterpolatedStringMissing.cs");
 
@@ -585,9 +1071,13 @@ public class ConvertToInterpolatedStringOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateWithFilesAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -595,33 +1085,47 @@ public class ConvertToInterpolatedStringOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = sourcePaths.Values.First(),
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }
