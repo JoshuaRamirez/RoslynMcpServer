@@ -442,6 +442,99 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void AnalyzeControlFlow_InvalidStartColumn_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateAnalyzeControlFlowParams(new AnalyzeControlFlowParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                StartLine = 1,
+                EndLine = 5,
+                StartColumn = 0
+            }));
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void AnalyzeControlFlow_InvalidEndColumn_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateAnalyzeControlFlowParams(new AnalyzeControlFlowParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                StartLine = 1,
+                EndLine = 5,
+                EndColumn = 0
+            }));
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void AnalyzeControlFlow_NegativeStartColumn_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateAnalyzeControlFlowParams(new AnalyzeControlFlowParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                StartLine = 1,
+                EndLine = 5,
+                StartColumn = -1
+            }));
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void AnalyzeControlFlow_SameLineStartColumnAfterEndColumn_ThrowsInvalidRegion()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateAnalyzeControlFlowParams(new AnalyzeControlFlowParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                StartLine = 3,
+                EndLine = 3,
+                StartColumn = 10,
+                EndColumn = 4
+            }));
+        Assert.Equal(ErrorCodes.InvalidRegion, ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void AnalyzeControlFlow_EmptySourceFile_WithColumns_ThrowsMissingRequiredParam(string sourceFile)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateAnalyzeControlFlowParams(new AnalyzeControlFlowParams
+            {
+                SourceFile = sourceFile,
+                StartLine = 1,
+                EndLine = 5,
+                StartColumn = 1,
+                EndColumn = 8
+            }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void AnalyzeControlFlow_InvalidStartLine_WithColumns_ThrowsInvalidLineNumber()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateAnalyzeControlFlowParams(new AnalyzeControlFlowParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                StartLine = 0,
+                EndLine = 5,
+                StartColumn = 1,
+                EndColumn = 8
+            }));
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
     #endregion
 
     #region FindCallersParams Validation
@@ -587,6 +680,17 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "endLine must be >= 1.");
         if (p.StartLine > p.EndLine)
             throw new RefactoringException(ErrorCodes.InvalidRegion, "startLine must be <= endLine.");
+        if (p.StartColumn.HasValue && p.StartColumn.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "startColumn must be >= 1.");
+        if (p.EndColumn.HasValue && p.EndColumn.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "endColumn must be >= 1.");
+        if (p.StartLine == p.EndLine &&
+            p.StartColumn.HasValue &&
+            p.EndColumn.HasValue &&
+            p.StartColumn.Value > p.EndColumn.Value)
+        {
+            throw new RefactoringException(ErrorCodes.InvalidRegion, "startColumn must be <= endColumn when both are set on the same line.");
+        }
         if (!File.Exists(p.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
     }

@@ -304,7 +304,7 @@ public sealed class ToolRegistry
         r.RegisterQuery<GetCodeMetricsOperation, GetCodeMetricsParams, GetCodeMetricsResult>(
             "get-code-metrics", "Calculate code metrics (complexity, coupling, etc.); column (optional) disambiguates same-named symbols the same way find_callers does when set with line; omitted keeps today's Line-only / file-level path; column without line keeps today's SymbolResolver omitted-line path");
         r.RegisterQuery<AnalyzeControlFlowOperation, AnalyzeControlFlowParams, AnalyzeControlFlowResult>(
-            "analyze-control-flow", "Analyze control flow paths in a method");
+            "analyze-control-flow", "Analyze control flow paths in a method; startColumn / endColumn (optional) trim the region (1-based; Roslyn Character = column - 1); omitted keeps today's whole-line span (start of startLine through end of endLine)");
         r.RegisterQuery<AnalyzeDataFlowOperation, AnalyzeDataFlowParams, AnalyzeDataFlowResult>(
             "analyze-data-flow", "Analyze data flow (reads, writes, captures) in a region");
         r.RegisterQuery<GetDocumentOutlineOperation, GetDocumentOutlineParams, GetDocumentOutlineResult>(
