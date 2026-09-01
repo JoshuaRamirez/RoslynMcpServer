@@ -293,7 +293,7 @@ These tools analyze your code without making changes. Use them to understand cod
 | Tool | Description | Key Parameters |
 |------|-------------|----------------|
 | `get_diagnostics` | Retrieve compiler diagnostics (errors, warnings, info) filtered by severity and optionally by file. | `sourceFile`, `severityFilter` |
-| `get_code_metrics` | Calculate code metrics: cyclomatic complexity, lines of code, maintainability index, class coupling, depth of inheritance. | `sourceFile`, `symbolName`, `line` |
+| `get_code_metrics` | Calculate code metrics: cyclomatic complexity, lines of code, maintainability index, class coupling, depth of inheritance. Optional `column` disambiguates same-named symbols the same way `find_callers` does when set with `line`; omitted keeps today's Line-only / file-level path (file-level when neither `symbolName` nor `line` is set); `column` without `line` keeps today's `SymbolResolver` omitted-line path. | `sourceFile`, `symbolName`, `line`, `column` |
 | `analyze_control_flow` | Analyze control flow for a code region: start/end point reachability, return statements, and exit points. | `sourceFile`, `startLine`, `endLine` |
 | `analyze_data_flow` | Analyze data flow for a code region: variables read/written inside, data flowing in/out, captured variables. | `sourceFile`, `startLine`, `endLine` |
 | `find_callers` | Find all callers of a symbol across the entire solution. | `sourceFile`, `symbolName`, `line`, `column`, `maxResults` |
