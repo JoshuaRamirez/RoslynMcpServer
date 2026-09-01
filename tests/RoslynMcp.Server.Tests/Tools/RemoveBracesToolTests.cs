@@ -103,6 +103,21 @@ public class RemoveBracesToolTests
         Assert.Contains("sourceFile is optional", description, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void GetDefinition_ScopeProperty_HasNoUnconditionalDefault()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var scope = doc.RootElement.GetProperty("properties").GetProperty("scope");
+
+        Assert.Equal("string", scope.GetProperty("type").GetString());
+        Assert.False(scope.TryGetProperty("default", out _),
+            "Unconditional scope=statement default would be materialized onto allFiles: true.");
+        var description = scope.GetProperty("description").GetString();
+        Assert.Contains("omit with allFiles", description, StringComparison.OrdinalIgnoreCase);
+    }
+
     #endregion
 
     #region ExecuteAsync Argument Validation Tests

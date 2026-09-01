@@ -73,9 +73,8 @@ public sealed class RemoveBracesTool : IToolHandler
             scope = new
             {
                 type = "string",
-                description = "Scope of the operation: statement (default; single-file only), file, or type (single-file only)",
-                @enum = new[] { "statement", "file", "type" },
-                @default = "statement"
+                description = "Scope of the operation: statement (single-file default; omit with allFiles so the walk uses file), file, or type (single-file only). No schema default — clients that materialize defaults must not inject statement onto allFiles: true.",
+                @enum = new[] { "statement", "file", "type" }
             },
             typeName = new
             {
