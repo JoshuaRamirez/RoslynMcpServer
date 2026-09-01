@@ -17,6 +17,13 @@ namespace RoslynMcp.Core.Refactoring;
 
 /// <summary>
 /// Changes the namespace of a type, updating all references across the solution.
+/// Honors optional <c>line</c> and <c>column</c> to disambiguate
+/// same-named top-level types in one file. Omitted column keeps today's
+/// symbolName + optional line pick (start-line equality /
+/// <c>SymbolAmbiguous</c> / single-match ignores line). Column without
+/// line keeps that omitted-line path. When column is set with line, picks
+/// the covering top-level type (identifier preferred, then smallest
+/// covering type). Nested types stay unmoveable.
 /// </summary>
 public sealed class MoveTypeToNamespaceOperation
 {
@@ -57,11 +64,18 @@ public sealed class MoveTypeToNamespaceOperation
             // Validate inputs
             ValidateInputs(@params);
 
-            // Resolve symbol
+            // Resolve symbol. Optional line/column disambiguates
+            // same-named top-level types. Omitted column keeps today's
+            // symbolName + optional line pick (start-line equality /
+            // SymbolAmbiguous / single-match ignores line). Column
+            // without line keeps that omitted-line path. Column set
+            // with line picks the covering top-level type (identifier
+            // preferred, then smallest covering type).
             var resolution = await _symbolResolver.FindTypeInFileAsync(
                 @params.SourceFile,
                 @params.SymbolName,
                 @params.Line,
+                @params.Column,
                 cancellationToken);
 
             // Validate namespace change
@@ -168,6 +182,9 @@ public sealed class MoveTypeToNamespaceOperation
 
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
