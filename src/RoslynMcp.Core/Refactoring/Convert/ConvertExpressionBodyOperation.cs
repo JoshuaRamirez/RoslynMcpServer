@@ -112,7 +112,8 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         }
         else
         {
-            (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member);
+            var model = await document.GetSemanticModelAsync(cancellationToken);
+            (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member, model);
         }
 
         if (@params.Preview)
@@ -176,10 +177,11 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
             if (root == null)
                 continue;
 
+            var model = await currentDocument.GetSemanticModelAsync(cancellationToken);
             var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
             foreach (var member in CollectSupportedMembers(root))
             {
-                if (TryConvert(member, direction, out var newMember, out _, out _))
+                if (TryConvert(member, direction, model, out var newMember, out _, out _))
                     replacements[member] = newMember;
             }
 
@@ -251,7 +253,11 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         int? line,
         int? column)
     {
-        var members = CollectSupportedMembers(root);
+        // FindMember keeps today's kind set (including indexers / operators)
+        // so single-member selection and CannotConvert errors stay unchanged.
+        var members = root.DescendantNodes().OfType<MemberDeclarationSyntax>()
+            .Where(m => m is MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
+                        or OperatorDeclarationSyntax or ConversionOperatorDeclarationSyntax);
 
         if (!string.IsNullOrWhiteSpace(memberName))
         {
@@ -335,10 +341,14 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         _ => null
     };
 
+    /// <summary>
+    /// Members the allFiles walk will attempt to convert. Indexers, operators,
+    /// and conversion operators stay out of this set (they are not supported
+    /// by the converters) so the walk skips them without throw+catch.
+    /// </summary>
     private static IEnumerable<MemberDeclarationSyntax> CollectSupportedMembers(SyntaxNode root) =>
         root.DescendantNodes().OfType<MemberDeclarationSyntax>()
-            .Where(m => m is MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
-                        or OperatorDeclarationSyntax or ConversionOperatorDeclarationSyntax);
+            .Where(m => m is MethodDeclarationSyntax or PropertyDeclarationSyntax);
 
     /// <summary>
     /// Attempts a conversion without throwing. Used by allFiles so already-
@@ -347,6 +357,7 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
     internal static bool TryConvert(
         MemberDeclarationSyntax member,
         ConversionDirection direction,
+        SemanticModel? model,
         out SyntaxNode newMember,
         out string beforeSnippet,
         out string afterSnippet)
@@ -355,7 +366,7 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         {
             (newMember, beforeSnippet, afterSnippet) = direction == ConversionDirection.ToExpressionBody
                 ? ConvertToExpressionBody(member)
-                : ConvertToBlockBody(member);
+                : ConvertToBlockBody(member, model);
             return true;
         }
         catch (RefactoringException)
@@ -427,7 +438,9 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         }
     }
 
-    private static (SyntaxNode newNode, string before, string after) ConvertToBlockBody(MemberDeclarationSyntax member)
+    private static (SyntaxNode newNode, string before, string after) ConvertToBlockBody(
+        MemberDeclarationSyntax member,
+        SemanticModel? model)
     {
         switch (member)
         {
@@ -435,14 +448,10 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
                 if (method.ExpressionBody == null)
                     throw new RefactoringException(ErrorCodes.CannotConvert, "Method does not have an expression body.");
 
-                var isVoid = method.ReturnType is PredefinedTypeSyntax predefined &&
-                             predefined.Keyword.IsKind(SyntaxKind.VoidKeyword);
+                var expr = method.ExpressionBody.Expression;
+                var stmt = CreateBlockStatement(expr, useReturn: !IsNonReturning(method, model));
 
-                StatementSyntax stmt = isVoid
-                    ? SyntaxFactory.ExpressionStatement(method.ExpressionBody.Expression)
-                    : SyntaxFactory.ReturnStatement(method.ExpressionBody.Expression);
-
-                var methodBefore = $"=> {method.ExpressionBody.Expression.NormalizeWhitespace()};";
+                var methodBefore = $"=> {expr.NormalizeWhitespace()};";
                 var newMethod = method
                     .WithExpressionBody(null)
                     .WithSemicolonToken(default)
@@ -454,11 +463,12 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
                 if (prop.ExpressionBody == null)
                     throw new RefactoringException(ErrorCodes.CannotConvert, "Property does not have an expression body.");
 
-                var returnStmt = SyntaxFactory.ReturnStatement(prop.ExpressionBody.Expression);
+                var propExpr = prop.ExpressionBody.Expression;
+                var propStmt = CreateBlockStatement(propExpr, useReturn: true);
                 var accessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                    .WithBody(SyntaxFactory.Block(returnStmt));
+                    .WithBody(SyntaxFactory.Block(propStmt));
 
-                var propBefore = $"=> {prop.ExpressionBody.Expression.NormalizeWhitespace()};";
+                var propBefore = $"=> {propExpr.NormalizeWhitespace()};";
                 var newProp = prop
                     .WithExpressionBody(null)
                     .WithSemicolonToken(default)
@@ -470,6 +480,59 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
                 throw new RefactoringException(ErrorCodes.CannotConvert, "Member type does not support block body conversion.");
         }
     }
+
+    /// <summary>
+    /// Inverse of <see cref="ExtractExpression"/> for throw: a throw
+    /// expression becomes a throw statement, never <c>return throw</c>.
+    /// Void and async non-generic Task/ValueTask emit an expression
+    /// statement; other returns stay return statements.
+    /// </summary>
+    private static StatementSyntax CreateBlockStatement(ExpressionSyntax expression, bool useReturn)
+    {
+        if (expression is ThrowExpressionSyntax throwExpression)
+            return SyntaxFactory.ThrowStatement(throwExpression.Expression);
+
+        if (useReturn)
+            return SyntaxFactory.ReturnStatement(expression);
+
+        return SyntaxFactory.ExpressionStatement(expression);
+    }
+
+    private static bool IsNonReturning(MethodDeclarationSyntax method, SemanticModel? model)
+    {
+        if (model?.GetDeclaredSymbol(method) is IMethodSymbol { ReturnType.TypeKind: not TypeKind.Error } symbol)
+        {
+            if (symbol.ReturnsVoid)
+                return true;
+
+            return method.Modifiers.Any(SyntaxKind.AsyncKeyword) &&
+                   IsNonGenericTaskLikeSymbol(symbol.ReturnType);
+        }
+
+        return IsVoidReturn(method.ReturnType) ||
+               (method.Modifiers.Any(SyntaxKind.AsyncKeyword) && IsNonGenericTaskLike(method.ReturnType));
+    }
+
+    private static bool IsVoidReturn(TypeSyntax returnType) =>
+        returnType is PredefinedTypeSyntax predefined && predefined.Keyword.IsKind(SyntaxKind.VoidKeyword);
+
+    private static bool IsNonGenericTaskLikeSymbol(ITypeSymbol type)
+    {
+        if (type is INamedTypeSymbol { IsGenericType: true })
+            return false;
+
+        return type.Name is "Task" or "ValueTask" &&
+               type.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks";
+    }
+
+    private static bool IsNonGenericTaskLike(TypeSyntax returnType) => returnType switch
+    {
+        GenericNameSyntax => false,
+        QualifiedNameSyntax qualified => IsNonGenericTaskLike(qualified.Right),
+        AliasQualifiedNameSyntax alias => IsNonGenericTaskLike(alias.Name),
+        IdentifierNameSyntax identifier => identifier.Identifier.Text is "Task" or "ValueTask",
+        _ => false
+    };
 
     private static ExpressionSyntax? ExtractExpression(StatementSyntax statement) => statement switch
     {

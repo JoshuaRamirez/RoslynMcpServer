@@ -875,6 +875,149 @@ public class ConvertExpressionBodyOperationTests
         Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
     }
 
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_ToBlockBody_AsyncTask_ProducesExpressionStatementNotReturnAwait()
+    {
+        const string source = """
+            using System.Threading.Tasks;
+
+            namespace TestApp;
+
+            public class AsyncWork
+            {
+                public async Task Run() => await Work();
+                private static Task Work() => Task.CompletedTask;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(("AsyncWork.cs", source));
+        var operation = new ConvertExpressionBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertExpressionBodyParams
+        {
+            AllFiles = true,
+            Direction = "ToBlockBody"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["AsyncWork.cs"]));
+        AssertMethodIsBlockBodied(updated, "Run");
+        Assert.DoesNotContain("return await", updated, StringComparison.Ordinal);
+        var run = CSharpSyntaxTree.ParseText(updated).GetRoot()
+            .DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "Run");
+        Assert.Single(run.Body!.Statements);
+        Assert.IsType<ExpressionStatementSyntax>(run.Body.Statements[0]);
+        Assert.Contains("await Work()", run.Body.Statements[0].ToString(), StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_ToBlockBody_ThrowBodiedMethod_EmitsThrowStatement()
+    {
+        const string source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Throws
+            {
+                public int Fail() => throw new Exception();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(("Throws.cs", source));
+        var operation = new ConvertExpressionBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertExpressionBodyParams
+        {
+            AllFiles = true,
+            Direction = "ToBlockBody"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Throws.cs"]));
+        Assert.DoesNotContain("return throw", updated, StringComparison.Ordinal);
+        var method = CSharpSyntaxTree.ParseText(updated).GetRoot()
+            .DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "Fail");
+        Assert.Null(method.ExpressionBody);
+        Assert.Single(method.Body!.Statements);
+        Assert.IsType<ThrowStatementSyntax>(method.Body.Statements[0]);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_ToBlockBody_ThrowBodiedProperty_EmitsThrowStatement()
+    {
+        const string source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Throws
+            {
+                public int Boom => throw new InvalidOperationException();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(("Throws.cs", source));
+        var operation = new ConvertExpressionBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertExpressionBodyParams
+        {
+            AllFiles = true,
+            Direction = "ToBlockBody"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Throws.cs"]));
+        Assert.DoesNotContain("return throw", updated, StringComparison.Ordinal);
+        var property = CSharpSyntaxTree.ParseText(updated).GetRoot()
+            .DescendantNodes()
+            .OfType<PropertyDeclarationSyntax>()
+            .First(p => p.Identifier.Text == "Boom");
+        Assert.Null(property.ExpressionBody);
+        var getter = Assert.Single(property.AccessorList!.Accessors);
+        Assert.Single(getter.Body!.Statements);
+        Assert.IsType<ThrowStatementSyntax>(getter.Body.Statements[0]);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_IndexerAndOperator_SkippedWithoutAbortingEligibleMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class MixedKinds
+            {
+                public int Eligible() => 1;
+                public int this[int i] => i;
+                public static MixedKinds operator +(MixedKinds left, MixedKinds right) => left;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(("MixedKinds.cs", source));
+        var operation = new ConvertExpressionBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertExpressionBodyParams
+        {
+            AllFiles = true,
+            Direction = "ToBlockBody"
+        });
+
+        Assert.True(result.Success);
+        Assert.Single(result.Changes!.FilesModified);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["MixedKinds.cs"]));
+        AssertMethodIsBlockBodied(updated, "Eligible");
+        Assert.Contains("this[int i] => i;", updated, StringComparison.Ordinal);
+        Assert.Contains("operator +(MixedKinds left, MixedKinds right) => left;", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
     #endregion
 
     #region Helpers
