@@ -911,6 +911,92 @@ public class ConvertToInterpolatedStringOperationTests
         Assert.Contains(collected, e => e is BinaryExpressionSyntax);
     }
 
+    private const string NestedUnconvertibleOuterFormat = """
+        namespace TestApp;
+
+        public class Nested
+        {
+            public string Wrap(string format, string value)
+            {
+                return string.Format(format, string.Format("{0}", value));
+            }
+        }
+        """;
+
+    private const string FormatInsideConcat = """
+        namespace TestApp;
+
+        public class Nested
+        {
+            public string Mix(string x, string y)
+            {
+                return string.Format("{0}", x) + y;
+            }
+        }
+        """;
+
+    [Fact]
+    public void CollectConvertibleExpressions_UnconvertibleOuterFormat_KeepsInnerFormat()
+    {
+        var (root, model) = Compile(NestedUnconvertibleOuterFormat);
+        var collected = ConvertToInterpolatedStringOperation.CollectConvertibleExpressions(root, model);
+
+        Assert.Single(collected);
+        Assert.IsType<InvocationExpressionSyntax>(collected[0]);
+        Assert.Contains("value", collected[0].ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("format,", collected[0].ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CollectConvertibleExpressions_FormatInsideConcat_PrefersFormat()
+    {
+        var (root, model) = Compile(FormatInsideConcat);
+        var collected = ConvertToInterpolatedStringOperation.CollectConvertibleExpressions(root, model);
+
+        Assert.Single(collected);
+        Assert.IsType<InvocationExpressionSyntax>(collected[0]);
+        Assert.Contains("string.Format", collected[0].ToString(), StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_UnconvertibleOuterFormat_ConvertsInnerFormat()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Nested.cs", NestedUnconvertibleOuterFormat));
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Nested.cs"]));
+        Assert.Contains("string.Format(format,", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("string.Format(\"{0}\", value)", updated, StringComparison.Ordinal);
+        Assert.Contains("{value}", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_FormatInsideConcat_ConvertsFormatThenConcat()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(("Nested.cs", FormatInsideConcat));
+        var operation = new ConvertToInterpolatedStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToInterpolatedStringParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Nested.cs"]));
+        Assert.DoesNotContain("string.Format", updated, StringComparison.Ordinal);
+        Assert.Contains("{x}", updated, StringComparison.Ordinal);
+        Assert.Contains("{y}", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
     #endregion
 
     #region Helpers

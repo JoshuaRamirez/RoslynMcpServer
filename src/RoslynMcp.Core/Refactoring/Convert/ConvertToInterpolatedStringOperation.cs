@@ -126,44 +126,63 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
-            if (currentDocument is SourceGeneratedDocument)
+            var originalDocument = currentSolution.GetDocument(document.Id) ?? document;
+            if (originalDocument is SourceGeneratedDocument)
                 continue;
 
-            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
-            if (root == null)
+            var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+            if (originalRoot == null)
                 continue;
 
-            var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+            var workingDocument = originalDocument;
+            var root = originalRoot;
+            var semanticModel = await workingDocument.GetSemanticModelAsync(cancellationToken);
             if (semanticModel == null)
                 continue;
 
-            var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
-            foreach (var expression in CollectConvertibleExpressions(root, semanticModel))
+            var convertedCount = 0;
+            while (true)
             {
-                if (TryConvert(expression, out var converted))
-                    replacements[expression] = converted;
+                var passReplacements = new Dictionary<SyntaxNode, SyntaxNode>();
+                foreach (var expression in CollectConvertibleExpressions(root, semanticModel))
+                {
+                    if (TryConvert(expression, out var converted))
+                        passReplacements[expression] = converted;
+                }
+
+                if (passReplacements.Count == 0)
+                    break;
+
+                convertedCount += passReplacements.Count;
+                var passRoot = root.ReplaceNodes(passReplacements.Keys, (original, _) => passReplacements[original]);
+                workingDocument = workingDocument.WithSyntaxRoot(passRoot);
+                root = await workingDocument.GetSyntaxRootAsync(cancellationToken);
+                if (root == null)
+                    break;
+                semanticModel = await workingDocument.GetSemanticModelAsync(cancellationToken);
+                if (semanticModel == null)
+                    break;
             }
 
-            if (replacements.Count == 0)
+            if (convertedCount == 0 || root == null)
                 continue;
 
-            var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
-            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
-            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+            SyntaxNode newRoot = root;
+            var newDocument = workingDocument;
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
             var afterText = await newDocument.GetTextAsync(cancellationToken);
             if (beforeText.ContentEquals(afterText))
                 continue;
 
             if (@params.Preview)
             {
-                var span = root.GetLocation().GetLineSpan();
+                var span = originalRoot.GetLocation().GetLineSpan();
                 allPendingChanges.Add(new PendingChange
                 {
-                    File = currentDocument.FilePath!,
+                    File = originalDocument.FilePath!,
                     ChangeType = ChangeKind.Modify,
-                    Description = BuildAllFilesDescription(replacements.Count),
-                    BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
+                    Description = BuildAllFilesDescription(convertedCount),
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
                     AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
                     StartLine = span.StartLinePosition.Line + 1,
                     EndLine = span.EndLinePosition.Line + 1
@@ -205,23 +224,34 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
     /// Collects every distinct convertible <c>string.Format</c> invocation and
     /// outer concatenation in <paramref name="root"/> using the same walk as
     /// <see cref="FindConvertibleExpression"/>. Inner nodes of a 3+ operand
-    /// chain collapse to <see cref="OuterConcatenation"/>.
+    /// chain collapse to <see cref="OuterConcatenation"/>. Containment is
+    /// applied only among expressions that can convert: an unconvertible
+    /// outer Format does not hide a convertible inner Format, and a concat
+    /// that contains a convertible Format is deferred so the Format is
+    /// rewritten first (the allFiles walk then picks up the remaining concat).
     /// </summary>
     internal static IReadOnlyList<ExpressionSyntax> CollectConvertibleExpressions(
         SyntaxNode root,
         SemanticModel semanticModel)
     {
-        var formats = EnumerateFormatInvocations(root, semanticModel).Cast<ExpressionSyntax>();
+        var convertibleFormats = EnumerateFormatInvocations(root, semanticModel)
+            .Where(invocation => TryConvert(invocation, out _))
+            .ToList();
+
+        // Innermost convertible Format wins so a nested literal Format is not
+        // dropped when an outer Format cannot convert, and so ReplaceNodes
+        // never has to rewrite an ancestor and descendant Format together.
+        var formats = convertibleFormats
+            .Where(invocation => !convertibleFormats.Any(other => other != invocation && invocation.Contains(other)))
+            .Cast<ExpressionSyntax>();
+
         var concats = EnumerateConcatenations(root, semanticModel)
             .Select(OuterConcatenation)
-            .Distinct();
-        var collected = formats.Concat(concats).ToList();
-        // Drop inner nodes contained by another collected expression so a 3+
-        // operand chain is converted once from OuterConcatenation, and a
-        // Format nested in a concat is not replaced twice.
-        return collected
-            .Where(expression => !collected.Any(other => other != expression && other.Contains(expression)))
-            .ToList();
+            .Distinct()
+            .Where(concat => TryConvert(concat, out _))
+            .Where(concat => !convertibleFormats.Any(format => concat.Contains(format)));
+
+        return formats.Concat(concats).ToList();
     }
 
     /// <summary>
