@@ -33,6 +33,18 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
     /// </summary>
     internal static void Validate(InvertIfParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (@params.Line.HasValue || @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with line or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -42,7 +54,10 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
-        if (@params.Line < 1)
+        if (!@params.Line.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "line is required.");
+
+        if (@params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
@@ -85,14 +100,17 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
         InvertIfParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         if (root == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var ifStatement = FindIfStatement(root, @params.Line, @params.Column);
+        var ifStatement = FindIfStatement(root, @params.Line!.Value, @params.Column);
         if (ifStatement == null)
         {
             throw new RefactoringException(
@@ -126,7 +144,7 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
             {
                 new()
                 {
-                    File = @params.SourceFile,
+                    File = @params.SourceFile!,
                     ChangeType = ChangeKind.Modify,
                     Description = description,
                     BeforeSnippet = beforeSnippet,
@@ -164,6 +182,160 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
             OriginalCondition = originalText,
             InvertedCondition = invertedText
         };
+    }
+
+    /// <summary>
+    /// Inverts every distinct eligible if in every C# document (same
+    /// document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
+    /// / <c>ConvertToPatternMatchingOperation.ExecuteAllFilesAsync</c>:
+    /// <c>FilePath</c> ends with <c>.cs</c>). Incomplete or otherwise
+    /// ineligible ifs and documents whose text is unchanged are skipped.
+    /// When every file is a no-op, succeeds with empty changes.
+    /// Nested ifs are inverted once each in a single rewrite pass
+    /// (innermost first) so the same node is never double-inverted.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        InvertIfParams @params,
+        CancellationToken cancellationToken)
+    {
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            if (currentDocument is SourceGeneratedDocument)
+                continue;
+
+            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+            if (root == null)
+                continue;
+
+            var model = await currentDocument.GetSemanticModelAsync(cancellationToken);
+            var newRoot = InvertAllIfs(root, model, out var invertedCount);
+            if (invertedCount == 0)
+                continue;
+
+            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+            var afterText = await newDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var span = root.GetLocation().GetLineSpan();
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = currentDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = BuildAllFilesDescription(invertedCount),
+                    BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            currentSolution = newDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    internal static string BuildAllFilesDescription(int invertedCount) =>
+        invertedCount == 1
+            ? "Invert if condition"
+            : $"Invert {invertedCount} if conditions";
+
+    /// <summary>
+    /// Collects every distinct eligible if in <paramref name="root"/> using
+    /// the existing invert helpers (not first-on-a-line). Incomplete and
+    /// otherwise ineligible ifs are skipped. Nested ifs are distinct nodes.
+    /// </summary>
+    internal static IReadOnlyList<IfStatementSyntax> CollectInvertibleIfs(
+        SyntaxNode root,
+        SemanticModel? model) =>
+        root.DescendantNodes()
+            .OfType<IfStatementSyntax>()
+            .Where(statement => TryInvert(statement, statement, model, out _))
+            .ToList();
+
+    /// <summary>
+    /// Inverts every eligible if in a single rewrite pass. Children are
+    /// visited first so nested ifs invert once, then the current node is
+    /// inverted using the already-rewritten branches. The same node is
+    /// never inverted twice.
+    /// </summary>
+    internal static SyntaxNode InvertAllIfs(
+        SyntaxNode root,
+        SemanticModel? model,
+        out int invertedCount)
+    {
+        var rewriter = new InvertIfRewriter(model);
+        var rewritten = rewriter.Visit(root);
+        invertedCount = rewriter.InvertedCount;
+        return rewritten ?? root;
+    }
+
+    /// <summary>
+    /// Attempts an invert without throwing. Used by allFiles so incomplete
+    /// or otherwise ineligible ifs stay no-ops. Eligibility is the same
+    /// ConditionNotInvertible / incomplete-if paths as the single-site helpers.
+    /// <paramref name="rewritten"/> supplies already-visited children so a
+    /// nested invert is not discarded when the outer if is inverted.
+    /// </summary>
+    internal static bool TryInvert(
+        IfStatementSyntax original,
+        IfStatementSyntax rewritten,
+        SemanticModel? model,
+        out IfStatementSyntax inverted)
+    {
+        inverted = rewritten;
+
+        if (original.Condition.IsMissing || original.Statement.IsMissing)
+            return false;
+
+        try
+        {
+            var invertedCondition = InvertCondition(original.Condition, model);
+            inverted = RewriteIf(rewritten, invertedCondition);
+            return true;
+        }
+        catch (RefactoringException)
+        {
+            inverted = rewritten;
+            return false;
+        }
     }
 
     internal static IfStatementSyntax? FindIfStatement(SyntaxNode root, int line, int? column)
@@ -539,5 +711,32 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
             ? "move the if body to else (empty if body)"
             : "swap if/else branches";
         return $"Invert if condition '{original}' to '{inverted}' and {swap}";
+    }
+
+    /// <summary>
+    /// Visits innermost ifs first, then inverts the current node so nested
+    /// and outer ifs each invert once without replacing an ancestor and
+    /// descendant independently.
+    /// </summary>
+    private sealed class InvertIfRewriter : CSharpSyntaxRewriter
+    {
+        private readonly SemanticModel? _model;
+
+        public InvertIfRewriter(SemanticModel? model)
+        {
+            _model = model;
+        }
+
+        public int InvertedCount { get; private set; }
+
+        public override SyntaxNode? VisitIfStatement(IfStatementSyntax node)
+        {
+            var rewritten = (IfStatementSyntax)base.VisitIfStatement(node)!;
+            if (!TryInvert(node, rewritten, _model, out var inverted))
+                return rewritten;
+
+            InvertedCount++;
+            return inverted;
+        }
     }
 }

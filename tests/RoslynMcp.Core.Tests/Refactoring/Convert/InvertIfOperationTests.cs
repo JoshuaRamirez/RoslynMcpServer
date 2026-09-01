@@ -84,6 +84,73 @@ public class InvertIfOperationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InvertIfOperation.Validate(new InvertIfParams
+            {
+                AllFiles = false,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InvertIfOperation.Validate(new InvertIfParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFile_DoesNotThrow()
+    {
+        InvertIfOperation.Validate(new InvertIfParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InvertIfOperation.Validate(new InvertIfParams
+            {
+                AllFiles = true,
+                Line = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InvertIfOperation.Validate(new InvertIfParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     #endregion
 
     #region P0 Happy Path
@@ -675,6 +742,424 @@ public class InvertIfOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string InvertFileA = """
+        namespace TestApp;
+
+        public class FileA
+        {
+            public string Classify(int x)
+            {
+                if (x > 0)
+                    return "positive";
+                else
+                    return "non-positive";
+            }
+        }
+        """;
+
+    private const string InvertFileB = """
+        namespace TestApp;
+
+        public class FileB
+        {
+            public void Route(bool flag)
+            {
+                if (flag)
+                {
+                    ThenBranch();
+                }
+                else
+                {
+                    ElseBranch();
+                }
+            }
+
+            private static void ThenBranch() { }
+            private static void ElseBranch() { }
+        }
+        """;
+
+    private const string NothingFileC = """
+        namespace TestApp;
+
+        public class FileC
+        {
+            public int Length(object value)
+            {
+                if (value is string s)
+                    return s.Length;
+                else
+                    return 0;
+            }
+        }
+        """;
+
+    private const string MixedEligibleAndIncomplete = """
+        namespace TestApp;
+
+        public class Mixed
+        {
+            public void Run(bool flag)
+            {
+                if (flag)
+                    Eligible();
+
+                if ()
+                    Incomplete();
+            }
+
+            private static void Eligible() { }
+            private static void Incomplete() { }
+        }
+        """;
+
+    private const string NestedIfs = """
+        namespace TestApp;
+
+        public class Nest
+        {
+            public void Run(bool outer, bool inner)
+            {
+                if (outer)
+                {
+                    if (inner)
+                    {
+                        InnerThen();
+                    }
+                    else
+                    {
+                        InnerElse();
+                    }
+                }
+                else
+                {
+                    OuterElse();
+                }
+            }
+
+            private static void InnerThen() { }
+            private static void InnerElse() { }
+            private static void OuterElse() { }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task InvertIf_AllFilesFalse_InvertsOnlySpecifiedStatement()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", InvertFileA),
+            ("FileB.cs", InvertFileB),
+            ("FileC.cs", NothingFileC));
+        var operation = new InvertIfOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            AllFiles = false,
+            Line = FindLine(InvertFileA, "if (x > 0)")
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("if (x <= 0)", updatedA);
+        Assert.DoesNotContain("if (x > 0)", updatedA);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_OmittedAllFiles_KeepsSingleSiteInvert()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InvertFileA);
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(InvertFileA, "if (x > 0)")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("if (x <= 0)", updated);
+        Assert.DoesNotContain("if (x > 0)", updated);
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_AllFilesTrue_InvertsEligibleIfsAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", InvertFileA),
+            ("FileB.cs", InvertFileB),
+            ("FileC.cs", NothingFileC));
+        var operation = new InvertIfOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains("if (x <= 0)", updatedA);
+        Assert.DoesNotContain("if (x > 0)", updatedA);
+        Assert.Contains("if (!flag)", updatedB);
+        Assert.DoesNotContain("if (flag)", updatedB);
+        var thenIndex = updatedB.IndexOf("ThenBranch();", StringComparison.Ordinal);
+        var elseIndex = updatedB.IndexOf("ElseBranch();", StringComparison.Ordinal);
+        Assert.True(elseIndex < thenIndex, "Else branch should become the if body.");
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_AllFilesTrue_WithoutSourceFileOrLine_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", InvertFileA),
+            ("FileB.cs", InvertFileB));
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InvertFileA);
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InvertIfParams
+            {
+                AllFiles = false,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_AllFilesFalse_WithoutLine_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InvertFileA);
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InvertIfParams
+            {
+                SourceFile = workspace.SourcePath,
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InvertFileA);
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InvertIfParams
+            {
+                AllFiles = true,
+                Line = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(InvertFileA);
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InvertIfParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", InvertFileA),
+            ("FileB.cs", InvertFileB),
+            ("FileC.cs", NothingFileC));
+        var operation = new InvertIfOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("Invert", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet != null &&
+            (c.AfterSnippet.Contains("<=", StringComparison.Ordinal) ||
+             c.AfterSnippet.Contains("!flag", StringComparison.Ordinal)));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", NothingFileC),
+            ("FileC2.cs", NothingFileC.Replace("FileC", "FileC2", StringComparison.Ordinal)));
+        var operation = new InvertIfOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_AllFilesTrue_MixedEligibleAndIncomplete_InvertsOnlyEligible()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Mixed.cs", MixedEligibleAndIncomplete));
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Mixed.cs"]));
+        Assert.Contains("if (!flag)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (flag)", updated, StringComparison.Ordinal);
+        Assert.Contains("if ()", updated, StringComparison.Ordinal);
+        Assert.Contains("Incomplete();", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_AllFilesTrue_NestedIfs_InvertsEachOnce()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Nest.cs", NestedIfs));
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Nest.cs"]));
+        Assert.Contains("if (!outer)", updated, StringComparison.Ordinal);
+        Assert.Contains("if (!inner)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (outer)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (inner)", updated, StringComparison.Ordinal);
+        var outerElse = updated.IndexOf("OuterElse();", StringComparison.Ordinal);
+        var innerElse = updated.IndexOf("InnerElse();", StringComparison.Ordinal);
+        var innerThen = updated.IndexOf("InnerThen();", StringComparison.Ordinal);
+        Assert.True(outerElse >= 0 && innerElse >= 0 && innerThen >= 0);
+        Assert.True(outerElse < innerElse, "Outer else should become the if body.");
+        Assert.True(innerElse < innerThen, "Inner else should become the inner if body.");
+        await AssertCompilesAsync(workspace);
+    }
+
+    [Fact]
+    public void CollectInvertibleIfs_MixedFile_ReturnsOnlyEligible()
+    {
+        var root = CSharpSyntaxTree.ParseText(MixedEligibleAndIncomplete).GetRoot();
+        var collected = InvertIfOperation.CollectInvertibleIfs(root, model: null);
+
+        Assert.Single(collected);
+        Assert.Contains("flag", collected[0].Condition.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(collected, statement => statement.Condition.IsMissing);
+    }
+
+    [Fact]
+    public void InvertAllIfs_NestedIfs_InvertsEachOnceWithoutDoubleInvert()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedIfs).GetRoot();
+        var rewritten = InvertIfOperation.InvertAllIfs(root, model: null, out var invertedCount);
+
+        Assert.Equal(2, invertedCount);
+        var text = rewritten.ToFullString();
+        Assert.Contains("if (!outer)", text, StringComparison.Ordinal);
+        Assert.Contains("if (!inner)", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (!!outer)", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (!!inner)", text, StringComparison.Ordinal);
+
+        // A second pass inverts the already-inverted conditions back — proof
+        // the first pass inverted each node once rather than twice.
+        var second = InvertIfOperation.InvertAllIfs(rewritten, model: null, out var secondCount);
+        Assert.Equal(2, secondCount);
+        var secondText = second.ToFullString();
+        Assert.Contains("if (outer)", secondText, StringComparison.Ordinal);
+        Assert.Contains("if (inner)", secondText, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (!!outer)", secondText, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (!outer)", secondText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Invert if condition", InvertIfOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Invert 2 if conditions", InvertIfOperation.BuildAllFilesDescription(2));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static void AssertPositiveAfterNonPositive(string updated)
@@ -684,6 +1169,22 @@ public class InvertIfOperationTests
         Assert.True(nonPositive >= 0 && positive >= 0);
         Assert.True(nonPositive < positive);
     }
+
+    private static async Task AssertCompilesAsync(TempWorkspace workspace)
+    {
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath);
+        Assert.NotNull(document);
+        var compilation = await document.Project.GetCompilationAsync();
+        Assert.NotNull(compilation);
+        var errors = compilation.GetDiagnostics()
+            .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+            .Select(diagnostic => diagnostic.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, string.Join(Environment.NewLine, errors));
+    }
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpInvertIfMissing.cs");
@@ -712,9 +1213,13 @@ public class InvertIfOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateWithFilesAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -722,33 +1227,47 @@ public class InvertIfOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = sourcePaths.Values.First(),
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }
