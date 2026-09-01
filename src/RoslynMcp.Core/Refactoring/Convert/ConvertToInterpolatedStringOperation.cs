@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -29,6 +30,18 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
     /// </summary>
     internal static void Validate(ConvertToInterpolatedStringParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (@params.Line.HasValue || @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with line or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -38,7 +51,10 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
-        if (@params.Line < 1)
+        if (!@params.Line.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "line is required.");
+
+        if (@params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
@@ -54,14 +70,17 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         ConvertToInterpolatedStringParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var target = FindConvertibleExpression(root, semanticModel, @params.Line, @params.Column);
+        var target = FindConvertibleExpression(root, semanticModel, @params.Line!.Value, @params.Column);
 
         if (target is InvocationExpressionSyntax formatInvocation)
         {
@@ -81,6 +100,131 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
     }
 
     /// <summary>
+    /// Converts every distinct convertible <c>string.Format</c> invocation and
+    /// outer concatenation in every C# document (same document filter as
+    /// <c>FormatDocumentOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ConvertExpressionBodyOperation.ExecuteAllFilesAsync</c>:
+    /// <c>FilePath</c> ends with <c>.cs</c>). Expressions that cannot convert
+    /// and documents whose text is unchanged are skipped. When every file is
+    /// a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ConvertToInterpolatedStringParams @params,
+        CancellationToken cancellationToken)
+    {
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            if (currentDocument is SourceGeneratedDocument)
+                continue;
+
+            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+            if (root == null)
+                continue;
+
+            var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+            if (semanticModel == null)
+                continue;
+
+            var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
+            foreach (var expression in CollectConvertibleExpressions(root, semanticModel))
+            {
+                if (TryConvert(expression, out var converted))
+                    replacements[expression] = converted;
+            }
+
+            if (replacements.Count == 0)
+                continue;
+
+            var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+            var afterText = await newDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var span = root.GetLocation().GetLineSpan();
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = currentDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = BuildAllFilesDescription(replacements.Count),
+                    BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            currentSolution = newDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    internal static string BuildAllFilesDescription(int convertedCount) =>
+        convertedCount == 1
+            ? "Convert expression to interpolated string"
+            : $"Convert {convertedCount} expressions to interpolated strings";
+
+    /// <summary>
+    /// Collects every distinct convertible <c>string.Format</c> invocation and
+    /// outer concatenation in <paramref name="root"/> using the same walk as
+    /// <see cref="FindConvertibleExpression"/>. Inner nodes of a 3+ operand
+    /// chain collapse to <see cref="OuterConcatenation"/>.
+    /// </summary>
+    internal static IReadOnlyList<ExpressionSyntax> CollectConvertibleExpressions(
+        SyntaxNode root,
+        SemanticModel semanticModel)
+    {
+        var formats = EnumerateFormatInvocations(root, semanticModel).Cast<ExpressionSyntax>();
+        var concats = EnumerateConcatenations(root, semanticModel)
+            .Select(OuterConcatenation)
+            .Distinct();
+        var collected = formats.Concat(concats).ToList();
+        // Drop inner nodes contained by another collected expression so a 3+
+        // operand chain is converted once from OuterConcatenation, and a
+        // Format nested in a concat is not replaced twice.
+        return collected
+            .Where(expression => !collected.Any(other => other != expression && other.Contains(expression)))
+            .ToList();
+    }
+
+    /// <summary>
     /// Finds a convertible <c>string.Format</c> invocation or concatenation.
     /// When <paramref name="column"/> is omitted, keeps today's first-match
     /// whose start line equals <paramref name="line"/> (Format before
@@ -96,14 +240,8 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         int line,
         int? column)
     {
-        var formats = root.DescendantNodes()
-            .OfType<InvocationExpressionSyntax>()
-            .Where(invocation => IsStringFormatCall(invocation, semanticModel));
-
-        var concats = root.DescendantNodes()
-            .OfType<BinaryExpressionSyntax>()
-            .Where(binary => binary.IsKind(SyntaxKind.AddExpression) &&
-                             IsStringConcatenation(binary, semanticModel));
+        var formats = EnumerateFormatInvocations(root, semanticModel);
+        var concats = EnumerateConcatenations(root, semanticModel);
 
         if (!column.HasValue)
         {
@@ -132,6 +270,51 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
             .OrderByDescending(binary => binary.Span.Length)
             .FirstOrDefault();
         return concatAtColumn == null ? null : OuterConcatenation(concatAtColumn);
+    }
+
+    private static IEnumerable<InvocationExpressionSyntax> EnumerateFormatInvocations(
+        SyntaxNode root,
+        SemanticModel semanticModel) =>
+        root.DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .Where(invocation => IsStringFormatCall(invocation, semanticModel));
+
+    private static IEnumerable<BinaryExpressionSyntax> EnumerateConcatenations(
+        SyntaxNode root,
+        SemanticModel semanticModel) =>
+        root.DescendantNodes()
+            .OfType<BinaryExpressionSyntax>()
+            .Where(binary => binary.IsKind(SyntaxKind.AddExpression) &&
+                             IsStringConcatenation(binary, semanticModel));
+
+    /// <summary>
+    /// Attempts a conversion without throwing. Used by allFiles so expressions
+    /// that cannot convert stay no-ops.
+    /// </summary>
+    internal static bool TryConvert(ExpressionSyntax expression, out ExpressionSyntax converted)
+    {
+        try
+        {
+            if (expression is InvocationExpressionSyntax formatInvocation)
+            {
+                converted = ConvertFormat(formatInvocation);
+                return true;
+            }
+
+            if (expression is BinaryExpressionSyntax concat)
+            {
+                converted = ConvertConcatenationExpression(concat);
+                return true;
+            }
+
+            converted = expression;
+            return false;
+        }
+        catch (RefactoringException)
+        {
+            converted = expression;
+            return false;
+        }
     }
 
     /// <summary>
@@ -202,6 +385,74 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         Guid operationId, Document document, SyntaxNode root,
         InvocationExpressionSyntax invocation, ConvertToInterpolatedStringParams @params,
         CancellationToken cancellationToken)
+    {
+        var interpolatedString = ConvertFormat(invocation);
+
+        var before = invocation.NormalizeWhitespace().ToFullString();
+        var after = interpolatedString.NormalizeWhitespace().ToFullString();
+
+        if (@params.Preview)
+        {
+            var pendingChanges = new List<PendingChange>
+            {
+                new()
+                {
+                    File = @params.SourceFile!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = "Convert string.Format to interpolated string",
+                    BeforeSnippet = before,
+                    AfterSnippet = after
+                }
+            };
+            return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        }
+
+        var newRoot = root.ReplaceNode(invocation, interpolatedString);
+        var newDocument = document.WithSyntaxRoot(newRoot);
+        var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = commitResult.FilesModified, FilesCreated = commitResult.FilesCreated, FilesDeleted = commitResult.FilesDeleted },
+            null, 0, 0);
+    }
+
+    private async Task<RefactoringResult> ConvertConcatenation(
+        Guid operationId, Document document, SyntaxNode root,
+        BinaryExpressionSyntax concat, ConvertToInterpolatedStringParams @params,
+        CancellationToken cancellationToken)
+    {
+        var interpolatedString = ConvertConcatenationExpression(concat);
+        var outerConcat = OuterConcatenation(concat);
+
+        var before = outerConcat.NormalizeWhitespace().ToFullString();
+        var after = interpolatedString.NormalizeWhitespace().ToFullString();
+
+        if (@params.Preview)
+        {
+            var pendingChanges = new List<PendingChange>
+            {
+                new()
+                {
+                    File = @params.SourceFile!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = "Convert string concatenation to interpolated string",
+                    BeforeSnippet = before.Length > 200 ? before[..200] + "..." : before,
+                    AfterSnippet = after.Length > 200 ? after[..200] + "..." : after
+                }
+            };
+            return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        }
+
+        var newRoot = root.ReplaceNode(outerConcat, interpolatedString);
+        var newDocument = document.WithSyntaxRoot(newRoot);
+        var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = commitResult.FilesModified, FilesCreated = commitResult.FilesCreated, FilesDeleted = commitResult.FilesDeleted },
+            null, 0, 0);
+    }
+
+    private static InterpolatedStringExpressionSyntax ConvertFormat(InvocationExpressionSyntax invocation)
     {
         var args = invocation.ArgumentList.Arguments;
         if (args.Count < 1)
@@ -285,42 +536,12 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
             i = closeBrace + 1;
         }
 
-        var interpolatedString = SyntaxFactory.InterpolatedStringExpression(
+        return SyntaxFactory.InterpolatedStringExpression(
             SyntaxFactory.Token(SyntaxKind.InterpolatedStringStartToken),
             SyntaxFactory.List(contents));
-
-        var before = invocation.NormalizeWhitespace().ToFullString();
-        var after = interpolatedString.NormalizeWhitespace().ToFullString();
-
-        if (@params.Preview)
-        {
-            var pendingChanges = new List<PendingChange>
-            {
-                new()
-                {
-                    File = @params.SourceFile,
-                    ChangeType = ChangeKind.Modify,
-                    Description = "Convert string.Format to interpolated string",
-                    BeforeSnippet = before,
-                    AfterSnippet = after
-                }
-            };
-            return RefactoringResult.PreviewResult(operationId, pendingChanges);
-        }
-
-        var newRoot = root.ReplaceNode(invocation, interpolatedString);
-        var newDocument = document.WithSyntaxRoot(newRoot);
-        var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
-
-        return RefactoringResult.Succeeded(operationId,
-            new FileChanges { FilesModified = commitResult.FilesModified, FilesCreated = commitResult.FilesCreated, FilesDeleted = commitResult.FilesDeleted },
-            null, 0, 0);
     }
 
-    private async Task<RefactoringResult> ConvertConcatenation(
-        Guid operationId, Document document, SyntaxNode root,
-        BinaryExpressionSyntax concat, ConvertToInterpolatedStringParams @params,
-        CancellationToken cancellationToken)
+    private static InterpolatedStringExpressionSyntax ConvertConcatenationExpression(BinaryExpressionSyntax concat)
     {
         // Flatten the outermost concatenation so a column (or omitted first
         // match) on an inner operand of a 3+ chain still keeps later parts.
@@ -346,36 +567,9 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
             }
         }
 
-        var interpolatedString = SyntaxFactory.InterpolatedStringExpression(
+        return SyntaxFactory.InterpolatedStringExpression(
             SyntaxFactory.Token(SyntaxKind.InterpolatedStringStartToken),
             SyntaxFactory.List(contents));
-
-        var before = outerConcat.NormalizeWhitespace().ToFullString();
-        var after = interpolatedString.NormalizeWhitespace().ToFullString();
-
-        if (@params.Preview)
-        {
-            var pendingChanges = new List<PendingChange>
-            {
-                new()
-                {
-                    File = @params.SourceFile,
-                    ChangeType = ChangeKind.Modify,
-                    Description = "Convert string concatenation to interpolated string",
-                    BeforeSnippet = before.Length > 200 ? before[..200] + "..." : before,
-                    AfterSnippet = after.Length > 200 ? after[..200] + "..." : after
-                }
-            };
-            return RefactoringResult.PreviewResult(operationId, pendingChanges);
-        }
-
-        var newRoot = root.ReplaceNode(outerConcat, interpolatedString);
-        var newDocument = document.WithSyntaxRoot(newRoot);
-        var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
-
-        return RefactoringResult.Succeeded(operationId,
-            new FileChanges { FilesModified = commitResult.FilesModified, FilesCreated = commitResult.FilesCreated, FilesDeleted = commitResult.FilesDeleted },
-            null, 0, 0);
     }
 
     private static List<ExpressionSyntax> FlattenConcatenation(ExpressionSyntax expr)
