@@ -9,4 +9,9 @@ public sealed class FormatDocumentParams
     /// Absolute path to the source file to format.
     /// </summary>
     public required string SourceFile { get; init; }
+
+    /// <summary>
+    /// Return computed changes without applying. Default: false.
+    /// </summary>
+    public bool Preview { get; init; }
 }
