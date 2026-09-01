@@ -30,7 +30,7 @@ public class GetCodeMetricsToolTests
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
         Assert.Contains("column", _tool.Description, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("omitted-line", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("omitted-line", _tool.Description);
     }
 
     [Fact]
@@ -102,7 +102,7 @@ public class GetCodeMetricsToolTests
     public void GetDefinition_Description_MentionsColumn()
     {
         Assert.Contains("column", _tool.Description, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("omitted-line", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("omitted-line", _tool.Description);
     }
 
     [Fact]
