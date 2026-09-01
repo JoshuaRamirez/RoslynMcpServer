@@ -218,7 +218,7 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             {
                 new()
                 {
-                    File = @params.SourceFile,
+                    File = @params.SourceFile!,
                     ChangeType = ChangeKind.Modify,
                     Description = description,
                     BeforeSnippet = beforeSnippet,
