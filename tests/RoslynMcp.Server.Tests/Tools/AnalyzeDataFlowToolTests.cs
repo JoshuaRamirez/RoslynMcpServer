@@ -35,6 +35,8 @@ public class AnalyzeDataFlowToolTests
         // Assert
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
+        Assert.Contains("startColumn", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("endColumn", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -72,6 +74,62 @@ public class AnalyzeDataFlowToolTests
         Assert.Contains("sourceFile", requiredFields);
         Assert.Contains("startLine", requiredFields);
         Assert.Contains("endLine", requiredFields);
+        Assert.DoesNotContain("startColumn", requiredFields);
+        Assert.DoesNotContain("endColumn", requiredFields);
+    }
+
+    [Fact]
+    public void GetDefinition_HasProperties_ForAllParameters()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("solutionPath", out _));
+        Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("startLine", out _));
+        Assert.True(properties.TryGetProperty("endLine", out _));
+        Assert.True(properties.TryGetProperty("startColumn", out _));
+        Assert.True(properties.TryGetProperty("endColumn", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_HasOptionalStartAndEndColumn()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+        var required = doc.RootElement.GetProperty("required");
+
+        var requiredFields = new List<string>();
+        foreach (var item in required.EnumerateArray())
+            requiredFields.Add(item.GetString()!);
+
+        Assert.True(properties.TryGetProperty("startColumn", out var startColumn));
+        Assert.Equal("integer", startColumn.GetProperty("type").GetString());
+        Assert.Equal(1, startColumn.GetProperty("minimum").GetInt32());
+        Assert.DoesNotContain("startColumn", requiredFields);
+        var startDescription = startColumn.GetProperty("description").GetString();
+        Assert.Contains("1-based", startDescription);
+        Assert.Contains("column", startDescription, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(properties.TryGetProperty("endColumn", out var endColumn));
+        Assert.Equal("integer", endColumn.GetProperty("type").GetString());
+        Assert.Equal(1, endColumn.GetProperty("minimum").GetInt32());
+        Assert.DoesNotContain("endColumn", requiredFields);
+        var endDescription = endColumn.GetProperty("description").GetString();
+        Assert.Contains("1-based", endDescription);
+        Assert.Contains("column", endDescription, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_Description_MentionsColumns()
+    {
+        Assert.Contains("startColumn", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("endColumn", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("whole-line", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion
