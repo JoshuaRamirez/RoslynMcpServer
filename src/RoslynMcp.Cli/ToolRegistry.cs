@@ -231,7 +231,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ConvertToInterpolatedStringOperation, ConvertToInterpolatedStringParams>(
             "convert-to-interpolated-string", "Convert string.Format() and concatenation to interpolated strings; column (optional) picks the Format invocation or concatenation whose span covers that column on the given line; allFiles (default false) converts every distinct convertible Format invocation and outer concatenation in every C# file (sourceFile optional when true; cannot be combined with line or column)");
         r.RegisterRefactoring<ConvertToPatternMatchingOperation, ConvertToPatternMatchingParams>(
-            "convert-to-pattern-matching", "Convert type checks to pattern matching; column (optional) picks the smallest switch or if whose span covers that column on the given line");
+            "convert-to-pattern-matching", "Convert type checks to pattern matching; column (optional) picks the smallest switch or if whose span covers that column on the given line; allFiles (default false) converts every distinct eligible switch/if-chain in every C# file (sourceFile optional when true; cannot be combined with line or column)");
 
         // ── Refactoring: Generate (9) ─────────────────────────────────
         r.RegisterRefactoring<GenerateConstructorOperation, GenerateConstructorParams>(
