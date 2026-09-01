@@ -135,6 +135,73 @@ public class ConvertForeachLinqOperationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertForeachLinqOperation.Validate(new ConvertForeachLinqParams
+            {
+                AllFiles = false,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertForeachLinqOperation.Validate(new ConvertForeachLinqParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFile_DoesNotThrow()
+    {
+        ConvertForeachLinqOperation.Validate(new ConvertForeachLinqParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertForeachLinqOperation.Validate(new ConvertForeachLinqParams
+            {
+                AllFiles = true,
+                Line = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertForeachLinqOperation.Validate(new ConvertForeachLinqParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     #endregion
 
     #region Query-syntax form policy (documented leftovers)
@@ -623,7 +690,412 @@ public class ConvertForeachLinqOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string ProjectFileA = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class FileA
+        {
+            public List<string> Names(List<Item> items)
+            {
+                var results = new List<string>();
+                foreach (var item in items)
+                {
+                    results.Add(item.Name);
+                }
+                return results;
+            }
+        }
+        """;
+
+    private const string FilterFileB = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class FileB
+        {
+            public List<string> ActiveNames(List<Item> items)
+            {
+                var results = new List<string>();
+                foreach (var item in items)
+                {
+                    if (item.Active)
+                        results.Add(item.Name);
+                }
+                return results;
+            }
+        }
+        """;
+
+    private const string NothingFileC = """
+        using System.Collections.Generic;
+
+        namespace TestApp;
+
+        public class FileC
+        {
+            public void Print(List<Item> items)
+            {
+                foreach (var item in items)
+                    System.Console.WriteLine(item.Name);
+            }
+        }
+        """;
+
+    private const string MixedFile = """
+        using System.Collections.Generic;
+        using System.Linq;
+
+        namespace TestApp;
+
+        public class Mixed
+        {
+            public List<string> Collect(List<Item> items)
+            {
+                var results = new List<string>();
+                foreach (var item in items)
+                    results.Add(item.Name);
+                foreach (var item in items)
+                    System.Console.WriteLine(item.Name);
+                return results;
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task Convert_AllFilesFalse_ConvertsOnlySpecifiedForeach()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", ProjectFileA),
+            ("FileB.cs", FilterFileB),
+            ("FileC.cs", NothingFileC),
+            ("Item.cs", SharedItemSource));
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            AllFiles = false,
+            Line = FindLine(ProjectFileA, "foreach (var item in items)")
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain("foreach", updatedA, StringComparison.Ordinal);
+        Assert.Contains(".Select", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("from ", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_OmittedAllFiles_KeepsSingleForeachConvert()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ProjectSource);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(ProjectSource, "foreach (var item in items)")
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains(".Select", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_ConvertsEligibleForeachAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", ProjectFileA),
+            ("FileB.cs", FilterFileB),
+            ("FileC.cs", NothingFileC),
+            ("Item.cs", SharedItemSource));
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain("foreach", updatedA, StringComparison.Ordinal);
+        Assert.Contains(".Select", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("from ", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("foreach", updatedB, StringComparison.Ordinal);
+        Assert.Contains(".Where", updatedB, StringComparison.Ordinal);
+        Assert.Contains(".Select", updatedB, StringComparison.Ordinal);
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_WithoutSourceFileOrLine_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", ProjectFileA),
+            ("FileB.cs", FilterFileB),
+            ("Item.cs", SharedItemSource));
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ProjectSource);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertForeachLinqParams
+            {
+                AllFiles = false,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesFalse_WithoutLine_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ProjectSource);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertForeachLinqParams
+            {
+                SourceFile = workspace.SourcePath,
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ProjectSource);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertForeachLinqParams
+            {
+                AllFiles = true,
+                Line = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ProjectSource);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertForeachLinqParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task Convert_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", ProjectFileA),
+            ("FileB.cs", FilterFileB),
+            ("FileC.cs", NothingFileC),
+            ("Item.cs", SharedItemSource));
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("foreach", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet != null &&
+            c.AfterSnippet.Contains(".Select", StringComparison.Ordinal));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", NothingFileC),
+            ("FileC2.cs", NothingFileC.Replace("FileC", "FileC2", StringComparison.Ordinal)),
+            ("Item.cs", SharedItemSource));
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_MixedEligibleAndIneligible_ConvertsOnlyEligible()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Mixed.cs", MixedFile),
+            ("Item.cs", SharedItemSource));
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Mixed.cs"]));
+        Assert.Contains(".Select", updated, StringComparison.Ordinal);
+        Assert.Contains("foreach (var item in items)", updated, StringComparison.Ordinal);
+        Assert.Contains("WriteLine", updated, StringComparison.Ordinal);
+        Assert.Empty(ConvertForeachLinqOperation.CollectConvertibleForeach(
+            CSharpSyntaxTree.ParseText(updated).GetRoot(),
+            preferQuerySyntax: false));
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_PreferQuerySyntax_EmitsQueryOnlyForSupportedPatterns()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", ProjectFileA),
+            ("FileB.cs", FilterFileB),
+            ("Item.cs", SharedItemSource));
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            AllFiles = true,
+            PreferQuerySyntax = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains("from ", updatedA, StringComparison.Ordinal);
+        Assert.Contains("select ", updatedA, StringComparison.Ordinal);
+        Assert.Contains(".ToList()", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain(".Select", updatedA, StringComparison.Ordinal);
+        Assert.Contains("from ", updatedB, StringComparison.Ordinal);
+        Assert.Contains("where ", updatedB, StringComparison.Ordinal);
+        Assert.Contains("select ", updatedB, StringComparison.Ordinal);
+        Assert.DoesNotContain(".Where", updatedB, StringComparison.Ordinal);
+        Assert.DoesNotContain(".Select", updatedB, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [Fact]
+    public void CollectConvertibleForeach_MixedFile_ReturnsOnlyEligible()
+    {
+        var root = CSharpSyntaxTree.ParseText(MixedFile).GetRoot();
+        var collected = ConvertForeachLinqOperation.CollectConvertibleForeach(root, preferQuerySyntax: false);
+
+        Assert.Single(collected);
+        Assert.Contains("results.Add", collected[0].ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CollectConvertibleForeach_TwoEligibleOnSameLine_ReturnsBoth()
+    {
+        const string source = """
+            class C
+            {
+                void M(int[] xs, int[] ys)
+                {
+                    var a = new System.Collections.Generic.List<int>();
+                    var b = new System.Collections.Generic.List<int>();
+                    foreach (var x in xs) a.Add(x); foreach (var y in ys) b.Add(y);
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var collected = ConvertForeachLinqOperation.CollectConvertibleForeach(root, preferQuerySyntax: false);
+
+        Assert.Equal(2, collected.Count);
+        Assert.Contains(collected, statement => statement.Identifier.Text == "x");
+        Assert.Contains(collected, statement => statement.Identifier.Text == "y");
+    }
+
+    #endregion
+
     #region Helpers
+
+    private const string SharedItemSource = """
+        namespace TestApp;
+
+        public class Item
+        {
+            public bool Active { get; set; }
+            public string Name { get; set; } = "";
+        }
+        """;
 
     private static ForeachLinqConversion SampleConversion(
         LinqConversionKind kind,
@@ -654,6 +1126,9 @@ public class ConvertForeachLinqOperationTests
             .ToList();
         Assert.True(errors.Count == 0, string.Join(Environment.NewLine, errors));
     }
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpConvertForeachLinqMissing.cs");
@@ -689,9 +1164,13 @@ public class ConvertForeachLinqOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateWithFilesAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -699,33 +1178,47 @@ public class ConvertForeachLinqOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = sourcePaths.Values.First(),
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }

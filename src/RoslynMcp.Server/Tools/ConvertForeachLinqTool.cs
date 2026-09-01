@@ -33,13 +33,13 @@ public sealed class ConvertForeachLinqTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert foreach loops with Add/accumulate patterns to LINQ. preferQuerySyntax (default false) keeps today's method syntax (.Where().Select().ToList()); true emits query syntax (from … where … select) for filter / project / ToList patterns. Any / All / FirstOrDefault / Count keep method syntax. column (optional) picks the foreach whose keyword covers that column on the given line. Preview describes the rewrite and writes nothing.";
+        "Convert foreach loops with Add/accumulate patterns to LINQ. preferQuerySyntax (default false) keeps today's method syntax (.Where().Select().ToList()); true emits query syntax (from … where … select) for filter / project / ToList patterns. Any / All / FirstOrDefault / Count keep method syntax. column (optional) picks the foreach whose keyword covers that column on the given line. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct eligible foreach (sourceFile optional when true; cannot be combined with line or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "line" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,17 +50,23 @@ public sealed class ConvertForeachLinqTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with line or column.",
+                @default = false
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number of the target statement"
+                description = "1-based line number of the target statement. Single-foreach only; cannot be combined with allFiles."
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column of the foreach keyword. When set, selects the foreach whose keyword covers that column on the given line."
+                description = "1-based column of the foreach keyword. When set, selects the foreach whose keyword covers that column on the given line. Single-foreach only; cannot be combined with allFiles."
             },
             preferQuerySyntax = new
             {
@@ -102,7 +108,8 @@ public sealed class ConvertForeachLinqTool : IToolHandler
             var @params = new ConvertForeachLinqParams
             {
                 SourceFile = args.SourceFile,
-                Line = args.Line ?? 0,
+                AllFiles = args.AllFiles ?? false,
+                Line = args.Line,
                 Column = args.Column,
                 PreferQuerySyntax = args.PreferQuerySyntax ?? false,
                 Preview = args.Preview ?? false
@@ -133,7 +140,8 @@ public sealed class ConvertForeachLinqTool : IToolHandler
     private sealed class ConvertForeachLinqArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
         public bool? PreferQuerySyntax { get; init; }
