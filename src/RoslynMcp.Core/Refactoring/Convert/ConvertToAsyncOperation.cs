@@ -20,6 +20,7 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
     private static readonly SyntaxAnnotation AwaitableCallAnnotation = new("convert-to-async-awaitable");
     private static readonly SyntaxAnnotation SelfCallAnnotation = new("convert-to-async-self-call");
     private static readonly SyntaxAnnotation SelfCallAwaitAnnotation = new("convert-to-async-self-call-await");
+    private const string ConvertedCallRenameKind = "convert-to-async-rename";
 
     internal const string SyncCallerSkipReason =
         "Caller is not async; skipped await wrap to keep the method compiling.";
@@ -43,6 +44,20 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
     /// </summary>
     internal static void Validate(ConvertToAsyncParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.MethodName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with methodName, line, or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -68,7 +83,10 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         ConvertToAsyncParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -77,16 +95,17 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         }
 
+        var methodName = @params.MethodName!;
         var methodDeclarations = root.DescendantNodes()
             .OfType<MethodDeclarationSyntax>()
-            .Where(m => m.Identifier.Text == @params.MethodName)
+            .Where(m => m.Identifier.Text == methodName)
             .ToList();
 
         if (methodDeclarations.Count == 0)
         {
             throw new RefactoringException(
                 ErrorCodes.MethodNotFound,
-                $"Method '{@params.MethodName}' not found.");
+                $"Method '{methodName}' not found.");
         }
 
         // Line is required when more than one method matches, even if
@@ -103,17 +122,17 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
                 .ToList();
             throw new RefactoringException(
                 ErrorCodes.SymbolAmbiguous,
-                $"Multiple methods named '{@params.MethodName}' found. Provide line number. Options: {string.Join(", ", lines)}");
+                $"Multiple methods named '{methodName}' found. Provide line number. Options: {string.Join(", ", lines)}");
         }
 
-        var methodDecl = FindMethod(root, @params.MethodName, @params.Line, @params.Column);
+        var methodDecl = FindMethod(root, methodName, @params.Line, @params.Column);
         if (methodDecl == null)
         {
             var location = @params.Column.HasValue
                 ? @params.Line.HasValue
-                    ? $"'{@params.MethodName}' at line {@params.Line}, column {@params.Column.Value}"
-                    : $"'{@params.MethodName}' at column {@params.Column.Value}"
-                : $"'{@params.MethodName}' at line {@params.Line}";
+                    ? $"'{methodName}' at line {@params.Line}, column {@params.Column.Value}"
+                    : $"'{methodName}' at column {@params.Column.Value}"
+                : $"'{methodName}' at line {@params.Line}";
             throw new RefactoringException(
                 ErrorCodes.MethodNotFound,
                 $"Method {location} not found.");
@@ -152,17 +171,15 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         }
 
         // Determine new method name
-        var newMethodName = @params.RenameToAsync && !@params.MethodName.EndsWith("Async")
-            ? @params.MethodName + "Async"
-            : @params.MethodName;
+        var newMethodName = ResolveAsyncMethodName(methodName, @params.RenameToAsync);
 
-        var needsRename = newMethodName != @params.MethodName;
+        var needsRename = newMethodName != methodName;
         var callSites = needsRename || @params.UpdateCallers
             ? await CollectCallSitesAsync(
                 methodSymbol,
                 methodDecl,
                 document,
-                @params.MethodName,
+                methodName,
                 cancellationToken)
             : [];
 
@@ -201,7 +218,7 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         }
 
         methodToRewrite = (MethodDeclarationSyntax)new AnnotatedCallRewriter(
-            @params.MethodName,
+            methodName,
             newMethodName).Visit(methodToRewrite)!;
 
         var newMethod = methodToRewrite
@@ -274,6 +291,476 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
             CallersSkipped = plan.Skipped.Count == 0 ? null : plan.Skipped
         };
     }
+
+    /// <summary>
+    /// Converts every distinct eligible sync method in every C# document
+    /// (same document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
+    /// / <c>ConvertPropertyOperation.ExecuteAllFilesAsync</c> /
+    /// <c>InvertIfOperation.ExecuteAllFilesAsync</c>:
+    /// <c>FilePath</c> ends with <c>.cs</c>). Already-async, iterator,
+    /// unresolved, override, and otherwise unsupported methods or documents
+    /// whose text is unchanged are skipped. Project entry-point /
+    /// traditional static <c>Main</c> is converted in place (not renamed
+    /// to <c>MainAsync</c>) so the console entry point stays valid.
+    /// When every file is a no-op, succeeds with empty changes.
+    /// <see cref="ConvertToAsyncParams.RenameToAsync"/> (default true) and
+    /// <see cref="ConvertToAsyncParams.UpdateCallers"/> (default false)
+    /// apply across the walk using the existing await-wrap rules.
+    /// Call-site identifier rewrites for converted methods are applied
+    /// (including method-group / nameof references); already-async callers
+    /// are awaited only when <c>updateCallers</c> is true.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ConvertToAsyncParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var candidates = new List<ConversionCandidate>();
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (document is SourceGeneratedDocument)
+                continue;
+
+            var root = await document.GetSyntaxRootAsync(cancellationToken);
+            var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+            if (root == null || semanticModel == null)
+                continue;
+
+            var compilation = await document.Project.GetCompilationAsync(cancellationToken);
+            var entryPoint = compilation?.GetEntryPoint(cancellationToken);
+
+            foreach (var method in CollectEligibleMethods(root, semanticModel, cancellationToken))
+            {
+                var symbol = semanticModel.GetDeclaredSymbol(method, cancellationToken);
+                if (symbol == null)
+                    continue;
+
+                var methodName = method.Identifier.Text;
+                candidates.Add(new ConversionCandidate(
+                    document.Id,
+                    method,
+                    symbol,
+                    FindAwaitableCalls(method, semanticModel, cancellationToken),
+                    methodName,
+                    ResolveAsyncMethodNameForAllFiles(
+                        symbol, methodName, @params.RenameToAsync, entryPoint)));
+            }
+        }
+
+        var convertedMethods = candidates.Select(c => c.Method).ToList();
+        var allCallSites = new List<(ConversionCandidate Candidate, CallSite Site)>();
+        foreach (var candidate in candidates)
+        {
+            var document = originalSolution.GetDocument(candidate.DocumentId);
+            if (document == null)
+                continue;
+
+            var needsRename = candidate.NewMethodName != candidate.MethodName;
+            if (!needsRename && !@params.UpdateCallers)
+                continue;
+
+            var callSites = await CollectCallSitesAsync(
+                candidate.Symbol,
+                candidate.Method,
+                document,
+                candidate.MethodName,
+                cancellationToken);
+            foreach (var site in callSites)
+                allCallSites.Add((candidate, site));
+        }
+
+        var convertedCountByDoc = candidates
+            .GroupBy(c => c.DocumentId)
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        var documentsToRewrite = allDocuments
+            .Select(d => d.Id)
+            .Where(id =>
+                convertedCountByDoc.ContainsKey(id) ||
+                allCallSites.Any(s => s.Site.DocumentId == id))
+            .Distinct()
+            .ToList();
+
+        var currentSolution = originalSolution;
+        var anyChanged = false;
+        var allPendingChanges = new List<PendingChange>();
+
+        foreach (var documentId in documentsToRewrite)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(documentId);
+            if (originalDocument == null || originalDocument is SourceGeneratedDocument)
+                continue;
+
+            var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+            if (originalRoot == null)
+                continue;
+
+            var newRoot = RewriteDocumentForAllFiles(
+                originalRoot,
+                documentId,
+                candidates,
+                convertedMethods,
+                allCallSites,
+                @params.UpdateCallers);
+
+            var currentDocument = currentSolution.GetDocument(documentId) ?? originalDocument;
+            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await newDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var convertedCount = convertedCountByDoc.GetValueOrDefault(documentId);
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = convertedCount > 0
+                        ? BuildAllFilesDescription(convertedCount)
+                        : "Update call sites of converted methods",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            currentSolution = newDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    internal static string BuildAllFilesDescription(int convertedCount) =>
+        convertedCount == 1
+            ? "Convert method to async"
+            : $"Convert {convertedCount} methods to async";
+
+    /// <summary>
+    /// Collects every distinct eligible sync <see cref="MethodDeclarationSyntax"/>
+    /// in <paramref name="root"/> using the same already-async / iterator /
+    /// unresolved / no-awaitable-call eligibility as the single-site path
+    /// (skip, not throw), plus allFiles-only skips for <c>override</c>
+    /// methods whose signature cannot change without breaking the base
+    /// contract.
+    /// </summary>
+    internal static IReadOnlyList<MethodDeclarationSyntax> CollectEligibleMethods(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken) =>
+        root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(method => TryGetEligibleMethod(method, semanticModel, cancellationToken, out _, out _))
+            .ToList();
+
+    /// <summary>
+    /// Classifies a method for allFiles: already-async, iterator, unresolved,
+    /// override, and methods with no awaitable calls are ineligible.
+    /// </summary>
+    internal static bool TryGetEligibleMethod(
+        MethodDeclarationSyntax methodDecl,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken,
+        out IMethodSymbol? methodSymbol,
+        out List<InvocationExpressionSyntax> awaitableCalls)
+    {
+        methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken);
+        awaitableCalls = [];
+
+        if (methodDecl.Modifiers.Any(SyntaxKind.AsyncKeyword))
+            return false;
+
+        if (methodDecl.DescendantNodes().OfType<YieldStatementSyntax>().Any())
+            return false;
+
+        if (methodDecl.Modifiers.Any(SyntaxKind.OverrideKeyword))
+            return false;
+
+        if (methodSymbol == null)
+            return false;
+
+        // Changing an override's name or return type cannot preserve the
+        // base signature (CS0115 / unimplemented virtuals).
+        if (methodSymbol.IsOverride)
+            return false;
+
+        awaitableCalls = FindAwaitableCalls(methodDecl, semanticModel, cancellationToken);
+        return awaitableCalls.Count > 0;
+    }
+
+    internal static string ResolveAsyncMethodName(string methodName, bool renameToAsync) =>
+        renameToAsync && !methodName.EndsWith("Async", StringComparison.Ordinal)
+            ? methodName + "Async"
+            : methodName;
+
+    /// <summary>
+    /// allFiles never renames the compilation entry point or a traditional
+    /// static <c>Main</c> — C# only recognizes <c>Main</c> as the console
+    /// entry-point name. Single-site rename is unchanged.
+    /// </summary>
+    internal static string ResolveAsyncMethodNameForAllFiles(
+        IMethodSymbol symbol,
+        string methodName,
+        bool renameToAsync,
+        IMethodSymbol? compilationEntryPoint) =>
+        IsPreservedEntryPoint(symbol, compilationEntryPoint)
+            ? methodName
+            : ResolveAsyncMethodName(methodName, renameToAsync);
+
+    internal static bool IsPreservedEntryPoint(
+        IMethodSymbol symbol,
+        IMethodSymbol? compilationEntryPoint)
+    {
+        if (compilationEntryPoint != null &&
+            SymbolEqualityComparer.Default.Equals(symbol, compilationEntryPoint))
+        {
+            return true;
+        }
+
+        return symbol.Name == "Main" && symbol.IsStatic;
+    }
+
+    private static SyntaxNode RewriteDocumentForAllFiles(
+        SyntaxNode root,
+        DocumentId documentId,
+        IReadOnlyList<ConversionCandidate> candidates,
+        IReadOnlyList<MethodDeclarationSyntax> convertedMethods,
+        IReadOnlyList<(ConversionCandidate Candidate, CallSite Site)> allCallSites,
+        bool updateCallers)
+    {
+        var methodReplacements = new Dictionary<SyntaxNode, SyntaxNode>();
+        var callSiteActions = new Dictionary<SyntaxNode, (CallSite Site, ConversionCandidate Candidate)>();
+        var methodsInDocument = candidates.Where(c => c.DocumentId == documentId).ToList();
+
+        foreach (var candidate in methodsInDocument)
+        {
+            var annotatedNodes = new Dictionary<SyntaxNode, List<SyntaxAnnotation>>();
+            foreach (var call in candidate.AwaitableCalls)
+                AddAnnotation(annotatedNodes, call, AwaitableCallAnnotation);
+
+            foreach (var (siteCandidate, site) in allCallSites)
+            {
+                if (site.DocumentId != documentId ||
+                    !candidate.Method.Span.Contains(site.Name.Span))
+                {
+                    continue;
+                }
+
+                var needsRename = siteCandidate.NewMethodName != siteCandidate.MethodName;
+                if (site.Invocation != null)
+                {
+                    if (needsRename)
+                        AddAnnotation(annotatedNodes, site.Invocation, RenameAnnotation(siteCandidate.NewMethodName));
+
+                    if (ShouldAwaitAllFilesCallSite(site, updateCallers, convertedMethods))
+                        AddAnnotation(annotatedNodes, site.Invocation, SelfCallAwaitAnnotation);
+                }
+                else if (needsRename)
+                {
+                    // Method-group / nameof / other non-invocation references.
+                    // Mirror single-site BuildCallSiteReplacement (Invocation == null).
+                    AddAnnotation(annotatedNodes, site.Name, RenameAnnotation(siteCandidate.NewMethodName));
+                }
+            }
+
+            foreach (var (name, newName) in FindNameOfReferencesToConvertedMethods(
+                candidate.Method, candidates))
+            {
+                AddAnnotation(annotatedNodes, name, RenameAnnotation(newName));
+            }
+
+            var methodToRewrite = candidate.Method;
+            if (annotatedNodes.Count > 0)
+            {
+                methodToRewrite = candidate.Method.ReplaceNodes(
+                    annotatedNodes.Keys,
+                    (original, _) => original.WithAdditionalAnnotations(annotatedNodes[original]));
+            }
+
+            methodToRewrite = (MethodDeclarationSyntax)new AnnotatedCallRewriter(
+                candidate.MethodName,
+                candidate.NewMethodName).Visit(methodToRewrite)!;
+
+            methodReplacements[candidate.Method] = methodToRewrite
+                .WithIdentifier(SyntaxFactory.Identifier(candidate.NewMethodName))
+                .WithReturnType(SyntaxGenerationHelper.ToAsyncReturnType(candidate.Symbol.ReturnType)
+                    .WithTrailingTrivia(SyntaxFactory.Space))
+                .AddModifiers(SyntaxFactory.Token(SyntaxKind.AsyncKeyword).WithTrailingTrivia(SyntaxFactory.Space));
+        }
+
+        foreach (var (siteCandidate, site) in allCallSites)
+        {
+            if (site.DocumentId != documentId)
+                continue;
+
+            if (IsInsideAnyConvertedMethod(site, convertedMethods))
+                continue;
+
+            var original = GetCallSiteReplacementOriginal(site, updateCallers);
+            if (original == null)
+                continue;
+
+            callSiteActions[original] = (site, siteCandidate);
+        }
+
+        var nodes = methodReplacements.Keys
+            .Concat(callSiteActions.Keys)
+            .Distinct()
+            .ToList();
+        if (nodes.Count == 0)
+            return root;
+
+        // Compose from the rewritten descendant so nested A(B()) keeps the
+        // inner rename/await when the outer invocation is replaced.
+        return root.ReplaceNodes(nodes, (old, rewritten) =>
+        {
+            if (methodReplacements.TryGetValue(old, out var newMethod))
+                return newMethod;
+
+            if (callSiteActions.TryGetValue(old, out var action))
+                return ApplyCallSiteReplacementToRewritten(rewritten, action.Site, action.Candidate, updateCallers);
+
+            return rewritten;
+        });
+    }
+
+    private static SyntaxNode? GetCallSiteReplacementOriginal(CallSite site, bool updateCallers)
+    {
+        if (site.Invocation == null)
+            return site.Name;
+
+        if (ShouldAwaitCallSite(site, updateCallers))
+            return GetAwaitWrapTarget(site.Invocation);
+
+        return site.Name;
+    }
+
+    /// <summary>
+    /// Applies the same rename / await-wrap as <see cref="BuildCallSiteReplacement"/>
+    /// to a node that may already contain rewritten descendants.
+    /// </summary>
+    private static SyntaxNode ApplyCallSiteReplacementToRewritten(
+        SyntaxNode rewritten,
+        CallSite site,
+        ConversionCandidate candidate,
+        bool updateCallers)
+    {
+        var needsRename = candidate.NewMethodName != candidate.MethodName;
+        if (rewritten is SimpleNameSyntax simpleName)
+        {
+            return needsRename
+                ? WithMethodName(simpleName, candidate.NewMethodName)
+                : rewritten;
+        }
+
+        if (rewritten is not ExpressionSyntax expression)
+            return rewritten;
+
+        var updated = expression;
+        if (needsRename)
+        {
+            var name = FindNameNode(updated, candidate.MethodName)
+                ?? FindInvocationName(updated as InvocationExpressionSyntax);
+            if (name != null && name.Identifier.Text != candidate.NewMethodName)
+                updated = (ExpressionSyntax)updated.ReplaceNode(name, WithMethodName(name, candidate.NewMethodName));
+        }
+
+        if (ShouldAwaitCallSite(site, updateCallers) && !IsAlreadyAwaited(updated))
+            return WrapWithAwait(updated);
+
+        return updated;
+    }
+
+    private static IEnumerable<(SimpleNameSyntax Name, string NewName)> FindNameOfReferencesToConvertedMethods(
+        MethodDeclarationSyntax method,
+        IReadOnlyList<ConversionCandidate> candidates)
+    {
+        foreach (var invocation in method.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        {
+            if (invocation.Expression is not IdentifierNameSyntax { Identifier.Text: "nameof" })
+                continue;
+
+            if (invocation.ArgumentList.Arguments.Count != 1)
+                continue;
+
+            if (invocation.ArgumentList.Arguments[0].Expression is not SimpleNameSyntax name)
+                continue;
+
+            var match = candidates.FirstOrDefault(c =>
+                c.MethodName == name.Identifier.Text &&
+                c.NewMethodName != c.MethodName);
+            if (match != null)
+                yield return (name, match.NewMethodName);
+        }
+    }
+
+    private static SimpleNameSyntax? FindInvocationName(InvocationExpressionSyntax? invocation) =>
+        invocation?.Expression switch
+        {
+            SimpleNameSyntax simple => simple,
+            MemberAccessExpressionSyntax member => member.Name,
+            MemberBindingExpressionSyntax binding => binding.Name,
+            _ => null
+        };
+
+    internal static bool ShouldAwaitAllFilesCallSite(
+        CallSite site,
+        bool updateCallers,
+        IReadOnlyCollection<MethodDeclarationSyntax> convertedMethods)
+    {
+        if (!updateCallers || site.Invocation == null || site.IsAlreadyAwaited)
+            return false;
+
+        if (site.IsAsyncContext)
+            return true;
+
+        return convertedMethods.Any(method =>
+            method.SyntaxTree == site.Name.SyntaxTree &&
+            IsNearestEnclosingConvertedMethod(site.Name, method));
+    }
+
+    private static bool IsInsideAnyConvertedMethod(
+        CallSite site,
+        IReadOnlyCollection<MethodDeclarationSyntax> convertedMethods) =>
+        convertedMethods.Any(method =>
+            method.SyntaxTree == site.Name.SyntaxTree &&
+            method.Span.Contains(site.Name.Span));
+
+    private static SyntaxAnnotation RenameAnnotation(string newName) =>
+        new(ConvertedCallRenameKind, newName);
 
     /// <summary>
     /// Finds a method by name. When <paramref name="column"/> is omitted,
@@ -724,7 +1211,7 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         {
             new()
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = $"Convert '{@params.MethodName}' to async ({awaitableCallCount} await expressions added)",
                 BeforeSnippet = oldSig,
@@ -732,7 +1219,7 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
             },
             new()
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = callerDescription
             }
@@ -765,6 +1252,20 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         IReadOnlyList<SkippedCaller> Skipped);
 
     private sealed record NodeReplacement(SyntaxNode Original, SyntaxNode Replacement);
+
+    private static void AddAnnotation(
+        Dictionary<SyntaxNode, List<SyntaxAnnotation>> map,
+        SyntaxNode node,
+        SyntaxAnnotation annotation)
+    {
+        if (!map.TryGetValue(node, out var annotations))
+        {
+            annotations = [];
+            map[node] = annotations;
+        }
+
+        annotations.Add(annotation);
+    }
 
     private static void AddAnnotation(
         Dictionary<InvocationExpressionSyntax, List<SyntaxAnnotation>> map,
@@ -805,8 +1306,15 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         {
             var visited = (InvocationExpressionSyntax)base.VisitInvocationExpression(node)!;
             var isSelfCall = node.HasAnnotation(SelfCallAnnotation);
+            var renameTo = node.GetAnnotations(ConvertedCallRenameKind).FirstOrDefault()?.Data;
 
-            if (isSelfCall && _oldName != _newName)
+            if (renameTo != null)
+            {
+                var name = GetInvocationName(visited) ?? FindNameNode(visited, _oldName);
+                if (name != null && name.Identifier.Text != renameTo)
+                    visited = visited.ReplaceNode(name, WithMethodName(name, renameTo));
+            }
+            else if (isSelfCall && _oldName != _newName)
             {
                 var name = FindNameNode(visited, _oldName);
                 if (name != null)
@@ -824,6 +1332,27 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
             return visited;
         }
 
+        public override SyntaxNode? VisitIdentifierName(IdentifierNameSyntax node)
+        {
+            var visited = (IdentifierNameSyntax)base.VisitIdentifierName(node)!;
+            return RenameAnnotatedName(node, visited);
+        }
+
+        public override SyntaxNode? VisitGenericName(GenericNameSyntax node)
+        {
+            var visited = (GenericNameSyntax)base.VisitGenericName(node)!;
+            return RenameAnnotatedName(node, visited);
+        }
+
+        private static SimpleNameSyntax RenameAnnotatedName(SimpleNameSyntax original, SimpleNameSyntax visited)
+        {
+            var renameTo = original.GetAnnotations(ConvertedCallRenameKind).FirstOrDefault()?.Data;
+            if (renameTo != null && visited.Identifier.Text != renameTo)
+                return WithMethodName(visited, renameTo);
+
+            return visited;
+        }
+
         private static bool ShouldAwaitAnnotated(InvocationExpressionSyntax node)
         {
             return node.HasAnnotation(AwaitableCallAnnotation)
@@ -837,5 +1366,22 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
                 .OfType<InvocationExpressionSyntax>()
                 .FirstOrDefault(ShouldAwaitAnnotated);
         }
+
+        private static SimpleNameSyntax? GetInvocationName(InvocationExpressionSyntax invocation) =>
+            invocation.Expression switch
+            {
+                SimpleNameSyntax simple => simple,
+                MemberAccessExpressionSyntax member => member.Name,
+                MemberBindingExpressionSyntax binding => binding.Name,
+                _ => null
+            };
     }
+
+    private sealed record ConversionCandidate(
+        DocumentId DocumentId,
+        MethodDeclarationSyntax Method,
+        IMethodSymbol Symbol,
+        List<InvocationExpressionSyntax> AwaitableCalls,
+        string MethodName,
+        string NewMethodName);
 }

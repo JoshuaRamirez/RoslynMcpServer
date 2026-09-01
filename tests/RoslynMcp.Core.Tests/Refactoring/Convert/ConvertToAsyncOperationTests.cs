@@ -470,6 +470,88 @@ public class ConvertToAsyncOperationTests
         Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+            {
+                AllFiles = false,
+                MethodName = "Process"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutMethodName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrMethodName_DoesNotThrow()
+    {
+        ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMethodName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+            {
+                AllFiles = true,
+                MethodName = "Process"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+            {
+                AllFiles = true,
+                Line = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     #endregion
 
     #region P0 omitted column converts the same method as today
@@ -901,6 +983,589 @@ public class ConvertToAsyncOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string EligibleFileA = """
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class FileA
+        {
+            public void Process()
+            {
+                Task.Delay(1);
+            }
+
+            public async Task CallerAsync()
+            {
+                Process();
+            }
+        }
+        """;
+
+    private const string EligibleFileB = """
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class FileB
+        {
+            public void Fetch()
+            {
+                Task.Delay(2);
+            }
+        }
+        """;
+
+    private const string IneligibleFileC = """
+        using System.Collections.Generic;
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class FileC
+        {
+            public async Task Already()
+            {
+                await Task.Delay(1);
+            }
+
+            public IEnumerable<int> Items()
+            {
+                yield return 1;
+            }
+
+            public void SyncOnly()
+            {
+                var x = 1;
+            }
+        }
+        """;
+
+    private const string MixedEligibleAndSkipped = """
+        using System.Collections.Generic;
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class Mixed
+        {
+            public void Eligible()
+            {
+                Task.Delay(1);
+            }
+
+            public async Task Already()
+            {
+                await Task.Delay(1);
+            }
+
+            public IEnumerable<int> Items()
+            {
+                yield return 1;
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesFalse_ConvertsOnlySpecifiedMethod()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            AllFiles = false,
+            MethodName = "Process"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("async Task ProcessAsync()", updatedA);
+        Assert.Contains("await Task.Delay(1)", updatedA);
+        Assert.Contains("ProcessAsync();", updatedA);
+        Assert.DoesNotContain("await ProcessAsync()", updatedA);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_OmittedAllFiles_KeepsSingleSiteConvert()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WorkerSource);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("async Task ProcessAsync()", updated);
+        Assert.Contains("await Task.Delay(1)", updated);
+        Assert.Contains("public async Task CallerAsync()", updated);
+        Assert.Contains("public void CallerSync()", updated);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_ConvertsEligibleMethodsAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains("async Task ProcessAsync()", updatedA);
+        Assert.Contains("await Task.Delay(1)", updatedA);
+        Assert.Contains("ProcessAsync();", updatedA);
+        Assert.DoesNotContain("await ProcessAsync()", updatedA);
+        Assert.Contains("async Task FetchAsync()", updatedB);
+        Assert.Contains("await Task.Delay(2)", updatedB);
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_WithoutSourceFileOrMethodName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WorkerSource);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToAsyncParams
+            {
+                AllFiles = false,
+                MethodName = "Process"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesFalse_WithoutMethodName_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WorkerSource);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToAsyncParams
+            {
+                AllFiles = false,
+                SourceFile = workspace.SourcePath
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_WithMethodName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WorkerSource);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToAsyncParams
+            {
+                AllFiles = true,
+                MethodName = "Process"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WorkerSource);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToAsyncParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WorkerSource);
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToAsyncParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("async", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet != null &&
+            (c.AfterSnippet.Contains("ProcessAsync", StringComparison.Ordinal) ||
+             c.AfterSnippet.Contains("FetchAsync", StringComparison.Ordinal)));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", IneligibleFileC),
+            ("FileC2.cs", IneligibleFileC.Replace("FileC", "FileC2", StringComparison.Ordinal)));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_SkipsAlreadyAsyncAndIterator()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Mixed.cs", MixedEligibleAndSkipped));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Mixed.cs"]));
+        Assert.Contains("async Task EligibleAsync()", updated);
+        Assert.Contains("await Task.Delay(1)", updated);
+        Assert.Contains("public async Task Already()", updated);
+        Assert.Contains("public IEnumerable<int> Items()", updated);
+        Assert.DoesNotContain("async Task AlreadyAsync", updated);
+        Assert.DoesNotContain("async", GetMethodDeclaration(updated, "Items"));
+        Assert.Single(result.Changes!.FilesModified);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_UpdateCallersTrue_AwaitsAlreadyAsyncCallers()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true,
+            UpdateCallers = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("async Task ProcessAsync()", updated);
+        var callerAsync = GetMethodBody(updated, "CallerAsync");
+        Assert.Contains("await ProcessAsync();", callerAsync);
+        await AssertCompilesAsync(workspace);
+    }
+
+    private const string MainAndWorkSource = """
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class Program
+        {
+            public static void Main()
+            {
+                Task.Delay(1);
+            }
+
+            public static void Work()
+            {
+                Task.Delay(2);
+            }
+        }
+        """;
+
+    private const string OverrideAndEligibleSource = """
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public abstract class BaseWorker
+        {
+            public abstract void OnStart();
+        }
+
+        public class Worker : BaseWorker
+        {
+            public override void OnStart()
+            {
+                Task.Delay(1);
+            }
+
+            public void Eligible()
+            {
+                Task.Delay(2);
+            }
+        }
+        """;
+
+    private const string NestedCallSitesSource = """
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class Nested
+        {
+            public int B()
+            {
+                Task.Delay(1);
+                return 1;
+            }
+
+            public void A(int n)
+            {
+                Task.Delay(n);
+            }
+
+            public async Task CallerAsync()
+            {
+                A(B());
+            }
+        }
+        """;
+
+    private const string MethodGroupAndNameOfSource = """
+        using System;
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class Groups
+        {
+            public void Process()
+            {
+                Task.Delay(1);
+            }
+
+            public void Eligible()
+            {
+                Task.Delay(2);
+                Func<Task> a = Process;
+                var n = nameof(Process);
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_PreservesMainEntryPointName()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Program.cs", MainAndWorkSource));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]));
+        Assert.Contains("async Task Main()", updated);
+        Assert.DoesNotContain("MainAsync", updated);
+        Assert.Contains("async Task WorkAsync()", updated);
+        Assert.Contains("await Task.Delay(1)", updated);
+        Assert.Contains("await Task.Delay(2)", updated);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_SingleSite_RenameToAsync_StillRenamesMain()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Program.cs", MainAndWorkSource));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            SourceFile = workspace.SourcePaths["Program.cs"],
+            MethodName = "Main"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Program.cs"]));
+        Assert.Contains("async Task MainAsync()", updated);
+        Assert.Contains("public static void Work()", updated);
+        Assert.DoesNotContain("async Task Work", updated);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_SkipsOverrideMethods()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Worker.cs", OverrideAndEligibleSource));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Worker.cs"]));
+        Assert.Contains("public override void OnStart()", updated);
+        Assert.DoesNotContain("OnStartAsync", updated);
+        Assert.DoesNotContain("async Task OnStart", updated);
+        Assert.Contains("async Task EligibleAsync()", updated);
+        Assert.Contains("await Task.Delay(2)", updated);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_NestedCallSites_ComposeInnerAndOuterRewrites()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Nested.cs", NestedCallSitesSource));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true,
+            UpdateCallers = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Nested.cs"]));
+        Assert.Contains("async Task<int> BAsync()", updated);
+        Assert.Contains("async Task AAsync(int n)", updated);
+        var caller = GetMethodBody(updated, "CallerAsync");
+        Assert.Contains("await AAsync(await BAsync())", caller);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task ConvertToAsync_AllFilesTrue_RenamesMethodGroupAndNameOfInsideConvertedMethod()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Groups.cs", MethodGroupAndNameOfSource));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Groups.cs"]));
+        Assert.Contains("async Task ProcessAsync()", updated);
+        Assert.Contains("async Task EligibleAsync()", updated);
+        var eligible = GetMethodBody(updated, "EligibleAsync");
+        Assert.Contains("Func<Task> a = ProcessAsync", eligible);
+        Assert.Contains("nameof(ProcessAsync)", eligible);
+        Assert.DoesNotContain("Func<Task> a = Process;", eligible);
+        Assert.DoesNotContain("nameof(Process)", eligible);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Convert method to async", ConvertToAsyncOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Convert 2 methods to async", ConvertToAsyncOperation.BuildAllFilesDescription(2));
+    }
+
+    #endregion
+
     #region Helper unit tests
 
     [Fact]
@@ -1022,6 +1687,22 @@ public class ConvertToAsyncOperationTests
         return method.ToFullString();
     }
 
+    private static async Task AssertCompilesAsync(TempWorkspace workspace)
+    {
+        var document = workspace.Context.GetDocumentByPath(workspace.SourcePath);
+        Assert.NotNull(document);
+        var compilation = await document.Project.GetCompilationAsync();
+        Assert.NotNull(compilation);
+        var errors = compilation.GetDiagnostics()
+            .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+            .Select(diagnostic => diagnostic.ToString())
+            .ToList();
+        Assert.True(errors.Count == 0, string.Join(Environment.NewLine, errors));
+    }
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpConvertToAsyncMissing.cs");
 
@@ -1056,9 +1737,13 @@ public class ConvertToAsyncOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateWithFilesAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1066,33 +1751,47 @@ public class ConvertToAsyncOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = sourcePaths.Values.First(),
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }

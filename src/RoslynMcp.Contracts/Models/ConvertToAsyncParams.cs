@@ -7,16 +7,26 @@ public sealed class ConvertToAsyncParams
 {
     /// <summary>
     /// Absolute path to the source file.
+    /// Required when <see cref="AllFiles"/> is false.
     /// </summary>
-    public required string SourceFile { get; init; }
+    public string? SourceFile { get; init; }
 
     /// <summary>
-    /// Name of the method to convert.
+    /// When true, process all C# documents in the solution instead of a single method.
+    /// When true, <see cref="SourceFile"/> is optional. Cannot be combined with
+    /// <see cref="MethodName"/>, <see cref="Line"/>, or <see cref="Column"/>.
     /// </summary>
-    public required string MethodName { get; init; }
+    public bool AllFiles { get; init; }
+
+    /// <summary>
+    /// Name of the method to convert. Single-site only.
+    /// Required when <see cref="AllFiles"/> is false.
+    /// </summary>
+    public string? MethodName { get; init; }
 
     /// <summary>
     /// Line number for disambiguation if multiple methods have the same name (1-based).
+    /// Single-site only.
     /// </summary>
     public int? Line { get; init; }
 
@@ -25,7 +35,7 @@ public sealed class ConvertToAsyncParams
     /// shares a line, or when the identifier lives on a continuation line
     /// of a split signature. Optional. When set, selects the method whose
     /// identifier or declaration span covers that column. Omitted keeps
-    /// today's MethodName + Line pick.
+    /// today's MethodName + Line pick. Single-site only.
     /// </summary>
     public int? Column { get; init; }
 
