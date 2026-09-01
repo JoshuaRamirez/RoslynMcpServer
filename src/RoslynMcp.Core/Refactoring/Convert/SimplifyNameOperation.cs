@@ -41,16 +41,14 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
     /// </summary>
     internal static void Validate(SimplifyNameParams @params)
     {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-
         var scope = NormalizeScope(@params.Scope);
+
+        if (@params.AllFiles && scope == ScopeLocation)
+        {
+            throw new RefactoringException(
+                ErrorCodes.MissingRequiredParam,
+                "allFiles cannot be combined with scope=location.");
+        }
 
         if (scope == ScopeLocation)
         {
@@ -67,6 +65,18 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
+
+        if (@params.AllFiles)
+            return;
+
+        if (string.IsNullOrWhiteSpace(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required when allFiles is false.");
+
+        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -105,7 +115,10 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
         SimplifyNameParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -165,7 +178,7 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
             {
                 new()
                 {
-                    File = @params.SourceFile,
+                    File = @params.SourceFile!,
                     ChangeType = ChangeKind.Modify,
                     Description = description,
                     BeforeSnippet = beforeSnippet,
@@ -205,6 +218,136 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
             SimplificationsApplied = outcome.Applied.Count,
             SimplificationsSkipped = outcome.Skipped.Count,
             SkippedReasons = outcome.Skipped
+        };
+    }
+
+    /// <summary>
+    /// Applies file-scope simplify to every C# document in the solution.
+    /// Files with nothing to simplify are skipped. When every file is a no-op,
+    /// succeeds with empty changes (does not throw <see cref="ErrorCodes.NoSimplifiableNames"/>).
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        SimplifyNameParams @params,
+        CancellationToken cancellationToken)
+    {
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var appliedTotal = 0;
+        var skippedTotal = 0;
+        var skippedReasons = new List<SkippedSimplification>();
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            if (currentDocument is SourceGeneratedDocument)
+                continue;
+
+            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+            if (root == null)
+                continue;
+
+            var model = await currentDocument.GetSemanticModelAsync(cancellationToken);
+            if (model == null)
+                continue;
+
+            var candidates = CollectCandidates(root, model);
+            if (candidates.Count == 0)
+                continue;
+
+            var outcome = await TrySimplifyAsync(currentDocument, root, model, candidates, cancellationToken);
+            if (outcome.Applied.Count == 0)
+                continue;
+
+            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+            var newDocument = currentDocument.WithSyntaxRoot(outcome.NewRoot);
+            var afterText = await newDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            appliedTotal += outcome.Applied.Count;
+            skippedTotal += outcome.Skipped.Count;
+            skippedReasons.AddRange(outcome.Skipped);
+
+            if (@params.Preview)
+            {
+                var description = BuildDescription(ScopeFile, outcome.Applied.Count, outcome.Skipped.Count);
+                var beforeSnippet = string.Join(Environment.NewLine, outcome.Applied.Select(item => item.OriginalText));
+                var afterSnippet = string.Join(Environment.NewLine, outcome.Applied.Select(item => item.NewText));
+                var span = root.GetLocation().GetLineSpan();
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = currentDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = description,
+                    BeforeSnippet = beforeSnippet,
+                    AfterSnippet = afterSnippet,
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            currentSolution = newDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+        {
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Preview = true,
+                PendingChanges = allPendingChanges,
+                Scope = ScopeFile,
+                SimplificationsApplied = appliedTotal,
+                SimplificationsSkipped = skippedTotal,
+                SkippedReasons = skippedReasons
+            };
+        }
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Changes = new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                Scope = ScopeFile,
+                SimplificationsApplied = appliedTotal,
+                SimplificationsSkipped = skippedTotal,
+                SkippedReasons = skippedReasons
+            };
+        }
+
+        return new RefactoringResult
+        {
+            Success = true,
+            OperationId = operationId,
+            Changes = new FileChanges
+            {
+                FilesModified = [],
+                FilesCreated = [],
+                FilesDeleted = []
+            },
+            Scope = ScopeFile,
+            SimplificationsApplied = 0,
+            SimplificationsSkipped = 0
         };
     }
 

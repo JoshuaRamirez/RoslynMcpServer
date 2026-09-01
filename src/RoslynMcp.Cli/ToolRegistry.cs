@@ -219,7 +219,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<RemoveBracesOperation, RemoveBracesParams>(
             "remove-braces", "Remove braces from control statements (if, else, for, foreach, while, using) that have a single-statement braced body");
         r.RegisterRefactoring<SimplifyNameOperation, SimplifyNameParams>(
-            "simplify-name", "Remove redundant namespace qualifications from type references; scope is file (default) or location (requires line)");
+            "simplify-name", "Remove redundant namespace qualifications from type references; scope is file (default) or location (requires line); allFiles (default false) simplifies every C# file (sourceFile optional when true)");
         r.RegisterRefactoring<ConvertPropertyOperation, ConvertPropertyParams>(
             "convert-property", "Convert between auto-property and full property; column (optional) picks the smallest property whose identifier or declaration span covers that column on the given line");
         r.RegisterRefactoring<ConvertForeachLinqOperation, ConvertForeachLinqParams>(
