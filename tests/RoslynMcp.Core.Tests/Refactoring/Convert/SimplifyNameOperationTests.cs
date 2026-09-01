@@ -31,6 +31,43 @@ public class SimplifyNameOperationTests
     }
 
     [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SimplifyNameOperation.Validate(new SimplifyNameParams
+            {
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFile_DoesNotThrow()
+    {
+        SimplifyNameOperation.Validate(new SimplifyNameParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLocationScope_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SimplifyNameOperation.Validate(new SimplifyNameParams
+            {
+                AllFiles = true,
+                Scope = "location",
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("location", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Validate_RelativePath_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -823,6 +860,181 @@ public class SimplifyNameOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesFalse_SimplifiesOnlySpecifiedFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("QualifiedA.cs", QualifiedA),
+            ("QualifiedB.cs", QualifiedB),
+            ("AlreadySimple.cs", AlreadySimple));
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedB.cs"]);
+        var beforeSimple = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimple.cs"]);
+
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            SourceFile = workspace.SourcePaths["QualifiedA.cs"],
+            AllFiles = false
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedA.cs"]));
+        Assert.DoesNotContain("System.Collections.Generic.List", updatedA, StringComparison.Ordinal);
+        Assert.Contains("List<int>", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedB.cs"]));
+        Assert.Equal(beforeSimple, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimple.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["QualifiedA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_WithoutSourceFile_SimplifiesMultipleFiles_LeavesAlreadySimpleUntouched()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("QualifiedA.cs", QualifiedA),
+            ("QualifiedB.cs", QualifiedB),
+            ("AlreadySimple.cs", AlreadySimple));
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var beforeSimple = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimple.cs"]);
+
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedB.cs"]));
+        Assert.DoesNotContain("System.Collections.Generic.List", updatedA, StringComparison.Ordinal);
+        Assert.Contains("List<int>", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("System.Text.StringBuilder", updatedB, StringComparison.Ordinal);
+        Assert.Contains("StringBuilder", updatedB, StringComparison.Ordinal);
+        Assert.Equal(beforeSimple, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimple.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["QualifiedA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["QualifiedB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["AlreadySimple.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_EveryFileAlreadySimple_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("AlreadySimple.cs", AlreadySimple),
+            ("AlreadySimpleB.cs", AlreadySimpleB));
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimple.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimpleB.cs"]);
+
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimple.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimpleB.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(QualifiedA);
+        var operation = new SimplifyNameOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SimplifyNameParams
+            {
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_WithLocationScope_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(QualifiedA);
+        var operation = new SimplifyNameOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SimplifyNameParams
+            {
+                AllFiles = true,
+                Scope = "location",
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("location", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_AmbiguousFile_ReportsSkipsWithoutWritingThatFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("QualifiedA.cs", QualifiedA),
+            ("Ambiguous.cs", AllAmbiguous));
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var beforeAmbiguous = await File.ReadAllTextAsync(workspace.SourcePaths["Ambiguous.cs"]);
+
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedA.cs"]));
+        Assert.DoesNotContain("System.Collections.Generic.List", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeAmbiguous, await File.ReadAllTextAsync(workspace.SourcePaths["Ambiguous.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["QualifiedA.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Ambiguous.cs"]));
+        Assert.True(result.SimplificationsSkipped >= 1);
+        Assert.NotNull(result.SkippedReasons);
+        Assert.Contains(result.SkippedReasons, skip =>
+            skip.Name.Contains("Widget", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_PreviewAllFiles_DoesNotWriteFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("QualifiedA.cs", QualifiedA),
+            ("QualifiedB.cs", QualifiedB),
+            ("AlreadySimple.cs", AlreadySimple));
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedB.cs"]);
+        var beforeSimple = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimple.cs"]);
+
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["QualifiedA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["QualifiedB.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["AlreadySimple.cs"]));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedB.cs"]));
+        Assert.Equal(beforeSimple, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimple.cs"]));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static async Task AssertCompilesAsync(TempWorkspace workspace)
@@ -837,6 +1049,83 @@ public class SimplifyNameOperationTests
             .ToList();
         Assert.True(errors.Count == 0, string.Join(Environment.NewLine, errors));
     }
+
+    private const string QualifiedA = """
+        using System.Collections.Generic;
+
+        namespace TestApp;
+
+        public class QualifiedA
+        {
+            public System.Collections.Generic.List<int> Items()
+            {
+                return new System.Collections.Generic.List<int>();
+            }
+        }
+        """;
+
+    private const string QualifiedB = """
+        using System.Text;
+
+        namespace TestApp;
+
+        public class QualifiedB
+        {
+            public System.Text.StringBuilder Builder()
+            {
+                return new System.Text.StringBuilder();
+            }
+        }
+        """;
+
+    private const string AlreadySimple = """
+        using System.Collections.Generic;
+
+        namespace TestApp;
+
+        public class AlreadySimple
+        {
+            public List<int> Items() => new List<int>();
+        }
+        """;
+
+    private const string AllAmbiguous = """
+        namespace Other
+        {
+            public class Widget
+            {
+            }
+        }
+
+        namespace TestApp
+        {
+            public class Widget
+            {
+            }
+
+            public class AmbiguousProcessor
+            {
+                public Other.Widget Create()
+                {
+                    return new Other.Widget();
+                }
+            }
+        }
+        """;
+
+    private const string AlreadySimpleB = """
+        using System.Text;
+
+        namespace TestApp;
+
+        public class AlreadySimpleB
+        {
+            public StringBuilder Builder() => new StringBuilder();
+        }
+        """;
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpSimplifyNameMissing.cs");
@@ -871,12 +1160,21 @@ public class SimplifyNameOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(
+        public static Task<TempWorkspace> CreateAsync(
             string source,
             string fileName = "Types.cs",
-            bool implicitUsings = true)
+            bool implicitUsings = true) =>
+            CreateWithFilesAsync(implicitUsings, (fileName, source));
+
+        public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
+            CreateWithFilesAsync(implicitUsings: true, files: files);
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(
+            bool implicitUsings,
+            params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -884,7 +1182,7 @@ public class SimplifyNameOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var implicitUsingsValue = implicitUsings ? "enable" : "disable";
 
             await File.WriteAllTextAsync(projectPath, $"""
@@ -893,26 +1191,38 @@ public class SimplifyNameOperationTests
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
                     <ImplicitUsings>{implicitUsingsValue}</ImplicitUsings>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = sourcePaths.Values.First(),
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }

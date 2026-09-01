@@ -33,13 +33,13 @@ public sealed class SimplifyNameTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Remove redundant namespace qualifications from type (and similar) references when a using directive or the current namespace already makes the short name bind to the same symbol. scope is file (default; every eligible qualified name in the file) or location (the qualified name at line / optional column). Names that would become ambiguous or bind differently are skipped and reported. Preview describes the simplifications and writes nothing.";
+        "Remove redundant namespace qualifications from type (and similar) references when a using directive or the current namespace already makes the short name bind to the same symbol. Process a single file or all files in the solution. scope is file (default; every eligible qualified name in the file) or location (the qualified name at line / optional column; single-file only). Names that would become ambiguous or bind differently are skipped and reported. Preview describes the simplifications and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,7 +50,13 @@ public sealed class SimplifyNameTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with scope=location.",
+                @default = false
             },
             line = new
             {
@@ -105,6 +111,7 @@ public sealed class SimplifyNameTool : IToolHandler
             var @params = new SimplifyNameParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 Line = args.Line,
                 Column = args.Column,
                 Scope = args.Scope ?? "file",
@@ -136,7 +143,8 @@ public sealed class SimplifyNameTool : IToolHandler
     private sealed class SimplifyNameArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
         public string? Scope { get; init; }
