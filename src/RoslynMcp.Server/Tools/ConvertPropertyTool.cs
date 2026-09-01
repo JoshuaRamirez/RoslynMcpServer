@@ -33,13 +33,13 @@ public sealed class ConvertPropertyTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a C# property between auto-property and full property with backing field. column (optional) picks the smallest property whose identifier or declaration span covers that column on the given line. Omitted keeps today's propertyName and/or line start-line pick. Preview describes the rewrite and writes nothing.";
+        "Convert a C# property between auto-property and full property with backing field. column (optional) picks the smallest property whose identifier or declaration span covers that column on the given line. Omitted keeps today's propertyName and/or line start-line pick. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct eligible property (sourceFile optional when true; cannot be combined with propertyName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "direction" },
+        required = new[] { "solutionPath", "direction" },
         properties = new
         {
             solutionPath = new
@@ -50,7 +50,13 @@ public sealed class ConvertPropertyTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with propertyName, line, or column.",
+                @default = false
             },
             direction = new
             {
@@ -60,18 +66,18 @@ public sealed class ConvertPropertyTool : IToolHandler
             propertyName = new
             {
                 type = "string",
-                description = "Name of the property to convert"
+                description = "Name of the property to convert. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "Line number for disambiguation if multiple properties have the same name (1-based)",
+                description = "Line number for disambiguation if multiple properties have the same name (1-based). Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set, selects the smallest property whose identifier or declaration span covers that column on the given line. Omitted keeps today's propertyName and/or line start-line pick.",
+                description = "1-based column for disambiguation. When set, selects the smallest property whose identifier or declaration span covers that column on the given line. Omitted keeps today's propertyName and/or line start-line pick. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             preview = new
@@ -108,6 +114,7 @@ public sealed class ConvertPropertyTool : IToolHandler
             var @params = new ConvertPropertyParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 Direction = args.Direction,
                 PropertyName = args.PropertyName,
                 Line = args.Line,
@@ -140,7 +147,8 @@ public sealed class ConvertPropertyTool : IToolHandler
     private sealed class ConvertPropertyArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public string Direction { get; init; } = "";
         public string? PropertyName { get; init; }
         public int? Line { get; init; }

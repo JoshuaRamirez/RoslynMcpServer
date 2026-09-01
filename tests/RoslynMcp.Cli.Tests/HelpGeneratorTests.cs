@@ -1108,6 +1108,8 @@ public class HelpGeneratorTests
 
         Assert.Contains("convert-property", help);
         Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
 
         var requiredIdx = help.IndexOf("REQUIRED:");
         var optionalIdx = help.IndexOf("OPTIONAL:");
@@ -1117,13 +1119,16 @@ public class HelpGeneratorTests
         var requiredSection = help[requiredIdx..optionalIdx];
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
+        Assert.DoesNotContain("--source-file", requiredSection);
         Assert.Contains("--direction", requiredSection);
         Assert.DoesNotContain("--column", requiredSection);
         Assert.DoesNotContain("--property-name", requiredSection);
         Assert.DoesNotContain("--line", requiredSection);
         Assert.DoesNotContain("--preview", requiredSection);
+        Assert.DoesNotContain("--all-files", requiredSection);
 
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
         Assert.Contains("--column", optionalSection);
         Assert.Contains("--property-name", optionalSection);
         Assert.Contains("--line", optionalSection);
