@@ -1236,4 +1236,27 @@ public class HelpGeneratorTests
         Assert.Contains("--scope", optionalSection);
         Assert.Contains("--preview", optionalSection);
     }
+
+    [Fact]
+    public void GenerateToolHelp_SortUsings_ShowsAllFiles()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("sort-usings")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("sort-usings", help);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--system-first", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+    }
 }

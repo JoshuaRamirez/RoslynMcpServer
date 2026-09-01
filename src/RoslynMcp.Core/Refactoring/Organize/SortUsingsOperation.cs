@@ -27,8 +27,14 @@ public sealed class SortUsingsOperation : RefactoringOperationBase<SortUsingsPar
     /// <inheritdoc />
     protected override void ValidateParams(SortUsingsParams @params)
     {
+        if (@params.AllFiles)
+        {
+            // When processing all files, sourceFile is optional
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required when allFiles is false.");
 
         if (!PathResolver.IsAbsolutePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
@@ -46,7 +52,24 @@ public sealed class SortUsingsOperation : RefactoringOperationBase<SortUsingsPar
         SortUsingsParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+        {
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+        }
+
+        return await ExecuteSingleFileAsync(operationId, @params.SourceFile!, @params, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sorts using directives in a single file.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteSingleFileAsync(
+        Guid operationId,
+        string sourceFile,
+        SortUsingsParams @params,
+        CancellationToken cancellationToken)
+    {
+        var document = GetDocumentOrThrow(sourceFile);
         var root = await document.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
 
         if (root == null)
@@ -96,7 +119,7 @@ public sealed class SortUsingsOperation : RefactoringOperationBase<SortUsingsPar
         // If preview mode, return without applying
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params.SourceFile, root, sortedUsings);
+            return CreatePreviewResult(operationId, sourceFile, root, sortedUsings);
         }
 
         // Apply the sorted usings
@@ -118,6 +141,100 @@ public sealed class SortUsingsOperation : RefactoringOperationBase<SortUsingsPar
                 FilesDeleted = commitResult.FilesDeleted
             }
         };
+    }
+
+    /// <summary>
+    /// Sorts using directives in every C# document in the solution.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        SortUsingsParams @params,
+        CancellationToken cancellationToken)
+    {
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
+
+            if (root == null)
+                continue;
+
+            // If there are no usings or only one, nothing to sort
+            if (root.Usings.Count <= 1)
+                continue;
+
+            var sortedUsings = UsingDirectiveSorter.Sort(root.Usings, @params.SystemFirst);
+
+            var alreadySorted = root.Usings
+                .Select(u => u.ToString())
+                .SequenceEqual(sortedUsings.Select(u => u.ToString()));
+
+            if (alreadySorted)
+                continue;
+
+            if (@params.Preview)
+            {
+                var previewResult = CreatePreviewResult(operationId, currentDocument.FilePath!, root, sortedUsings);
+                if (previewResult.PendingChanges != null)
+                    allPendingChanges.AddRange(previewResult.PendingChanges);
+                continue;
+            }
+
+            var newRoot = root.WithUsings(SyntaxFactory.List(sortedUsings));
+            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+            currentSolution = newDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+        {
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Preview = true,
+                PendingChanges = allPendingChanges
+            };
+        }
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Changes = new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                }
+            };
+        }
+
+        return RefactoringResult.Succeeded(
+            operationId,
+            new FileChanges
+            {
+                FilesModified = [],
+                FilesCreated = [],
+                FilesDeleted = []
+            },
+            null,
+            0,
+            0);
     }
 
     /// <summary>

@@ -259,7 +259,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<RemoveUnusedUsingsOperation, RemoveUnusedUsingsParams>(
             "remove-unused-usings", "Remove unused using directives");
         r.RegisterRefactoring<SortUsingsOperation, SortUsingsParams>(
-            "sort-usings", "Sort using directives; systemFirst (default true) places System / System.* first");
+            "sort-usings", "Sort using directives; systemFirst (default true) places System / System.* first; allFiles (default false) sorts every C# file (sourceFile optional when true)");
 
         // ── Refactoring: Format (1) ───────────────────────────────────
         r.RegisterRefactoring<FormatDocumentOperation, FormatDocumentParams>(
