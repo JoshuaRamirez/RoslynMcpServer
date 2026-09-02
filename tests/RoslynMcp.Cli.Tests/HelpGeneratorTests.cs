@@ -502,21 +502,22 @@ public class HelpGeneratorTests
         var tool = registry.GetTool("generate-equals-hashcode")!;
         var help = HelpGenerator.GenerateToolHelp(tool);
 
-        var requiredIdx = help.IndexOf("REQUIRED:");
-        var optionalIdx = help.IndexOf("OPTIONAL:");
-        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
-        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        Assert.Contains("generate-equals-hashcode", help);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
 
-        var requiredSection = help[requiredIdx..optionalIdx];
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
-        Assert.Contains("--type-name", requiredSection);
-        Assert.DoesNotContain("--line", requiredSection);
-        Assert.DoesNotContain("--column", requiredSection);
-
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--type-name", optionalSection);
         Assert.Contains("--line", optionalSection);
         Assert.Contains("--column", optionalSection);
+        Assert.Contains("--fields", optionalSection);
         Assert.Contains("--implement-i-equatable", help);
         Assert.Contains("--generate-operators", help);
         Assert.Contains("--replace-existing", help);
