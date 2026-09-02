@@ -7,13 +7,25 @@ public sealed class GenerateOverridesParams
 {
     /// <summary>
     /// Absolute path to the source file containing the type.
+    /// Required when <see cref="AllFiles"/> is false.
+    /// When <see cref="AllFiles"/> is true, optional and limits the walk
+    /// to that one file when set.
     /// </summary>
-    public required string SourceFile { get; init; }
+    public string? SourceFile { get; init; }
+
+    /// <summary>
+    /// When true, process every eligible type in every C# document
+    /// (or the optional single <see cref="SourceFile"/>).
+    /// When true, cannot be combined with <see cref="TypeName"/>,
+    /// <see cref="Members"/>, <see cref="Line"/>, or <see cref="Column"/>.
+    /// </summary>
+    public bool AllFiles { get; init; }
 
     /// <summary>
     /// Name of the type to generate overrides for.
+    /// Single-site only. Required when <see cref="AllFiles"/> is false.
     /// </summary>
-    public required string TypeName { get; init; }
+    public string? TypeName { get; init; }
 
     /// <summary>
     /// 1-based line number for disambiguation when several types share
@@ -21,6 +33,7 @@ public sealed class GenerateOverridesParams
     /// or declaration span covers that line (identifier preferred, then
     /// smallest containing type). Omitted keeps today's typeName
     /// <c>FirstOrDefault</c> pick.
+    /// Single-site only.
     /// </summary>
     public int? Line { get; init; }
 
@@ -30,11 +43,16 @@ public sealed class GenerateOverridesParams
     /// column (identifier preferred, then smallest containing type).
     /// Omitted keeps today's typeName + optional line pick. Column without
     /// line keeps today's first-match after the typeName filter.
+    /// Single-site only.
     /// </summary>
     public int? Column { get; init; }
 
     /// <summary>
-    /// Names of specific members to override. If null, shows available members.
+    /// Names of specific members to override. If null or empty, generates
+    /// all missing overridable members (today's collect, including Object
+    /// <c>ToString</c> / <c>Equals(object)</c> / <c>GetHashCode</c> when
+    /// not already overridden). Single-site only; cannot be combined with
+    /// <see cref="AllFiles"/>.
     /// </summary>
     public IReadOnlyList<string>? Members { get; init; }
 
@@ -43,6 +61,7 @@ public sealed class GenerateOverridesParams
     /// in generated overrides. Default: true. Abstract members still throw
     /// <c>NotImplementedException</c> (no legal base implementation). Events
     /// always use empty add/remove regardless of this flag.
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool CallBase { get; init; } = true;
 
@@ -63,11 +82,13 @@ public sealed class GenerateOverridesParams
     /// Default: false (skip members this type already overrides; a named
     /// member that is already overridden fails with
     /// <c>OverrideTargetNotFound</c>).
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool ReplaceExisting { get; init; }
 
     /// <summary>
     /// Return computed changes without applying. Default: false.
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool Preview { get; init; }
 }

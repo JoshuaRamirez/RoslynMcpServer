@@ -14,8 +14,9 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 /// <summary>
 /// Operation-level tests for <see cref="GenerateOverridesOperation"/>, including
 /// optional <c>line</c> / <c>column</c> disambiguation, <c>callBase</c>,
-/// <c>members</c>, <c>preview</c>, <c>replaceExisting</c>, and cross-assembly
-/// CS0507 accessibility for methods, properties, and indexers.
+/// <c>members</c>, <c>preview</c>, <c>replaceExisting</c>, optional
+/// <c>allFiles</c>, and cross-assembly CS0507 accessibility for methods,
+/// properties, and indexers.
 /// </summary>
 public class GenerateOverridesOperationTests
 {
@@ -132,6 +133,19 @@ public class GenerateOverridesOperationTests
         };
 
         Assert.False(@params.ReplaceExisting);
+        Assert.False(@params.AllFiles);
+    }
+
+    [Fact]
+    public void AllFiles_DefaultsToFalse()
+    {
+        var @params = new GenerateOverridesParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "Dog"
+        };
+
+        Assert.False(@params.AllFiles);
     }
 
     [Fact]
@@ -3170,6 +3184,756 @@ public class GenerateOverridesOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string AllFilesAnimal = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public virtual void Speak() { }
+
+            public override string ToString() => "animal";
+
+            public override bool Equals(object? obj) => false;
+
+            public override int GetHashCode() => 0;
+        }
+        """;
+
+    private const string EligibleFileA = AllFilesAnimal + """
+
+        public class FileA : Animal
+        {
+        }
+
+        public static class StaticSkip
+        {
+        }
+
+        public interface ISkip
+        {
+            void Skip();
+        }
+        """;
+
+    private const string EligibleFileB = """
+        namespace TestApp;
+
+        public class FileB : Animal
+        {
+        }
+        """;
+
+    private const string IneligibleFileC = """
+        namespace TestApp;
+
+        public static class Limits
+        {
+        }
+
+        public interface IWidget
+        {
+            void Draw();
+        }
+
+        public class AlreadyComplete
+        {
+            public override string ToString() => "done";
+
+            public override bool Equals(object? obj) => false;
+
+            public override int GetHashCode() => 1;
+        }
+        """;
+
+    private const string MixedEligibleAndSkipped = AllFilesAnimal + """
+
+        public class Eligible : Animal
+        {
+        }
+
+        public static class StaticSkip
+        {
+        }
+
+        public interface ISkip
+        {
+            void Skip();
+        }
+
+        public class Outer : Animal
+        {
+            public class Nested : Animal
+            {
+            }
+        }
+        """;
+
+    private const string ObjectOnlyHost = """
+        namespace TestApp;
+
+        public class Widget
+        {
+        }
+        """;
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateOverridesOperation.Validate(new GenerateOverridesParams
+            {
+                AllFiles = false,
+                TypeName = "Dog"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateOverridesOperation.Validate(new GenerateOverridesParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileTypeNameOrMembers_DoesNotThrow()
+    {
+        GenerateOverridesOperation.Validate(new GenerateOverridesParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateOverridesOperation.Validate(new GenerateOverridesParams
+            {
+                AllFiles = true,
+                TypeName = "Dog"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateOverridesOperation.Validate(new GenerateOverridesParams
+            {
+                AllFiles = true,
+                Members = new[] { "Speak" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithEmptyMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateOverridesOperation.Validate(new GenerateOverridesParams
+            {
+                AllFiles = true,
+                Members = Array.Empty<string>()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TypeWalkKey_IncludesProjectIdentity()
+    {
+        var projectA = ProjectId.CreateNewId();
+        var projectB = ProjectId.CreateNewId();
+        const string fqn = "global::TestApp.Widget";
+
+        var keyA = GenerateOverridesOperation.TypeWalkKey(projectA, fqn);
+        var keyB = GenerateOverridesOperation.TypeWalkKey(projectB, fqn);
+
+        Assert.NotEqual(keyA, keyB);
+        Assert.Equal(keyA, GenerateOverridesOperation.TypeWalkKey(projectA, fqn));
+        Assert.NotEqual(keyA, GenerateOverridesOperation.TypeWalkKey(projectA, "global::TestApp.Other"));
+    }
+
+    [Fact]
+    public void TypeWalkKey_FileLocalIdentity_DistinguishesSameFqn()
+    {
+        var project = ProjectId.CreateNewId();
+        const string fqn = "global::TestApp.Worker";
+
+        var ordinary = GenerateOverridesOperation.TypeWalkKey(project, fqn);
+        var fileA = GenerateOverridesOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs");
+        var fileB = GenerateOverridesOperation.TypeWalkKey(project, fqn, "/tmp/FileB.cs");
+
+        Assert.NotEqual(ordinary, fileA);
+        Assert.NotEqual(ordinary, fileB);
+        Assert.NotEqual(fileA, fileB);
+        Assert.Equal(fileA, GenerateOverridesOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs"));
+        Assert.Equal(ordinary, GenerateOverridesOperation.TypeWalkKey(project, fqn));
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateOverridesOperation.Validate(new GenerateOverridesParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateOverridesOperation.Validate(new GenerateOverridesParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Generate overrides", GenerateOverridesOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Generate overrides on 2 types", GenerateOverridesOperation.BuildAllFilesDescription(2));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesFalse_GeneratesOnlySpecifiedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.PathFor("FileB.cs"));
+        var beforeC = await File.ReadAllTextAsync(workspace.PathFor("FileC.cs"));
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.PathFor("FileA.cs"),
+            AllFiles = false,
+            TypeName = "FileA"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        Assert.Contains("public override void Speak()", updatedA, StringComparison.Ordinal);
+        Assert.True(HasOverrideToString(updatedA));
+        Assert.Contains("public override bool Equals(", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public override int GetHashCode()", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("public override void Skip(", updatedA, StringComparison.Ordinal);
+        var animal = FindType(updatedA, "Animal");
+        Assert.DoesNotContain("public override void Speak()", animal.ToFullString(), StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.PathFor("FileC.cs")));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileA.cs")));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_OmittedAllFiles_KeepsSingleSiteGenerate()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "FileA"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override void Speak()", updated, StringComparison.Ordinal);
+        Assert.True(HasOverrideToString(updated));
+        Assert.Contains("public override bool Equals(", updated, StringComparison.Ordinal);
+        Assert.Contains("public override int GetHashCode()", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_GeneratesEligibleTypesAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.PathFor("FileC.cs"));
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
+        Assert.Contains("public override void Speak()", FindType(updatedA, "FileA").ToFullString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("public override void Skip(", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public override void Speak()", updatedB, StringComparison.Ordinal);
+        Assert.True(HasOverrideToString(updatedB));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.PathFor("FileC.cs")));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileA.cs")));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileB.cs")));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileC.cs")));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_WithoutSourceFileTypeNameOrMembers_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateOverridesParams
+            {
+                AllFiles = false,
+                TypeName = "FileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesFalse_WithoutTypeName_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateOverridesParams
+            {
+                AllFiles = false,
+                SourceFile = workspace.SourcePath
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_WithTypeName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateOverridesParams
+            {
+                AllFiles = true,
+                TypeName = "FileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_WithMembers_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateOverridesParams
+            {
+                AllFiles = true,
+                Members = new[] { "Speak" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateOverridesParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateOverridesParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.PathFor("FileA.cs"));
+        var beforeB = await File.ReadAllTextAsync(workspace.PathFor("FileB.cs"));
+        var beforeC = await File.ReadAllTextAsync(workspace.PathFor("FileC.cs"));
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.PathFor("FileA.cs")));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.PathFor("FileB.cs")));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.PathFor("FileC.cs")));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("Generate overrides", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet != null &&
+            (c.AfterSnippet.Contains("Speak", StringComparison.Ordinal) ||
+             c.AfterSnippet.Contains("ToString", StringComparison.Ordinal)));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.PathFor("FileC.cs")));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileC.cs", IneligibleFileC),
+            ("FileC2.cs", IneligibleFileC
+                .Replace("Limits", "Limits2", StringComparison.Ordinal)
+                .Replace("IWidget", "IWidget2", StringComparison.Ordinal)
+                .Replace("AlreadyComplete", "AlreadyComplete2", StringComparison.Ordinal)));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.PathFor("FileC.cs"));
+        var beforeB = await File.ReadAllTextAsync(workspace.PathFor("FileC2.cs"));
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.PathFor("FileC.cs")));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("FileC2.cs")));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_SkipsNoOverridableAlreadyCompleteAndIneligible()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Mixed.cs", MixedEligibleAndSkipped));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Mixed.cs")));
+        Assert.Contains("public override void Speak()", FindType(updated, "Eligible").ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("public override void Speak()", FindType(updated, "Outer").ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("public override void Speak()", FindType(updated, "Nested").ToFullString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("public override void Skip(", updated, StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_IncludesObjectMethodsWhenMissing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Widget.cs", ObjectOnlyHost));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Widget.cs")));
+        Assert.True(HasOverrideToString(updated));
+        Assert.Contains("public override bool Equals(", updated, StringComparison.Ordinal);
+        Assert.Contains("public override int GetHashCode()", updated, StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.PathFor("FileB.cs"));
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.PathFor("FileA.cs")
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        Assert.Contains("public override void Speak()", FindType(updatedA, "FileA").ToFullString(), StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileA.cs")));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.PathFor("FileB.cs"));
+        var flipped = FlipPathCasing(workspace.PathFor("FileA.cs"));
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        Assert.Contains("public override void Speak()", FindType(updatedA, "FileA").ToFullString(), StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileA.cs")));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_ReplaceExisting_ReplacesMatchingOverride()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Dog.cs", DogWithToStringSource));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Dog.cs")));
+        var dog = FindType(updated, "Dog").ToFullString();
+        Assert.Equal(1, CountOverrideToString(dog));
+        Assert.DoesNotContain("=> \"old\"", dog, StringComparison.Ordinal);
+        Assert.Contains("base.ToString()", dog, StringComparison.Ordinal);
+        Assert.Contains("public override void Speak()", dog, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_CallBaseFalse_HasNoBaseCall()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true,
+            CallBase = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        var fileA = FindType(updated, "FileA").ToFullString();
+        Assert.Contains("public override void Speak()", fileA, StringComparison.Ordinal);
+        Assert.DoesNotContain("base.Speak()", fileA, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_SameNamedFileLocalTypes_BothGetOverrides()
+    {
+        const string fileA = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual void Speak() { }
+
+                public override string ToString() => "animal";
+
+                public override bool Equals(object? obj) => false;
+
+                public override int GetHashCode() => 0;
+            }
+
+            file class Worker : Animal
+            {
+            }
+            """;
+
+        const string fileB = """
+            namespace TestApp;
+
+            file class Worker : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", fileA),
+            ("FileB.cs", fileB));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
+        Assert.Contains("public override void Speak()", FindType(updatedA, "Worker").ToFullString(), StringComparison.Ordinal);
+        Assert.Contains("public override void Speak()", FindType(updatedB, "Worker").ToFullString(), StringComparison.Ordinal);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileA.cs")));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileB.cs")));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_GenuinePartial_GeneratedOnce()
+    {
+        const string partA = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual void Speak() { }
+
+                public override string ToString() => "animal";
+
+                public override bool Equals(object? obj) => false;
+
+                public override int GetHashCode() => 0;
+            }
+
+            public partial class Widget : Animal
+            {
+            }
+            """;
+
+        const string partB = """
+            namespace TestApp;
+
+            public partial class Widget
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Widget.PartA.cs", partA),
+            ("Widget.PartB.cs", partB));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.PathFor("Widget.PartB.cs"));
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Widget.PartA.cs")));
+        Assert.Contains("public override void Speak()", updatedA, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(updatedA, "public override void Speak()"));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("Widget.PartB.cs")));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("Widget.PartA.cs")));
+    }
+
+    [Fact]
+    public void CollectTypeDeclarations_IncludesNestedAndInterface()
+    {
+        var root = CSharpSyntaxTree.ParseText(NormalizeNewlines(MixedEligibleAndSkipped)).GetRoot();
+        var types = GenerateOverridesOperation.CollectTypeDeclarations(root);
+        var names = types.Select(t => t.Identifier.Text).ToList();
+        Assert.Contains("Eligible", names);
+        Assert.Contains("StaticSkip", names);
+        Assert.Contains("ISkip", names);
+        Assert.Contains("Outer", names);
+        Assert.Contains("Nested", names);
+        Assert.True(names.IndexOf("Outer") < names.IndexOf("Nested"));
+    }
+
+    #endregion
+
     #region Helpers
 
     private const string MissingVirtualEventSource = """
@@ -3295,6 +4059,35 @@ public class GenerateOverridesOperationTests
         }
 
         return count;
+    }
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
+
+    private static TypeDeclarationSyntax FindType(string source, string typeName)
+    {
+        var type = CSharpSyntaxTree.ParseText(source).GetCompilationUnitRoot().DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .FirstOrDefault(t => t.Identifier.Text == typeName);
+        Assert.True(type != null, $"Generated source did not contain type '{typeName}':\n{source}");
+        return type!;
     }
 
     private static string ExtractMember(string source, string signatureMarker)
