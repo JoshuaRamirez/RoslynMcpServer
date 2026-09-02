@@ -96,6 +96,86 @@ public class MakeNonStaticOperationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MakeNonStaticOperation.Validate(new MakeNonStaticParams
+            {
+                AllFiles = false,
+                StartLine = 1,
+                StartColumn = 1,
+                EndLine = 1,
+                EndColumn = 2
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutStartLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MakeNonStaticOperation.Validate(new MakeNonStaticParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath(),
+                StartColumn = 1,
+                EndLine = 1,
+                EndColumn = 2
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("startLine", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrSelection_DoesNotThrow()
+    {
+        MakeNonStaticOperation.Validate(new MakeNonStaticParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithStartLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MakeNonStaticOperation.Validate(new MakeNonStaticParams
+            {
+                AllFiles = true,
+                StartLine = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("startLine", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithSymbolName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MakeNonStaticOperation.Validate(new MakeNonStaticParams
+            {
+                AllFiles = true,
+                SymbolName = "Add"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("symbolName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Make method an instance method", MakeNonStaticOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Make 2 methods instance methods", MakeNonStaticOperation.BuildAllFilesDescription(2));
+    }
+
     #endregion
 
     #region P0 Happy Path
@@ -926,6 +1006,608 @@ public class MakeNonStaticOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string EligibleFileA = """
+        namespace TestApp;
+
+        public class FileA
+        {
+            public static int Add(int a, int b)
+            {
+                return a + b;
+            }
+
+            public int Use()
+            {
+                var other = new FileA();
+                return FileA.Add(1, 2);
+            }
+        }
+        """;
+
+    private const string EligibleFileB = """
+        namespace TestApp;
+
+        public class FileB
+        {
+            public static int Double(int x)
+            {
+                return x * 2;
+            }
+
+            public int Use()
+            {
+                return FileB.Double(2);
+            }
+        }
+        """;
+
+    private const string IneligibleFileC = """
+        namespace TestApp;
+
+        public interface ILogger
+        {
+            void Log();
+            static void InterfaceHelper()
+            {
+            }
+        }
+
+        public static class StaticHelpers
+        {
+            public static int Helper(int x)
+            {
+                return x;
+            }
+        }
+
+        public static class FileCExtensions
+        {
+            public static int Ext(this FileC c)
+            {
+                return 1;
+            }
+        }
+
+        public class FileC : ILogger
+        {
+            public int Already(int a, int b)
+            {
+                return a + b;
+            }
+
+            public virtual int VirtualAdd(int a, int b)
+            {
+                return a + b;
+            }
+
+            public static int NoReceiver(int a, int b)
+            {
+                return a + b;
+            }
+
+            public void Log()
+            {
+            }
+        }
+
+        public static class FileCCaller
+        {
+            public static int Use()
+            {
+                return FileC.NoReceiver(1, 2);
+            }
+        }
+        """;
+
+    private const string MixedEligibleAndSkipped = """
+        namespace TestApp;
+
+        public class Mixed
+        {
+            public static int Eligible(int a, int b)
+            {
+                return a + b;
+            }
+
+            public int UseEligible()
+            {
+                return Mixed.Eligible(1, 2);
+            }
+
+            public int Already(int a, int b)
+            {
+                return a + b;
+            }
+
+            public static int NoReceiver(int a, int b)
+            {
+                return a + b;
+            }
+
+            public virtual int VirtualAdd(int a, int b)
+            {
+                return a + b;
+            }
+        }
+
+        public static class MixedCaller
+        {
+            public static int Use()
+            {
+                return Mixed.NoReceiver(1, 2);
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesFalse_MakesOnlySpecifiedMethod()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var span = FindSpan(EligibleFileA, "Add");
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            AllFiles = false,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            SymbolName = "Add"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public int Add(int a, int b)", updatedA);
+        Assert.DoesNotContain("public static int Add", updatedA);
+        Assert.Contains("this.Add(1, 2)", updatedA);
+        Assert.DoesNotContain("FileA.Add(1, 2)", updatedA);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_OmittedAllFiles_KeepsSingleSiteMakeNonStatic()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var span = FindSpan(EligibleFileA, "Add");
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            SymbolName = "Add"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public int Add(int a, int b)", updated);
+        Assert.DoesNotContain("public static int Add", updated);
+        Assert.Contains("this.Add(1, 2)", updated);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesTrue_MakesEligibleMethodsAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains("public int Add(int a, int b)", updatedA);
+        Assert.DoesNotContain("public static int Add", updatedA);
+        Assert.Contains("this.Add(1, 2)", updatedA);
+        Assert.DoesNotContain("FileA.Add(1, 2)", updatedA);
+        Assert.Contains("public int Double(int x)", updatedB);
+        Assert.DoesNotContain("public static int Double", updatedB);
+        Assert.Contains("this.Double(2)", updatedB);
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesTrue_WithoutSourceFileOrSelection_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MakeNonStaticParams
+            {
+                AllFiles = false,
+                StartLine = 1,
+                StartColumn = 1,
+                EndLine = 1,
+                EndColumn = 2
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesFalse_WithoutSelection_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MakeNonStaticParams
+            {
+                AllFiles = false,
+                SourceFile = workspace.SourcePath
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("startLine", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesTrue_WithStartLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MakeNonStaticParams
+            {
+                AllFiles = true,
+                StartLine = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("startLine", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesTrue_WithSymbolName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MakeNonStaticParams
+            {
+                AllFiles = true,
+                SymbolName = "Add"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("symbolName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("instance", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet != null &&
+            (c.AfterSnippet.Contains("int Add", StringComparison.Ordinal) ||
+             c.AfterSnippet.Contains("int Double", StringComparison.Ordinal)));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", IneligibleFileC),
+            ("FileC2.cs", IneligibleFileC.Replace("FileC", "FileC2", StringComparison.Ordinal)
+                .Replace("ILogger", "ILogger2", StringComparison.Ordinal)));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]);
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesTrue_SkipsAlreadyInstanceExtensionVirtualInterfaceStaticClassAndNoReceiver()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Mixed.cs", MixedEligibleAndSkipped));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Mixed.cs"]));
+        Assert.Contains("public int Eligible(int a, int b)", updated);
+        Assert.DoesNotContain("public static int Eligible", updated);
+        Assert.Contains("this.Eligible(1, 2)", updated);
+        Assert.Contains("public int Already(int a, int b)", updated);
+        Assert.Contains("public static int NoReceiver(int a, int b)", updated);
+        Assert.Contains("public virtual int VirtualAdd(int a, int b)", updated);
+        Assert.DoesNotContain("static virtual", updated);
+        Assert.DoesNotContain("virtual static", updated);
+        Assert.Contains("return Mixed.NoReceiver(1, 2);", updated);
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public int Add(int a, int b)", updatedA);
+        Assert.DoesNotContain("public static int Add", updatedA);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var flipped = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public int Add(int a, int b)", updatedA);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesTrue_CalledPartialMethod_MakesBothDeclarationsInstance()
+    {
+        const string definition = """
+            namespace TestApp;
+
+            public partial class Calculator
+            {
+                public static partial int Add(int a, int b);
+
+                public int Use()
+                {
+                    var other = new Calculator();
+                    return Calculator.Add(1, 2);
+                }
+            }
+            """;
+
+        const string implementation = """
+            namespace TestApp;
+
+            public partial class Calculator
+            {
+                public static partial int Add(int a, int b) => a + b;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Calculator.Definition.cs", definition),
+            ("Calculator.Implementation.cs", implementation));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedDef = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Calculator.Definition.cs"]));
+        var updatedImpl = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Calculator.Implementation.cs"]));
+        Assert.Contains("public partial int Add(int a, int b);", updatedDef);
+        Assert.DoesNotContain("public static partial int Add(int a, int b);", updatedDef);
+        Assert.Contains("this.Add(1, 2)", updatedDef);
+        Assert.DoesNotContain("Calculator.Add(1, 2)", updatedDef);
+        Assert.Contains("public partial int Add(int a, int b)", updatedImpl);
+        Assert.DoesNotContain("public static partial int Add(int a, int b)", updatedImpl);
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["Calculator.Definition.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Calculator.Implementation.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_PreviewAllFiles_PartialMethod_DescribesBothDeclarationFiles()
+    {
+        const string definition = """
+            namespace TestApp;
+
+            public partial class Calculator
+            {
+                public static partial int Add(int a, int b);
+
+                public int Use()
+                {
+                    var other = new Calculator();
+                    return Calculator.Add(1, 2);
+                }
+            }
+            """;
+
+        const string implementation = """
+            namespace TestApp;
+
+            public partial class Calculator
+            {
+                public static partial int Add(int a, int b) => a + b;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Calculator.Definition.cs", definition),
+            ("Calculator.Implementation.cs", implementation));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var beforeDef = await File.ReadAllTextAsync(workspace.SourcePaths["Calculator.Definition.cs"]);
+        var beforeImpl = await File.ReadAllTextAsync(workspace.SourcePaths["Calculator.Implementation.cs"]);
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        var def = Assert.Single(result.PendingChanges, c =>
+            PathEquals(c.File, workspace.SourcePaths["Calculator.Definition.cs"]));
+        var impl = Assert.Single(result.PendingChanges, c =>
+            PathEquals(c.File, workspace.SourcePaths["Calculator.Implementation.cs"]));
+        Assert.Equal("Make method an instance method", def.Description);
+        Assert.Equal("Make method an instance method", impl.Description);
+        Assert.Equal(beforeDef, await File.ReadAllTextAsync(workspace.SourcePaths["Calculator.Definition.cs"]));
+        Assert.Equal(beforeImpl, await File.ReadAllTextAsync(workspace.SourcePaths["Calculator.Implementation.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesTrue_SkipsConditionalAccess()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public static void Log()
+                {
+                }
+
+                public void Use(Calculator? other)
+                {
+                    other?.Log();
+                }
+
+                public static int Add(int a, int b)
+                {
+                    return a + b;
+                }
+
+                public int UseAdd()
+                {
+                    return Calculator.Add(1, 2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new MakeNonStaticOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public int Add(int a, int b)", updated);
+        Assert.DoesNotContain("public static int Add", updated);
+        // other?.Log() already has an instance receiver, so Log is eligible
+        // (inverse of make_static, where ?. would drop short-circuiting).
+        Assert.Contains("public void Log()", updated);
+        Assert.DoesNotContain("public static void Log()", updated);
+        Assert.Contains("other?.Log();", updated);
+        Assert.Contains("this.Add(1, 2)", updated);
+    }
+
+    #endregion
+
     #region Helpers
 
     private static string AbsoluteTestPath() =>
@@ -933,6 +1615,26 @@ public class MakeNonStaticOperationTests
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
 
     private static (int StartLine, int StartColumn, int EndLine, int EndColumn) FindSpan(string source, string snippet)
     {
@@ -1002,9 +1704,13 @@ public class MakeNonStaticOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateWithFilesAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1012,33 +1718,47 @@ public class MakeNonStaticOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = sourcePaths[files[0].FileName],
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }
