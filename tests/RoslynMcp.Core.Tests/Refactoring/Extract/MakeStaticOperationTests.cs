@@ -975,6 +975,30 @@ public class MakeStaticOperationTests
     }
 
     [SkippableFact]
+    public async Task MakeStatic_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new MakeStaticOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var flipped = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
+
+        var result = await operation.ExecuteAsync(new MakeStaticParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public static int Add(int a, int b)", updatedA);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
     public async Task MakeStatic_AllFilesTrue_SkipsConditionalAccess()
     {
         const string source = """
@@ -1026,6 +1050,23 @@ public class MakeStaticOperationTests
 
     private static bool PathEquals(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
 
     private static (int StartLine, int StartColumn, int EndLine, int EndColumn) FindSpan(string source, string snippet)
     {
@@ -1148,7 +1189,7 @@ public class MakeStaticOperationTests
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePaths.Values.First(),
+                    SourcePath = sourcePaths[files[0].FileName],
                     SourcePaths = sourcePaths,
                     Context = context
                 };

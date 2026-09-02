@@ -439,7 +439,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
             .Where(d => string.Equals(
                 PathResolver.NormalizePath(d.FilePath!),
                 wanted,
-                StringComparison.Ordinal))
+                StringComparison.OrdinalIgnoreCase))
             .ToList();
     }
 
