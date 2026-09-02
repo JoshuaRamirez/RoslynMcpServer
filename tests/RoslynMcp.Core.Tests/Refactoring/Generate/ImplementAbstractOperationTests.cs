@@ -3961,6 +3961,23 @@ public class ImplementAbstractOperationTests
     }
 
     [Fact]
+    public void TypeWalkKey_FileLocalIdentity_DistinguishesSameFqn()
+    {
+        var project = ProjectId.CreateNewId();
+        const string fqn = "global::TestApp.Worker";
+
+        var ordinary = ImplementAbstractOperation.TypeWalkKey(project, fqn);
+        var fileA = ImplementAbstractOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs");
+        var fileB = ImplementAbstractOperation.TypeWalkKey(project, fqn, "/tmp/FileB.cs");
+
+        Assert.NotEqual(ordinary, fileA);
+        Assert.NotEqual(ordinary, fileB);
+        Assert.NotEqual(fileA, fileB);
+        Assert.Equal(fileA, ImplementAbstractOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs"));
+        Assert.Equal(ordinary, ImplementAbstractOperation.TypeWalkKey(project, fqn));
+    }
+
+    [Fact]
     public void Validate_AllFilesTrue_WithLine_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -4364,6 +4381,94 @@ public class ImplementAbstractOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
         Assert.Contains("public override void WorkA()", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("NotImplementedException", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_SameNamedFileLocalTypes_BothGetStubs()
+    {
+        const string fileA = """
+            namespace TestApp;
+
+            public abstract class WorkerBase
+            {
+                public abstract void Work();
+            }
+
+            file class Worker : WorkerBase
+            {
+            }
+            """;
+
+        const string fileB = """
+            namespace TestApp;
+
+            file class Worker : WorkerBase
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", fileA),
+            ("FileB.cs", fileB));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains("public override void Work()", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public override void Work()", updatedB, StringComparison.Ordinal);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_GenuinePartial_ImplementedOnce()
+    {
+        const string partA = """
+            namespace TestApp;
+
+            public abstract class PartialBase
+            {
+                public abstract void Draw();
+            }
+
+            public partial class Widget : PartialBase
+            {
+            }
+            """;
+
+        const string partB = """
+            namespace TestApp;
+
+            public partial class Widget
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Widget.PartA.cs", partA),
+            ("Widget.PartB.cs", partB));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["Widget.PartB.cs"]);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Widget.PartA.cs"]));
+        Assert.Contains("public override void Draw()", updatedA, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(updatedA, "public override void Draw()"));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["Widget.PartB.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Widget.PartA.cs"]));
     }
 
     [Fact]
