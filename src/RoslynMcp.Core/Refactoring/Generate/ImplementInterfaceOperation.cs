@@ -22,6 +22,12 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// signature, and insert a standard generated stub. Property/event accessors
 /// are never emitted as ordinary methods. Extra modifiers on the old
 /// implementation are not copied.
+/// Honors optional <c>allFiles</c> to walk every C# document (or the
+/// optional single <c>sourceFile</c>) and implement missing members of
+/// already-declared interfaces on every eligible
+/// <see cref="TypeDeclarationSyntax"/>. Bulk uses
+/// <c>typeSymbol.AllInterfaces</c> only — it does not
+/// <c>TypeResolver</c>-hunt undeclared interfaces.
 /// </summary>
 public sealed class ImplementInterfaceOperation : RefactoringOperationBase<ImplementInterfaceParams>
 {
@@ -41,6 +47,22 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
     /// </summary>
     internal static void Validate(ImplementInterfaceParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.TypeName) ||
+                !string.IsNullOrWhiteSpace(@params.InterfaceName) ||
+                @params.Members != null ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with typeName, interfaceName, members, line, or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -50,10 +72,12 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         if (string.IsNullOrWhiteSpace(@params.InterfaceName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "interfaceName is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
+        var sourceFile = @params.SourceFile!;
+
+        if (!PathResolver.IsAbsolutePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
 
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
@@ -62,8 +86,8 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+        if (!File.Exists(sourceFile))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {sourceFile}");
     }
 
     /// <inheritdoc />
@@ -72,7 +96,10 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         ImplementInterfaceParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -82,7 +109,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         }
 
         // Find the type declaration (optional line/column disambiguates same-named types)
-        var typeDeclaration = FindTypeDeclaration(root, @params.TypeName, @params.Line, @params.Column);
+        var typeDeclaration = FindTypeDeclaration(root, @params.TypeName!, @params.Line, @params.Column);
 
         if (typeDeclaration == null)
         {
@@ -101,7 +128,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         // Find the interface
         var interfaceSymbol = await FindInterfaceAsync(
             typeSymbol,
-            @params.InterfaceName,
+            @params.InterfaceName!,
             cancellationToken);
 
         if (interfaceSymbol == null)
@@ -164,7 +191,402 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                 cancellationToken);
         }
 
-        var solution = document.Project.Solution;
+        var newSolution = await ApplyImplementationsToSolutionAsync(
+            document.Project.Solution,
+            document,
+            typeDeclaration,
+            typeSymbol,
+            implementations,
+            replacements,
+            @params.TypeName!,
+            cancellationToken);
+
+        // Commit changes
+        var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
+
+        return RefactoringResult.Succeeded(
+            operationId,
+            new FileChanges
+            {
+                FilesModified = commitResult.FilesModified,
+                FilesCreated = commitResult.FilesCreated,
+                FilesDeleted = commitResult.FilesDeleted
+            },
+            new Contracts.Models.SymbolInfo
+            {
+                Name = @params.TypeName!,
+                FullyQualifiedName = typeSymbol.ToDisplayString(),
+                Kind = Contracts.Enums.SymbolKind.Class
+            },
+            0,
+            0);
+    }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
+    /// / <c>ImplementAbstractOperation.ExecuteAllFilesAsync</c> /
+    /// <c>GenerateToStringOperation.ExecuteAllFilesAsync</c> /
+    /// <c>GenerateEqualsHashCodeOperation.ExecuteAllFilesAsync</c> /
+    /// <c>GenerateConstructorOperation.ExecuteAllFilesAsync</c> /
+    /// <c>InlineConstantOperation.ExecuteAllFilesAsync</c> /
+    /// <c>MakeStaticOperation.ExecuteAllFilesAsync</c> /
+    /// <c>MakeNonStaticOperation.ExecuteAllFilesAsync</c> /
+    /// <c>EncapsulateFieldOperation.ExecuteAllFilesAsync</c>) and implements
+    /// missing members of already-declared interfaces on every eligible
+    /// <see cref="TypeDeclarationSyntax"/> (class / struct / record /
+    /// record struct / interface, including nested — same node kind as
+    /// today's <c>FindTypeDeclaration</c>). Optional <c>sourceFile</c>
+    /// limits the walk to that one file. Types with no declared interfaces,
+    /// empty eligible members, <c>NameCollision</c>, uneditable documents,
+    /// parse/symbol failures, and otherwise ineligible types are skipped
+    /// rather than failing the walk. Bulk never
+    /// <c>TypeResolver</c>-hunts an undeclared interface. When a later
+    /// rewrite conflicts with an earlier one, the later claim is skipped.
+    /// When every type is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ImplementInterfaceParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var implementedCountByDoc = new Dictionary<DocumentId, int>();
+        var processedTypes = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!IsDocumentEditable(document, Context.Workspace))
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(document.Id);
+                if (currentDocument == null || !IsDocumentEditable(currentDocument, Context.Workspace))
+                    break;
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var typeDeclaration in CollectTypeDeclarations(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var typeSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
+                    if (typeSymbol == null)
+                        continue;
+
+                    var typeKey = TypeWalkKey(currentDocument.Project.Id, typeSymbol);
+                    if (!processedTypes.Add(typeKey))
+                        continue;
+
+                    try
+                    {
+                        updated = await TryImplementOneAsync(
+                            currentDocument,
+                            typeDeclaration,
+                            typeSymbol,
+                            @params,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        // Skip no-interfaces / already-implemented /
+                        // NameCollision / uneditable / InterfaceNotFound /
+                        // parse-symbol failures rather than failing the walk.
+                        updated = null;
+                    }
+
+                    if (updated != null)
+                        break;
+                }
+
+                if (updated == null)
+                    break;
+
+                currentSolution = updated;
+                implementedCountByDoc[document.Id] =
+                    implementedCountByDoc.GetValueOrDefault(document.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var implementedCount = implementedCountByDoc.GetValueOrDefault(document.Id);
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = implementedCount > 0
+                        ? BuildAllFilesDescription(implementedCount)
+                        : "Update interface implementations generated in other files",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// De-dupes types within one project across rematches and partials.
+    /// Includes <paramref name="projectId"/> so two projects that both
+    /// declare <c>TestApp.Widget</c> are not collapsed onto one walk key.
+    /// File-local types (<see cref="INamedTypeSymbol.IsFileLocal"/>) also
+    /// include a file-local marker and declaring file so two
+    /// <c>file class Worker</c> hosts that share
+    /// <see cref="SymbolDisplayFormat.FullyQualifiedFormat"/> are not
+    /// skipped as if they were one partial. Genuine partials
+    /// (<c>IsFileLocal</c> false, multiple declaring syntax refs) still
+    /// collapse to one walk.
+    /// </summary>
+    internal static string TypeWalkKey(ProjectId projectId, INamedTypeSymbol typeSymbol)
+    {
+        var fqn = typeSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        if (!typeSymbol.IsFileLocal)
+            return TypeWalkKey(projectId, fqn);
+
+        var declaringFile = typeSymbol.DeclaringSyntaxReferences
+            .Select(reference => reference.SyntaxTree.FilePath)
+            .FirstOrDefault(path => !string.IsNullOrWhiteSpace(path));
+
+        return TypeWalkKey(projectId, fqn, declaringFile);
+    }
+
+    /// <summary>
+    /// Same key shape as a non-file-local
+    /// <see cref="TypeWalkKey(ProjectId, INamedTypeSymbol)"/> for tests
+    /// that do not have a compilation symbol.
+    /// </summary>
+    internal static string TypeWalkKey(ProjectId projectId, string fullyQualifiedTypeName) =>
+        $"{projectId.Id:D}\0{fullyQualifiedTypeName}";
+
+    /// <summary>
+    /// File-local walk key: project id + FQN plus a <c>file</c> marker and
+    /// declaring path so same-named file-local types in different files
+    /// stay distinct. Ordinary (non-file-local) callers should use
+    /// <see cref="TypeWalkKey(ProjectId, string)"/>.
+    /// </summary>
+    internal static string TypeWalkKey(ProjectId projectId, string fullyQualifiedTypeName, string? fileLocalDeclaringPath)
+    {
+        var key = TypeWalkKey(projectId, fullyQualifiedTypeName);
+        if (string.IsNullOrWhiteSpace(fileLocalDeclaringPath))
+            return $"{key}\0file";
+
+        string normalized;
+        try
+        {
+            normalized = PathResolver.NormalizePath(fileLocalDeclaringPath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            normalized = fileLocalDeclaringPath;
+        }
+
+        return $"{key}\0file\0{normalized}";
+    }
+
+    /// <summary>
+    /// Preview description for a file that implemented interface members
+    /// on <paramref name="implementedCount"/> types.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int implementedCount) =>
+        implementedCount == 1
+            ? "Implement interface members"
+            : $"Implement interface members on {implementedCount} types";
+
+    /// <summary>
+    /// Collects every <see cref="TypeDeclarationSyntax"/> in
+    /// <paramref name="root"/> (class / struct / interface / record /
+    /// record struct, including nested — same node kind as today's
+    /// <see cref="FindTypeDeclaration"/>). Deterministic
+    /// <c>SpanStart</c> then span-length order.
+    /// </summary>
+    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTypeDeclarations(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .OrderBy(type => type.SpanStart)
+            .ThenBy(type => type.Span.Length)
+            .ToList();
+
+    private async Task<Solution?> TryImplementOneAsync(
+        Document document,
+        TypeDeclarationSyntax typeDeclaration,
+        INamedTypeSymbol typeSymbol,
+        ImplementInterfaceParams @params,
+        CancellationToken cancellationToken)
+    {
+        if (!IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        if (typeSymbol.AllInterfaces.Length == 0)
+            return null;
+
+        List<ISymbol> eligibleMembers;
+        try
+        {
+            eligibleMembers = CollectMembersToImplementAllDeclared(
+                typeSymbol,
+                @params.ReplaceExisting,
+                @params.ExplicitImplementation);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+
+        if (eligibleMembers.Count == 0)
+            return null;
+
+        Dictionary<ISymbol, ISymbol> replacements;
+        try
+        {
+            replacements = ResolveReplacements(
+                typeSymbol,
+                eligibleMembers,
+                @params.ReplaceExisting,
+                @params.ExplicitImplementation);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+
+        var implementations = GenerateImplementations(
+            eligibleMembers,
+            @params.ExplicitImplementation,
+            @params.ThrowNotImplemented);
+        if (implementations.Count == 0)
+            return null;
+
+        try
+        {
+            return await ApplyImplementationsToSolutionAsync(
+                document.Project.Solution,
+                document,
+                typeDeclaration,
+                typeSymbol,
+                implementations,
+                replacements,
+                typeSymbol.Name,
+                cancellationToken);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Eligible members across every already-declared interface
+    /// (<c>typeSymbol.AllInterfaces</c>). Does not
+    /// <c>TypeResolver</c>-hunt undeclared interfaces.
+    /// Implicit mode de-dupes by signature so one public stub can
+    /// satisfy two same-signature interface members. Explicit mode
+    /// de-dupes by symbol identity so <c>I1.M</c> and <c>I2.M</c>
+    /// both get stubs.
+    /// </summary>
+    internal static List<ISymbol> CollectMembersToImplementAllDeclared(
+        INamedTypeSymbol typeSymbol,
+        bool replaceExisting,
+        bool explicitImplementation)
+    {
+        var result = new List<ISymbol>();
+
+        foreach (var interfaceSymbol in typeSymbol.AllInterfaces)
+        {
+            foreach (var member in CollectMembersToImplement(typeSymbol, interfaceSymbol, replaceExisting))
+            {
+                if (explicitImplementation)
+                    AddUniqueByIdentity(result, member);
+                else
+                    AddUnique(result, member);
+            }
+        }
+
+        return result;
+    }
+
+    private static async Task<Solution> ApplyImplementationsToSolutionAsync(
+        Solution solution,
+        Document document,
+        TypeDeclarationSyntax typeDeclaration,
+        INamedTypeSymbol typeSymbol,
+        List<MemberDeclarationSyntax> implementations,
+        Dictionary<ISymbol, ISymbol> replacements,
+        string typeName,
+        CancellationToken cancellationToken)
+    {
+        var root = await document.GetSyntaxRootAsync(cancellationToken)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         // Fresh instance per execution. A static annotation is shared
         // across operations; after CommitChanges the in-memory solution
         // can still carry it, so a later replaceExisting on another type
@@ -188,7 +610,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             document = solution.GetDocument(document.Id)
                 ?? throw new RefactoringException(
                     ErrorCodes.DocumentNotEditable,
-                    $"Could not locate the document for type '{@params.TypeName}'.");
+                    $"Could not locate the document for type '{typeName}'.");
             root = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
             typeDeclaration = root.GetAnnotatedNodes(targetTypeAnnotation)
@@ -196,7 +618,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                 .FirstOrDefault()
                 ?? throw new RefactoringException(
                     ErrorCodes.TypeNotFound,
-                    $"Type '{@params.TypeName}' not found in file.");
+                    $"Type '{typeName}' not found in file.");
         }
 
         // Add implementations to type. Strip the per-execution annotation
@@ -205,29 +627,42 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         if (targetTypeAnnotation != null)
             newTypeDeclaration = (TypeDeclarationSyntax)newTypeDeclaration.WithoutAnnotations(targetTypeAnnotation);
         var newRoot = root.ReplaceNode(typeDeclaration, newTypeDeclaration);
+        return document.WithSyntaxRoot(newRoot).Project.Solution;
+    }
 
-        var newDocument = document.WithSyntaxRoot(newRoot);
-        var newSolution = newDocument.Project.Solution;
+    private static List<Document> FilterDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        string wanted;
+        try
+        {
+            wanted = PathResolver.NormalizePath(sourceFile);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            wanted = sourceFile;
+        }
 
-        // Commit changes
-        var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
+        return documents
+            .Where(d => string.Equals(
+                PathResolver.NormalizePath(d.FilePath!),
+                wanted,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
 
-        return RefactoringResult.Succeeded(
-            operationId,
-            new FileChanges
-            {
-                FilesModified = commitResult.FilesModified,
-                FilesCreated = commitResult.FilesCreated,
-                FilesDeleted = commitResult.FilesDeleted
-            },
-            new Contracts.Models.SymbolInfo
-            {
-                Name = @params.TypeName,
-                FullyQualifiedName = typeSymbol.ToDisplayString(),
-                Kind = Contracts.Enums.SymbolKind.Class
-            },
-            0,
-            0);
+    /// <summary>
+    /// Returns whether <paramref name="document"/> can receive source edits
+    /// (skip not throw — same checks as sibling AllFiles operations).
+    /// </summary>
+    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
+    {
+        if (document is SourceGeneratedDocument)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
+            return false;
+
+        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
     }
 
     private async Task<INamedTypeSymbol?> FindInterfaceAsync(
@@ -293,6 +728,14 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
     private static void AddUnique(List<ISymbol> members, ISymbol member)
     {
         if (members.Any(existing => SignaturesMatch(existing, member)))
+            return;
+
+        members.Add(member);
+    }
+
+    private static void AddUniqueByIdentity(List<ISymbol> members, ISymbol member)
+    {
+        if (members.Any(existing => SymbolEqualityComparer.Default.Equals(existing, member)))
             return;
 
         members.Add(member);
@@ -1077,7 +1520,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
     {
         var selectedMembers = membersToGenerate.Concat(membersToReplace).ToList();
         var description = membersToReplace.Count > 0 || @params.ReplaceExisting
-            ? BuildPreviewDescription(@params.InterfaceName, membersToGenerate, membersToReplace)
+            ? BuildPreviewDescription(@params.InterfaceName!, membersToGenerate, membersToReplace)
             : $"Implement {@params.InterfaceName} members: {string.Join(", ", selectedMembers.Select(m => m.Name))}";
         var implCode = string.Join("\n\n",
             implementations.Select(i => i.NormalizeWhitespace().ToFullString()));
@@ -1086,7 +1529,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         {
             new()
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = description,
                 BeforeSnippet = membersToReplace.Count > 0
@@ -1098,7 +1541,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
 
         if (replacements.Count > 0)
         {
-            var sourcePath = PathResolver.NormalizePath(@params.SourceFile);
+            var sourcePath = PathResolver.NormalizePath(@params.SourceFile!);
             var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var existing in replacements.Values)
             {
