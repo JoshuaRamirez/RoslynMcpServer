@@ -237,11 +237,13 @@ public sealed class MoveTypeToNamespaceOperation
     /// <paramref name="params"/>.TargetNamespace. Optional <c>sourceFile</c>
     /// limits the walk to that one file. Nested types, types already in
     /// the target namespace, SameLocation, NameCollision, multi-type
-    /// files, types without a namespace declaration, uneditable
-    /// documents, and resolution failures are skipped. When
-    /// <c>updateFileLocation</c> is true and two types would claim the
-    /// same destination, the later claim is skipped. When every type is
-    /// a no-op, succeeds with empty changes.
+    /// files, multi-declaration <c>partial</c> types, types without a
+    /// namespace declaration, uneditable documents, and resolution
+    /// failures are skipped. When <c>updateFileLocation</c> is true and
+    /// two types would claim the same destination, the later claim is
+    /// skipped. File-location moves compose per-project <c>Compile</c>
+    /// rewrites and roll back if a later move or project write fails.
+    /// When every type is a no-op, succeeds with empty changes.
     /// </summary>
     private async Task<RefactoringResult> ExecuteAllFilesAsync(
         Guid operationId,
@@ -413,23 +415,7 @@ public sealed class MoveTypeToNamespaceOperation
         var filesCreated = commitResult.FilesCreated.ToList();
         var filesDeleted = commitResult.FilesDeleted.ToList();
 
-        foreach (var filePlan in filePlans)
-        {
-            try
-            {
-                ApplyFileLocationUpdate(filePlan);
-                filesModified = filesModified
-                    .Select(path => RemapCommittedPath(path, filePlan))
-                    .ToList();
-                filesModified.AddRange(filePlan.ProjectTexts.Keys);
-                filesCreated.Add(filePlan.DestinationFile);
-                filesDeleted.Add(filePlan.SourceFile);
-            }
-            catch (RefactoringException)
-            {
-                // Skip later file-location claims that collide or fail mid-walk.
-            }
-        }
+        ApplyFileLocationUpdates(filePlans, filesModified, filesCreated, filesDeleted);
 
         stopwatch.Stop();
         return new RefactoringResult
@@ -494,6 +480,14 @@ public sealed class MoveTypeToNamespaceOperation
         $"Change namespace of {typeName} to {targetNamespace}";
 
     /// <summary>
+    /// True when the type has more than one declaring syntax reference
+    /// (a multi-file <c>partial</c>). Bulk skips these so a partial is
+    /// never split across namespaces.
+    /// </summary>
+    internal static bool IsMultiDeclarationType(INamedTypeSymbol symbol) =>
+        symbol.DeclaringSyntaxReferences.Length > 1;
+
+    /// <summary>
     /// True when the document can receive a path or text edit. AllFiles skips
     /// rather than throwing the single-file <see cref="ErrorCodes.DocumentNotEditable"/>.
     /// </summary>
@@ -534,6 +528,9 @@ public sealed class MoveTypeToNamespaceOperation
             return null;
 
         if (symbol.ContainingType != null)
+            return null;
+
+        if (IsMultiDeclarationType(symbol))
             return null;
 
         return new SymbolResolutionResult
@@ -934,6 +931,129 @@ public sealed class MoveTypeToNamespaceOperation
         };
     }
 
+    /// <summary>
+    /// Applies every planned file-location move after namespace text is
+    /// committed. Collision skips happen before this method (claimed
+    /// destinations). Moves are applied together and rolled back if a later
+    /// move or project write fails so Success never reports a half-applied
+    /// filesystem update. Project rewrites are composed per project so
+    /// earlier <c>Compile</c> edits survive.
+    /// </summary>
+    private void ApplyFileLocationUpdates(
+        IReadOnlyList<FileLocationPlan> plans,
+        List<string> filesModified,
+        List<string> filesCreated,
+        List<string> filesDeleted)
+    {
+        if (plans.Count == 0)
+            return;
+
+        var projectUpdates = ComposeProjectUpdates(plans);
+        var moves = plans.Select(p => (p.SourceFile, p.DestinationFile)).ToList();
+
+        try
+        {
+            foreach (var plan in plans)
+            {
+                var destDirectory = Path.GetDirectoryName(plan.DestinationFile);
+                if (string.IsNullOrEmpty(destDirectory))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.InvalidTargetPath,
+                        $"Destination file has no directory: {plan.DestinationFile}");
+                }
+
+                Directory.CreateDirectory(destDirectory);
+            }
+
+            RenameFileToMatchTypeOperation.ApplyFileMovesOrRollback(moves);
+        }
+        catch (IOException ex)
+        {
+            throw new RefactoringException(
+                ErrorCodes.FilesystemError,
+                $"Failed to move file: {ex.Message}",
+                ex);
+        }
+
+        try
+        {
+            foreach (var (projectPath, projectText) in projectUpdates)
+                File.WriteAllText(projectPath, projectText);
+        }
+        catch (IOException ex)
+        {
+            RenameFileToMatchTypeOperation.RollbackCompletedMoves(moves);
+            throw new RefactoringException(
+                ErrorCodes.FilesystemError,
+                $"Failed to update project file: {ex.Message}",
+                ex);
+        }
+
+        var updated = _context.Solution;
+        foreach (var plan in plans)
+        {
+            foreach (var documentId in plan.DocumentIds)
+                updated = updated.WithDocumentFilePath(documentId, plan.DestinationFile);
+
+            for (var i = 0; i < filesModified.Count; i++)
+                filesModified[i] = RemapCommittedPath(filesModified[i], plan);
+
+            filesCreated.Add(plan.DestinationFile);
+            filesDeleted.Add(plan.SourceFile);
+        }
+
+        filesModified.AddRange(projectUpdates.Keys);
+        _context.UpdateSolution(updated);
+    }
+
+    /// <summary>
+    /// Applies each plan's project rewrite onto the previous composed text
+    /// so two moves in the same project keep every prior <c>Compile</c>
+    /// edit instead of overwriting from the original on-disk snapshot.
+    /// </summary>
+    internal static Dictionary<string, string> ComposeProjectUpdates(
+        IReadOnlyList<(string ProjectPath, string SourceFile, string DestinationFile)> rewrites)
+    {
+        var originals = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var updates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (projectPath, sourceFile, destFile) in rewrites)
+        {
+            if (string.IsNullOrWhiteSpace(projectPath) || !File.Exists(projectPath))
+                continue;
+
+            var projectDirectory = Path.GetDirectoryName(projectPath);
+            if (string.IsNullOrEmpty(projectDirectory))
+                continue;
+
+            if (!originals.TryGetValue(projectPath, out var original))
+            {
+                original = File.ReadAllText(projectPath);
+                originals[projectPath] = original;
+            }
+
+            var current = updates.TryGetValue(projectPath, out var pending) ? pending : original;
+            var updated = UpdateProjectTextForFileMove(current, projectDirectory, sourceFile, destFile);
+            if (!string.Equals(current, updated, StringComparison.Ordinal))
+                updates[projectPath] = updated;
+        }
+
+        return updates;
+    }
+
+    private Dictionary<string, string> ComposeProjectUpdates(IReadOnlyList<FileLocationPlan> plans)
+    {
+        var rewrites = new List<(string ProjectPath, string SourceFile, string DestinationFile)>();
+        foreach (var plan in plans)
+        {
+            foreach (var projectPath in plan.ProjectTexts.Keys)
+                rewrites.Add((projectPath, plan.SourceFile, plan.DestinationFile));
+        }
+
+        return ComposeProjectUpdates(rewrites);
+    }
+
     private void ApplyFileLocationUpdate(FileLocationPlan plan)
     {
         var destDirectory = Path.GetDirectoryName(plan.DestinationFile);
@@ -944,10 +1064,12 @@ public sealed class MoveTypeToNamespaceOperation
                 $"Destination file has no directory: {plan.DestinationFile}");
         }
 
+        var moved = false;
         try
         {
             Directory.CreateDirectory(destDirectory);
             RenameFileToMatchTypeOperation.MoveSourceFile(plan.SourceFile, plan.DestinationFile);
+            moved = true;
         }
         catch (IOException ex)
         {
@@ -957,19 +1079,31 @@ public sealed class MoveTypeToNamespaceOperation
                 ex);
         }
 
-        foreach (var (projectPath, projectText) in plan.ProjectTexts)
+        try
         {
-            try
-            {
+            foreach (var (projectPath, projectText) in plan.ProjectTexts)
                 File.WriteAllText(projectPath, projectText);
-            }
-            catch (IOException ex)
+        }
+        catch (IOException ex)
+        {
+            if (moved)
             {
-                throw new RefactoringException(
-                    ErrorCodes.FilesystemError,
-                    $"Failed to update project file: {ex.Message}",
-                    ex);
+                try
+                {
+                    if (File.Exists(plan.DestinationFile))
+                        RenameFileToMatchTypeOperation.MoveSourceFile(plan.DestinationFile, plan.SourceFile);
+                }
+                catch
+                {
+                    // Best-effort rollback so a failed project write does not
+                    // leave source gone / dest created.
+                }
             }
+
+            throw new RefactoringException(
+                ErrorCodes.FilesystemError,
+                $"Failed to update project file: {ex.Message}",
+                ex);
         }
 
         var updated = _context.Solution;
