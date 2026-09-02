@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Rename;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -13,7 +14,7 @@ namespace RoslynMcp.Core.Tests.Refactoring;
 /// <summary>
 /// Operation-level tests for <see cref="MoveTypeToFileOperation"/>,
 /// including optional <c>line</c>, <c>column</c>, <c>createTargetFile</c>,
-/// and <c>preview</c>.
+/// <c>preview</c>, and <c>allFiles</c>.
 /// </summary>
 public class MoveTypeToFileOperationTests
 {
@@ -118,6 +119,129 @@ public class MoveTypeToFileOperationTests
             }));
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void AllFiles_DefaultsToFalse()
+    {
+        var @params = new MoveTypeToFileParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            SymbolName = "Widget",
+            TargetFile = AbsoluteTestPath("Target.cs")
+        };
+
+        Assert.False(@params.AllFiles);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToFileOperation.Validate(new MoveTypeToFileParams
+            {
+                AllFiles = false,
+                SymbolName = "Widget",
+                TargetFile = AbsoluteTestPath("Target.cs")
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSymbolName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToFileOperation.Validate(new MoveTypeToFileParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath(),
+                TargetFile = AbsoluteTestPath("Target.cs")
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("symbolName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutTargetFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToFileOperation.Validate(new MoveTypeToFileParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath(),
+                SymbolName = "Widget"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("targetFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileSymbolNameTargetFile_DoesNotThrow()
+    {
+        MoveTypeToFileOperation.Validate(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithSymbolName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToFileOperation.Validate(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                SymbolName = "Widget"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("symbolName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTargetFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToFileOperation.Validate(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                TargetFile = AbsoluteTestPath("Target.cs")
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("targetFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToFileOperation.Validate(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToFileOperation.Validate(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion
@@ -635,7 +759,731 @@ public class MoveTypeToFileOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string MultiTypeSource = """
+        namespace TestApp;
+
+        public class Alpha
+        {
+        }
+
+        public class Beta
+        {
+        }
+        """;
+
+    private const string MismatchedNameSource = """
+        namespace TestApp;
+
+        public class Gamma
+        {
+        }
+        """;
+
+    private const string WellPlacedSource = """
+        namespace TestApp;
+
+        public class Already
+        {
+        }
+        """;
+
+    private const string NestedAndSiblingSource = """
+        namespace TestApp;
+
+        public class Outer
+        {
+            public class Nested { } // nested-widget
+        }
+
+        public class Delta
+        {
+        }
+        """;
+
+    private const string CollisionASource = """
+        namespace A;
+
+        public class Shared
+        {
+        }
+        """;
+
+    private const string CollisionBSource = """
+        namespace B;
+
+        public class Shared
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesFalse_MovesOnlySpecifiedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", MultiTypeSource),
+            ("Other.cs", MismatchedNameSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var target = workspace.TargetPath("Alpha.cs");
+        var beforeOther = await File.ReadAllTextAsync(workspace.FilePaths["Other.cs"]);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            SourceFile = workspace.FilePaths["Types.cs"],
+            AllFiles = false,
+            SymbolName = "Alpha",
+            TargetFile = target
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.True(File.Exists(target));
+        Assert.Contains("class Alpha", await File.ReadAllTextAsync(target));
+        Assert.Contains("class Beta", await File.ReadAllTextAsync(workspace.FilePaths["Types.cs"]));
+        Assert.DoesNotContain("class Alpha", await File.ReadAllTextAsync(workspace.FilePaths["Types.cs"]));
+        Assert.Equal(beforeOther, await File.ReadAllTextAsync(workspace.FilePaths["Other.cs"]));
+        Assert.False(File.Exists(workspace.TargetPath("Gamma.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_OmittedAllFiles_KeepsSingleSiteMove()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var target = workspace.TargetPath("Widget.cs");
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            TargetFile = target
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(target));
+        Assert.Contains("class Widget", await File.ReadAllTextAsync(target));
+        Assert.False(File.Exists(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_MovesEligibleMultiTypeAndMismatchedName()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", MultiTypeSource),
+            ("Mismatched.cs", MismatchedNameSource),
+            ("Already.cs", WellPlacedSource),
+            ("WithNested.cs", NestedAndSiblingSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var beforeAlready = await File.ReadAllTextAsync(workspace.FilePaths["Already.cs"]);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+
+        var alphaPath = workspace.TargetPath("Alpha.cs");
+        var betaPath = workspace.TargetPath("Beta.cs");
+        var gammaPath = workspace.TargetPath("Gamma.cs");
+        var deltaPath = workspace.TargetPath("Delta.cs");
+        var outerPath = workspace.TargetPath("Outer.cs");
+
+        Assert.True(File.Exists(alphaPath));
+        Assert.True(File.Exists(betaPath));
+        Assert.True(File.Exists(gammaPath));
+        Assert.True(File.Exists(deltaPath));
+        Assert.Contains("class Alpha", await File.ReadAllTextAsync(alphaPath));
+        Assert.Contains("class Beta", await File.ReadAllTextAsync(betaPath));
+        Assert.Contains("class Gamma", await File.ReadAllTextAsync(gammaPath));
+        Assert.Contains("class Delta", await File.ReadAllTextAsync(deltaPath));
+
+        Assert.False(File.Exists(workspace.FilePaths["Types.cs"]));
+        Assert.False(File.Exists(workspace.FilePaths["Mismatched.cs"]));
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(workspace.FilePaths["Already.cs"]));
+        Assert.False(File.Exists(workspace.TargetPath("Nested.cs")));
+        Assert.True(File.Exists(outerPath));
+        Assert.Contains("class Outer", await File.ReadAllTextAsync(outerPath));
+        Assert.Contains("class Nested", await File.ReadAllTextAsync(outerPath));
+        Assert.False(File.Exists(workspace.FilePaths["WithNested.cs"]));
+
+        Assert.Contains(result.Changes!.FilesCreated, p => PathEquals(p, alphaPath));
+        Assert.Contains(result.Changes.FilesCreated, p => PathEquals(p, betaPath));
+        Assert.Contains(result.Changes.FilesCreated, p => PathEquals(p, gammaPath));
+        Assert.Contains(result.Changes.FilesCreated, p => PathEquals(p, deltaPath));
+        Assert.Contains(result.Changes.FilesCreated, p => PathEquals(p, outerPath));
+        Assert.DoesNotContain(result.Changes.FilesCreated, p => PathEquals(p, workspace.FilePaths["Already.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_SkipsSameLocationWhenTypeAlreadyMatchesFileStem()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Widget.cs", """
+                namespace TestApp;
+
+                public class Widget
+                {
+                }
+
+                public class Extra
+                {
+                }
+                """));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(workspace.FilePaths["Widget.cs"]));
+        Assert.Contains("class Widget", await File.ReadAllTextAsync(workspace.FilePaths["Widget.cs"]));
+        Assert.DoesNotContain("class Extra", await File.ReadAllTextAsync(workspace.FilePaths["Widget.cs"]));
+        Assert.True(File.Exists(workspace.TargetPath("Extra.cs")));
+        Assert.Contains("class Extra", await File.ReadAllTextAsync(workspace.TargetPath("Extra.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_WithoutSourceFileSymbolNameTargetFile_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", MultiTypeSource),
+            ("Mismatched.cs", MismatchedNameSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(workspace.TargetPath("Alpha.cs")));
+        Assert.True(File.Exists(workspace.TargetPath("Beta.cs")));
+        Assert.True(File.Exists(workspace.TargetPath("Gamma.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesFalse_WithoutRequired_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToFileParams
+            {
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_WithSymbolName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                SymbolName = "Widget"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("symbolName", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(workspace.SourcePath));
+        Assert.False(File.Exists(workspace.TargetPath("Widget.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_WithTargetFile_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                TargetFile = workspace.TargetPath("Widget.cs")
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("targetFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_PreviewAllFiles_AggregatesChangesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", MultiTypeSource),
+            ("Mismatched.cs", MismatchedNameSource),
+            ("Already.cs", WellPlacedSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var beforeTypes = await File.ReadAllTextAsync(workspace.FilePaths["Types.cs"]);
+        var beforeMismatched = await File.ReadAllTextAsync(workspace.FilePaths["Mismatched.cs"]);
+        var beforeAlready = await File.ReadAllTextAsync(workspace.FilePaths["Already.cs"]);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.FilePaths["Types.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.TargetPath("Alpha.cs")));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.TargetPath("Beta.cs")));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.TargetPath("Gamma.cs")));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.FilePaths["Already.cs"]));
+        Assert.Equal(beforeTypes, await File.ReadAllTextAsync(workspace.FilePaths["Types.cs"]));
+        Assert.Equal(beforeMismatched, await File.ReadAllTextAsync(workspace.FilePaths["Mismatched.cs"]));
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(workspace.FilePaths["Already.cs"]));
+        Assert.False(File.Exists(workspace.TargetPath("Alpha.cs")));
+        Assert.False(File.Exists(workspace.TargetPath("Beta.cs")));
+        Assert.False(File.Exists(workspace.TargetPath("Gamma.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_EveryTypeNoOp_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Already.cs", WellPlacedSource),
+            ("Outer.cs", NestedWidgetSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var beforeAlready = await File.ReadAllTextAsync(workspace.FilePaths["Already.cs"]);
+        var beforeOuter = await File.ReadAllTextAsync(workspace.FilePaths["Outer.cs"]);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesCreated);
+        Assert.Empty(result.Changes.FilesDeleted);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(workspace.FilePaths["Already.cs"]));
+        Assert.Equal(beforeOuter, await File.ReadAllTextAsync(workspace.FilePaths["Outer.cs"]));
+        Assert.False(File.Exists(workspace.TargetPath("Nested.cs")));
+        Assert.False(File.Exists(workspace.TargetPath("Widget.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_DestinationCollision_SkipsLaterClaim()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("AShared.cs", CollisionASource),
+            ("BShared.cs", CollisionBSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.FilePaths["AShared.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.FilePaths["BShared.cs"]);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var sharedPath = workspace.TargetPath("Shared.cs");
+        var aStillThere = File.Exists(workspace.FilePaths["AShared.cs"]) &&
+            (await File.ReadAllTextAsync(workspace.FilePaths["AShared.cs"])).Contains("class Shared");
+        var bStillThere = File.Exists(workspace.FilePaths["BShared.cs"]) &&
+            (await File.ReadAllTextAsync(workspace.FilePaths["BShared.cs"])).Contains("class Shared");
+
+        // First claim moves; later claim is skipped. Exactly one source keeps Shared.
+        Assert.True(aStillThere ^ bStillThere);
+        if (File.Exists(sharedPath))
+            Assert.Contains("class Shared", await File.ReadAllTextAsync(sharedPath));
+        Assert.True(File.Exists(workspace.FilePaths["AShared.cs"]) || File.Exists(workspace.FilePaths["BShared.cs"]));
+        Assert.True(beforeA.Contains("class Shared") && beforeB.Contains("class Shared"));
+        Assert.True(result.Changes!.FilesCreated.Count <= 1);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", MultiTypeSource),
+            ("Mismatched.cs", MismatchedNameSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var beforeMismatched = await File.ReadAllTextAsync(workspace.FilePaths["Mismatched.cs"]);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.FilePaths["Types.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(workspace.TargetPath("Alpha.cs")));
+        Assert.True(File.Exists(workspace.TargetPath("Beta.cs")));
+        Assert.False(File.Exists(workspace.TargetPath("Gamma.cs")));
+        Assert.Equal(beforeMismatched, await File.ReadAllTextAsync(workspace.FilePaths["Mismatched.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_CreateTargetFileFalse_SkipsMissingDestination()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", MultiTypeSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.FilePaths["Types.cs"]);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true,
+            CreateTargetFile = false
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.FilePaths["Types.cs"]));
+        Assert.False(File.Exists(workspace.TargetPath("Alpha.cs")));
+        Assert.False(File.Exists(workspace.TargetPath("Beta.cs")));
+        Assert.Empty(result.Changes!.FilesCreated);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_NameCollision_SkipsOccupiedDestination()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", MultiTypeSource),
+            ("Alpha.cs", """
+                namespace Other;
+
+                public class Alpha
+                {
+                }
+                """));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var beforeAlpha = await File.ReadAllTextAsync(workspace.FilePaths["Alpha.cs"]);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeAlpha, await File.ReadAllTextAsync(workspace.FilePaths["Alpha.cs"]));
+        Assert.Contains("class Alpha", await File.ReadAllTextAsync(workspace.FilePaths["Types.cs"]));
+        Assert.True(File.Exists(workspace.TargetPath("Beta.cs")));
+        Assert.DoesNotContain("class Alpha", await File.ReadAllTextAsync(workspace.TargetPath("Beta.cs")));
+    }
+
+    [Fact]
+    public void CollectTopLevelTypes_IncludesClassStructInterfaceRecord_ExcludesNestedEnumDelegate()
+    {
+        const string source = """
+            namespace TestApp;
+            public class C { public class Nested { } }
+            public struct S { }
+            public interface I { }
+            public enum E { A }
+            public delegate void D();
+            public record R();
+            """;
+
+        var root = Parse(source);
+        var types = MoveTypeToFileOperation.CollectTopLevelTypes(root);
+        var names = types.Select(t => t.Identifier.Text).ToList();
+
+        Assert.Contains("C", names);
+        Assert.Contains("S", names);
+        Assert.Contains("I", names);
+        Assert.Contains("R", names);
+        Assert.DoesNotContain("Nested", names);
+        Assert.DoesNotContain("E", names);
+        Assert.DoesNotContain("D", names);
+    }
+
+    [Fact]
+    public void GetDerivedTargetFile_UsesCurrentDirectoryAndTypeName()
+    {
+        var source = Path.Combine(Path.GetTempPath(), "folder", "Types.cs");
+        var dest = MoveTypeToFileOperation.GetDerivedTargetFile(source, "Widget");
+        Assert.Equal(Path.Combine(Path.GetTempPath(), "folder", "Widget.cs"), dest);
+    }
+
+    [Fact]
+    public void IsAlreadyWellPlaced_RequiresSingleMatchingType()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "Widget.cs");
+        Assert.True(MoveTypeToFileOperation.IsAlreadyWellPlaced(path, "Widget", 1));
+        Assert.False(MoveTypeToFileOperation.IsAlreadyWellPlaced(path, "Widget", 2));
+        Assert.False(MoveTypeToFileOperation.IsAlreadyWellPlaced(path, "Other", 1));
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_IncludesTypeAndFileName()
+    {
+        Assert.Equal(
+            "Move Widget to Widget.cs",
+            MoveTypeToFileOperation.BuildAllFilesDescription("Widget", Path.Combine(Path.GetTempPath(), "Widget.cs")));
+    }
+
+    [Fact]
+    public void GetNamespaceName_NestedNamespaces_ReturnsFullPath()
+    {
+        const string source = """
+            namespace A
+            {
+                namespace B
+                {
+                    public class Widget { }
+                }
+            }
+
+            namespace B
+            {
+                public class Other { }
+            }
+            """;
+
+        var root = Parse(source);
+        var widget = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == "Widget");
+        var other = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == "Other");
+
+        Assert.Equal("A.B", MoveTypeToFileOperation.GetNamespaceName(widget));
+        Assert.Equal("B", MoveTypeToFileOperation.GetNamespaceName(other));
+    }
+
+    [Fact]
+    public void HasRemainingSourceContent_PreservesEnumDelegateAndGlobalStatements()
+    {
+        var afterClassRemoved = Parse("""
+            namespace TestApp;
+            public enum E { A }
+            public delegate void D();
+            """);
+        Assert.True(MoveTypeToFileOperation.HasRemainingSourceContent(afterClassRemoved, preserveNonTypeMembers: true));
+        Assert.False(MoveTypeToFileOperation.HasRemainingSourceContent(afterClassRemoved, preserveNonTypeMembers: false));
+
+        var empty = Parse("namespace TestApp;\n");
+        Assert.False(MoveTypeToFileOperation.HasRemainingSourceContent(empty, preserveNonTypeMembers: true));
+    }
+
+    [Fact]
+    public void IsSamePhysicalLocation_OrdinalMatch_IsTrue()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "Widget.cs");
+        Assert.True(MoveTypeToFileOperation.IsSamePhysicalLocation(path, path));
+    }
+
+    [Fact]
+    public void IsSamePhysicalLocation_DifferentNames_IsFalse()
+    {
+        var dir = Path.GetTempPath();
+        Assert.False(MoveTypeToFileOperation.IsSamePhysicalLocation(
+            Path.Combine(dir, "Widget.cs"),
+            Path.Combine(dir, "Other.cs")));
+    }
+
+    [Fact]
+    public void IsSamePhysicalLocation_CaseOnlyPair_FollowsVolume()
+    {
+        var dir = Path.GetTempPath();
+        var same = MoveTypeToFileOperation.IsSamePhysicalLocation(
+            Path.Combine(dir, "widget.cs"),
+            Path.Combine(dir, "Widget.cs"));
+        Assert.Equal(
+            !RenameFileToMatchTypeOperation.DirectoryTreatsCaseAsDistinct(dir),
+            same);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_ClassPlusEnum_KeepsEnumInSource()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Mixed.cs", """
+                namespace TestApp;
+
+                public class Alpha
+                {
+                }
+
+                public enum Kept
+                {
+                    A
+                }
+                """));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(workspace.TargetPath("Alpha.cs")));
+        Assert.Contains("class Alpha", await File.ReadAllTextAsync(workspace.TargetPath("Alpha.cs")));
+        Assert.True(File.Exists(workspace.FilePaths["Mixed.cs"]));
+        var remaining = await File.ReadAllTextAsync(workspace.FilePaths["Mixed.cs"]);
+        Assert.Contains("enum Kept", remaining);
+        Assert.DoesNotContain("class Alpha", remaining);
+        Assert.DoesNotContain(result.Changes!.FilesDeleted, p => PathEquals(p, workspace.FilePaths["Mixed.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_CaseOnlyDest_DoesNotScheduleCompetingWriteAndDelete()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("widget.cs", """
+                namespace TestApp;
+
+                public class Widget
+                {
+                }
+
+                public class Extra
+                {
+                }
+                """));
+        var source = workspace.FilePaths["widget.cs"];
+        var widgetDest = workspace.TargetPath("Widget.cs");
+        var extraDest = workspace.TargetPath("Extra.cs");
+        var samePhysical = MoveTypeToFileOperation.IsSamePhysicalLocation(source, widgetDest);
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(extraDest));
+        Assert.Contains("class Extra", await File.ReadAllTextAsync(extraDest));
+
+        if (samePhysical)
+        {
+            Assert.True(File.Exists(source));
+            var remaining = await File.ReadAllTextAsync(source);
+            Assert.Contains("class Widget", remaining);
+            Assert.DoesNotContain("class Extra", remaining);
+            Assert.DoesNotContain(result.Changes!.FilesDeleted, p => PathEquals(p, source));
+            Assert.DoesNotContain(result.Changes.FilesCreated, p => PathEquals(p, widgetDest));
+        }
+        else
+        {
+            Assert.True(File.Exists(widgetDest));
+            Assert.Contains("class Widget", await File.ReadAllTextAsync(widgetDest));
+            Assert.False(File.Exists(source));
+        }
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_OccupiedDestOutsideWorkspace_Skips()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", """
+                namespace TestApp;
+
+                public class Occupied
+                {
+                }
+
+                public class Other
+                {
+                }
+                """));
+        var occupiedPath = workspace.TargetPath("Occupied.cs");
+        const string sentinel = "// excluded leftover — do not overwrite";
+        await File.WriteAllTextAsync(occupiedPath, sentinel);
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(sentinel, await File.ReadAllTextAsync(occupiedPath));
+        Assert.Contains("class Occupied", await File.ReadAllTextAsync(workspace.FilePaths["Types.cs"]));
+        Assert.True(File.Exists(workspace.TargetPath("Other.cs")));
+        Assert.Contains("class Other", await File.ReadAllTextAsync(workspace.TargetPath("Other.cs")));
+        Assert.DoesNotContain(result.Changes!.FilesCreated, p => PathEquals(p, occupiedPath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_NestedNamespaces_ResolvesFullPath()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", """
+                namespace A.B;
+
+                public class Alpha { }
+                public class Beta { }
+                """));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(workspace.TargetPath("Alpha.cs")));
+        Assert.True(File.Exists(workspace.TargetPath("Beta.cs")));
+        Assert.Contains("namespace A.B", await File.ReadAllTextAsync(workspace.TargetPath("Alpha.cs")));
+        Assert.Contains("namespace A.B", await File.ReadAllTextAsync(workspace.TargetPath("Beta.cs")));
+        Assert.False(File.Exists(workspace.FilePaths["Types.cs"]));
+    }
+
+    #endregion
+
     #region Helpers
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
 
@@ -711,6 +1559,8 @@ public class MoveTypeToFileOperationTests
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
