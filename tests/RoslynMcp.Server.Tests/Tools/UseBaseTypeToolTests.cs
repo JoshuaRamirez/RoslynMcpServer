@@ -117,6 +117,19 @@ public class UseBaseTypeToolTests
     {
         Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("sourceFile optional", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile and typeName are required", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_TypeName_RequiredWhenAllFilesIsFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var typeName = doc.RootElement.GetProperty("properties").GetProperty("typeName");
+        var description = typeName.GetProperty("description").GetString();
+        Assert.Contains("Required when allFiles is false", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Single-site only", description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

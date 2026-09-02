@@ -2520,6 +2520,57 @@ public class UseBaseTypeOperationTests
         Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Cat.cs"]));
     }
 
+    private const string DogTypeOnlySource = """
+        namespace TestApp;
+
+        public class Dog : Animal
+        {
+            public int Bark() => 2;
+        }
+        """;
+
+    private const string CatTypeOnlySource = """
+        namespace TestApp;
+
+        public class Cat : Animal
+        {
+        }
+        """;
+
+    private const string OverloadUseSource = """
+        namespace TestApp;
+
+        public static class Use
+        {
+            public static int Feed(Dog dog) => dog.Eat();
+            public static int Feed(Cat cat) => cat.Eat();
+        }
+        """;
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_SkipsTypeThatWouldCollapseOverloads()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", DogTypeOnlySource),
+            ("Cat.cs", CatTypeOnlySource),
+            ("Use.cs", OverloadUseSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Use.cs"]));
+        var animalFeeds = System.Text.RegularExpressions.Regex.Matches(updated, @"Feed\(Animal ").Count;
+        Assert.Equal(1, animalFeeds);
+        var keepsDog = updated.Contains("Feed(Dog ", StringComparison.Ordinal);
+        var keepsCat = updated.Contains("Feed(Cat ", StringComparison.Ordinal);
+        Assert.True(keepsDog ^ keepsCat);
+    }
+
     [Fact]
     public void BuildAllFilesDescription_SingularAndPlural()
     {

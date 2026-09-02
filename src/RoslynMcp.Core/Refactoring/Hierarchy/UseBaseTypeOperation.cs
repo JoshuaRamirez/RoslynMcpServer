@@ -173,10 +173,12 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
     /// Per-type <c>InvalidSymbolKind</c>, <c>NoCommonBase</c>,
     /// <c>BaseClassNotFound</c>, <c>NoEligibleReferences</c>,
     /// <c>BaseCannotSatisfyUsedMembers</c>, <c>DocumentNotEditable</c>, and
-    /// similar failures are skipped. Optional <c>targetBaseType</c> filters
-    /// to types that have that base. When every type is a no-op, succeeds
-    /// with empty changes. Bulk walks every eligible type, not a broader
-    /// search for one typeName.
+    /// similar failures are skipped. A type whose eligible rewrites would
+    /// collapse sibling overloads onto the same signature (CS0111) when
+    /// combined with already-accepted rewrites is also skipped. Optional
+    /// <c>targetBaseType</c> filters to types that have that base. When
+    /// every type is a no-op, succeeds with empty changes. Bulk walks
+    /// every eligible type, not a broader search for one typeName.
     /// </summary>
     private async Task<RefactoringResult> ExecuteAllFilesAsync(
         Guid operationId,
@@ -218,6 +220,12 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
 
                     var (rewrites, _) = await CollectRewritesAsync(
                         derived, @params.TargetBaseType, cancellationToken);
+                    if (await BatchWouldCollapseOverloadsAsync(
+                            allRewrites, rewrites, cancellationToken))
+                    {
+                        continue;
+                    }
+
                     allRewrites.AddRange(rewrites);
                 }
                 catch (RefactoringException)
@@ -314,6 +322,161 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         }
 
         return (rewrites, target);
+    }
+
+    /// <summary>
+    /// True when adding <paramref name="candidate"/> to
+    /// <paramref name="accepted"/> would make two methods or constructors
+    /// in the same container share a parameter signature (CS0111), e.g.
+    /// <c>M(Dog)</c> + <c>M(Cat)</c> both rewritten to <c>M(Animal)</c>.
+    /// Each type is validated alone against the original solution; this
+    /// rechecks the combined batch before apply / preview.
+    /// </summary>
+    private static async Task<bool> BatchWouldCollapseOverloadsAsync(
+        IReadOnlyList<RewritableReference> accepted,
+        IReadOnlyList<RewritableReference> candidate,
+        CancellationToken cancellationToken)
+    {
+        var combined = accepted.Concat(candidate).ToList();
+        var paramRewrites = combined.Where(IsParameterTypeRewrite).ToList();
+        if (paramRewrites.Count == 0)
+            return false;
+
+        var replacementBySpan = new Dictionary<(DocumentId Id, int Start, int End), INamedTypeSymbol>();
+        foreach (var rewrite in paramRewrites)
+        {
+            var outermost = GetOutermostTypeSyntax(rewrite.Original);
+            replacementBySpan[(rewrite.Document.Id, outermost.Span.Start, outermost.Span.End)] =
+                rewrite.BaseType;
+        }
+
+        var seenMethods = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        var signatures = new List<(ISymbol Container, string Name, int Arity, string Parameters)>();
+
+        foreach (var rewrite in paramRewrites)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var model = await rewrite.Document.GetSemanticModelAsync(cancellationToken);
+            if (model == null)
+                continue;
+
+            if (!TryGetParameterMethod(
+                    rewrite.Original, model, cancellationToken, out var method, out var parameterList))
+            {
+                continue;
+            }
+
+            if (!seenMethods.Add(method.OriginalDefinition))
+                continue;
+
+            if (method.ContainingSymbol == null)
+                continue;
+
+            signatures.Add((
+                method.ContainingSymbol,
+                method.Name,
+                method.TypeParameters.Length,
+                BuildParameterSignatureKey(
+                    method, parameterList, rewrite.Document.Id, replacementBySpan)));
+        }
+
+        return signatures
+            .GroupBy(
+                signature => signature,
+                new OverloadSignatureComparer())
+            .Any(group => group.Count() > 1);
+    }
+
+    private static bool IsParameterTypeRewrite(RewritableReference rewrite) =>
+        GetOutermostTypeSyntax(rewrite.Original).Parent is ParameterSyntax;
+
+    private static bool TryGetParameterMethod(
+        TypeSyntax original,
+        SemanticModel model,
+        CancellationToken cancellationToken,
+        out IMethodSymbol method,
+        out BaseParameterListSyntax parameterList)
+    {
+        method = null!;
+        parameterList = null!;
+
+        if (GetOutermostTypeSyntax(original).Parent is not ParameterSyntax parameter)
+            return false;
+
+        switch (parameter.Parent?.Parent)
+        {
+            case MethodDeclarationSyntax declaredMethod
+                when model.GetDeclaredSymbol(declaredMethod, cancellationToken) is IMethodSymbol declared:
+                method = declared;
+                parameterList = declaredMethod.ParameterList;
+                return true;
+            case ConstructorDeclarationSyntax constructor
+                when model.GetDeclaredSymbol(constructor, cancellationToken) is IMethodSymbol ctor:
+                method = ctor;
+                parameterList = constructor.ParameterList;
+                return true;
+            case LocalFunctionStatementSyntax localFunction
+                when model.GetDeclaredSymbol(localFunction, cancellationToken) is IMethodSymbol local:
+                method = local;
+                parameterList = localFunction.ParameterList;
+                return true;
+            case IndexerDeclarationSyntax indexer
+                when model.GetDeclaredSymbol(indexer, cancellationToken) is IMethodSymbol indexerSymbol:
+                method = indexerSymbol;
+                parameterList = indexer.ParameterList;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static string BuildParameterSignatureKey(
+        IMethodSymbol method,
+        BaseParameterListSyntax parameterList,
+        DocumentId documentId,
+        IReadOnlyDictionary<(DocumentId Id, int Start, int End), INamedTypeSymbol> replacements)
+    {
+        var parts = new List<string>(method.Parameters.Length);
+        for (var i = 0; i < method.Parameters.Length; i++)
+        {
+            var parameter = method.Parameters[i];
+            var type = parameter.Type;
+            if (i < parameterList.Parameters.Count &&
+                parameterList.Parameters[i].Type is { } typeSyntax)
+            {
+                var outermost = GetOutermostTypeSyntax(typeSyntax);
+                if (replacements.TryGetValue(
+                        (documentId, outermost.Span.Start, outermost.Span.End),
+                        out var rewritten))
+                {
+                    type = rewritten;
+                }
+            }
+
+            parts.Add($"{parameter.RefKind}:{type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}");
+        }
+
+        return string.Join("\u001f", parts);
+    }
+
+    private sealed class OverloadSignatureComparer :
+        IEqualityComparer<(ISymbol Container, string Name, int Arity, string Parameters)>
+    {
+        public bool Equals(
+            (ISymbol Container, string Name, int Arity, string Parameters) left,
+            (ISymbol Container, string Name, int Arity, string Parameters) right) =>
+            SymbolEqualityComparer.Default.Equals(left.Container, right.Container) &&
+            left.Name == right.Name &&
+            left.Arity == right.Arity &&
+            left.Parameters == right.Parameters;
+
+        public int GetHashCode((ISymbol Container, string Name, int Arity, string Parameters) value) =>
+            HashCode.Combine(
+                SymbolEqualityComparer.Default.GetHashCode(value.Container),
+                value.Name,
+                value.Arity,
+                value.Parameters);
     }
 
     private static RefactoringResult CreateAllFilesPreviewResult(

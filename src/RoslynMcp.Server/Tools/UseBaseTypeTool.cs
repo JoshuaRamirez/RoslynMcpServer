@@ -33,7 +33,7 @@ public sealed class UseBaseTypeTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Replace derived-type references with a compatible base type or interface. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick (simple name / single match) or FQN semantic narrowing. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and rewrites eligible references of every type declaration (sourceFile optional when true; cannot be combined with typeName, line, or column).";
+        "Replace derived-type references with a compatible base type or interface. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick (simple name / single match) or FQN semantic narrowing. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. Preview describes the rewrite and writes nothing. sourceFile and typeName are required when allFiles is omitted or false. allFiles: true walks every C# file and rewrites eligible references of every type declaration (sourceFile optional when true; cannot be combined with typeName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -61,7 +61,7 @@ public sealed class UseBaseTypeTool : IToolHandler
             typeName = new
             {
                 type = "string",
-                description = "Name of the derived class, struct, or interface. Single-site only; cannot be combined with allFiles."
+                description = "Name of the derived class, struct, or interface. Required when allFiles is false. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
