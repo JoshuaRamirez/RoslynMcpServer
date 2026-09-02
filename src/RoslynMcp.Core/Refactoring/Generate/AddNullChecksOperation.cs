@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
@@ -29,6 +30,20 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
     /// </summary>
     internal static void Validate(AddNullChecksParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.MethodName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with methodName, line, or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -57,7 +72,10 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
         AddNullChecksParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -68,7 +86,7 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
                              string.Equals(@params.Style, "throw", StringComparison.OrdinalIgnoreCase);
 
         // Find the method or constructor
-        var methodNode = FindMethod(root, @params.MethodName, @params.Line, @params.Column);
+        var methodNode = FindMethod(root, @params.MethodName!, @params.Line, @params.Column);
         if (methodNode == null)
             throw new RefactoringException(ErrorCodes.MethodNotFound, $"Method '{@params.MethodName}' not found.");
 
@@ -102,8 +120,8 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
             {
                 new()
                 {
-                    File = @params.SourceFile,
-                    ChangeType = Contracts.Enums.ChangeKind.Modify,
+                    File = @params.SourceFile!,
+                    ChangeType = ChangeKind.Modify,
                     Description = $"Add null checks to {@params.MethodName}",
                     BeforeSnippet = $"// Method '{@params.MethodName}' (no null checks)",
                     AfterSnippet = code
@@ -127,9 +145,190 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
 
         return RefactoringResult.Succeeded(operationId,
             new FileChanges { FilesModified = commitResult.FilesModified, FilesCreated = commitResult.FilesCreated, FilesDeleted = commitResult.FilesDeleted },
-            new Contracts.Models.SymbolInfo { Name = @params.MethodName, FullyQualifiedName = @params.MethodName, Kind = Contracts.Enums.SymbolKind.Method },
+            new Contracts.Models.SymbolInfo { Name = @params.MethodName!, FullyQualifiedName = @params.MethodName!, Kind = Contracts.Enums.SymbolKind.Method },
             0, 0);
     }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
+    /// / <c>ConvertToAsyncOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ConvertPropertyOperation.ExecuteAllFilesAsync</c> /
+    /// <c>InvertIfOperation.ExecuteAllFilesAsync</c>) and inserts null checks
+    /// at the start of every method or constructor with a block body whose
+    /// parameters still need them. Methods with no parameters requiring
+    /// checks, no body, an expression body, or every eligible parameter
+    /// already guarded are skipped. When every file is a no-op, succeeds
+    /// with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        AddNullChecksParams @params,
+        CancellationToken cancellationToken)
+    {
+        var useThrowIfNull = string.IsNullOrWhiteSpace(@params.Style) ||
+                             string.Equals(@params.Style, "throw", StringComparison.OrdinalIgnoreCase);
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            if (currentDocument is SourceGeneratedDocument)
+                continue;
+
+            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+            var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+            if (root == null || semanticModel == null)
+                continue;
+
+            var newRoot = AddNullChecksToAllMethods(
+                root, semanticModel, useThrowIfNull, cancellationToken, out var checkedCount);
+            if (checkedCount == 0)
+                continue;
+
+            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+            var afterText = await newDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var span = root.GetLocation().GetLineSpan();
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = currentDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = BuildAllFilesDescription(checkedCount),
+                    BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            currentSolution = newDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    internal static string BuildAllFilesDescription(int checkedCount) =>
+        checkedCount == 1
+            ? "Add null checks to method"
+            : $"Add null checks to {checkedCount} methods";
+
+    /// <summary>
+    /// Inserts null checks into every eligible method or constructor in
+    /// <paramref name="root"/> in a single rewrite pass so the same node
+    /// is never double-checked.
+    /// </summary>
+    internal static SyntaxNode AddNullChecksToAllMethods(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        bool useThrowIfNull,
+        CancellationToken cancellationToken,
+        out int checkedCount)
+    {
+        var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
+        foreach (var methodNode in CollectMethodsAndConstructors(root))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var rewritten = TryAddNullChecks(
+                methodNode, semanticModel, useThrowIfNull, cancellationToken);
+            if (rewritten == null)
+                continue;
+
+            replacements[methodNode] = rewritten;
+        }
+
+        checkedCount = replacements.Count;
+        if (replacements.Count == 0)
+            return root;
+
+        return root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+    }
+
+    internal static IReadOnlyList<SyntaxNode> CollectMethodsAndConstructors(SyntaxNode root) =>
+        root.DescendantNodes()
+            .Where(n => n is MethodDeclarationSyntax or ConstructorDeclarationSyntax)
+            .ToList();
+
+    private static SyntaxNode? TryAddNullChecks(
+        SyntaxNode methodNode,
+        SemanticModel semanticModel,
+        bool useThrowIfNull,
+        CancellationToken cancellationToken)
+    {
+        var body = GetBody(methodNode);
+        if (body == null)
+            return null;
+
+        if (GetExpressionBody(methodNode) != null)
+            return null;
+
+        var methodSymbol = semanticModel.GetDeclaredSymbol(methodNode, cancellationToken) as IMethodSymbol;
+        if (methodSymbol == null)
+            return null;
+
+        var paramsToCheck = methodSymbol.Parameters
+            .Where(NullCheckGenerator.ShouldCheckForNull)
+            .Where(param => !NullCheckGenerator.HasExistingNullCheck(body, param.Name))
+            .ToList();
+
+        if (paramsToCheck.Count == 0)
+            return null;
+
+        var nullChecks = new List<StatementSyntax>();
+        foreach (var param in paramsToCheck)
+        {
+            var check = useThrowIfNull
+                ? NullCheckGenerator.GenerateThrowIfNull(param.Name)
+                : NullCheckGenerator.GenerateGuardClause(param.Name);
+            nullChecks.Add(check);
+        }
+
+        var newStatements = nullChecks.Concat(body.Statements);
+        var newBody = body.WithStatements(SyntaxFactory.List(newStatements));
+        return ReplaceBody(methodNode, newBody);
+    }
+
+    private static ArrowExpressionClauseSyntax? GetExpressionBody(SyntaxNode node) => node switch
+    {
+        MethodDeclarationSyntax m => m.ExpressionBody,
+        ConstructorDeclarationSyntax c => c.ExpressionBody,
+        _ => null
+    };
 
     /// <summary>
     /// Finds a method or constructor. Omitted <paramref name="column"/> keeps

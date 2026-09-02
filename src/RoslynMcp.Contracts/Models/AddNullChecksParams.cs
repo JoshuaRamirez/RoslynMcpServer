@@ -7,16 +7,25 @@ public sealed class AddNullChecksParams
 {
     /// <summary>
     /// Absolute path to the source file.
+    /// Required when <see cref="AllFiles"/> is false.
     /// </summary>
-    public required string SourceFile { get; init; }
+    public string? SourceFile { get; init; }
 
     /// <summary>
-    /// Name of the method/constructor to add null checks to.
+    /// When true, process all C# documents in the solution instead of a single method.
+    /// When true, <see cref="SourceFile"/> is optional. Cannot be combined with
+    /// <see cref="MethodName"/>, <see cref="Line"/>, or <see cref="Column"/>.
     /// </summary>
-    public required string MethodName { get; init; }
+    public bool AllFiles { get; init; }
 
     /// <summary>
-    /// 1-based line number for disambiguation.
+    /// Name of the method/constructor to add null checks to. Single-site only.
+    /// Required when <see cref="AllFiles"/> is false.
+    /// </summary>
+    public string? MethodName { get; init; }
+
+    /// <summary>
+    /// 1-based line number for disambiguation. Single-site only.
     /// </summary>
     public int? Line { get; init; }
 
@@ -25,6 +34,7 @@ public sealed class AddNullChecksParams
     /// or constructor whose identifier or declaration span covers that column.
     /// Omitted keeps today's MethodName and optional Line start-line pick
     /// (including today's silent First() fallback when line misses).
+    /// Single-site only.
     /// </summary>
     public int? Column { get; init; }
 
