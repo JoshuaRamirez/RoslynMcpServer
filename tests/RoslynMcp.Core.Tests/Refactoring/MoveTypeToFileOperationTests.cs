@@ -1265,6 +1265,147 @@ public class MoveTypeToFileOperationTests
             MoveTypeToFileOperation.BuildAllFilesDescription("Widget", Path.Combine(Path.GetTempPath(), "Widget.cs")));
     }
 
+    [Fact]
+    public void GetNamespaceName_NestedNamespaces_ReturnsFullPath()
+    {
+        const string source = """
+            namespace A
+            {
+                namespace B
+                {
+                    public class Widget { }
+                }
+            }
+
+            namespace B
+            {
+                public class Other { }
+            }
+            """;
+
+        var root = Parse(source);
+        var widget = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == "Widget");
+        var other = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .First(t => t.Identifier.Text == "Other");
+
+        Assert.Equal("A.B", MoveTypeToFileOperation.GetNamespaceName(widget));
+        Assert.Equal("B", MoveTypeToFileOperation.GetNamespaceName(other));
+    }
+
+    [Fact]
+    public void HasRemainingSourceContent_PreservesEnumDelegateAndGlobalStatements()
+    {
+        var afterClassRemoved = Parse("""
+            namespace TestApp;
+            public enum E { A }
+            public delegate void D();
+            """);
+        Assert.True(MoveTypeToFileOperation.HasRemainingSourceContent(afterClassRemoved, preserveNonTypeMembers: true));
+        Assert.False(MoveTypeToFileOperation.HasRemainingSourceContent(afterClassRemoved, preserveNonTypeMembers: false));
+
+        var empty = Parse("namespace TestApp;\n");
+        Assert.False(MoveTypeToFileOperation.HasRemainingSourceContent(empty, preserveNonTypeMembers: true));
+    }
+
+    [Fact]
+    public void IsSamePhysicalLocation_OrdinalMatch_IsTrue()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "Widget.cs");
+        Assert.True(MoveTypeToFileOperation.IsSamePhysicalLocation(path, path));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_ClassPlusEnum_KeepsEnumInSource()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Mixed.cs", """
+                namespace TestApp;
+
+                public class Alpha
+                {
+                }
+
+                public enum Kept
+                {
+                    A
+                }
+                """));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(workspace.TargetPath("Alpha.cs")));
+        Assert.Contains("class Alpha", await File.ReadAllTextAsync(workspace.TargetPath("Alpha.cs")));
+        Assert.True(File.Exists(workspace.FilePaths["Mixed.cs"]));
+        var remaining = await File.ReadAllTextAsync(workspace.FilePaths["Mixed.cs"]);
+        Assert.Contains("enum Kept", remaining);
+        Assert.DoesNotContain("class Alpha", remaining);
+        Assert.DoesNotContain(result.Changes!.FilesDeleted, p => PathEquals(p, workspace.FilePaths["Mixed.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_OccupiedDestOutsideWorkspace_Skips()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", """
+                namespace TestApp;
+
+                public class Occupied
+                {
+                }
+
+                public class Other
+                {
+                }
+                """));
+        var occupiedPath = workspace.TargetPath("Occupied.cs");
+        const string sentinel = "// excluded leftover — do not overwrite";
+        await File.WriteAllTextAsync(occupiedPath, sentinel);
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(sentinel, await File.ReadAllTextAsync(occupiedPath));
+        Assert.Contains("class Occupied", await File.ReadAllTextAsync(workspace.FilePaths["Types.cs"]));
+        Assert.True(File.Exists(workspace.TargetPath("Other.cs")));
+        Assert.Contains("class Other", await File.ReadAllTextAsync(workspace.TargetPath("Other.cs")));
+        Assert.DoesNotContain(result.Changes!.FilesCreated, p => PathEquals(p, occupiedPath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_NestedNamespaces_ResolvesFullPath()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", """
+                namespace A.B;
+
+                public class Alpha { }
+                public class Beta { }
+                """));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(workspace.TargetPath("Alpha.cs")));
+        Assert.True(File.Exists(workspace.TargetPath("Beta.cs")));
+        Assert.Contains("namespace A.B", await File.ReadAllTextAsync(workspace.TargetPath("Alpha.cs")));
+        Assert.Contains("namespace A.B", await File.ReadAllTextAsync(workspace.TargetPath("Beta.cs")));
+        Assert.False(File.Exists(workspace.FilePaths["Types.cs"]));
+    }
+
     #endregion
 
     #region Helpers

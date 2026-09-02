@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
+using RoslynMcp.Core.Refactoring.Rename;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -242,7 +243,8 @@ public sealed class MoveTypeToFileOperation
         }
 
         var plans = new List<TypeMovePlan>();
-        var claimedDestinations = new HashSet<string>(StringComparer.Ordinal);
+        var claimedDestinations = new List<string>();
+        var caseDistinctCache = new Dictionary<string, bool>(StringComparer.Ordinal);
 
         foreach (var document in allDocuments)
         {
@@ -256,6 +258,7 @@ public sealed class MoveTypeToFileOperation
                 continue;
 
             var root = await document.GetSyntaxRootAsync(cancellationToken);
+            var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
             if (root == null)
                 continue;
 
@@ -272,22 +275,24 @@ public sealed class MoveTypeToFileOperation
                     continue;
 
                 var targetFile = GetDerivedTargetFile(sourceFile, typeName);
-                if (string.Equals(
-                        PathResolver.NormalizePath(sourceFile),
-                        PathResolver.NormalizePath(targetFile),
-                        StringComparison.Ordinal))
+                if (IsSamePhysicalLocation(sourceFile, targetFile, caseDistinctCache))
+                    continue;
+
+                if (IsDestinationOccupiedOutsideWorkspace(sourceFile, targetFile))
+                    continue;
+
+                if (claimedDestinations.Any(claimed =>
+                        RenameFileToMatchTypeOperation.DestinationsReferToSameLocation(
+                            claimed, targetFile, caseDistinctCache)))
                 {
                     continue;
                 }
 
-                var destKey = PathResolver.NormalizePath(targetFile);
-                if (!claimedDestinations.Add(destKey))
-                    continue;
-
+                claimedDestinations.Add(targetFile);
                 plans.Add(new TypeMovePlan(
                     sourceFile,
                     typeName,
-                    GetNamespaceName(typeDecl),
+                    GetNamespaceName(typeDecl, semanticModel, cancellationToken),
                     targetFile));
             }
         }
@@ -318,6 +323,9 @@ public sealed class MoveTypeToFileOperation
                     Preview = @params.Preview
                 };
 
+                if (IsDestinationOccupiedOutsideWorkspace(plan.SourceFile, plan.TargetFile))
+                    continue;
+
                 await ValidateTargetAsync(moveParams, resolution, cancellationToken);
 
                 var references = await _referenceTracker.FindAllReferencesAsync(
@@ -328,7 +336,8 @@ public sealed class MoveTypeToFileOperation
                     moveParams,
                     resolution,
                     references,
-                    cancellationToken);
+                    cancellationToken,
+                    preserveNonTypeMembers: true);
 
                 pendingChanges.AddRange(CreatePendingChanges(changeInfo, resolution, plan.TargetFile));
                 totalReferences += references.TotalReferenceCount;
@@ -438,10 +447,76 @@ public sealed class MoveTypeToFileOperation
         return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
     }
 
-    private static string GetNamespaceName(TypeDeclarationSyntax typeDecl)
+    /// <summary>
+    /// True when <paramref name="sourceFile"/> and <paramref name="targetFile"/>
+    /// refer to the same physical location, including case-only differences
+    /// on a case-insensitive volume (same filesystem semantics as
+    /// <c>RenameFileToMatchTypeOperation.DestinationsReferToSameLocation</c>).
+    /// </summary>
+    internal static bool IsSamePhysicalLocation(
+        string sourceFile,
+        string targetFile,
+        IDictionary<string, bool>? caseDistinctCache = null) =>
+        RenameFileToMatchTypeOperation.DestinationsReferToSameLocation(
+            sourceFile, targetFile, caseDistinctCache);
+
+    /// <summary>
+    /// True when the derived destination exists on disk, is not the source
+    /// file, and is not a workspace document. Bulk skips rather than
+    /// creating a second document that would overwrite the file.
+    /// </summary>
+    internal bool IsDestinationOccupiedOutsideWorkspace(string sourceFile, string targetFile)
     {
-        var namespaceDecl = typeDecl.Ancestors().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault();
-        return namespaceDecl?.Name.ToString() ?? "";
+        if (_context.GetDocumentByPath(targetFile) != null)
+            return false;
+
+        return RenameFileToMatchTypeOperation.IsDestinationOccupiedByDifferentFile(sourceFile, targetFile);
+    }
+
+    /// <summary>
+    /// Full namespace of a top-level type, including nested namespace
+    /// declarations (<c>namespace A { namespace B { class C } }</c> is
+    /// <c>A.B</c>, not just the nearest <c>B</c>). Prefers the semantic
+    /// containing namespace when a model is available.
+    /// </summary>
+    internal static string GetNamespaceName(
+        TypeDeclarationSyntax typeDecl,
+        SemanticModel? semanticModel = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (semanticModel?.GetDeclaredSymbol(typeDecl, cancellationToken) is INamedTypeSymbol symbol
+            && symbol.ContainingNamespace != null
+            && !symbol.ContainingNamespace.IsGlobalNamespace)
+        {
+            return symbol.ContainingNamespace.ToDisplayString();
+        }
+
+        var parts = typeDecl.Ancestors()
+            .OfType<BaseNamespaceDeclarationSyntax>()
+            .Reverse()
+            .Select(n => n.Name.ToString())
+            .ToList();
+        return parts.Count == 0 ? "" : string.Join(".", parts);
+    }
+
+    /// <summary>
+    /// True when the source still has a type, enum, delegate, or global
+    /// statement after the move. Bulk uses this so leftover excluded
+    /// declarations are not deleted with the last eligible type.
+    /// </summary>
+    internal static bool HasRemainingSourceContent(SyntaxNode? root, bool preserveNonTypeMembers)
+    {
+        if (root == null)
+            return false;
+
+        if (root.DescendantNodes().OfType<TypeDeclarationSyntax>().Any())
+            return true;
+
+        if (!preserveNonTypeMembers)
+            return false;
+
+        return root.DescendantNodes().Any(node =>
+            node is EnumDeclarationSyntax or DelegateDeclarationSyntax or GlobalStatementSyntax);
     }
 
     private async Task<SymbolResolutionResult?> TryResolvePlannedTypeAsync(
@@ -459,7 +534,7 @@ public sealed class MoveTypeToFileOperation
 
         var match = CollectTopLevelTypes(root).FirstOrDefault(t =>
             t.Identifier.Text == plan.TypeName &&
-            GetNamespaceName(t) == plan.Namespace);
+            GetNamespaceName(t, semanticModel, cancellationToken) == plan.Namespace);
         if (match == null)
             return null;
 
@@ -546,7 +621,8 @@ public sealed class MoveTypeToFileOperation
         MoveTypeToFileParams @params,
         SymbolResolutionResult resolution,
         ReferenceSearchResult references,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool preserveNonTypeMembers = false)
     {
         var solution = _context.Solution;
         var sourceDoc = resolution.Document;
@@ -591,10 +667,11 @@ public sealed class MoveTypeToFileOperation
         // Remove type from source file
         var newSourceRoot = sourceRoot.RemoveNode(typeNode, SyntaxRemoveOptions.KeepNoTrivia);
 
-        // If source file is now empty (no types), we'll delete it
-        var remainingTypes = newSourceRoot?.DescendantNodes().OfType<TypeDeclarationSyntax>().Any() ?? false;
+        // If source file is now empty (no types), we'll delete it.
+        // Bulk also keeps leftover enums / delegates / global statements.
+        var remainingContent = HasRemainingSourceContent(newSourceRoot, preserveNonTypeMembers);
 
-        if (!remainingTypes && newSourceRoot != null)
+        if (!remainingContent && newSourceRoot != null)
         {
             // Remove the document entirely
             solution = solution.RemoveDocument(sourceDoc.Id);
@@ -606,7 +683,7 @@ public sealed class MoveTypeToFileOperation
 
         return (solution, new ChangeInfo
         {
-            SourceFileEmptied = !remainingTypes,
+            SourceFileEmptied = !remainingContent,
             TargetFileCreated = targetDoc == null,
             TypeNode = typeNode,
             Namespace = namespaceName
