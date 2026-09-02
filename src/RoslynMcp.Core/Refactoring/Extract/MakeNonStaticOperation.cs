@@ -17,7 +17,10 @@ namespace RoslynMcp.Core.Refactoring.Extract;
 /// Removes the <c>static</c> modifier from a selected static method when a
 /// valid instance receiver exists for every call site, and rewrites type-name
 /// invocations and method-group conversions to that receiver (or <c>this</c>
-/// in the same type).
+/// in the same type). Optional <c>allFiles</c> walks every C# document (or
+/// the optional single <c>sourceFile</c>) and makes every eligible ordinary
+/// static method an instance method, skipping ineligible methods rather
+/// than throwing.
 /// </summary>
 public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonStaticParams>
 {
@@ -37,8 +40,36 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
     /// </summary>
     internal static void Validate(MakeNonStaticParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (@params.StartLine.HasValue ||
+                @params.StartColumn.HasValue ||
+                @params.EndLine.HasValue ||
+                @params.EndColumn.HasValue ||
+                !string.IsNullOrWhiteSpace(@params.SymbolName))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with startLine, startColumn, endLine, endColumn, or symbolName.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+
+        if (!@params.StartLine.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "startLine is required.");
+
+        if (!@params.StartColumn.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "startColumn is required.");
+
+        if (!@params.EndLine.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endLine is required.");
+
+        if (!@params.EndColumn.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endColumn is required.");
 
         if (!PathResolver.IsAbsolutePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
@@ -46,20 +77,20 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
-        if (@params.StartLine < 1)
+        if (@params.StartLine.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "startLine must be >= 1.");
 
-        if (@params.StartColumn < 1)
+        if (@params.StartColumn.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "startColumn must be >= 1.");
 
-        if (@params.EndLine < 1)
+        if (@params.EndLine.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "endLine must be >= 1.");
 
-        if (@params.EndColumn < 1)
+        if (@params.EndColumn.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "endColumn must be >= 1.");
 
-        if (@params.EndLine < @params.StartLine ||
-            (@params.EndLine == @params.StartLine && @params.EndColumn < @params.StartColumn))
+        if (@params.EndLine.Value < @params.StartLine.Value ||
+            (@params.EndLine.Value == @params.StartLine.Value && @params.EndColumn.Value < @params.StartColumn.Value))
             throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
 
         if (!File.Exists(@params.SourceFile))
@@ -99,7 +130,10 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         MakeNonStaticParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -142,18 +176,369 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
             0);
     }
 
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
+    /// / <c>ConvertToAsyncOperation.ExecuteAllFilesAsync</c> /
+    /// <c>AddNullChecksOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ConvertPropertyOperation.ExecuteAllFilesAsync</c> /
+    /// <c>MakeStaticOperation.ExecuteAllFilesAsync</c>) and makes every
+    /// eligible ordinary static method an instance method using today's
+    /// rewrite (remove <c>static</c>, update type-name call sites and
+    /// method-group conversions to a valid instance receiver or
+    /// <c>this</c>). Optional <c>sourceFile</c> limits the walk to that
+    /// one file. Already-instance, extension, virtual/override/abstract/extern,
+    /// static-class, interface / interface-implementing, no-valid-receiver,
+    /// uneditable, conditional-access, and otherwise ineligible methods are
+    /// skipped rather than failing the walk. When two plans claim the same
+    /// span, the later claim is skipped. When every method is a no-op,
+    /// succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        MakeNonStaticParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = FilterDocumentsBySourceFile(allDocuments, @params.SourceFile);
+
+        var acceptedDeclarations = new List<DeclarationEdit>();
+        var acceptedCallSites = new List<CallSiteEdit>();
+        var claimedSpans = new HashSet<(SyntaxTree Tree, TextSpan Span)>();
+        var processedMethods = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        var convertedCountByDoc = new Dictionary<DocumentId, int>();
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!IsDocumentEditable(document, Context.Workspace))
+                continue;
+
+            var root = await document.GetSyntaxRootAsync(cancellationToken);
+            var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+            if (root == null || semanticModel == null)
+                continue;
+
+            foreach (var methodDecl in CollectOrdinaryMethods(root))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    if (!TryGetEligibleMethod(methodDecl, semanticModel, cancellationToken, out var method) ||
+                        method == null)
+                    {
+                        continue;
+                    }
+
+                    var canonical = CanonicalPartialMethod(method);
+                    if (!processedMethods.Add(canonical))
+                        continue;
+
+                    var declarationDocuments = await GetDeclarationDocumentsAsync(canonical, cancellationToken);
+                    if (declarationDocuments.Any(declarationDocument =>
+                            !IsDocumentEditable(declarationDocument, Context.Workspace)))
+                    {
+                        continue;
+                    }
+
+                    var plan = await BuildPlanAsync(canonical, cancellationToken);
+                    if (PlanConflictsWithClaimedSpans(plan, claimedSpans))
+                        continue;
+
+                    foreach (var declaration in plan.Declarations)
+                        claimedSpans.Add((declaration.SyntaxTree, declaration.Span));
+                    foreach (var callSite in plan.CallSites)
+                        claimedSpans.Add((callSite.SyntaxTree, callSite.Span));
+
+                    acceptedDeclarations.AddRange(plan.Declarations);
+                    acceptedCallSites.AddRange(plan.CallSites);
+                    convertedCountByDoc[document.Id] =
+                        convertedCountByDoc.GetValueOrDefault(document.Id) + 1;
+                }
+                catch (RefactoringException)
+                {
+                    // Skip ineligible / uneditable / no-valid-receiver /
+                    // conditional-access methods rather than failing the walk.
+                }
+            }
+        }
+
+        if (acceptedDeclarations.Count == 0 && acceptedCallSites.Count == 0)
+        {
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+                null, 0, 0);
+        }
+
+        var megaPlan = new StaticPlan(
+            "methods",
+            "methods",
+            Contracts.Enums.SymbolKind.Method,
+            acceptedDeclarations,
+            acceptedCallSites);
+        var newSolution = await ApplyPlanAsync(originalSolution, megaPlan, cancellationToken);
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var documentsToCompare = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = newSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var convertedCount = convertedCountByDoc.GetValueOrDefault(document.Id);
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = convertedCount > 0
+                        ? BuildAllFilesDescription(convertedCount)
+                        : "Update call sites of methods made instance",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that made
+    /// <paramref name="convertedCount"/> methods instance.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int convertedCount) =>
+        convertedCount == 1
+            ? "Make method an instance method"
+            : $"Make {convertedCount} methods instance methods";
+
+    /// <summary>
+    /// Collects every <see cref="MethodDeclarationSyntax"/> in
+    /// <paramref name="root"/> in deterministic span order (ordinary-kind
+    /// filter is applied later via <see cref="TryGetEligibleMethod"/>).
+    /// </summary>
+    internal static IReadOnlyList<MethodDeclarationSyntax> CollectOrdinaryMethods(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .OrderBy(method => method.SpanStart)
+            .ThenBy(method => method.Span.Length)
+            .ToList();
+
+    /// <summary>
+    /// Classifies a method for allFiles using the same kind / modifier /
+    /// interface / static-class filter as
+    /// <see cref="ValidateMethodCanBeMadeNonStatic"/> (skip, not throw).
+    /// Receiver eligibility is checked separately via today's rewrite.
+    /// </summary>
+    internal static bool TryGetEligibleMethod(
+        MethodDeclarationSyntax methodDecl,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken,
+        out IMethodSymbol? method)
+    {
+        method = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken) as IMethodSymbol;
+        if (method == null)
+            return false;
+
+        method = method.OriginalDefinition;
+        return CanMethodBeMadeNonStatic(method);
+    }
+
+    private static bool CanMethodBeMadeNonStatic(IMethodSymbol method)
+    {
+        if (method.MethodKind != MethodKind.Ordinary)
+            return false;
+
+        if (!method.IsStatic)
+            return false;
+
+        if (method.IsExtensionMethod)
+            return false;
+
+        if (method.IsAbstract || method.IsOverride || HasVirtualModifier(method))
+            return false;
+
+        if (method.IsExtern)
+            return false;
+
+        if (method.ContainingType == null)
+            return false;
+
+        if (method.ContainingType.IsStatic)
+            return false;
+
+        if (method.ContainingType.TypeKind == TypeKind.Interface)
+            return false;
+
+        if (ImplementsInterface(method))
+            return false;
+
+        return method.Locations.Any(location => location.IsInSource);
+    }
+
+    /// <summary>
+    /// Prefers the implementation part of a partial method so the walk
+    /// treats definition + implementation as one method.
+    /// </summary>
+    internal static IMethodSymbol CanonicalPartialMethod(IMethodSymbol method)
+    {
+        var implementation = method.PartialImplementationPart
+            ?? method.PartialDefinitionPart?.PartialImplementationPart;
+        return implementation ?? method.PartialDefinitionPart ?? method;
+    }
+
+    /// <summary>
+    /// Both partial definition and implementation (when present), plus
+    /// <paramref name="method"/> itself.
+    /// </summary>
+    internal static IEnumerable<IMethodSymbol> GetPartialMethodParts(IMethodSymbol method)
+    {
+        var parts = new List<IMethodSymbol> { method };
+        if (method.PartialDefinitionPart != null)
+            parts.Add(method.PartialDefinitionPart);
+        if (method.PartialImplementationPart != null)
+            parts.Add(method.PartialImplementationPart);
+        if (method.PartialDefinitionPart?.PartialImplementationPart != null)
+            parts.Add(method.PartialDefinitionPart.PartialImplementationPart);
+        if (method.PartialImplementationPart?.PartialDefinitionPart != null)
+            parts.Add(method.PartialImplementationPart.PartialDefinitionPart);
+        return parts.Distinct<IMethodSymbol>(SymbolEqualityComparer.Default);
+    }
+
+    private static IEnumerable<SyntaxReference> EnumerateDeclaringSyntaxReferences(IMethodSymbol method)
+    {
+        foreach (var part in GetPartialMethodParts(method))
+        {
+            foreach (var reference in part.DeclaringSyntaxReferences)
+                yield return reference;
+        }
+    }
+
+    private static List<Document> FilterDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        string wanted;
+        try
+        {
+            wanted = PathResolver.NormalizePath(sourceFile);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            wanted = sourceFile;
+        }
+
+        return documents
+            .Where(d => string.Equals(
+                PathResolver.NormalizePath(d.FilePath!),
+                wanted,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private static bool PlanConflictsWithClaimedSpans(
+        StaticPlan plan,
+        HashSet<(SyntaxTree Tree, TextSpan Span)> claimedSpans)
+    {
+        foreach (var declaration in plan.Declarations)
+        {
+            if (claimedSpans.Contains((declaration.SyntaxTree, declaration.Span)))
+                return true;
+        }
+
+        foreach (var callSite in plan.CallSites)
+        {
+            if (claimedSpans.Contains((callSite.SyntaxTree, callSite.Span)))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Non-throwing counterpart of <see cref="ValidateDocumentIsEditable"/>
+    /// for allFiles skips.
+    /// </summary>
+    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
+    {
+        if (document is SourceGeneratedDocument)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
+            return false;
+
+        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
+    }
+
     internal static TextSpan GetSelectionSpan(SourceText sourceText, MakeNonStaticParams @params)
     {
-        if (@params.StartLine > sourceText.Lines.Count || @params.EndLine > sourceText.Lines.Count)
+        var startLineNumber = @params.StartLine!.Value;
+        var startColumn = @params.StartColumn!.Value;
+        var endLineNumber = @params.EndLine!.Value;
+        var endColumn = @params.EndColumn!.Value;
+
+        if (startLineNumber > sourceText.Lines.Count || endLineNumber > sourceText.Lines.Count)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Selection is outside the file.");
 
-        var startLine = sourceText.Lines[@params.StartLine - 1];
-        var endLine = sourceText.Lines[@params.EndLine - 1];
-        if (@params.StartColumn - 1 > startLine.Span.Length || @params.EndColumn - 1 > endLine.SpanIncludingLineBreak.Length)
+        var startLine = sourceText.Lines[startLineNumber - 1];
+        var endLine = sourceText.Lines[endLineNumber - 1];
+        if (startColumn - 1 > startLine.Span.Length || endColumn - 1 > endLine.SpanIncludingLineBreak.Length)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Selection column is outside the line.");
 
-        var startPosition = startLine.Start + @params.StartColumn - 1;
-        var endPosition = endLine.Start + @params.EndColumn - 1;
+        var startPosition = startLine.Start + startColumn - 1;
+        var endPosition = endLine.Start + endColumn - 1;
         if (endPosition < startPosition)
             throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
 
@@ -372,7 +757,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         CancellationToken cancellationToken)
     {
         var documents = new List<Document>();
-        foreach (var reference in method.DeclaringSyntaxReferences)
+        foreach (var reference in EnumerateDeclaringSyntaxReferences(method))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var syntax = await reference.GetSyntaxAsync(cancellationToken);
@@ -400,7 +785,8 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
     private async Task<StaticPlan> BuildPlanAsync(IMethodSymbol method, CancellationToken cancellationToken)
     {
         var declarations = new List<DeclarationEdit>();
-        foreach (var reference in method.DeclaringSyntaxReferences)
+        var seenDeclarations = new HashSet<(SyntaxTree Tree, TextSpan Span)>();
+        foreach (var reference in EnumerateDeclaringSyntaxReferences(method))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var syntax = await reference.GetSyntaxAsync(cancellationToken);
@@ -410,6 +796,9 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
                     ErrorCodes.InvalidSymbolKind,
                     $"Declaration '{method.Name}' is not a method that can be made an instance method.");
             }
+
+            if (!seenDeclarations.Add((declaration.SyntaxTree, declaration.Span)))
+                continue;
 
             declarations.Add(new DeclarationEdit(
                 declaration.SyntaxTree,
@@ -425,7 +814,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
                 $"Could not locate a declaration to make non-static for '{method.Name}'.");
         }
 
-        var callSites = await FindCallSiteEditsAsync(method, cancellationToken);
+        var callSites = await FindCallSiteEditsAsync(CanonicalPartialMethod(method), cancellationToken);
         return new StaticPlan(
             method.Name,
             method.ToDisplayString(),
@@ -980,20 +1369,29 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
 
             var methodAnn = new SyntaxAnnotation("make-non-static-method");
             var rewriteAnn = new SyntaxAnnotation("make-non-static-call");
-            var methodSet = methods.Cast<SyntaxNode>().ToHashSet();
-            var rewriteSet = rewriteTargets.ToHashSet();
-            var annotateTargets = methodSet.Concat(rewriteSet).ToList();
-            if (annotateTargets.Count > 0)
+
+            // Annotate methods and call sites in separate ReplaceNodes
+            // passes. A later method's declaration can contain an earlier
+            // method's call site; Roslyn ignores descendant replacements
+            // when the ancestor is in the same list.
+            if (methods.Count > 0)
             {
-                root = root.ReplaceNodes(annotateTargets, (original, _) =>
+                root = root.ReplaceNodes(methods, (original, _) =>
+                    original.WithAdditionalAnnotations(methodAnn));
+            }
+
+            if (rewriteTargets.Count > 0)
+            {
+                var rewriteSpans = rewriteTargets.Select(target => target.Span).ToHashSet();
+                var currentRewrites = root.DescendantNodes()
+                    .Where(node => rewriteSpans.Contains(node.Span) &&
+                        (node is MemberAccessExpressionSyntax || node is SimpleNameSyntax))
+                    .ToList();
+                if (currentRewrites.Count > 0)
                 {
-                    var node = original;
-                    if (methodSet.Contains(original))
-                        node = node.WithAdditionalAnnotations(methodAnn);
-                    if (rewriteSet.Contains(original))
-                        node = node.WithAdditionalAnnotations(rewriteAnn);
-                    return node;
-                });
+                    root = root.ReplaceNodes(currentRewrites, (original, _) =>
+                        original.WithAdditionalAnnotations(rewriteAnn));
+                }
             }
 
             var annotatedRewrites = root.GetAnnotatedNodes(rewriteAnn).ToList();
