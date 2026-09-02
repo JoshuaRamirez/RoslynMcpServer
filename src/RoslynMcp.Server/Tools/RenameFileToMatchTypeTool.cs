@@ -33,13 +33,13 @@ public sealed class RenameFileToMatchTypeTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Rename a source file so its name matches the primary type declared in it, without renaming the type or its references.";
+        "Rename a source file so its name matches the primary type declared in it, without renaming the type or its references. Process a single file or all files in the solution. allFiles: true walks every C# file and renames each unambiguous mismatched single-type file (sourceFile optional when true; cannot be combined with typeName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,23 +50,29 @@ public sealed class RenameFileToMatchTypeTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file to rename"
+                description = "Absolute path to the source file to rename. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with typeName, line, or column.",
+                @default = false
             },
             typeName = new
             {
                 type = "string",
-                description = "Type name used to disambiguate when the file declares more than one type"
+                description = "Type name used to disambiguate when the file declares more than one type. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number used to select a type when the file declares more than one",
+                description = "1-based line number used to select a type when the file declares more than one. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column number used with line when multiple types share a line",
+                description = "1-based column number used with line when multiple types share a line. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             preview = new
@@ -103,6 +109,7 @@ public sealed class RenameFileToMatchTypeTool : IToolHandler
             var @params = new RenameFileToMatchTypeParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 TypeName = args.TypeName,
                 Line = args.Line,
                 Column = args.Column,
@@ -134,7 +141,8 @@ public sealed class RenameFileToMatchTypeTool : IToolHandler
     private sealed class RenameFileToMatchTypeArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public string? TypeName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }

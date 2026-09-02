@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Rename;
 using RoslynMcp.Core.Workspace;
@@ -41,6 +42,73 @@ public class RenameFileToMatchTypeOperationTests
             RenameFileToMatchTypeOperation.Validate(ValidParams()));
 
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameFileToMatchTypeOperation.Validate(new RenameFileToMatchTypeParams
+            {
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFile_DoesNotThrow()
+    {
+        RenameFileToMatchTypeOperation.Validate(new RenameFileToMatchTypeParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameFileToMatchTypeOperation.Validate(new RenameFileToMatchTypeParams
+            {
+                AllFiles = true,
+                TypeName = "Bar"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameFileToMatchTypeOperation.Validate(new RenameFileToMatchTypeParams
+            {
+                AllFiles = true,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameFileToMatchTypeOperation.Validate(new RenameFileToMatchTypeParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -163,6 +231,68 @@ public class RenameFileToMatchTypeOperationTests
         Assert.False(RenameFileToMatchTypeOperation.PathsDifferOnlyByCase(
             Path.Combine(dir, "foo.cs"),
             Path.Combine(dir, "foo.cs")));
+    }
+
+    [Fact]
+    public void DestinationsReferToSameLocation_OrdinalMatch_IsSame()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "Alpha.cs");
+        Assert.True(RenameFileToMatchTypeOperation.DestinationsReferToSameLocation(path, path));
+    }
+
+    [Fact]
+    public void DestinationsReferToSameLocation_DifferentNames_AreDistinct()
+    {
+        var dir = Path.GetTempPath();
+        Assert.False(RenameFileToMatchTypeOperation.DestinationsReferToSameLocation(
+            Path.Combine(dir, "Alpha.cs"),
+            Path.Combine(dir, "Beta.cs")));
+    }
+
+    [Fact]
+    public void DestinationsReferToSameLocation_CaseOnlyPair_FollowsVolume()
+    {
+        var dir = Path.GetTempPath();
+        var same = RenameFileToMatchTypeOperation.DestinationsReferToSameLocation(
+            Path.Combine(dir, "Alpha.cs"),
+            Path.Combine(dir, "alpha.cs"));
+        Assert.Equal(
+            !RenameFileToMatchTypeOperation.DirectoryTreatsCaseAsDistinct(dir),
+            same);
+    }
+
+    [Fact]
+    public void ApplyFileMovesOrRollback_LaterMoveFails_RestoresEarlierMoves()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameRollback_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var firstSource = Path.Combine(directory, "Foo.cs");
+            var firstDest = Path.Combine(directory, "Alpha.cs");
+            var secondSource = Path.Combine(directory, "Qux.cs");
+            var secondDest = Path.Combine(directory, "Beta.cs");
+            File.WriteAllText(firstSource, "class Alpha {}");
+            File.WriteAllText(secondSource, "class Beta {}");
+            Directory.CreateDirectory(secondDest);
+
+            Assert.Throws<IOException>(() =>
+                RenameFileToMatchTypeOperation.ApplyFileMovesOrRollback(
+                [
+                    (firstSource, firstDest),
+                    (secondSource, secondDest)
+                ]));
+
+            Assert.True(File.Exists(firstSource));
+            Assert.False(File.Exists(firstDest));
+            Assert.True(File.Exists(secondSource));
+            Assert.True(Directory.Exists(secondDest));
+            Assert.Equal("class Alpha {}", File.ReadAllText(firstSource));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     [Fact]
@@ -639,6 +769,476 @@ public class RenameFileToMatchTypeOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesFalse_RenamesOnlySpecifiedFile()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", "namespace TestApp; public class Alpha { }"),
+            ("Bar.cs", "namespace TestApp; public class Beta { }"),
+            ("Already.cs", "namespace TestApp; public class Already { }"));
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+        var barPath = Path.Combine(workspace.DirectoryPath, "Bar.cs");
+        var alreadyPath = Path.Combine(workspace.DirectoryPath, "Already.cs");
+        var beforeBar = await File.ReadAllTextAsync(barPath);
+        var beforeAlready = await File.ReadAllTextAsync(alreadyPath);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            AllFiles = false
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.False(File.Exists(workspace.SourcePath));
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "Alpha.cs")));
+        Assert.True(File.Exists(barPath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Beta.cs")));
+        Assert.Equal(beforeBar, await File.ReadAllTextAsync(barPath));
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(alreadyPath));
+        Assert.Contains(Path.Combine(workspace.DirectoryPath, "Alpha.cs"), result.Changes!.FilesCreated);
+        Assert.DoesNotContain(result.Changes.FilesCreated, p => Path.GetFileName(p) == "Beta.cs");
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_OmittedAllFiles_KeepsSingleFileRename()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Bar
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Foo.cs");
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(result.Success);
+        Assert.False(File.Exists(workspace.SourcePath));
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "Bar.cs")));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesTrue_RenamesUnambiguousMismatchedAndSkipsOthers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", "namespace TestApp; public class Alpha { }"),
+            ("Qux.cs", "namespace TestApp; public class Beta { }"),
+            ("Already.cs", "namespace TestApp; public class Already { }"),
+            ("Multi.cs", "namespace TestApp; public class One { } public class Two { }"),
+            ("Empty.cs", "namespace TestApp;\n"),
+            ("OccupiedSrc.cs", "namespace TestApp; public class OccupiedDest { }"),
+            ("OccupiedDest.cs", "namespace TestApp; public class OccupiedDest { }"));
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+        var alreadyPath = Path.Combine(workspace.DirectoryPath, "Already.cs");
+        var multiPath = Path.Combine(workspace.DirectoryPath, "Multi.cs");
+        var emptyPath = Path.Combine(workspace.DirectoryPath, "Empty.cs");
+        var occupiedSrc = Path.Combine(workspace.DirectoryPath, "OccupiedSrc.cs");
+        var occupiedDest = Path.Combine(workspace.DirectoryPath, "OccupiedDest.cs");
+        var beforeAlready = await File.ReadAllTextAsync(alreadyPath);
+        var beforeMulti = await File.ReadAllTextAsync(multiPath);
+        var beforeEmpty = await File.ReadAllTextAsync(emptyPath);
+        var beforeOccupiedSrc = await File.ReadAllTextAsync(occupiedSrc);
+        var beforeOccupiedDest = await File.ReadAllTextAsync(occupiedDest);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+
+        var alphaPath = Path.Combine(workspace.DirectoryPath, "Alpha.cs");
+        var betaPath = Path.Combine(workspace.DirectoryPath, "Beta.cs");
+        Assert.False(File.Exists(workspace.SourcePath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Qux.cs")));
+        Assert.True(File.Exists(alphaPath));
+        Assert.True(File.Exists(betaPath));
+        Assert.Contains("public class Alpha", await File.ReadAllTextAsync(alphaPath));
+        Assert.Contains("public class Beta", await File.ReadAllTextAsync(betaPath));
+
+        Assert.True(File.Exists(alreadyPath));
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(alreadyPath));
+        Assert.True(File.Exists(multiPath));
+        Assert.Equal(beforeMulti, await File.ReadAllTextAsync(multiPath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "One.cs")));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Two.cs")));
+        Assert.True(File.Exists(emptyPath));
+        Assert.Equal(beforeEmpty, await File.ReadAllTextAsync(emptyPath));
+        Assert.True(File.Exists(occupiedSrc));
+        Assert.True(File.Exists(occupiedDest));
+        Assert.Equal(beforeOccupiedSrc, await File.ReadAllTextAsync(occupiedSrc));
+        Assert.Equal(beforeOccupiedDest, await File.ReadAllTextAsync(occupiedDest));
+
+        Assert.Equal(2, result.Changes!.FilesCreated.Count);
+        Assert.Contains(alphaPath, result.Changes.FilesCreated);
+        Assert.Contains(betaPath, result.Changes.FilesCreated);
+        Assert.Contains(workspace.SourcePath, result.Changes.FilesDeleted);
+        Assert.Contains(Path.Combine(workspace.DirectoryPath, "Qux.cs"), result.Changes.FilesDeleted);
+        Assert.DoesNotContain(result.Changes.FilesCreated, p => Path.GetFileName(p) == "OccupiedDest.cs");
+        Assert.DoesNotContain(alreadyPath, result.Changes.FilesDeleted);
+        Assert.DoesNotContain(multiPath, result.Changes.FilesDeleted);
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesTrue_WithoutSourceFile_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", "namespace TestApp; public class Alpha { }"),
+            ("Qux.cs", "namespace TestApp; public class Beta { }"));
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesCreated.Count);
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "Alpha.cs")));
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "Beta.cs")));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "namespace TestApp; public class Bar { }",
+            "Foo.cs");
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameFileToMatchTypeParams
+            {
+                AllFiles = false
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesTrue_WithTypeName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "namespace TestApp; public class Bar { }",
+            "Foo.cs");
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameFileToMatchTypeParams
+            {
+                AllFiles = true,
+                TypeName = "Bar"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(workspace.SourcePath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Bar.cs")));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "namespace TestApp; public class Bar { }",
+            "Foo.cs");
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameFileToMatchTypeParams
+            {
+                AllFiles = true,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            "namespace TestApp; public class Bar { }",
+            "Foo.cs");
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameFileToMatchTypeParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_PreviewAllFiles_AggregatesChangesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", "namespace TestApp; public class Alpha { }"),
+            ("Qux.cs", "namespace TestApp; public class Beta { }"),
+            ("Already.cs", "namespace TestApp; public class Already { }"));
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+        var fooPath = workspace.SourcePath;
+        var quxPath = Path.Combine(workspace.DirectoryPath, "Qux.cs");
+        var alreadyPath = Path.Combine(workspace.DirectoryPath, "Already.cs");
+        var beforeFoo = await File.ReadAllTextAsync(fooPath);
+        var beforeQux = await File.ReadAllTextAsync(quxPath);
+        var beforeAlready = await File.ReadAllTextAsync(alreadyPath);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => c.File == fooPath);
+        Assert.Contains(result.PendingChanges, c => c.File == Path.Combine(workspace.DirectoryPath, "Alpha.cs"));
+        Assert.Contains(result.PendingChanges, c => c.File == quxPath);
+        Assert.Contains(result.PendingChanges, c => c.File == Path.Combine(workspace.DirectoryPath, "Beta.cs"));
+        Assert.DoesNotContain(result.PendingChanges, c => c.File == alreadyPath);
+        Assert.True(File.Exists(fooPath));
+        Assert.True(File.Exists(quxPath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Alpha.cs")));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Beta.cs")));
+        Assert.Equal(beforeFoo, await File.ReadAllTextAsync(fooPath));
+        Assert.Equal(beforeQux, await File.ReadAllTextAsync(quxPath));
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(alreadyPath));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesTrue_EveryFileNoOp_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Already.cs", "namespace TestApp; public class Already { }"),
+            ("Multi.cs", "namespace TestApp; public class One { } public class Two { }"));
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+        var alreadyPath = workspace.SourcePath;
+        var multiPath = Path.Combine(workspace.DirectoryPath, "Multi.cs");
+        var beforeAlready = await File.ReadAllTextAsync(alreadyPath);
+        var beforeMulti = await File.ReadAllTextAsync(multiPath);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesCreated);
+        Assert.Empty(result.Changes.FilesDeleted);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(alreadyPath));
+        Assert.Equal(beforeMulti, await File.ReadAllTextAsync(multiPath));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesTrue_DestinationCollision_SkipsBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", "namespace TestApp; public class Shared { }"),
+            ("Bar.cs", "namespace TestApp; public class Shared { }"),
+            ("Keep.cs", "namespace TestApp; public class Alpha { }"));
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+        var fooPath = workspace.SourcePath;
+        var barPath = Path.Combine(workspace.DirectoryPath, "Bar.cs");
+        var keepPath = Path.Combine(workspace.DirectoryPath, "Keep.cs");
+        var beforeFoo = await File.ReadAllTextAsync(fooPath);
+        var beforeBar = await File.ReadAllTextAsync(barPath);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(fooPath));
+        Assert.True(File.Exists(barPath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Shared.cs")));
+        Assert.Equal(beforeFoo, await File.ReadAllTextAsync(fooPath));
+        Assert.Equal(beforeBar, await File.ReadAllTextAsync(barPath));
+        Assert.False(File.Exists(keepPath));
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "Alpha.cs")));
+        Assert.DoesNotContain(result.Changes!.FilesCreated, p => Path.GetFileName(p) == "Shared.cs");
+        Assert.Contains(Path.Combine(workspace.DirectoryPath, "Alpha.cs"), result.Changes.FilesCreated);
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesTrue_ExplicitCompileItems_UpdatesProjectOnce()
+    {
+        await using var workspace = await TempWorkspace.CreateWithExplicitCompileItemsAsync(
+            ("Foo.cs", "namespace TestApp; public class Alpha { }"),
+            ("Qux.cs", "namespace TestApp; public class Beta { }"));
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "Alpha.cs")));
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "Beta.cs")));
+        Assert.False(File.Exists(workspace.SourcePath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Qux.cs")));
+
+        var csproj = await File.ReadAllTextAsync(workspace.ProjectPath);
+        Assert.Contains("Include=\"Alpha.cs\"", csproj);
+        Assert.Contains("Include=\"Beta.cs\"", csproj);
+        Assert.DoesNotContain("Include=\"Foo.cs\"", csproj);
+        Assert.DoesNotContain("Include=\"Qux.cs\"", csproj);
+        Assert.Contains(workspace.ProjectPath, result.Changes!.FilesModified);
+        Assert.Single(result.Changes.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_PreviewAllFiles_ExplicitCompileItems_WritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithExplicitCompileItemsAsync(
+            ("Foo.cs", "namespace TestApp; public class Alpha { }"));
+        var originalProject = await File.ReadAllTextAsync(workspace.ProjectPath);
+        var originalSource = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Contains(result.PendingChanges!, c => c.File == workspace.ProjectPath);
+        Assert.Equal(originalProject, await File.ReadAllTextAsync(workspace.ProjectPath));
+        Assert.Equal(originalSource, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.True(File.Exists(workspace.SourcePath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Alpha.cs")));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesTrue_PartialMoveFailure_RollsBackCompletedMoves()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", "namespace TestApp; public class Alpha { }"),
+            ("Qux.cs", "namespace TestApp; public class Beta { }"));
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+        var fooPath = workspace.SourcePath;
+        var quxPath = Path.Combine(workspace.DirectoryPath, "Qux.cs");
+        var beforeFoo = await File.ReadAllTextAsync(fooPath);
+        var beforeQux = await File.ReadAllTextAsync(quxPath);
+        Directory.CreateDirectory(Path.Combine(workspace.DirectoryPath, "Beta.cs"));
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameFileToMatchTypeParams
+            {
+                AllFiles = true
+            }));
+
+        Assert.Equal(ErrorCodes.FilesystemError, ex.ErrorCode);
+        Assert.True(File.Exists(fooPath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Alpha.cs")));
+        Assert.True(File.Exists(quxPath));
+        Assert.Equal(beforeFoo, await File.ReadAllTextAsync(fooPath));
+        Assert.Equal(beforeQux, await File.ReadAllTextAsync(quxPath));
+        Assert.NotNull(workspace.Context.GetDocumentByPath(fooPath));
+        Assert.Null(workspace.Context.GetDocumentByPath(Path.Combine(workspace.DirectoryPath, "Alpha.cs")));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesTrue_LinkedIntoMultipleProjects_UpdatesEveryOwner()
+    {
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectAsync(
+            ("Foo.cs", "namespace TestApp; public class Alpha { }"));
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var newPath = Path.Combine(Path.GetDirectoryName(workspace.SourcePath)!, "Alpha.cs");
+        Assert.True(File.Exists(newPath));
+        Assert.False(File.Exists(workspace.SourcePath));
+
+        var ownerProj = await File.ReadAllTextAsync(workspace.ProjectPath);
+        var linkerProj = await File.ReadAllTextAsync(workspace.SecondaryProjectPath);
+        Assert.Contains("Alpha.cs", ownerProj);
+        Assert.DoesNotContain("Foo.cs", ownerProj);
+        Assert.Contains("Alpha.cs", linkerProj);
+        Assert.DoesNotContain("Foo.cs", linkerProj);
+        Assert.Contains(workspace.ProjectPath, result.Changes!.FilesModified);
+        Assert.Contains(workspace.SecondaryProjectPath, result.Changes.FilesModified);
+
+        var docsAtNew = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Count(d =>
+                d.FilePath != null
+                && string.Equals(
+                    PathResolver.NormalizePath(d.FilePath),
+                    PathResolver.NormalizePath(newPath),
+                    StringComparison.OrdinalIgnoreCase));
+        var docsAtOld = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Count(d =>
+                d.FilePath != null
+                && string.Equals(
+                    PathResolver.NormalizePath(d.FilePath),
+                    PathResolver.NormalizePath(workspace.SourcePath),
+                    StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(2, docsAtNew);
+        Assert.Equal(0, docsAtOld);
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_AllFilesTrue_DistinctCaseDestinations_RenamesBothWhenVolumeIsCaseSensitive()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", "namespace TestApp; public class Alpha { }"),
+            ("Bar.cs", "namespace TestApp; public class alpha { }"));
+        Skip.If(
+            !RenameFileToMatchTypeOperation.DirectoryTreatsCaseAsDistinct(workspace.DirectoryPath),
+            "Volume treats Alpha.cs and alpha.cs as the same destination");
+
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var upper = Path.Combine(workspace.DirectoryPath, "Alpha.cs");
+        var lower = Path.Combine(workspace.DirectoryPath, "alpha.cs");
+        Assert.True(File.Exists(upper));
+        Assert.True(File.Exists(lower));
+        Assert.False(File.Exists(workspace.SourcePath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Bar.cs")));
+        Assert.Contains("public class Alpha", await File.ReadAllTextAsync(upper));
+        Assert.Contains("public class alpha", await File.ReadAllTextAsync(lower));
+        Assert.Equal(2, result.Changes!.FilesCreated.Count);
+    }
+
+    #endregion
+
     #region Helpers
 
     private static RenameFileToMatchTypeParams ValidParams(
@@ -658,6 +1258,7 @@ public class RenameFileToMatchTypeOperationTests
         public required string SourcePath { get; init; }
         public required WorkspaceContext Context { get; init; }
         public string SecondarySourcePath { get; init; } = "";
+        public string SecondaryProjectPath { get; init; } = "";
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Foo.cs") =>
             CreateAsync((fileName, source));
@@ -693,6 +1294,130 @@ public class RenameFileToMatchTypeOperationTests
                   </PropertyGroup>
                 </Project>
                 """, files);
+
+        public static async Task<TempWorkspace> CreateWithLinkedProjectAsync(
+            params (string FileName, string Source)[] ownerFiles)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameFileLink_" + Guid.NewGuid().ToString("N"));
+            var ownerDir = Path.Combine(directory, "Owner");
+            var linkerDir = Path.Combine(directory, "Linker");
+            Directory.CreateDirectory(ownerDir);
+            Directory.CreateDirectory(linkerDir);
+
+            var ownerCompileItems = string.Join(
+                Environment.NewLine,
+                ownerFiles.Select(f => $"    <Compile Include=\"{f.FileName}\" />"));
+            await File.WriteAllTextAsync(Path.Combine(ownerDir, "Owner.csproj"), $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <EnableDefaultItems>false</EnableDefaultItems>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                {ownerCompileItems}
+                  </ItemGroup>
+                </Project>
+                """);
+
+            string? sourcePath = null;
+            foreach (var (fileName, source) in ownerFiles)
+            {
+                var path = Path.Combine(ownerDir, fileName);
+                await File.WriteAllTextAsync(path, source);
+                sourcePath ??= path;
+            }
+
+            sourcePath ??= Path.Combine(ownerDir, "Foo.cs");
+            var linkedInclude = string.Join(
+                Environment.NewLine,
+                ownerFiles.Select(f => $"    <Compile Include=\"../Owner/{f.FileName.Replace('\\', '/')}\" />"));
+            await File.WriteAllTextAsync(Path.Combine(linkerDir, "Linker.csproj"), $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <EnableDefaultItems>false</EnableDefaultItems>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                {linkedInclude}
+                  </ItemGroup>
+                </Project>
+                """);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            await File.WriteAllTextAsync(solutionPath, """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Owner", "Owner\Owner.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Linker", "Linker\Linker.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                if (context.GetDocumentByPath(sourcePath) == null)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                }
+
+                var linkedCount = context.Solution.Projects
+                    .SelectMany(p => p.Documents)
+                    .Count(d =>
+                        d.FilePath != null
+                        && string.Equals(
+                            PathResolver.NormalizePath(d.FilePath),
+                            PathResolver.NormalizePath(sourcePath),
+                            StringComparison.OrdinalIgnoreCase));
+                if (linkedCount < 2)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException($"Expected linked document in both projects, found {linkedCount}.");
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = Path.Combine(ownerDir, "Owner.csproj"),
+                    SecondaryProjectPath = Path.Combine(linkerDir, "Linker.csproj"),
+                    SourcePath = sourcePath,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
 
         public static async Task<TempWorkspace> CreateAsync(
             string projectXml,
