@@ -2999,6 +2999,87 @@ public class ImplementInterfaceOperationTests
     }
 
     [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_ExplicitImplementation_SameSignatureOnTwoInterfaces_EmitsBothStubs()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IAlpha
+            {
+                void Shared();
+            }
+
+            public interface IBeta
+            {
+                void Shared();
+            }
+
+            public class Both : IAlpha, IBeta
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Both.cs", source));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true,
+            ExplicitImplementation = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Both.cs")));
+        var methods = FindType(updated, "Both").Members.OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == "Shared")
+            .ToList();
+        Assert.Equal(2, methods.Count);
+        Assert.All(methods, m => Assert.NotNull(m.ExplicitInterfaceSpecifier));
+        var specifiers = methods
+            .Select(m => m.ExplicitInterfaceSpecifier!.Name.ToString())
+            .ToList();
+        Assert.Contains(specifiers, s => s.Contains("IAlpha", StringComparison.Ordinal));
+        Assert.Contains(specifiers, s => s.Contains("IBeta", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_ImplicitImplementation_SameSignatureOnTwoInterfaces_EmitsOnePublicStub()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IAlpha
+            {
+                void Shared();
+            }
+
+            public interface IBeta
+            {
+                void Shared();
+            }
+
+            public class Both : IAlpha, IBeta
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Both.cs", source));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Both.cs")));
+        Assert.Equal(1, CountOccurrences(updated, "public void Shared()"));
+        Assert.Null(FindMethod(updated, "Both", "Shared")!.ExplicitInterfaceSpecifier);
+    }
+
+    [SkippableFact]
     public async Task ImplementInterface_AllFilesTrue_DoesNotAddUndeclaredInterfaceViaTypeResolver()
     {
         await using var workspace = await TempWorkspace.CreateAsync(

@@ -493,7 +493,10 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         List<ISymbol> eligibleMembers;
         try
         {
-            eligibleMembers = CollectMembersToImplementAllDeclared(typeSymbol, @params.ReplaceExisting);
+            eligibleMembers = CollectMembersToImplementAllDeclared(
+                typeSymbol,
+                @params.ReplaceExisting,
+                @params.ExplicitImplementation);
         }
         catch (RefactoringException)
         {
@@ -546,17 +549,27 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
     /// Eligible members across every already-declared interface
     /// (<c>typeSymbol.AllInterfaces</c>). Does not
     /// <c>TypeResolver</c>-hunt undeclared interfaces.
+    /// Implicit mode de-dupes by signature so one public stub can
+    /// satisfy two same-signature interface members. Explicit mode
+    /// de-dupes by symbol identity so <c>I1.M</c> and <c>I2.M</c>
+    /// both get stubs.
     /// </summary>
     internal static List<ISymbol> CollectMembersToImplementAllDeclared(
         INamedTypeSymbol typeSymbol,
-        bool replaceExisting)
+        bool replaceExisting,
+        bool explicitImplementation)
     {
         var result = new List<ISymbol>();
 
         foreach (var interfaceSymbol in typeSymbol.AllInterfaces)
         {
             foreach (var member in CollectMembersToImplement(typeSymbol, interfaceSymbol, replaceExisting))
-                AddUnique(result, member);
+            {
+                if (explicitImplementation)
+                    AddUniqueByIdentity(result, member);
+                else
+                    AddUnique(result, member);
+            }
         }
 
         return result;
@@ -715,6 +728,14 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
     private static void AddUnique(List<ISymbol> members, ISymbol member)
     {
         if (members.Any(existing => SignaturesMatch(existing, member)))
+            return;
+
+        members.Add(member);
+    }
+
+    private static void AddUniqueByIdentity(List<ISymbol> members, ISymbol member)
+    {
+        if (members.Any(existing => SymbolEqualityComparer.Default.Equals(existing, member)))
             return;
 
         members.Add(member);
