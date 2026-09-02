@@ -24,6 +24,17 @@ namespace RoslynMcp.Core.Refactoring;
 /// line keeps that omitted-line path. When column is set with line, picks
 /// the covering top-level type (identifier preferred, then smallest
 /// covering type). Nested types stay unmoveable.
+/// Optional <c>allFiles</c> walks every C# document (or the optional
+/// single <c>sourceFile</c>) and moves every eligible top-level type
+/// whose current namespace is not already <c>targetNamespace</c>
+/// (skip nested / already-there / SameLocation / NameCollision /
+/// uneditable / resolution failures / types today's
+/// <see cref="ValidateNamespaceChangeAsync"/> or
+/// <see cref="ComputeChangesAsync"/> would reject rather than
+/// throwing). Bulk walks every eligible type, not a broader search
+/// for one symbolName. <c>updateFileLocation</c> stays valid; when
+/// two types would claim the same destination, the later claim is
+/// skipped.
 /// </summary>
 public sealed class MoveTypeToNamespaceOperation
 {
@@ -64,6 +75,9 @@ public sealed class MoveTypeToNamespaceOperation
             // Validate inputs
             ValidateInputs(@params);
 
+            if (@params.AllFiles)
+                return await ExecuteAllFilesAsync(operationId, @params, stopwatch, cancellationToken);
+
             // Resolve symbol. Optional line/column disambiguates
             // same-named top-level types. Omitted column keeps today's
             // symbolName + optional line pick (start-line equality /
@@ -72,8 +86,8 @@ public sealed class MoveTypeToNamespaceOperation
             // with line picks the covering top-level type (identifier
             // preferred, then smallest covering type).
             var resolution = await _symbolResolver.FindTypeInFileAsync(
-                @params.SourceFile,
-                @params.SymbolName,
+                @params.SourceFile!,
+                @params.SymbolName!,
                 @params.Line,
                 @params.Column,
                 cancellationToken);
@@ -168,14 +182,33 @@ public sealed class MoveTypeToNamespaceOperation
     /// </summary>
     internal static void Validate(MoveTypeToNamespaceParams @params)
     {
+        if (string.IsNullOrWhiteSpace(@params.TargetNamespace))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "targetNamespace is required.");
+
+        if (!NamespacePattern.IsMatch(@params.TargetNamespace))
+            throw new RefactoringException(
+                ErrorCodes.InvalidNamespace,
+                $"Invalid namespace format: {@params.TargetNamespace}. Must be valid C# identifier(s) separated by dots.");
+
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.SymbolName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with symbolName, line, or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (string.IsNullOrWhiteSpace(@params.SymbolName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "symbolName is required.");
-
-        if (string.IsNullOrWhiteSpace(@params.TargetNamespace))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "targetNamespace is required.");
 
         if (!PathResolver.IsAbsolutePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
@@ -189,13 +222,396 @@ public sealed class MoveTypeToNamespaceOperation
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (!NamespacePattern.IsMatch(@params.TargetNamespace))
-            throw new RefactoringException(
-                ErrorCodes.InvalidNamespace,
-                $"Invalid namespace format: {@params.TargetNamespace}. Must be valid C# identifier(s) separated by dots.");
-
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
+    }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
+    /// / <c>MoveTypeToFileOperation.ExecuteAllFilesAsync</c> /
+    /// <c>RenameFileToMatchTypeOperation.ExecuteAllFilesAsync</c> /
+    /// <c>UseBaseTypeOperation.ExecuteAllFilesAsync</c> /
+    /// <c>EncapsulateFieldOperation.ExecuteAllFilesAsync</c>) and moves
+    /// every eligible top-level <c>TypeDeclarationSyntax</c> into
+    /// <paramref name="params"/>.TargetNamespace. Optional <c>sourceFile</c>
+    /// limits the walk to that one file. Nested types, types already in
+    /// the target namespace, SameLocation, NameCollision, multi-type
+    /// files, types without a namespace declaration, uneditable
+    /// documents, and resolution failures are skipped. When
+    /// <c>updateFileLocation</c> is true and two types would claim the
+    /// same destination, the later claim is skipped. When every type is
+    /// a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        MoveTypeToNamespaceParams @params,
+        Stopwatch stopwatch,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = _context.Solution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            string wanted;
+            try
+            {
+                wanted = PathResolver.NormalizePath(@params.SourceFile);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                wanted = @params.SourceFile;
+            }
+
+            allDocuments = allDocuments
+                .Where(d => string.Equals(
+                    PathResolver.NormalizePath(d.FilePath!),
+                    wanted,
+                    StringComparison.Ordinal))
+                .ToList();
+        }
+
+        var pendingChanges = new List<PendingChange>();
+        var filePlans = new List<FileLocationPlan>();
+        var claimedDestinations = new List<string>();
+        var caseDistinctCache = new Dictionary<string, bool>(StringComparer.Ordinal);
+        var anyMove = false;
+        var totalReferences = 0;
+        var totalUsingsAdded = 0;
+        var totalUsingsRemoved = 0;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!IsDocumentEditable(document, _context.Workspace))
+                continue;
+
+            var sourceFile = document.FilePath;
+            if (string.IsNullOrWhiteSpace(sourceFile))
+                continue;
+
+            var root = await document.GetSyntaxRootAsync(cancellationToken);
+            if (root == null)
+                continue;
+
+            foreach (var typeDecl in CollectTopLevelTypes(root))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var typeName = typeDecl.Identifier.Text;
+                if (string.IsNullOrWhiteSpace(typeName))
+                    continue;
+
+                try
+                {
+                    var resolution = await TryResolveTopLevelTypeAsync(
+                        sourceFile,
+                        typeName,
+                        typeDecl,
+                        cancellationToken);
+                    if (resolution == null)
+                        continue;
+
+                    if (!IsDocumentEditable(resolution.Document, _context.Workspace))
+                        continue;
+
+                    var currentNamespace = resolution.Symbol.ContainingNamespace.ToDisplayString();
+                    if (currentNamespace == @params.TargetNamespace)
+                        continue;
+
+                    var moveParams = new MoveTypeToNamespaceParams
+                    {
+                        SourceFile = sourceFile,
+                        SymbolName = typeName,
+                        TargetNamespace = @params.TargetNamespace,
+                        UpdateFileLocation = @params.UpdateFileLocation,
+                        Preview = @params.Preview
+                    };
+
+                    await ValidateNamespaceChangeAsync(moveParams, resolution, cancellationToken);
+
+                    var references = await _referenceTracker.FindAllReferencesAsync(
+                        resolution.Symbol,
+                        cancellationToken);
+
+                    var (newSolution, changeStats) = await ComputeChangesAsync(
+                        moveParams,
+                        resolution,
+                        references,
+                        cancellationToken);
+
+                    FileLocationPlan? filePlan = null;
+                    if (@params.UpdateFileLocation)
+                    {
+                        filePlan = TryPlanFileLocationUpdate(resolution, @params.TargetNamespace);
+                        if (filePlan != null)
+                        {
+                            if (claimedDestinations.Any(claimed =>
+                                    RenameFileToMatchTypeOperation.DestinationsReferToSameLocation(
+                                        claimed, filePlan.DestinationFile, caseDistinctCache)))
+                            {
+                                filePlan = null;
+                            }
+                            else
+                            {
+                                claimedDestinations.Add(filePlan.DestinationFile);
+                                filePlans.Add(filePlan);
+                            }
+                        }
+                    }
+
+                    pendingChanges.AddRange(CreateAllFilesPendingChanges(
+                        moveParams, resolution, changeStats, filePlan));
+                    totalReferences += references.TotalReferenceCount;
+                    totalUsingsAdded += changeStats.UsingsAdded;
+                    totalUsingsRemoved += changeStats.UsingsRemoved;
+                    _context.UpdateSolution(newSolution);
+                    anyMove = true;
+                }
+                catch (RefactoringException)
+                {
+                    // Skip per-type failures that single-site would throw.
+                }
+            }
+        }
+
+        if (@params.Preview)
+        {
+            _context.UpdateSolution(originalSolution);
+            return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        }
+
+        var finalSolution = _context.Solution;
+        _context.UpdateSolution(originalSolution);
+
+        if (!anyMove)
+        {
+            stopwatch.Stop();
+            return RefactoringResult.Succeeded(
+                operationId,
+                new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+                null,
+                0,
+                stopwatch.ElapsedMilliseconds);
+        }
+
+        var commitResult = await _context.CommitChangesAsync(finalSolution, cancellationToken);
+        if (!commitResult.Success)
+        {
+            throw new RefactoringException(
+                ErrorCodes.FilesystemError,
+                $"Failed to write files: {commitResult.Error}");
+        }
+
+        var filesModified = commitResult.FilesModified.ToList();
+        var filesCreated = commitResult.FilesCreated.ToList();
+        var filesDeleted = commitResult.FilesDeleted.ToList();
+
+        foreach (var filePlan in filePlans)
+        {
+            try
+            {
+                ApplyFileLocationUpdate(filePlan);
+                filesModified = filesModified
+                    .Select(path => RemapCommittedPath(path, filePlan))
+                    .ToList();
+                filesModified.AddRange(filePlan.ProjectTexts.Keys);
+                filesCreated.Add(filePlan.DestinationFile);
+                filesDeleted.Add(filePlan.SourceFile);
+            }
+            catch (RefactoringException)
+            {
+                // Skip later file-location claims that collide or fail mid-walk.
+            }
+        }
+
+        stopwatch.Stop();
+        return new RefactoringResult
+        {
+            Success = true,
+            OperationId = operationId,
+            Changes = new FileChanges
+            {
+                FilesModified = filesModified,
+                FilesCreated = filesCreated,
+                FilesDeleted = filesDeleted
+            },
+            ReferencesUpdated = totalReferences,
+            UsingDirectivesAdded = totalUsingsAdded,
+            UsingDirectivesRemoved = totalUsingsRemoved,
+            ExecutionTimeMs = stopwatch.ElapsedMilliseconds
+        };
+    }
+
+    /// <summary>
+    /// Top-level named types in a file (class, struct, interface, record).
+    /// Nested types are ignored, matching single-site <c>FindTypeInFileAsync</c>.
+    /// Enums and delegates are not <see cref="TypeDeclarationSyntax"/> and
+    /// stay out of the bulk walk.
+    /// </summary>
+    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTopLevelTypes(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Parent is CompilationUnitSyntax or BaseNamespaceDeclarationSyntax)
+            .ToList();
+
+    /// <summary>
+    /// Full namespace of a top-level type, including nested namespace
+    /// declarations. Prefers the semantic containing namespace when a
+    /// model is available.
+    /// </summary>
+    internal static string GetNamespaceName(
+        TypeDeclarationSyntax typeDecl,
+        SemanticModel? semanticModel = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (semanticModel?.GetDeclaredSymbol(typeDecl, cancellationToken) is INamedTypeSymbol symbol
+            && symbol.ContainingNamespace != null
+            && !symbol.ContainingNamespace.IsGlobalNamespace)
+        {
+            return symbol.ContainingNamespace.ToDisplayString();
+        }
+
+        var parts = typeDecl.Ancestors()
+            .OfType<BaseNamespaceDeclarationSyntax>()
+            .Reverse()
+            .Select(n => n.Name.ToString())
+            .ToList();
+        return parts.Count == 0 ? "" : string.Join(".", parts);
+    }
+
+    /// <summary>
+    /// Preview description for moving <paramref name="typeName"/> into
+    /// <paramref name="targetNamespace"/>.
+    /// </summary>
+    internal static string BuildAllFilesDescription(string typeName, string targetNamespace) =>
+        $"Change namespace of {typeName} to {targetNamespace}";
+
+    /// <summary>
+    /// True when the document can receive a path or text edit. AllFiles skips
+    /// rather than throwing the single-file <see cref="ErrorCodes.DocumentNotEditable"/>.
+    /// </summary>
+    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
+    {
+        if (document is SourceGeneratedDocument)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
+            return false;
+
+        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
+    }
+
+    private async Task<SymbolResolutionResult?> TryResolveTopLevelTypeAsync(
+        string sourceFile,
+        string typeName,
+        TypeDeclarationSyntax typeDecl,
+        CancellationToken cancellationToken)
+    {
+        var document = _context.GetDocumentByPath(sourceFile);
+        if (document == null)
+            return null;
+
+        var root = await document.GetSyntaxRootAsync(cancellationToken);
+        var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+        if (root == null || semanticModel == null)
+            return null;
+
+        var expectedNamespace = GetNamespaceName(typeDecl);
+        var match = CollectTopLevelTypes(root).FirstOrDefault(t =>
+            t.Identifier.Text == typeName &&
+            GetNamespaceName(t) == expectedNamespace);
+        if (match == null)
+            return null;
+
+        if (semanticModel.GetDeclaredSymbol(match, cancellationToken) is not INamedTypeSymbol symbol)
+            return null;
+
+        if (symbol.ContainingType != null)
+            return null;
+
+        return new SymbolResolutionResult
+        {
+            Symbol = symbol,
+            Declaration = match,
+            Document = document
+        };
+    }
+
+    private FileLocationPlan? TryPlanFileLocationUpdate(
+        SymbolResolutionResult resolution,
+        string newNamespace)
+    {
+        try
+        {
+            return PlanFileLocationUpdate(resolution, newNamespace);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+    }
+
+    private List<PendingChange> CreateAllFilesPendingChanges(
+        MoveTypeToNamespaceParams @params,
+        SymbolResolutionResult resolution,
+        ChangeStats stats,
+        FileLocationPlan? filePlan)
+    {
+        var pending = new List<PendingChange>
+        {
+            new()
+            {
+                File = resolution.Document.FilePath!,
+                ChangeType = ChangeKind.Modify,
+                Description = BuildAllFilesDescription(
+                    resolution.Symbol.Name, @params.TargetNamespace)
+            }
+        };
+
+        if (stats.UsingsAdded > 0)
+        {
+            pending.Add(new PendingChange
+            {
+                File = "(multiple files)",
+                ChangeType = ChangeKind.Modify,
+                Description = $"Add using directive for {@params.TargetNamespace} in {stats.UsingsAdded} file(s)"
+            });
+        }
+
+        if (filePlan != null)
+        {
+            pending.Add(new PendingChange
+            {
+                File = filePlan.SourceFile,
+                ChangeType = ChangeKind.Delete,
+                Description = $"Move file to match namespace '{@params.TargetNamespace}'"
+            });
+            pending.Add(new PendingChange
+            {
+                File = filePlan.DestinationFile,
+                ChangeType = ChangeKind.Create,
+                Description = $"Move '{filePlan.SourceFile}' to '{filePlan.DestinationFile}'"
+            });
+
+            foreach (var projectPath in filePlan.ProjectTexts.Keys)
+            {
+                pending.Add(new PendingChange
+                {
+                    File = projectPath,
+                    ChangeType = ChangeKind.Modify,
+                    Description = "Update explicit Compile item to the moved file"
+                });
+            }
+        }
+
+        return pending;
     }
 
     private async Task ValidateNamespaceChangeAsync(

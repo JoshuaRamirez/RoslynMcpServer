@@ -15,7 +15,7 @@ namespace RoslynMcp.Core.Tests.Refactoring;
 /// <summary>
 /// Operation-level tests for <see cref="MoveTypeToNamespaceOperation"/>,
 /// including optional <c>line</c>, <c>column</c>, <c>updateFileLocation</c>,
-/// and <c>preview</c>.
+/// <c>preview</c>, and <c>allFiles</c>.
 /// </summary>
 public class MoveTypeToNamespaceOperationTests
 {
@@ -138,6 +138,131 @@ public class MoveTypeToNamespaceOperationTests
             MoveTypeToNamespaceOperation.Validate(ValidParams()));
 
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void AllFiles_DefaultsToFalse()
+    {
+        var @params = new MoveTypeToNamespaceParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            SymbolName = "Widget",
+            TargetNamespace = "New.Ns"
+        };
+
+        Assert.False(@params.AllFiles);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                AllFiles = false,
+                SymbolName = "Widget",
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSymbolName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath(),
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("symbolName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileSymbolName_DoesNotThrow()
+    {
+        MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+        {
+            AllFiles = true,
+            TargetNamespace = "New.Ns"
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutTargetNamespace_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                TargetNamespace = ""
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("targetNamespace", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithSymbolName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                SymbolName = "Widget",
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("symbolName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                Line = 8,
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                Column = 1,
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_InvalidTargetNamespace_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                TargetNamespace = "1Bad.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidNamespace, ex.ErrorCode);
     }
 
     #endregion
@@ -1234,7 +1359,486 @@ public class MoveTypeToNamespaceOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string AlphaSource = """
+        namespace Old.Ns;
+
+        public class Alpha
+        {
+        }
+        """;
+
+    private const string BetaSource = """
+        namespace Other.Ns;
+
+        public class Beta
+        {
+        }
+        """;
+
+    private const string AlreadyInTargetSource = """
+        namespace New.Ns;
+
+        public class Already
+        {
+        }
+        """;
+
+    private const string MultiTypeSource = """
+        namespace Old.Ns;
+
+        public class MultiA
+        {
+        }
+
+        public class MultiB
+        {
+        }
+        """;
+
+    private const string NestedAndOuterSource = """
+        namespace Old.Ns;
+
+        public class Outer
+        {
+            public class Nested { } // nested-widget
+        }
+        """;
+
+    private const string CollisionAlphaSource = """
+        namespace A;
+
+        public class Shared
+        {
+        }
+        """;
+
+    private const string CollisionBetaSource = """
+        namespace B;
+
+        public class Shared
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesFalse_MovesOnlySpecifiedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Alpha.cs", AlphaSource),
+            ("Beta.cs", BetaSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var beforeBeta = await File.ReadAllTextAsync(workspace.GetPath("Beta.cs"));
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.GetPath("Alpha.cs"),
+            AllFiles = false,
+            SymbolName = "Alpha",
+            TargetNamespace = "New.Ns"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(workspace.GetPath("Alpha.cs")));
+        Assert.DoesNotContain("namespace Old.Ns;", await File.ReadAllTextAsync(workspace.GetPath("Alpha.cs")));
+        Assert.Equal(beforeBeta, await File.ReadAllTextAsync(workspace.GetPath("Beta.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_OmittedAllFiles_KeepsSingleSiteMove()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            TargetNamespace = "New.Ns"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("namespace TestApp;", await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_MovesEligibleAndSkipsAlreadyThereNestedIneligible()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Alpha.cs", AlphaSource),
+            ("Beta.cs", BetaSource),
+            ("Already.cs", AlreadyInTargetSource),
+            ("Multi.cs", MultiTypeSource),
+            ("WithNested.cs", NestedAndOuterSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var beforeAlready = await File.ReadAllTextAsync(workspace.GetPath("Already.cs"));
+        var beforeMulti = await File.ReadAllTextAsync(workspace.GetPath("Multi.cs"));
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            AllFiles = true,
+            TargetNamespace = "New.Ns"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+
+        Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(workspace.GetPath("Alpha.cs")));
+        Assert.Contains("class Alpha", await File.ReadAllTextAsync(workspace.GetPath("Alpha.cs")));
+        Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(workspace.GetPath("Beta.cs")));
+        Assert.Contains("class Beta", await File.ReadAllTextAsync(workspace.GetPath("Beta.cs")));
+
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(workspace.GetPath("Already.cs")));
+        Assert.Equal(beforeMulti, await File.ReadAllTextAsync(workspace.GetPath("Multi.cs")));
+        Assert.Contains("class MultiA", await File.ReadAllTextAsync(workspace.GetPath("Multi.cs")));
+        Assert.Contains("class MultiB", await File.ReadAllTextAsync(workspace.GetPath("Multi.cs")));
+
+        var outer = await File.ReadAllTextAsync(workspace.GetPath("WithNested.cs"));
+        Assert.Contains("namespace New.Ns;", outer);
+        Assert.Contains("class Outer", outer);
+        Assert.Contains("class Nested", outer);
+        Assert.DoesNotContain("namespace Old.Ns;", outer);
+
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.GetPath("Alpha.cs")));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.GetPath("Beta.cs")));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.GetPath("WithNested.cs")));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.GetPath("Already.cs")));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.GetPath("Multi.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_WithoutSourceFileSymbolName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Alpha.cs", AlphaSource),
+            ("Beta.cs", BetaSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            AllFiles = true,
+            TargetNamespace = "New.Ns"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(workspace.GetPath("Alpha.cs")));
+        Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(workspace.GetPath("Beta.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesFalse_WithoutRequired_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                AllFiles = false,
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(workspace.SourcePath));
+        Assert.Contains("namespace TestApp;", await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_WithSymbolName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                SymbolName = "Widget",
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("symbolName", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("namespace TestApp;", await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                Line = 1,
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleWidgetSource);
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                Column = 1,
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_PreviewAllFiles_AggregatesChangesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Alpha.cs", AlphaSource),
+            ("Beta.cs", BetaSource),
+            ("Already.cs", AlreadyInTargetSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var beforeAlpha = await File.ReadAllTextAsync(workspace.GetPath("Alpha.cs"));
+        var beforeBeta = await File.ReadAllTextAsync(workspace.GetPath("Beta.cs"));
+        var beforeAlready = await File.ReadAllTextAsync(workspace.GetPath("Already.cs"));
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            AllFiles = true,
+            TargetNamespace = "New.Ns",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.GetPath("Alpha.cs")));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.GetPath("Beta.cs")));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.GetPath("Already.cs")));
+        Assert.Equal(beforeAlpha, await File.ReadAllTextAsync(workspace.GetPath("Alpha.cs")));
+        Assert.Equal(beforeBeta, await File.ReadAllTextAsync(workspace.GetPath("Beta.cs")));
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(workspace.GetPath("Already.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_EveryTypeNoOp_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Already.cs", AlreadyInTargetSource),
+            ("Multi.cs", MultiTypeSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var beforeAlready = await File.ReadAllTextAsync(workspace.GetPath("Already.cs"));
+        var beforeMulti = await File.ReadAllTextAsync(workspace.GetPath("Multi.cs"));
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            AllFiles = true,
+            TargetNamespace = "New.Ns"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesCreated);
+        Assert.Empty(result.Changes.FilesDeleted);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(workspace.GetPath("Already.cs")));
+        Assert.Equal(beforeMulti, await File.ReadAllTextAsync(workspace.GetPath("Multi.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_NameCollision_SkipsLater()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("AShared.cs", CollisionAlphaSource),
+            ("BShared.cs", CollisionBetaSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.GetPath("AShared.cs"));
+        var beforeB = await File.ReadAllTextAsync(workspace.GetPath("BShared.cs"));
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            AllFiles = true,
+            TargetNamespace = "New.Ns"
+        });
+
+        Assert.True(result.Success);
+        var afterA = await File.ReadAllTextAsync(workspace.GetPath("AShared.cs"));
+        var afterB = await File.ReadAllTextAsync(workspace.GetPath("BShared.cs"));
+        var aMoved = afterA.Contains("namespace New.Ns;");
+        var bMoved = afterB.Contains("namespace New.Ns;");
+
+        Assert.True(aMoved ^ bMoved);
+        Assert.True(beforeA.Contains("class Shared") && beforeB.Contains("class Shared"));
+        Assert.True(result.Changes!.FilesModified.Count <= 1);
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Alpha.cs", AlphaSource),
+            ("Beta.cs", BetaSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var beforeBeta = await File.ReadAllTextAsync(workspace.GetPath("Beta.cs"));
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.GetPath("Alpha.cs"),
+            TargetNamespace = "New.Ns"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(workspace.GetPath("Alpha.cs")));
+        Assert.Equal(beforeBeta, await File.ReadAllTextAsync(workspace.GetPath("Beta.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_UpdateFileLocation_MovesEligibleFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Old/Ns/Alpha.cs", AlphaSource),
+            ("Other/Ns/Beta.cs", BetaSource),
+            ("New/Ns/Already.cs", AlreadyInTargetSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var oldAlpha = workspace.GetPath("Old/Ns/Alpha.cs");
+        var oldBeta = workspace.GetPath("Other/Ns/Beta.cs");
+        var newAlpha = workspace.GetPath("New/Ns/Alpha.cs");
+        var newBeta = workspace.GetPath("New/Ns/Beta.cs");
+        var already = workspace.GetPath("New/Ns/Already.cs");
+        var beforeAlready = await File.ReadAllTextAsync(already);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            AllFiles = true,
+            TargetNamespace = "New.Ns",
+            UpdateFileLocation = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(File.Exists(oldAlpha));
+        Assert.False(File.Exists(oldBeta));
+        Assert.True(File.Exists(newAlpha));
+        Assert.True(File.Exists(newBeta));
+        Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(newAlpha));
+        Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(newBeta));
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(already));
+        Assert.Contains(result.Changes!.FilesCreated, p => PathEquals(p, newAlpha));
+        Assert.Contains(result.Changes.FilesCreated, p => PathEquals(p, newBeta));
+        Assert.Contains(result.Changes.FilesDeleted, p => PathEquals(p, oldAlpha));
+        Assert.Contains(result.Changes.FilesDeleted, p => PathEquals(p, oldBeta));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_UpdateFileLocation_DestinationCollision_SkipsLaterClaim()
+    {
+        const string gammaSource = """
+            namespace A;
+
+            public class Gamma
+            {
+            }
+            """;
+        const string deltaSource = """
+            namespace B;
+
+            public class Delta
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Extra/Shared.cs", gammaSource),
+            ("Misc/Shared.cs", deltaSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var dest = workspace.GetPath("New/Ns/Shared.cs");
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            AllFiles = true,
+            TargetNamespace = "New.Ns",
+            UpdateFileLocation = true
+        });
+
+        Assert.True(result.Success);
+        var aPath = workspace.GetPath("Extra/Shared.cs");
+        var bPath = workspace.GetPath("Misc/Shared.cs");
+        var aStillThere = File.Exists(aPath);
+        var bStillThere = File.Exists(bPath);
+
+        Assert.True(File.Exists(dest));
+        Assert.True(aStillThere ^ bStillThere);
+        Assert.True(result.Changes!.FilesCreated.Count(p => PathEquals(p, dest)) <= 1);
+
+        var destText = await File.ReadAllTextAsync(dest);
+        Assert.Contains("namespace New.Ns;", destText);
+        if (aStillThere)
+        {
+            Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(aPath));
+            Assert.Contains("class Gamma", await File.ReadAllTextAsync(aPath));
+        }
+
+        if (bStillThere)
+        {
+            Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(bPath));
+            Assert.Contains("class Delta", await File.ReadAllTextAsync(bPath));
+        }
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_IncludesTypeAndNamespace()
+    {
+        Assert.Equal(
+            "Change namespace of Widget to New.Ns",
+            MoveTypeToNamespaceOperation.BuildAllFilesDescription("Widget", "New.Ns"));
+    }
+
+    [Fact]
+    public void CollectTopLevelTypes_SkipsNested()
+    {
+        var types = MoveTypeToNamespaceOperation.CollectTopLevelTypes(Parse(NestedAndOuterSource));
+        Assert.Single(types);
+        Assert.Equal("Outer", types[0].Identifier.Text);
+    }
+
+    [Fact]
+    public void GetNamespaceName_JoinsNestedNamespaceDeclarations()
+    {
+        var root = Parse("""
+            namespace A
+            {
+                namespace B
+                {
+                    public class C { }
+                }
+            }
+            """);
+        var type = MoveTypeToNamespaceOperation.CollectTopLevelTypes(root).Single();
+        Assert.Equal("A.B", MoveTypeToNamespaceOperation.GetNamespaceName(type));
+    }
+
+    #endregion
+
     #region Helpers
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
 

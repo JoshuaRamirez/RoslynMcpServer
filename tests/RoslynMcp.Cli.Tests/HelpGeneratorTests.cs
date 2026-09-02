@@ -437,6 +437,9 @@ public class HelpGeneratorTests
         Assert.Contains("line", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("omitted-line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile and symbolName are required", tool.Description, StringComparison.OrdinalIgnoreCase);
 
         var requiredIdx = help.IndexOf("REQUIRED:");
         var optionalIdx = help.IndexOf("OPTIONAL:");
@@ -446,14 +449,18 @@ public class HelpGeneratorTests
         var requiredSection = help[requiredIdx..optionalIdx];
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
-        Assert.Contains("--symbol-name", requiredSection);
         Assert.Contains("--target-namespace", requiredSection);
+        Assert.DoesNotContain("--source-file", requiredSection);
+        Assert.DoesNotContain("--symbol-name", requiredSection);
+        Assert.DoesNotContain("--all-files", requiredSection);
         Assert.DoesNotContain("--line", requiredSection);
         Assert.DoesNotContain("--column", requiredSection);
         Assert.DoesNotContain("--update-file-location", requiredSection);
         Assert.DoesNotContain("--preview", requiredSection);
 
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--symbol-name", optionalSection);
         Assert.Contains("--line", optionalSection);
         Assert.Contains("--column", optionalSection);
         Assert.Contains("--update-file-location", optionalSection);
