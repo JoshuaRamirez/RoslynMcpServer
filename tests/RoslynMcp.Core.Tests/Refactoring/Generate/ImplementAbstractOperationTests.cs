@@ -83,6 +83,7 @@ public class ImplementAbstractOperationTests
         Assert.True(@params.ThrowNotImplemented);
         Assert.False(@params.ReplaceExisting);
         Assert.False(@params.Preview);
+        Assert.False(@params.AllFiles);
         Assert.Null(@params.Line);
         Assert.Null(@params.Column);
     }
@@ -3750,6 +3751,743 @@ public class ImplementAbstractOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string EligibleFileA = """
+        namespace TestApp;
+
+        public abstract class BaseA
+        {
+            public abstract void WorkA();
+        }
+
+        public class FileA : BaseA
+        {
+        }
+
+        public static class StaticSkip
+        {
+        }
+
+        public interface ISkip
+        {
+            void Skip();
+        }
+        """;
+
+    private const string EligibleFileB = """
+        namespace TestApp;
+
+        public abstract class BaseB
+        {
+            public abstract int Value { get; }
+        }
+
+        public class FileB : BaseB
+        {
+        }
+        """;
+
+    private const string IneligibleFileC = """
+        namespace TestApp;
+
+        public static class Limits
+        {
+        }
+
+        public interface IWidget
+        {
+            void Draw();
+        }
+
+        public struct Point
+        {
+        }
+
+        public abstract class Shape
+        {
+            public abstract void Draw();
+        }
+
+        public class AlreadyImplemented : Shape
+        {
+            public override void Draw() { }
+        }
+
+        public class Empty
+        {
+        }
+        """;
+
+    private const string MixedEligibleAndSkipped = """
+        namespace TestApp;
+
+        public abstract class Base
+        {
+            public abstract void Work();
+        }
+
+        public class Eligible : Base
+        {
+        }
+
+        public static class StaticSkip
+        {
+        }
+
+        public interface ISkip
+        {
+            void Skip();
+        }
+
+        public struct PointSkip
+        {
+        }
+
+        public class Empty
+        {
+        }
+
+        public abstract class OuterBase
+        {
+            public abstract void OuterWork();
+        }
+
+        public class Outer : OuterBase
+        {
+            public abstract class NestedBase
+            {
+                public abstract int NestedWork();
+            }
+
+            public class Nested : NestedBase
+            {
+            }
+        }
+        """;
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementAbstractOperation.Validate(new ImplementAbstractParams
+            {
+                AllFiles = false,
+                TypeName = "Widget"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementAbstractOperation.Validate(new ImplementAbstractParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrTypeName_DoesNotThrow()
+    {
+        ImplementAbstractOperation.Validate(new ImplementAbstractParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementAbstractOperation.Validate(new ImplementAbstractParams
+            {
+                AllFiles = true,
+                TypeName = "Widget"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementAbstractOperation.Validate(new ImplementAbstractParams
+            {
+                AllFiles = true,
+                Members = new[] { "Work" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithEmptyMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementAbstractOperation.Validate(new ImplementAbstractParams
+            {
+                AllFiles = true,
+                Members = Array.Empty<string>()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TypeWalkKey_IncludesProjectIdentity()
+    {
+        var projectA = ProjectId.CreateNewId();
+        var projectB = ProjectId.CreateNewId();
+        const string fqn = "global::TestApp.Widget";
+
+        var keyA = ImplementAbstractOperation.TypeWalkKey(projectA, fqn);
+        var keyB = ImplementAbstractOperation.TypeWalkKey(projectB, fqn);
+
+        Assert.NotEqual(keyA, keyB);
+        Assert.Equal(keyA, ImplementAbstractOperation.TypeWalkKey(projectA, fqn));
+        Assert.NotEqual(keyA, ImplementAbstractOperation.TypeWalkKey(projectA, "global::TestApp.Other"));
+    }
+
+    [Fact]
+    public void TypeWalkKey_FileLocalIdentity_DistinguishesSameFqn()
+    {
+        var project = ProjectId.CreateNewId();
+        const string fqn = "global::TestApp.Worker";
+
+        var ordinary = ImplementAbstractOperation.TypeWalkKey(project, fqn);
+        var fileA = ImplementAbstractOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs");
+        var fileB = ImplementAbstractOperation.TypeWalkKey(project, fqn, "/tmp/FileB.cs");
+
+        Assert.NotEqual(ordinary, fileA);
+        Assert.NotEqual(ordinary, fileB);
+        Assert.NotEqual(fileA, fileB);
+        Assert.Equal(fileA, ImplementAbstractOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs"));
+        Assert.Equal(ordinary, ImplementAbstractOperation.TypeWalkKey(project, fqn));
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementAbstractOperation.Validate(new ImplementAbstractParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementAbstractOperation.Validate(new ImplementAbstractParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Implement abstract members", ImplementAbstractOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Implement abstract members on 2 types", ImplementAbstractOperation.BuildAllFilesDescription(2));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesFalse_ImplementsOnlySpecifiedType()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            AllFiles = false,
+            TypeName = "FileA"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public override void WorkA()", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("public override void Skip(", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_OmittedAllFiles_KeepsSingleSiteImplement()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "FileA"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public override void WorkA()", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public override void Skip(", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_ImplementsEligibleTypesAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains("public override void WorkA()", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("public override void Skip(", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public override int Value", updatedB, StringComparison.Ordinal);
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_WithoutSourceFileOrTypeName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                AllFiles = false,
+                TypeName = "FileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesFalse_WithoutTypeName_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                AllFiles = false,
+                SourceFile = workspace.SourcePath
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_WithTypeName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                AllFiles = true,
+                TypeName = "FileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_WithMembers_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                AllFiles = true,
+                Members = new[] { "WorkA" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementAbstractParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("Implement", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet != null &&
+            (c.AfterSnippet.Contains("WorkA", StringComparison.Ordinal) ||
+             c.AfterSnippet.Contains("Value", StringComparison.Ordinal)));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", IneligibleFileC),
+            ("FileC2.cs", IneligibleFileC
+                .Replace("Limits", "Limits2", StringComparison.Ordinal)
+                .Replace("IWidget", "IWidget2", StringComparison.Ordinal)
+                .Replace("Point", "Point2", StringComparison.Ordinal)
+                .Replace("Shape", "Shape2", StringComparison.Ordinal)
+                .Replace("AlreadyImplemented", "AlreadyImplemented2", StringComparison.Ordinal)
+                .Replace("Empty", "Empty2", StringComparison.Ordinal)));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_SkipsStaticInterfaceStructAndNoUnimplemented()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Mixed.cs", MixedEligibleAndSkipped));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Mixed.cs"]));
+        Assert.Contains("public override void Work()", updated, StringComparison.Ordinal);
+        Assert.Contains("public override void OuterWork()", updated, StringComparison.Ordinal);
+        Assert.Contains("public override int NestedWork()", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public override void Skip(", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("static override", updated, StringComparison.Ordinal);
+        var pointStart = updated.IndexOf("public struct PointSkip", StringComparison.Ordinal);
+        Assert.True(pointStart >= 0);
+        var pointEnd = updated.IndexOf('}', pointStart);
+        Assert.DoesNotContain("override", updated[pointStart..(pointEnd + 1)], StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public override void WorkA()", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var flipped = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public override void WorkA()", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_ReplaceExisting_ReplacesMatchingImplementation()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Widget.cs", AlreadyImplementedMethodSource));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Widget.cs"]));
+        Assert.Equal(1, CountOccurrences(updated, "public override void Draw()"));
+        Assert.DoesNotContain("old-body", updated, StringComparison.Ordinal);
+        Assert.Contains("NotImplementedException", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_ThrowNotImplementedFalse_UsesDefaultBodies()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true,
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public override void WorkA()", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("NotImplementedException", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_SameNamedFileLocalTypes_BothGetStubs()
+    {
+        const string fileA = """
+            namespace TestApp;
+
+            public abstract class WorkerBase
+            {
+                public abstract void Work();
+            }
+
+            file class Worker : WorkerBase
+            {
+            }
+            """;
+
+        const string fileB = """
+            namespace TestApp;
+
+            file class Worker : WorkerBase
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", fileA),
+            ("FileB.cs", fileB));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains("public override void Work()", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public override void Work()", updatedB, StringComparison.Ordinal);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_AllFilesTrue_GenuinePartial_ImplementedOnce()
+    {
+        const string partA = """
+            namespace TestApp;
+
+            public abstract class PartialBase
+            {
+                public abstract void Draw();
+            }
+
+            public partial class Widget : PartialBase
+            {
+            }
+            """;
+
+        const string partB = """
+            namespace TestApp;
+
+            public partial class Widget
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Widget.PartA.cs", partA),
+            ("Widget.PartB.cs", partB));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["Widget.PartB.cs"]);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Widget.PartA.cs"]));
+        Assert.Contains("public override void Draw()", updatedA, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(updatedA, "public override void Draw()"));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["Widget.PartB.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Widget.PartA.cs"]));
+    }
+
+    [Fact]
+    public void CollectTypeDeclarations_IncludesNestedAndInterface()
+    {
+        var root = CSharpSyntaxTree.ParseText(NormalizeNewlines(MixedEligibleAndSkipped)).GetRoot();
+        var types = ImplementAbstractOperation.CollectTypeDeclarations(root);
+        var names = types.Select(t => t.Identifier.Text).ToList();
+        Assert.Contains("Eligible", names);
+        Assert.Contains("StaticSkip", names);
+        Assert.Contains("ISkip", names);
+        Assert.Contains("PointSkip", names);
+        Assert.Contains("Outer", names);
+        Assert.Contains("Nested", names);
+        Assert.True(names.IndexOf("Outer") < names.IndexOf("Nested"));
+    }
+
+    #endregion
+
     #region Helpers
 
     private const string AlreadyImplementedMethodSource = """
@@ -3850,6 +4588,26 @@ public class ImplementAbstractOperationTests
         text.Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace("\r", "\n", StringComparison.Ordinal);
 
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
+
     private static int CountOccurrences(string text, string value)
     {
         var count = 0;
@@ -3929,9 +4687,13 @@ public class ImplementAbstractOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
         public string PathFor(string fileName) => Path.Combine(DirectoryPath, fileName);
+
+        public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
+            CreateAsync(files);
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
             CreateAsync((fileName, source));
@@ -3955,15 +4717,17 @@ public class ImplementAbstractOperationTests
                 """);
 
             string? sourcePath = null;
+            var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var (fileName, source) in files)
             {
                 var path = Path.Combine(directory, fileName);
                 await File.WriteAllTextAsync(path, source);
+                sourcePaths[fileName] = path;
                 sourcePath ??= path;
             }
 
             sourcePath ??= Path.Combine(directory, "Types.cs");
-            return await LoadAsync(directory, projectPath, sourcePath);
+            return await LoadAsync(directory, projectPath, sourcePath, sourcePaths);
         }
 
         /// <summary>
@@ -4027,10 +4791,21 @@ public class ImplementAbstractOperationTests
                 EndGlobal
                 """);
 
-            return await LoadAsync(directory, solutionPath, appSourcePath);
+            return await LoadAsync(
+                directory,
+                solutionPath,
+                appSourcePath,
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["Circle.cs"] = appSourcePath
+                });
         }
 
-        private static async Task<TempWorkspace> LoadAsync(string directory, string projectPath, string sourcePath)
+        private static async Task<TempWorkspace> LoadAsync(
+            string directory,
+            string projectPath,
+            string sourcePath,
+            IReadOnlyDictionary<string, string> sourcePaths)
         {
             try
             {
@@ -4047,6 +4822,7 @@ public class ImplementAbstractOperationTests
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
                     SourcePath = sourcePath,
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }

@@ -33,13 +33,13 @@ public sealed class ImplementAbstractTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Generate implementation stubs for unimplemented abstract members inherited by a selected class. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. throwNotImplemented (default true) throws NotImplementedException in stub bodies; replaceExisting (default false) replaces already-implemented abstract members instead of failing; preview returns computed changes without applying.";
+        "Generate implementation stubs for unimplemented abstract members inherited by a selected class. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. throwNotImplemented (default true) throws NotImplementedException in stub bodies; replaceExisting (default false) replaces already-implemented abstract members instead of failing; preview returns computed changes without applying. allFiles: true walks every C# file and implements missing abstract members for every eligible type (sourceFile optional when true; cannot be combined with typeName, members, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "typeName" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,30 +50,36 @@ public sealed class ImplementAbstractTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the type"
+                description = "Absolute path to the source file containing the type. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with typeName, members, line, or column.",
+                @default = false
             },
             typeName = new
             {
                 type = "string",
-                description = "Name of the class to implement inherited abstract members on"
+                description = "Name of the class to implement inherited abstract members on. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter.",
+                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             members = new
             {
                 type = "array",
                 items = new { type = "string" },
-                description = "Names of specific abstract members to implement. If not specified, implements all missing members (and, when replaceExisting is true, replaces existing implementable abstract members)."
+                description = "Names of specific abstract members to implement. If not specified, implements all missing members (and, when replaceExisting is true, replaces existing implementable abstract members). Single-site only; cannot be combined with allFiles."
             },
             throwNotImplemented = new
             {
@@ -121,6 +127,7 @@ public sealed class ImplementAbstractTool : IToolHandler
             var @params = new ImplementAbstractParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 TypeName = args.TypeName,
                 Line = args.Line,
                 Column = args.Column,
@@ -155,8 +162,9 @@ public sealed class ImplementAbstractTool : IToolHandler
     private sealed class ImplementAbstractArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string TypeName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? TypeName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
         public List<string>? Members { get; init; }
