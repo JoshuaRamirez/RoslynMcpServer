@@ -33,13 +33,13 @@ public sealed class InlineConstantTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Inline a const field by replacing references with its literal value. Optionally remove the constant. line (optional) picks the matching const field whose identifier or declaration span covers that line when several constants share the name; omitted keeps today's constantName + optional typeName path including SymbolAmbiguous. column (optional) picks the matching const field whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering declarator/field); omitted keeps today's constantName + optional typeName + optional line pick; column without line keeps today's omitted-line path after the name/typeName filter.";
+        "Inline a const field by replacing references with its literal value. Optionally remove the constant. line (optional) picks the matching const field whose identifier or declaration span covers that line when several constants share the name; omitted keeps today's constantName + optional typeName path including SymbolAmbiguous. column (optional) picks the matching const field whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering declarator/field); omitted keeps today's constantName + optional typeName + optional line pick; column without line keeps today's omitted-line path after the name/typeName filter. allFiles: true walks every C# file and inlines every eligible const field (sourceFile optional when true; cannot be combined with constantName, typeName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "constantName" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,28 +50,34 @@ public sealed class InlineConstantTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the constant"
+                description = "Absolute path to the source file containing the constant. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with constantName, typeName, line, or column.",
+                @default = false
             },
             constantName = new
             {
                 type = "string",
-                description = "Name of the constant field to inline"
+                description = "Name of the constant field to inline. Single-site only; cannot be combined with allFiles."
             },
             typeName = new
             {
                 type = "string",
-                description = "Containing type name for disambiguation when multiple constants share a name. Additive filter when supplied; line/column do not replace it."
+                description = "Containing type name for disambiguation when multiple constants share a name. Additive filter when supplied; line/column do not replace it. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number for disambiguation when several constants share the name. When set, selects the const field whose identifier or declaration span covers that line (identifier preferred, then smallest covering declarator/field). Omitted keeps today's constantName + optional typeName path including SymbolAmbiguous.",
+                description = "1-based line number for disambiguation when several constants share the name. When set, selects the const field whose identifier or declaration span covers that line (identifier preferred, then smallest covering declarator/field). Omitted keeps today's constantName + optional typeName path including SymbolAmbiguous. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set with line, selects the const field whose identifier or declaration span covers that column (identifier preferred, then smallest covering declarator/field). Omitted keeps today's constantName + optional typeName + optional line pick. Column without line keeps today's omitted-line path after the name/typeName filter.",
+                description = "1-based column for disambiguation. When set with line, selects the const field whose identifier or declaration span covers that column (identifier preferred, then smallest covering declarator/field). Omitted keeps today's constantName + optional typeName + optional line pick. Column without line keeps today's omitted-line path after the name/typeName filter. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             removeConstant = new
@@ -114,6 +120,7 @@ public sealed class InlineConstantTool : IToolHandler
             var @params = new InlineConstantParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 ConstantName = args.ConstantName,
                 TypeName = args.TypeName,
                 Line = args.Line,
@@ -147,8 +154,9 @@ public sealed class InlineConstantTool : IToolHandler
     private sealed class InlineConstantArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string ConstantName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? ConstantName { get; init; }
         public string? TypeName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }

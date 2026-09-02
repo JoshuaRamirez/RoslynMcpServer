@@ -15,12 +15,13 @@ namespace RoslynMcp.Core.Refactoring.Inline;
 
 /// <summary>
 /// Inlines a const field by replacing references with a formatted literal
-/// and optionally removing the declaration.
+/// and optionally removing the declaration. Optional <c>allFiles</c> walks
+/// every C# document (or the optional single <c>sourceFile</c>) and inlines
+/// every eligible const field, skipping ineligible constants rather than
+/// throwing.
 /// </summary>
 public sealed class InlineConstantOperation : RefactoringOperationBase<InlineConstantParams>
 {
-    private static readonly SyntaxAnnotation TargetConstantAnnotation = new("RoslynMcp.InlineConstant.Target");
-
     /// <summary>
     /// Creates a new inline constant operation.
     /// </summary>
@@ -37,16 +38,34 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
     /// </summary>
     internal static void Validate(InlineConstantParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.ConstantName) ||
+                !string.IsNullOrWhiteSpace(@params.TypeName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with constantName, typeName, line, or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (string.IsNullOrWhiteSpace(@params.ConstantName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "constantName is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
+        var sourceFile = @params.SourceFile!;
+        var constantName = @params.ConstantName!;
+
+        if (!PathResolver.IsAbsolutePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
 
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
@@ -55,11 +74,11 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+        if (!File.Exists(sourceFile))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {sourceFile}");
 
-        if (!IsValidIdentifier(@params.ConstantName))
-            throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"'{@params.ConstantName}' is not a valid constant name.");
+        if (!IsValidIdentifier(constantName))
+            throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"'{constantName}' is not a valid constant name.");
 
         if (@params.TypeName != null && string.IsNullOrWhiteSpace(@params.TypeName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, "typeName must not be empty when provided.");
@@ -98,7 +117,10 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         InlineConstantParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -168,12 +190,299 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.ConstantName,
+                Name = @params.ConstantName!,
                 FullyQualifiedName = fieldSymbol.ToDisplayString(),
                 Kind = SymbolKindMapper.Map(fieldSymbol)
             },
             replaceable.Count,
             0);
+    }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
+    /// / <c>MakeNonStaticOperation.ExecuteAllFilesAsync</c> /
+    /// <c>MakeStaticOperation.ExecuteAllFilesAsync</c> /
+    /// <c>EncapsulateFieldOperation.ExecuteAllFilesAsync</c>) and inlines
+    /// every eligible const field <c>VariableDeclaratorSyntax</c> whose
+    /// parent field is <c>const</c> (same kind filter as
+    /// <see cref="FindConstantDeclarator"/> / <see cref="ValidateIsConstant"/>).
+    /// Optional <c>sourceFile</c> limits the walk to that one file. Attribute
+    /// uses, public-API constants when <c>removeConstant</c> would apply,
+    /// uneditable documents, missing literals, and otherwise ineligible
+    /// constants are skipped rather than failing the walk. When a later
+    /// rewrite conflicts with an earlier one, the later claim is skipped.
+    /// When every constant is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        InlineConstantParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var inlinedCountByDoc = new Dictionary<DocumentId, int>();
+        var processedFields = new HashSet<IFieldSymbol>(SymbolEqualityComparer.Default);
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!IsDocumentEditable(document, Context.Workspace))
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(document.Id);
+                if (currentDocument == null || !IsDocumentEditable(currentDocument, Context.Workspace))
+                    break;
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var declarator in CollectConstDeclarators(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var fieldSymbol = semanticModel.GetDeclaredSymbol(declarator, cancellationToken) as IFieldSymbol;
+                    if (fieldSymbol == null || !processedFields.Add(fieldSymbol))
+                        continue;
+
+                    try
+                    {
+                        updated = await TryInlineOneAsync(
+                            currentDocument,
+                            declarator,
+                            @params.RemoveConstant,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        // Skip attribute / public-API+remove / uneditable /
+                        // missing-literal / unsupported-use constants rather
+                        // than failing the walk.
+                        updated = null;
+                    }
+
+                    if (updated != null)
+                        break;
+                }
+
+                if (updated == null)
+                    break;
+
+                currentSolution = updated;
+                inlinedCountByDoc[document.Id] =
+                    inlinedCountByDoc.GetValueOrDefault(document.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var inlinedCount = inlinedCountByDoc.GetValueOrDefault(document.Id);
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = inlinedCount > 0
+                        ? BuildAllFilesDescription(inlinedCount)
+                        : "Update references of inlined constants",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that inlined
+    /// <paramref name="inlinedCount"/> constants.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int inlinedCount) =>
+        inlinedCount == 1
+            ? "Inline constant"
+            : $"Inline {inlinedCount} constants";
+
+    /// <summary>
+    /// Collects every const field <see cref="VariableDeclaratorSyntax"/> in
+    /// <paramref name="root"/> whose parent field is <c>const</c> (same
+    /// field-only filter as <see cref="FindConstantDeclarator"/>; locals
+    /// and other non-field declarators stay excluded). Deterministic
+    /// <c>SpanStart</c> then span-length order.
+    /// </summary>
+    internal static IReadOnlyList<VariableDeclaratorSyntax> CollectConstDeclarators(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<VariableDeclaratorSyntax>()
+            .Where(IsConstFieldDeclarator)
+            .OrderBy(declarator => declarator.SpanStart)
+            .ThenBy(declarator => declarator.Span.Length)
+            .ToList();
+
+    private static bool IsConstFieldDeclarator(VariableDeclaratorSyntax declarator) =>
+        declarator.Parent?.Parent is FieldDeclarationSyntax field &&
+        field.Modifiers.Any(SyntaxKind.ConstKeyword);
+
+    private async Task<Solution?> TryInlineOneAsync(
+        Document document,
+        VariableDeclaratorSyntax declarator,
+        bool removeConstantRequested,
+        CancellationToken cancellationToken)
+    {
+        var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+        if (semanticModel == null)
+            return null;
+
+        var fieldSymbol = semanticModel.GetDeclaredSymbol(declarator, cancellationToken) as IFieldSymbol;
+        if (fieldSymbol == null || !fieldSymbol.IsConst)
+            return null;
+
+        if (removeConstantRequested && IsPublicApiConstant(fieldSymbol))
+            return null;
+
+        ExpressionSyntax literal;
+        try
+        {
+            literal = GetLiteralRepresentation(fieldSymbol, declarator, semanticModel, cancellationToken);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+
+        List<ConstantReference> references;
+        try
+        {
+            references = await FindReferenceLocationsAsync(fieldSymbol, declarator, document, cancellationToken);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+
+        if (references.Any(r => r.InAttribute))
+            return null;
+
+        if (references.Any(r => !IsDocumentEditable(r.Document, Context.Workspace)) ||
+            !IsDocumentEditable(document, Context.Workspace))
+        {
+            return null;
+        }
+
+        var replaceable = references.Where(r => r.CanReplace).ToList();
+        var remainingNonDeclaration = references.Count(r => !r.CanReplace);
+        var removeConstant = removeConstantRequested && remainingNonDeclaration == 0;
+
+        if (replaceable.Count == 0 && !removeConstant)
+            return null;
+
+        return await ApplyInliningAsync(
+            document,
+            declarator,
+            replaceable,
+            literal,
+            removeConstant,
+            cancellationToken);
+    }
+
+    private static List<Document> FilterDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        string wanted;
+        try
+        {
+            wanted = PathResolver.NormalizePath(sourceFile);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            wanted = sourceFile;
+        }
+
+        return documents
+            .Where(d => string.Equals(
+                PathResolver.NormalizePath(d.FilePath!),
+                wanted,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Returns whether <paramref name="document"/> can receive source edits
+    /// (same checks as <see cref="ValidateDocumentIsEditable"/>, skip not throw).
+    /// </summary>
+    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
+    {
+        if (document is SourceGeneratedDocument)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
+            return false;
+
+        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
     }
 
     /// <summary>
@@ -205,7 +514,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
     {
         var candidates = root.DescendantNodes()
             .OfType<VariableDeclaratorSyntax>()
-            .Where(v => NamesMatch(v.Identifier, @params.ConstantName) && v.Parent?.Parent is FieldDeclarationSyntax)
+            .Where(v => NamesMatch(v.Identifier, @params.ConstantName!) && v.Parent?.Parent is FieldDeclarationSyntax)
             .ToList();
 
         if (!string.IsNullOrWhiteSpace(@params.TypeName))
@@ -516,7 +825,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
     {
         var references = await SymbolFinder.FindReferencesAsync(
             fieldSymbol,
-            Context.Solution,
+            declaringDocument.Project.Solution,
             cancellationToken);
 
         var results = new List<ConstantReference>();
@@ -623,13 +932,21 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
     {
         var solution = declaringDocument.Project.Solution;
 
+        // Fresh instance per apply. A static annotation is shared across
+        // calls; when the declaration is kept (nameof / other
+        // non-replaceable refs) the mark stays on the tree and a later
+        // same-named const in the same file can hit multi-annotated →
+        // name fallback → SymbolAmbiguous. Same instance-not-kind
+        // matching as encapsulate_field / simplify_name.
+        var targetAnnotation = new SyntaxAnnotation("RoslynMcp.InlineConstant.Target");
+
         var declaringRoot = await declaringDocument.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         var currentDeclarator = RematchDeclarator(declaringRoot, declarator)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Constant declaration disappeared.");
         declaringRoot = declaringRoot.ReplaceNode(
             currentDeclarator,
-            currentDeclarator.WithAdditionalAnnotations(TargetConstantAnnotation));
+            currentDeclarator.WithAdditionalAnnotations(targetAnnotation));
         solution = declaringDocument.WithSyntaxRoot(declaringRoot).Project.Solution;
 
         var documentsToRewrite = replaceable.Select(r => r.Document.Id).ToHashSet();
@@ -662,12 +979,16 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             }
 
             if (removeConstant && documentId == declaringDocument.Id)
-                root = RemoveAnnotatedConstant(root, declarator.Identifier.ValueText);
+                root = RemoveAnnotatedConstant(root, declarator.Identifier.ValueText, targetAnnotation);
 
             solution = document.WithSyntaxRoot(root).Project.Solution;
         }
 
-        return solution;
+        return await StripTargetAnnotationAsync(
+            solution,
+            declaringDocument.Id,
+            targetAnnotation,
+            cancellationToken);
     }
 
     private static VariableDeclaratorSyntax? RematchDeclarator(SyntaxNode root, VariableDeclaratorSyntax original)
@@ -677,9 +998,12 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             .FirstOrDefault(v => v.Span == original.Span && v.Identifier.Text == original.Identifier.Text);
     }
 
-    private static SyntaxNode RemoveAnnotatedConstant(SyntaxNode root, string constantName)
+    private static SyntaxNode RemoveAnnotatedConstant(
+        SyntaxNode root,
+        string constantName,
+        SyntaxAnnotation targetAnnotation)
     {
-        var annotated = root.GetAnnotatedNodes(TargetConstantAnnotation)
+        var annotated = root.GetAnnotatedNodes(targetAnnotation)
             .OfType<VariableDeclaratorSyntax>()
             .ToList();
 
@@ -706,6 +1030,33 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         }
 
         return root.RemoveNode(declarator, SyntaxRemoveOptions.KeepNoTrivia) ?? root;
+    }
+
+    /// <summary>
+    /// Drops leftover target annotations when the declaration is kept
+    /// (nameof / other non-replaceable refs) so a later bulk apply in
+    /// the same file cannot see a stale mark.
+    /// </summary>
+    private static async Task<Solution> StripTargetAnnotationAsync(
+        Solution solution,
+        DocumentId declaringDocumentId,
+        SyntaxAnnotation targetAnnotation,
+        CancellationToken cancellationToken)
+    {
+        var document = solution.GetDocument(declaringDocumentId);
+        if (document == null)
+            return solution;
+
+        var root = await document.GetSyntaxRootAsync(cancellationToken);
+        if (root == null)
+            return solution;
+
+        var leftover = root.GetAnnotatedNodes(targetAnnotation).ToList();
+        if (leftover.Count == 0)
+            return solution;
+
+        root = root.ReplaceNodes(leftover, (original, _) => original.WithoutAnnotations(targetAnnotation));
+        return document.WithSyntaxRoot(root).Project.Solution;
     }
 
     private static async Task<RefactoringResult> CreatePreviewResultAsync(
@@ -747,7 +1098,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         {
             pendingChanges.Add(new PendingChange
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = $"Inline constant '{@params.ConstantName}' ({usageCount} usage(s))",
                 BeforeSnippet = null,
