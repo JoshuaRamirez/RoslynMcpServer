@@ -267,7 +267,7 @@ public sealed class ToolRegistry
 
         // ── Refactoring: Move (2) — non-standard base class ──────────
         r.RegisterManual("move-type-to-file",
-            "Move a type declaration to its own file; line (optional) disambiguates same-named top-level types by start-line equality; omitted with several matches is SymbolAmbiguous; a single match ignores line; column (optional) picks the top-level type whose identifier or declaration span covers that column when set with line; omitted keeps today's symbolName + optional line pick; column without line keeps today's omitted-line path",
+            "Move a type declaration to its own file; line (optional) disambiguates same-named top-level types by start-line equality; omitted with several matches is SymbolAmbiguous; a single match ignores line; column (optional) picks the top-level type whose identifier or declaration span covers that column when set with line; omitted keeps today's symbolName + optional line pick; column without line keeps today's omitted-line path; sourceFile, symbolName, and targetFile are required when allFiles is omitted or false; allFiles (default false) extracts every eligible top-level type into {directory}/{TypeName}.cs in every C# file (sourceFile optional when true — limits the walk to that file; cannot be combined with symbolName, targetFile, line, or column)",
             typeof(MoveTypeToFileParams), "Refactoring",
             async (ctx, json, ct) =>
             {

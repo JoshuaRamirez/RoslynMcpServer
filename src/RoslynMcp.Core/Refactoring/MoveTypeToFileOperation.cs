@@ -21,6 +21,12 @@ namespace RoslynMcp.Core.Refactoring;
 /// line keeps that omitted-line path. When column is set with line, picks
 /// the covering top-level type (identifier preferred, then smallest
 /// covering type). Nested types stay unmoveable.
+/// Optional <c>allFiles</c> walks every C# document (or the optional
+/// single <c>sourceFile</c>) and extracts every eligible top-level type
+/// into <c>{directory}/{TypeName}.cs</c> (skip nested / already
+/// well-placed / SameLocation / NameCollision / occupied destinations /
+/// uneditable / resolution failures rather than throwing). Bulk walks
+/// every eligible type, not a broader search for one symbolName.
 /// </summary>
 public sealed class MoveTypeToFileOperation
 {
@@ -57,6 +63,9 @@ public sealed class MoveTypeToFileOperation
             // Validate inputs
             Validate(@params);
 
+            if (@params.AllFiles)
+                return await ExecuteAllFilesAsync(operationId, @params, stopwatch, cancellationToken);
+
             // Resolve symbol. Optional line/column disambiguates
             // same-named top-level types. Omitted column keeps today's
             // symbolName + optional line pick (start-line equality /
@@ -65,8 +74,8 @@ public sealed class MoveTypeToFileOperation
             // with line picks the covering top-level type (identifier
             // preferred, then smallest covering type).
             var resolution = await _symbolResolver.FindTypeInFileAsync(
-                @params.SourceFile,
-                @params.SymbolName,
+                @params.SourceFile!,
+                @params.SymbolName!,
                 @params.Line,
                 @params.Column,
                 cancellationToken);
@@ -112,7 +121,7 @@ public sealed class MoveTypeToFileOperation
                     FilesCreated = commitResult.FilesCreated,
                     FilesDeleted = commitResult.FilesDeleted
                 },
-                CreateSymbolInfo(resolution, @params.TargetFile),
+                CreateSymbolInfo(resolution, @params.TargetFile!),
                 references.TotalReferenceCount,
                 stopwatch.ElapsedMilliseconds);
         }
@@ -135,6 +144,21 @@ public sealed class MoveTypeToFileOperation
     /// </summary>
     internal static void Validate(MoveTypeToFileParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.SymbolName) ||
+                !string.IsNullOrWhiteSpace(@params.TargetFile) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with symbolName, targetFile, line, or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -166,22 +190,334 @@ public sealed class MoveTypeToFileOperation
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
         // Check source != target
-        if (PathResolver.NormalizePath(@params.SourceFile) == PathResolver.NormalizePath(@params.TargetFile))
+        if (PathResolver.NormalizePath(@params.SourceFile) == PathResolver.NormalizePath(@params.TargetFile!))
             throw new RefactoringException(ErrorCodes.SameLocation, "Source and target files are the same.");
     }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
+    /// / <c>RenameFileToMatchTypeOperation.ExecuteAllFilesAsync</c> /
+    /// <c>UseBaseTypeOperation.ExecuteAllFilesAsync</c> /
+    /// <c>EncapsulateFieldOperation.ExecuteAllFilesAsync</c>) and extracts
+    /// every eligible top-level <c>TypeDeclarationSyntax</c> into
+    /// <c>{directory}/{TypeName}.cs</c>. Optional <c>sourceFile</c> limits
+    /// the walk to that one file. Nested types, already well-placed
+    /// single-type matching files, SameLocation, NameCollision / occupied
+    /// destinations today's <see cref="ValidateTargetAsync"/> would reject,
+    /// uneditable documents, and resolution failures are skipped. When two
+    /// types would claim the same destination, the later claim is skipped.
+    /// When every type is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        MoveTypeToFileParams @params,
+        Stopwatch stopwatch,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = _context.Solution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            string wanted;
+            try
+            {
+                wanted = PathResolver.NormalizePath(@params.SourceFile);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                wanted = @params.SourceFile;
+            }
+
+            allDocuments = allDocuments
+                .Where(d => string.Equals(
+                    PathResolver.NormalizePath(d.FilePath!),
+                    wanted,
+                    StringComparison.Ordinal))
+                .ToList();
+        }
+
+        var plans = new List<TypeMovePlan>();
+        var claimedDestinations = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!IsDocumentEditable(document, _context.Workspace))
+                continue;
+
+            var sourceFile = document.FilePath;
+            if (string.IsNullOrWhiteSpace(sourceFile))
+                continue;
+
+            var root = await document.GetSyntaxRootAsync(cancellationToken);
+            if (root == null)
+                continue;
+
+            var topLevel = CollectTopLevelTypes(root);
+            foreach (var typeDecl in topLevel)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var typeName = typeDecl.Identifier.Text;
+                if (string.IsNullOrWhiteSpace(typeName))
+                    continue;
+
+                if (IsAlreadyWellPlaced(sourceFile, typeName, topLevel.Count))
+                    continue;
+
+                var targetFile = GetDerivedTargetFile(sourceFile, typeName);
+                if (string.Equals(
+                        PathResolver.NormalizePath(sourceFile),
+                        PathResolver.NormalizePath(targetFile),
+                        StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var destKey = PathResolver.NormalizePath(targetFile);
+                if (!claimedDestinations.Add(destKey))
+                    continue;
+
+                plans.Add(new TypeMovePlan(
+                    sourceFile,
+                    typeName,
+                    GetNamespaceName(typeDecl),
+                    targetFile));
+            }
+        }
+
+        var pendingChanges = new List<PendingChange>();
+        var anyMove = false;
+        var totalReferences = 0;
+
+        foreach (var plan in plans)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var resolution = await TryResolvePlannedTypeAsync(plan, cancellationToken);
+                if (resolution == null)
+                    continue;
+
+                if (!IsDocumentEditable(resolution.Document, _context.Workspace))
+                    continue;
+
+                var moveParams = new MoveTypeToFileParams
+                {
+                    SourceFile = plan.SourceFile,
+                    SymbolName = plan.TypeName,
+                    TargetFile = plan.TargetFile,
+                    CreateTargetFile = @params.CreateTargetFile,
+                    Preview = @params.Preview
+                };
+
+                await ValidateTargetAsync(moveParams, resolution, cancellationToken);
+
+                var references = await _referenceTracker.FindAllReferencesAsync(
+                    resolution.Symbol,
+                    cancellationToken);
+
+                var (newSolution, changeInfo) = await ComputeChangesAsync(
+                    moveParams,
+                    resolution,
+                    references,
+                    cancellationToken);
+
+                pendingChanges.AddRange(CreatePendingChanges(changeInfo, resolution, plan.TargetFile));
+                totalReferences += references.TotalReferenceCount;
+                _context.UpdateSolution(newSolution);
+                anyMove = true;
+            }
+            catch (RefactoringException)
+            {
+                // Skip per-type failures that single-site would throw.
+            }
+        }
+
+        if (@params.Preview)
+        {
+            _context.UpdateSolution(originalSolution);
+            return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        }
+
+        var finalSolution = _context.Solution;
+        _context.UpdateSolution(originalSolution);
+
+        if (!anyMove)
+        {
+            stopwatch.Stop();
+            return RefactoringResult.Succeeded(
+                operationId,
+                new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+                null,
+                0,
+                stopwatch.ElapsedMilliseconds);
+        }
+
+        var commitResult = await _context.CommitChangesAsync(finalSolution, cancellationToken);
+        if (!commitResult.Success)
+        {
+            throw new RefactoringException(
+                ErrorCodes.FilesystemError,
+                $"Failed to write files: {commitResult.Error}");
+        }
+
+        stopwatch.Stop();
+        return RefactoringResult.Succeeded(
+            operationId,
+            new FileChanges
+            {
+                FilesModified = commitResult.FilesModified,
+                FilesCreated = commitResult.FilesCreated,
+                FilesDeleted = commitResult.FilesDeleted
+            },
+            null,
+            totalReferences,
+            stopwatch.ElapsedMilliseconds);
+    }
+
+    /// <summary>
+    /// Top-level named types in a file (class, struct, interface, record).
+    /// Nested types are ignored, matching single-site <c>FindTypeInFileAsync</c>.
+    /// Enums and delegates are not <see cref="TypeDeclarationSyntax"/> and
+    /// stay out of the bulk walk.
+    /// </summary>
+    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTopLevelTypes(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Parent is CompilationUnitSyntax or BaseNamespaceDeclarationSyntax)
+            .ToList();
+
+    /// <summary>
+    /// Builds the destination path as <c>{directory of source}/{TypeName}.cs</c>.
+    /// </summary>
+    internal static string GetDerivedTargetFile(string sourceFile, string typeName)
+    {
+        var directory = Path.GetDirectoryName(sourceFile) ?? string.Empty;
+        var extension = Path.GetExtension(sourceFile);
+        if (string.IsNullOrEmpty(extension))
+            extension = ".cs";
+        return Path.Combine(directory, typeName + extension);
+    }
+
+    /// <summary>
+    /// True when the type name already matches the current file stem and
+    /// the file has exactly one top-level type (already well-placed — same
+    /// spirit as <c>rename_file_to_match_type</c> allFiles no-op).
+    /// </summary>
+    internal static bool IsAlreadyWellPlaced(string sourceFile, string typeName, int topLevelTypeCount) =>
+        topLevelTypeCount == 1 &&
+        string.Equals(Path.GetFileNameWithoutExtension(sourceFile), typeName, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Preview description for moving <paramref name="typeName"/> into
+    /// <paramref name="targetFile"/>.
+    /// </summary>
+    internal static string BuildAllFilesDescription(string typeName, string targetFile) =>
+        $"Move {typeName} to {Path.GetFileName(targetFile)}";
+
+    /// <summary>
+    /// True when the document can receive a path or text edit. AllFiles skips
+    /// rather than throwing the single-file <see cref="ErrorCodes.DocumentNotEditable"/>.
+    /// </summary>
+    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
+    {
+        if (document is SourceGeneratedDocument)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
+            return false;
+
+        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
+    }
+
+    private static string GetNamespaceName(TypeDeclarationSyntax typeDecl)
+    {
+        var namespaceDecl = typeDecl.Ancestors().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault();
+        return namespaceDecl?.Name.ToString() ?? "";
+    }
+
+    private async Task<SymbolResolutionResult?> TryResolvePlannedTypeAsync(
+        TypeMovePlan plan,
+        CancellationToken cancellationToken)
+    {
+        var document = _context.GetDocumentByPath(plan.SourceFile);
+        if (document == null)
+            return null;
+
+        var root = await document.GetSyntaxRootAsync(cancellationToken);
+        var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+        if (root == null || semanticModel == null)
+            return null;
+
+        var match = CollectTopLevelTypes(root).FirstOrDefault(t =>
+            t.Identifier.Text == plan.TypeName &&
+            GetNamespaceName(t) == plan.Namespace);
+        if (match == null)
+            return null;
+
+        if (semanticModel.GetDeclaredSymbol(match, cancellationToken) is not INamedTypeSymbol symbol)
+            return null;
+
+        if (symbol.ContainingType != null)
+            return null;
+
+        return new SymbolResolutionResult
+        {
+            Symbol = symbol,
+            Declaration = match,
+            Document = document
+        };
+    }
+
+    private static List<PendingChange> CreatePendingChanges(
+        ChangeInfo changeInfo,
+        SymbolResolutionResult resolution,
+        string targetFile) =>
+    [
+        new()
+        {
+            File = resolution.Document.FilePath!,
+            ChangeType = changeInfo.SourceFileEmptied ? ChangeKind.Delete : ChangeKind.Modify,
+            Description = changeInfo.SourceFileEmptied
+                ? $"Delete file (emptied after removing {resolution.Symbol.Name})"
+                : $"Remove {resolution.Symbol.Name} declaration"
+        },
+        new()
+        {
+            File = targetFile,
+            ChangeType = changeInfo.TargetFileCreated ? ChangeKind.Create : ChangeKind.Modify,
+            Description = changeInfo.TargetFileCreated
+                ? $"Create file with {resolution.Symbol.Name}"
+                : $"Add {resolution.Symbol.Name} declaration"
+        }
+    ];
+
+    private sealed record TypeMovePlan(
+        string SourceFile,
+        string TypeName,
+        string Namespace,
+        string TargetFile);
 
     private async Task ValidateTargetAsync(
         MoveTypeToFileParams @params,
         SymbolResolutionResult resolution,
         CancellationToken cancellationToken)
     {
-        var targetDoc = _context.GetDocumentByPath(@params.TargetFile);
+        var targetDoc = _context.GetDocumentByPath(@params.TargetFile!);
 
         if (targetDoc == null && !@params.CreateTargetFile)
         {
             throw new RefactoringException(
                 ErrorCodes.SourceFileNotFound,
-                $"Target file does not exist: {@params.TargetFile}. Set createTargetFile=true to create it.");
+                $"Target file does not exist: {@params.TargetFile!}. Set createTargetFile=true to create it.");
         }
 
         // If target exists, check for name collision
@@ -232,7 +568,7 @@ public sealed class MoveTypeToFileOperation
         var targetContent = CreateTargetFileContent(typeNode, namespaceName, usings);
 
         // Check if target document exists
-        var targetDoc = _context.GetDocumentByPath(@params.TargetFile);
+        var targetDoc = _context.GetDocumentByPath(@params.TargetFile!);
 
         if (targetDoc != null)
         {
@@ -246,7 +582,7 @@ public sealed class MoveTypeToFileOperation
             // Create new document
             var project = sourceDoc.Project;
             var newDoc = project.AddDocument(
-                Path.GetFileNameWithoutExtension(@params.TargetFile),
+                Path.GetFileNameWithoutExtension(@params.TargetFile!),
                 targetContent,
                 filePath: @params.TargetFile);
             solution = newDoc.Project.Solution;

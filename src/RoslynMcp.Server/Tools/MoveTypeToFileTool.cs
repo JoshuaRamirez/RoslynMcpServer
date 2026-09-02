@@ -32,13 +32,13 @@ public sealed class MoveTypeToFileTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Move a C# type declaration to a different file within the solution. Updates all references automatically. line (optional) disambiguates same-named top-level types by start-line equality; omitted with several matches is SymbolAmbiguous; a single match ignores line. column (optional) picks the top-level type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering type); omitted keeps today's symbolName + optional line pick; column without line keeps today's omitted-line path.";
+        "Move a C# type declaration to a different file within the solution. Updates all references automatically. line (optional) disambiguates same-named top-level types by start-line equality; omitted with several matches is SymbolAmbiguous; a single match ignores line. column (optional) picks the top-level type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering type); omitted keeps today's symbolName + optional line pick; column without line keeps today's omitted-line path. sourceFile, symbolName, and targetFile are required when allFiles is omitted or false. allFiles: true walks every C# file and extracts every eligible top-level type into {directory}/{TypeName}.cs (sourceFile optional when true — limits the walk to that file; cannot be combined with symbolName, targetFile, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "symbolName", "targetFile" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -49,34 +49,40 @@ public sealed class MoveTypeToFileTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the type"
+                description = "Absolute path to the source file containing the type. Required when allFiles is false. When allFiles is true, optional: limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional and limits the walk to that file when provided. Cannot be combined with symbolName, targetFile, line, or column. Walks every eligible top-level type into {directory}/{TypeName}.cs rather than broadening search for one symbolName.",
+                @default = false
             },
             symbolName = new
             {
                 type = "string",
-                description = "Name of the type to move (simple or fully qualified)"
+                description = "Name of the type to move (simple or fully qualified). Required when allFiles is false. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number for disambiguation if multiple types match. When column is omitted, matching stays today's start-line equality. A single match ignores line.",
+                description = "1-based line number for disambiguation if multiple types match. When column is omitted, matching stays today's start-line equality. A single match ignores line. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set with line, selects the top-level type whose identifier or declaration span covers that column (identifier preferred, then smallest covering type). Omitted keeps today's symbolName + optional line pick. Column without line keeps today's omitted-line path.",
+                description = "1-based column for disambiguation. When set with line, selects the top-level type whose identifier or declaration span covers that column (identifier preferred, then smallest covering type). Omitted keeps today's symbolName + optional line pick. Column without line keeps today's omitted-line path. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             targetFile = new
             {
                 type = "string",
-                description = "Absolute path to the target file"
+                description = "Absolute path to the target file. Required when allFiles is false. Single-site only; cannot be combined with allFiles. Bulk derives each destination as {directory}/{TypeName}.cs."
             },
             createTargetFile = new
             {
                 type = "boolean",
-                description = "Create target file if it does not exist",
+                description = "Create target file if it does not exist. With allFiles, skip a type when false and the derived destination is missing.",
                 @default = true
             },
             preview = new
@@ -115,6 +121,7 @@ public sealed class MoveTypeToFileTool : IToolHandler
             var @params = new MoveTypeToFileParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 SymbolName = args.SymbolName,
                 Line = args.Line,
                 Column = args.Column,
@@ -148,11 +155,12 @@ public sealed class MoveTypeToFileTool : IToolHandler
     private sealed class MoveTypeToFileArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string SymbolName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? SymbolName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
-        public string TargetFile { get; init; } = "";
+        public string? TargetFile { get; init; }
         public bool? CreateTargetFile { get; init; }
         public bool? Preview { get; init; }
     }
