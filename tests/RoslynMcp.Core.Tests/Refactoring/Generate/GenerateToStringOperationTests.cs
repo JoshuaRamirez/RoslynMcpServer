@@ -3701,6 +3701,94 @@ public class GenerateToStringOperationTests
         Assert.True(names.IndexOf("Outer") < names.IndexOf("Nested"));
     }
 
+    [SkippableFact]
+    public async Task GenerateToString_AllFilesTrue_SkipsSealedInheritedToString_SiblingStillGenerated()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class SealedBase
+            {
+                public override sealed string ToString() => "sealed";
+            }
+
+            public class BlockedBySealedBase : SealedBase
+            {
+                public string Name { get; set; }
+            }
+
+            public class EligibleSibling
+            {
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Types.cs", source));
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Types.cs"]));
+        var blocked = GetTypes(updated, "BlockedBySealedBase").Single();
+        var sibling = GetTypes(updated, "EligibleSibling").Single();
+        var sealedBase = GetTypes(updated, "SealedBase").Single();
+        Assert.False(TypeHasMethod(blocked, "ToString"));
+        Assert.True(TypeHasMethod(sibling, "ToString"));
+        Assert.Contains("{Age}", ExtractOwnToString(sibling), StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(NormalizeNewlines(sealedBase.ToFullString()), "ToString()"));
+        Assert.DoesNotContain("=> \"sealed\"", ExtractOwnToString(sibling), StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task GenerateToString_AllFilesTrue_ReplaceExisting_StillSkipsSealedInheritedToString()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class SealedBase
+            {
+                public override sealed string ToString() => "sealed";
+            }
+
+            public class BlockedBySealedBase : SealedBase
+            {
+                public string Name { get; set; }
+            }
+
+            public class EligibleSibling
+            {
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Types.cs", source));
+        var operation = new GenerateToStringOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateToStringParams
+        {
+            AllFiles = true,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Types.cs"]));
+        var blocked = GetTypes(updated, "BlockedBySealedBase").Single();
+        var sibling = GetTypes(updated, "EligibleSibling").Single();
+        var sealedBase = GetTypes(updated, "SealedBase").Single();
+        Assert.False(TypeHasMethod(blocked, "ToString"));
+        Assert.True(TypeHasMethod(sibling, "ToString"));
+        Assert.Contains("{Age}", ExtractOwnToString(sibling), StringComparison.Ordinal);
+        Assert.Contains("=> \"sealed\"", ExtractOwnToString(sealedBase), StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(NormalizeNewlines(sealedBase.ToFullString()), "ToString()"));
+    }
+
     #endregion
 
     #region Helpers

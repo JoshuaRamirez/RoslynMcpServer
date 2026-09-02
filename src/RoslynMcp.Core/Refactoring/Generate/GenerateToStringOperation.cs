@@ -213,6 +213,9 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
     /// <c>sourceFile</c> limits the walk to that one file. Interface,
     /// no-members when <c>callSuper</c> is false, existing-ToString
     /// collisions when <c>replaceExisting</c> is false,
+    /// sealed inherited parameterless instance ToString (CS0239; skipped
+    /// even when <c>replaceExisting</c> unless this type itself declares
+    /// the parameterless ToString being replaced),
     /// <c>CallSuperOnObjectBase</c> / <c>CallSuperOnAbstractBase</c>,
     /// uneditable, parse/symbol failures, and otherwise ineligible types
     /// are skipped rather than failing the walk. When a later rewrite
@@ -473,6 +476,16 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
 
         if (!@params.ReplaceExisting && HasExistingToStringOverride(typeSymbol))
             return null;
+
+        // Sealed inherited ToString is CS0239 if we emit override.
+        // replaceExisting cannot unseal an inherited method — only skip
+        // this guard when THIS type already declares the parameterless
+        // ToString being replaced.
+        if (HasSealedInheritedToString(typeSymbol) &&
+            !(@params.ReplaceExisting && HasExistingToStringOverride(typeSymbol)))
+        {
+            return null;
+        }
 
         List<ISymbol> members;
         try
@@ -1045,6 +1058,23 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
 
         var toString = FindParameterlessInstanceToString(baseType);
         return toString?.IsAbstract == true;
+    }
+
+    /// <summary>
+    /// True when the effective inherited parameterless instance
+    /// <c>ToString</c> is sealed (same walk as
+    /// <see cref="HasAbstractBaseToString"/> via
+    /// <see cref="FindParameterlessInstanceToString"/>). Emitting
+    /// <c>public override string ToString()</c> would be CS0239.
+    /// </summary>
+    internal static bool HasSealedInheritedToString(INamedTypeSymbol typeSymbol)
+    {
+        var baseType = typeSymbol.BaseType;
+        if (baseType == null)
+            return false;
+
+        var toString = FindParameterlessInstanceToString(baseType);
+        return toString?.IsSealed == true;
     }
 
     private static IMethodSymbol? FindParameterlessInstanceToString(INamedTypeSymbol type)
