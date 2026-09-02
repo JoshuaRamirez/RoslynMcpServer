@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Rename;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -1315,6 +1316,27 @@ public class MoveTypeToFileOperationTests
         Assert.True(MoveTypeToFileOperation.IsSamePhysicalLocation(path, path));
     }
 
+    [Fact]
+    public void IsSamePhysicalLocation_DifferentNames_IsFalse()
+    {
+        var dir = Path.GetTempPath();
+        Assert.False(MoveTypeToFileOperation.IsSamePhysicalLocation(
+            Path.Combine(dir, "Widget.cs"),
+            Path.Combine(dir, "Other.cs")));
+    }
+
+    [Fact]
+    public void IsSamePhysicalLocation_CaseOnlyPair_FollowsVolume()
+    {
+        var dir = Path.GetTempPath();
+        var same = MoveTypeToFileOperation.IsSamePhysicalLocation(
+            Path.Combine(dir, "widget.cs"),
+            Path.Combine(dir, "Widget.cs"));
+        Assert.Equal(
+            !RenameFileToMatchTypeOperation.DirectoryTreatsCaseAsDistinct(dir),
+            same);
+    }
+
     [SkippableFact]
     public async Task MoveTypeToFile_AllFilesTrue_ClassPlusEnum_KeepsEnumInSource()
     {
@@ -1346,6 +1368,53 @@ public class MoveTypeToFileOperationTests
         Assert.Contains("enum Kept", remaining);
         Assert.DoesNotContain("class Alpha", remaining);
         Assert.DoesNotContain(result.Changes!.FilesDeleted, p => PathEquals(p, workspace.FilePaths["Mixed.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_CaseOnlyDest_DoesNotScheduleCompetingWriteAndDelete()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("widget.cs", """
+                namespace TestApp;
+
+                public class Widget
+                {
+                }
+
+                public class Extra
+                {
+                }
+                """));
+        var source = workspace.FilePaths["widget.cs"];
+        var widgetDest = workspace.TargetPath("Widget.cs");
+        var extraDest = workspace.TargetPath("Extra.cs");
+        var samePhysical = MoveTypeToFileOperation.IsSamePhysicalLocation(source, widgetDest);
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(extraDest));
+        Assert.Contains("class Extra", await File.ReadAllTextAsync(extraDest));
+
+        if (samePhysical)
+        {
+            Assert.True(File.Exists(source));
+            var remaining = await File.ReadAllTextAsync(source);
+            Assert.Contains("class Widget", remaining);
+            Assert.DoesNotContain("class Extra", remaining);
+            Assert.DoesNotContain(result.Changes!.FilesDeleted, p => PathEquals(p, source));
+            Assert.DoesNotContain(result.Changes.FilesCreated, p => PathEquals(p, widgetDest));
+        }
+        else
+        {
+            Assert.True(File.Exists(widgetDest));
+            Assert.Contains("class Widget", await File.ReadAllTextAsync(widgetDest));
+            Assert.False(File.Exists(source));
+        }
     }
 
     [SkippableFact]
