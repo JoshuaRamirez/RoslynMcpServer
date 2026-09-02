@@ -5418,6 +5418,35 @@ public class GenerateConstructorOperationTests
     }
 
     [Fact]
+    public void Validate_AllFilesTrue_WithEmptyMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                AllFiles = true,
+                Members = Array.Empty<string>()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TypeWalkKey_IncludesProjectIdentity()
+    {
+        var projectA = ProjectId.CreateNewId();
+        var projectB = ProjectId.CreateNewId();
+        const string fqn = "global::TestApp.Widget";
+
+        var keyA = GenerateConstructorOperation.TypeWalkKey(projectA, fqn);
+        var keyB = GenerateConstructorOperation.TypeWalkKey(projectB, fqn);
+
+        Assert.NotEqual(keyA, keyB);
+        Assert.Equal(keyA, GenerateConstructorOperation.TypeWalkKey(projectA, fqn));
+        Assert.NotEqual(keyA, GenerateConstructorOperation.TypeWalkKey(projectA, "global::TestApp.Other"));
+    }
+
+    [Fact]
     public void Validate_AllFilesTrue_WithLine_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -5608,6 +5637,23 @@ public class GenerateConstructorOperationTests
             {
                 AllFiles = true,
                 Members = new[] { "Name" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_AllFilesTrue_WithEmptyMembers_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateConstructorParams
+            {
+                AllFiles = true,
+                Members = Array.Empty<string>()
             }));
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);

@@ -431,6 +431,20 @@ public class GenerateConstructorParamsValidationTests
     }
 
     [Fact]
+    public void Validate_AllFilesTrue_WithEmptyMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                AllFiles = true,
+                Members = Array.Empty<string>()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Validate_AllFilesTrue_WithLine_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>

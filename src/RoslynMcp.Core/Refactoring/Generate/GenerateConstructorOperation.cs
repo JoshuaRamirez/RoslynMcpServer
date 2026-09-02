@@ -87,7 +87,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         if (@params.AllFiles)
         {
             if (!string.IsNullOrWhiteSpace(@params.TypeName) ||
-                (@params.Members != null && @params.Members.Count > 0) ||
+                @params.Members != null ||
                 @params.Line.HasValue ||
                 @params.Column.HasValue)
             {
@@ -463,7 +463,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                     if (typeSymbol == null)
                         continue;
 
-                    var typeKey = typeSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                    var typeKey = TypeWalkKey(currentDocument.Project.Id, typeSymbol);
                     if (!processedTypes.Add(typeKey))
                         continue;
 
@@ -568,6 +568,21 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
             null, 0, 0);
     }
+
+    /// <summary>
+    /// De-dupes types within one project across rematches and partials.
+    /// Includes <paramref name="projectId"/> so two projects that both
+    /// declare <c>TestApp.Widget</c> are not collapsed onto one walk key.
+    /// </summary>
+    internal static string TypeWalkKey(ProjectId projectId, INamedTypeSymbol typeSymbol) =>
+        TypeWalkKey(projectId, typeSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
+
+    /// <summary>
+    /// Same key shape as <see cref="TypeWalkKey(ProjectId, INamedTypeSymbol)"/>
+    /// for tests that do not have a compilation symbol.
+    /// </summary>
+    internal static string TypeWalkKey(ProjectId projectId, string fullyQualifiedTypeName) =>
+        $"{projectId.Id:D}\0{fullyQualifiedTypeName}";
 
     /// <summary>
     /// Preview description for a file that generated
