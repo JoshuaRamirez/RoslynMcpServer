@@ -999,6 +999,54 @@ public class MakeStaticOperationTests
     }
 
     [SkippableFact]
+    public async Task MakeStatic_AllFilesTrue_CalledPartialMethod_MakesBothDeclarationsStatic()
+    {
+        const string definition = """
+            namespace TestApp;
+
+            public partial class Calculator
+            {
+                public partial int Add(int a, int b);
+
+                public int Use()
+                {
+                    var other = new Calculator();
+                    return other.Add(1, 2);
+                }
+            }
+            """;
+
+        const string implementation = """
+            namespace TestApp;
+
+            public partial class Calculator
+            {
+                public partial int Add(int a, int b) => a + b;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Calculator.Definition.cs", definition),
+            ("Calculator.Implementation.cs", implementation));
+        var operation = new MakeStaticOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MakeStaticParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedDef = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Calculator.Definition.cs"]));
+        var updatedImpl = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Calculator.Implementation.cs"]));
+        Assert.Contains("public static partial int Add(int a, int b);", updatedDef);
+        Assert.Contains("Calculator.Add(1, 2)", updatedDef);
+        Assert.DoesNotContain("other.Add(1, 2)", updatedDef);
+        Assert.Contains("public static partial int Add(int a, int b)", updatedImpl);
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["Calculator.Definition.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Calculator.Implementation.cs"]));
+    }
+
+    [SkippableFact]
     public async Task MakeStatic_AllFilesTrue_SkipsConditionalAccess()
     {
         const string source = """

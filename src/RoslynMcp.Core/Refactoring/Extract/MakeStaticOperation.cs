@@ -213,6 +213,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         var acceptedDeclarations = new List<DeclarationEdit>();
         var acceptedCallSites = new List<CallSiteEdit>();
         var claimedSpans = new HashSet<(SyntaxTree Tree, TextSpan Span)>();
+        var processedMethods = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
         var convertedCountByDoc = new Dictionary<DocumentId, int>();
 
         foreach (var document in allDocuments)
@@ -239,18 +240,22 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
                         continue;
                     }
 
-                    var instanceMembers = await GetInstanceMemberReferencesAsync(method, cancellationToken);
+                    var canonical = CanonicalPartialMethod(method);
+                    if (!processedMethods.Add(canonical))
+                        continue;
+
+                    var instanceMembers = await GetInstanceMemberReferencesAsync(canonical, cancellationToken);
                     if (!CanMakeStatic(instanceMembers))
                         continue;
 
-                    var declarationDocuments = await GetDeclarationDocumentsAsync(method, cancellationToken);
+                    var declarationDocuments = await GetDeclarationDocumentsAsync(canonical, cancellationToken);
                     if (declarationDocuments.Any(declarationDocument =>
                             !IsDocumentEditable(declarationDocument, Context.Workspace)))
                     {
                         continue;
                     }
 
-                    var plan = await BuildPlanAsync(method, cancellationToken);
+                    var plan = await BuildPlanAsync(canonical, cancellationToken);
                     if (PlanConflictsWithClaimedSpans(plan, claimedSpans))
                         continue;
 
@@ -421,6 +426,44 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
             return false;
 
         return method.Locations.Any(location => location.IsInSource);
+    }
+
+    /// <summary>
+    /// Prefers the implementation part of a partial method so the walk
+    /// treats definition + implementation as one method.
+    /// </summary>
+    internal static IMethodSymbol CanonicalPartialMethod(IMethodSymbol method)
+    {
+        var implementation = method.PartialImplementationPart
+            ?? method.PartialDefinitionPart?.PartialImplementationPart;
+        return implementation ?? method.PartialDefinitionPart ?? method;
+    }
+
+    /// <summary>
+    /// Both partial definition and implementation (when present), plus
+    /// <paramref name="method"/> itself.
+    /// </summary>
+    internal static IEnumerable<IMethodSymbol> GetPartialMethodParts(IMethodSymbol method)
+    {
+        var parts = new List<IMethodSymbol> { method };
+        if (method.PartialDefinitionPart != null)
+            parts.Add(method.PartialDefinitionPart);
+        if (method.PartialImplementationPart != null)
+            parts.Add(method.PartialImplementationPart);
+        if (method.PartialDefinitionPart?.PartialImplementationPart != null)
+            parts.Add(method.PartialDefinitionPart.PartialImplementationPart);
+        if (method.PartialImplementationPart?.PartialDefinitionPart != null)
+            parts.Add(method.PartialImplementationPart.PartialDefinitionPart);
+        return parts.Distinct<IMethodSymbol>(SymbolEqualityComparer.Default);
+    }
+
+    private static IEnumerable<SyntaxReference> EnumerateDeclaringSyntaxReferences(IMethodSymbol method)
+    {
+        foreach (var part in GetPartialMethodParts(method))
+        {
+            foreach (var reference in part.DeclaringSyntaxReferences)
+                yield return reference;
+        }
     }
 
     private static List<Document> FilterDocumentsBySourceFile(List<Document> documents, string sourceFile)
@@ -698,7 +741,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         CancellationToken cancellationToken)
     {
         var documents = new List<Document>();
-        foreach (var reference in method.DeclaringSyntaxReferences)
+        foreach (var reference in EnumerateDeclaringSyntaxReferences(method))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var syntax = await reference.GetSyntaxAsync(cancellationToken);
@@ -730,7 +773,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         CancellationToken cancellationToken)
     {
         var members = new List<ISymbol>();
-        foreach (var reference in method.DeclaringSyntaxReferences)
+        foreach (var reference in EnumerateDeclaringSyntaxReferences(method))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var syntax = await reference.GetSyntaxAsync(cancellationToken);
@@ -900,7 +943,8 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
     private async Task<StaticPlan> BuildPlanAsync(IMethodSymbol method, CancellationToken cancellationToken)
     {
         var declarations = new List<DeclarationEdit>();
-        foreach (var reference in method.DeclaringSyntaxReferences)
+        var seenDeclarations = new HashSet<(SyntaxTree Tree, TextSpan Span)>();
+        foreach (var reference in EnumerateDeclaringSyntaxReferences(method))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var syntax = await reference.GetSyntaxAsync(cancellationToken);
@@ -910,6 +954,9 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
                     ErrorCodes.InvalidSymbolKind,
                     $"Declaration '{method.Name}' is not a method that can be made static.");
             }
+
+            if (!seenDeclarations.Add((declaration.SyntaxTree, declaration.Span)))
+                continue;
 
             declarations.Add(new DeclarationEdit(
                 declaration.SyntaxTree,
@@ -925,7 +972,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
                 $"Could not locate a declaration to make static for '{method.Name}'.");
         }
 
-        var callSites = await FindCallSiteEditsAsync(method, cancellationToken);
+        var callSites = await FindCallSiteEditsAsync(CanonicalPartialMethod(method), cancellationToken);
         return new StaticPlan(
             method.Name,
             method.ToDisplayString(),
