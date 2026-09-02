@@ -147,7 +147,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         // Line set also includes a covering delegate so it reaches
         // InvalidSymbolKind instead of retargeting a later class.
         var typeDecl = FindTypeDeclaration(
-            root, @params.TypeName, @params.Line, @params.Column, out var hadCandidates);
+            root, @params.TypeName!, @params.Line, @params.Column, out var hadCandidates);
 
         if (typeDecl == null)
         {
@@ -263,7 +263,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// missing abstract members on every eligible
     /// <see cref="TypeDeclarationSyntax"/> (class / struct / record /
     /// record struct / interface, including nested — same node kind as
-    /// today's host after <see cref="FindTypeDeclaration"/>). Optional
+    /// today's host after <c>FindTypeDeclaration</c>). Optional
     /// <c>sourceFile</c> limits the walk to that one file. Interface,
     /// static, struct, enum, delegate, no-unimplemented, uneditable,
     /// <c>NameCollision</c>, and otherwise ineligible types are skipped
@@ -452,7 +452,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// <paramref name="root"/> (class / struct / interface / record /
     /// record struct, including nested — same node kind as today's
     /// <see cref="TypeDeclarationSyntax"/> host after
-    /// <see cref="FindTypeDeclaration"/>). Deterministic
+    /// <c>FindTypeDeclaration</c>). Deterministic
     /// <c>SpanStart</c> then span-length order.
     /// </summary>
     internal static IReadOnlyList<TypeDeclarationSyntax> CollectTypeDeclarations(SyntaxNode root) =>
