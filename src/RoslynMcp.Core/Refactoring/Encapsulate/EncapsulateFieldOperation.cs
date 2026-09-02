@@ -28,7 +28,10 @@ namespace RoslynMcp.Core.Refactoring.Encapsulate;
 /// per-execution syntax annotation and strip the annotation before
 /// commit. Same-file outer/sibling references are external (semantic
 /// containment in the selected type, not file-path equality) and are
-/// annotated before the field rewrite.
+/// annotated before the field rewrite. Optional <c>allFiles</c> walks
+/// every C# document and encapsulates every eligible field (skip
+/// const / name-collision / other per-field failures rather than
+/// throwing).
 /// </summary>
 public sealed class EncapsulateFieldOperation : RefactoringOperationBase<EncapsulateFieldParams>
 {
@@ -48,6 +51,21 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
     /// </summary>
     internal static void Validate(EncapsulateFieldParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.FieldName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue ||
+                !string.IsNullOrWhiteSpace(@params.PropertyName))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with fieldName, line, column, or propertyName.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -79,7 +97,10 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         EncapsulateFieldParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -97,12 +118,13 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         // covering declarator/field). Nested types participate. Locals
         // stay excluded. Do not fall back to first-match when line is
         // set and nothing covers that position.
-        var fieldDeclarator = FindFieldDeclarator(root, @params.FieldName, @params.Line, @params.Column);
+        var fieldName = @params.FieldName!;
+        var fieldDeclarator = FindFieldDeclarator(root, fieldName, @params.Line, @params.Column);
         if (fieldDeclarator == null)
         {
             throw new RefactoringException(
                 ErrorCodes.FieldNotFound,
-                $"Field '{@params.FieldName}' not found.");
+                $"Field '{fieldName}' not found.");
         }
 
         var fieldDeclaration = (FieldDeclarationSyntax)fieldDeclarator.Parent!.Parent!;
@@ -125,7 +147,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         var isStatic = fieldSymbol.IsStatic;
 
         // Determine property name
-        var propertyName = @params.PropertyName ?? DerivePropertyName(@params.FieldName);
+        var propertyName = @params.PropertyName ?? DerivePropertyName(fieldName);
 
         // Check for existing property with same name
         var containingType = fieldDeclarator.Ancestors().OfType<TypeDeclarationSyntax>().First();
@@ -164,11 +186,11 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
         // Rename field if property name would conflict (computed before preview
         // so the description can mention backing-field rename updates).
-        var newFieldName = @params.FieldName;
+        var newFieldName = fieldName;
         var fieldRenamed = false;
-        if (propertyName.Equals(@params.FieldName, StringComparison.OrdinalIgnoreCase))
+        if (propertyName.Equals(fieldName, StringComparison.OrdinalIgnoreCase))
         {
-            newFieldName = "_" + char.ToLowerInvariant(@params.FieldName[0]) + @params.FieldName.Substring(1);
+            newFieldName = "_" + char.ToLowerInvariant(fieldName[0]) + fieldName.Substring(1);
             fieldRenamed = true;
         }
 
@@ -185,6 +207,316 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
                 fieldRenamed);
         }
 
+        var newSolution = await ApplyEncapsulateToSolutionAsync(
+            document,
+            root,
+            fieldDeclarator,
+            fieldDeclaration,
+            fieldSymbol,
+            fieldName,
+            propertyName,
+            property,
+            externalReferences,
+            newFieldName,
+            fieldRenamed,
+            @params.UpdateReferences,
+            cancellationToken);
+
+        var referenceReplacement = @params.UpdateReferences
+            ? propertyName
+            : fieldRenamed ? newFieldName : null;
+        var referencesUpdated = referenceReplacement != null ? externalReferences.Count : 0;
+
+        // Commit changes
+        var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
+
+        return RefactoringResult.Succeeded(
+            operationId,
+            new FileChanges
+            {
+                FilesModified = commitResult.FilesModified,
+                FilesCreated = commitResult.FilesCreated,
+                FilesDeleted = commitResult.FilesDeleted
+            },
+            new Contracts.Models.SymbolInfo
+            {
+                Name = propertyName,
+                FullyQualifiedName = $"{fieldSymbol.ContainingType.ToDisplayString()}.{propertyName}",
+                Kind = Contracts.Enums.SymbolKind.Property
+            },
+            referencesUpdated,
+            0);
+    }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
+    /// / <c>AddNullChecksOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ConvertToAsyncOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ConvertPropertyOperation.ExecuteAllFilesAsync</c> /
+    /// <c>InvertIfOperation.ExecuteAllFilesAsync</c>) and encapsulates
+    /// every eligible field <c>VariableDeclaratorSyntax</c> (same filter
+    /// as <see cref="FindFieldDeclarator"/>; locals excluded). Const
+    /// fields, fields whose derived property name already exists, and
+    /// other per-field failures are skipped. Property names are derived
+    /// per field via <see cref="DerivePropertyName"/>. When every file
+    /// is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        EncapsulateFieldParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var encapsulatedCountByDoc = new Dictionary<DocumentId, int>();
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (document is SourceGeneratedDocument)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(document.Id);
+                if (currentDocument == null || currentDocument is SourceGeneratedDocument)
+                    break;
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var fieldDeclarator in CollectFieldDeclarators(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        updated = await TryEncapsulateOneAsync(
+                            currentDocument,
+                            root,
+                            semanticModel,
+                            fieldDeclarator,
+                            @params.ReadOnly,
+                            @params.UpdateReferences,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        updated = null;
+                    }
+
+                    if (updated != null)
+                        break;
+                }
+
+                if (updated == null)
+                    break;
+
+                currentSolution = updated;
+                encapsulatedCountByDoc[document.Id] =
+                    encapsulatedCountByDoc.GetValueOrDefault(document.Id) + 1;
+            }
+        }
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var encapsulatedCount = encapsulatedCountByDoc.GetValueOrDefault(document.Id);
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = encapsulatedCount > 0
+                        ? BuildAllFilesDescription(encapsulatedCount)
+                        : "Update references of encapsulated fields",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that encapsulated
+    /// <paramref name="encapsulatedCount"/> fields.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int encapsulatedCount) =>
+        encapsulatedCount == 1
+            ? "Encapsulate field"
+            : $"Encapsulate {encapsulatedCount} fields";
+
+    /// <summary>
+    /// Collects every field <see cref="VariableDeclaratorSyntax"/> in
+    /// <paramref name="root"/> using the same field-only filter as
+    /// <see cref="FindFieldDeclarator"/> (locals and other non-field
+    /// declarators stay excluded).
+    /// </summary>
+    internal static IReadOnlyList<VariableDeclaratorSyntax> CollectFieldDeclarators(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<VariableDeclaratorSyntax>()
+            .Where(IsFieldDeclarator)
+            .ToList();
+
+    private static bool IsFieldDeclarator(VariableDeclaratorSyntax declarator) =>
+        declarator.Parent?.Parent is FieldDeclarationSyntax;
+
+    private async Task<Solution?> TryEncapsulateOneAsync(
+        Document document,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        VariableDeclaratorSyntax fieldDeclarator,
+        bool readOnly,
+        bool updateReferences,
+        CancellationToken cancellationToken)
+    {
+        if (fieldDeclarator.Parent?.Parent is not FieldDeclarationSyntax fieldDeclaration)
+            return null;
+
+        var fieldName = fieldDeclarator.Identifier.Text;
+        var fieldSymbol = semanticModel.GetDeclaredSymbol(fieldDeclarator, cancellationToken) as IFieldSymbol;
+        if (fieldSymbol == null)
+            return null;
+
+        if (fieldSymbol.IsConst)
+            return null;
+
+        var propertyName = DerivePropertyName(fieldName);
+
+        var containingType = fieldDeclarator.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
+        if (containingType == null)
+            return null;
+
+        // Skip when the derived name is already a member of this type
+        // (property, field, method, …), including other partial
+        // declarations. Do not treat the field being encapsulated as a
+        // collision with itself (e.g. field `Name` renamed to `_name`).
+        var containingTypeSymbol = fieldSymbol.ContainingType;
+        if (containingTypeSymbol != null &&
+            containingTypeSymbol.GetMembers(propertyName)
+                .Any(member => !SymbolEqualityComparer.Default.Equals(member, fieldSymbol)))
+        {
+            return null;
+        }
+
+        var newFieldName = fieldName;
+        var fieldRenamed = false;
+        if (propertyName.Equals(fieldName, StringComparison.OrdinalIgnoreCase))
+        {
+            newFieldName = "_" + char.ToLowerInvariant(fieldName[0]) + fieldName.Substring(1);
+            fieldRenamed = true;
+            if (containingTypeSymbol != null &&
+                containingTypeSymbol.GetMembers(newFieldName).Any())
+            {
+                return null;
+            }
+        }
+
+        var property = SyntaxGenerationHelper.CreatePropertyFromField(
+            fieldSymbol,
+            propertyName,
+            readOnly);
+
+        if (fieldSymbol.IsStatic)
+            property = property.AddModifiers(SyntaxFactory.Token(SyntaxKind.StaticKeyword));
+
+        var references = await SymbolFinder.FindReferencesAsync(
+            fieldSymbol,
+            document.Project.Solution,
+            cancellationToken);
+
+        var externalReferences = references
+            .SelectMany(r => r.Locations)
+            .Where(loc => !IsInsideContainingType(loc, fieldSymbol.ContainingType))
+            .ToList();
+
+        return await ApplyEncapsulateToSolutionAsync(
+            document,
+            root,
+            fieldDeclarator,
+            fieldDeclaration,
+            fieldSymbol,
+            fieldName,
+            propertyName,
+            property,
+            externalReferences,
+            newFieldName,
+            fieldRenamed,
+            updateReferences,
+            cancellationToken);
+    }
+
+    private static async Task<Solution> ApplyEncapsulateToSolutionAsync(
+        Document document,
+        SyntaxNode root,
+        VariableDeclaratorSyntax fieldDeclarator,
+        FieldDeclarationSyntax fieldDeclaration,
+        IFieldSymbol fieldSymbol,
+        string fieldName,
+        string propertyName,
+        PropertyDeclarationSyntax property,
+        IReadOnlyList<ReferenceLocation> externalReferences,
+        string newFieldName,
+        bool fieldRenamed,
+        bool updateReferences,
+        CancellationToken cancellationToken)
+    {
         // Make field private if it's not already
         var newFieldDeclaration = fieldDeclaration;
         if (fieldSymbol.DeclaredAccessibility != Accessibility.Private)
@@ -213,7 +545,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         // Redirect to the property when updateReferences is true. When false,
         // still rewrite to the renamed backing field so callers stay on the
         // field (`name` → `_name`) instead of a name that no longer exists.
-        var referenceReplacement = @params.UpdateReferences
+        var referenceReplacement = updateReferences
             ? propertyName
             : fieldRenamed ? newFieldName : null;
 
@@ -234,7 +566,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         if (referenceReplacement != null)
         {
             foreach (var identifier in EnumerateSameFileExternalIdentifiers(
-                         root, document.Id, externalReferences, @params.FieldName))
+                         root, document.Id, externalReferences, fieldName))
             {
                 replacements[identifier] = identifier.WithAdditionalAnnotations(refAnnotation);
             }
@@ -287,50 +619,45 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
         if (referenceReplacement != null)
         {
-            foreach (var reference in externalReferences)
+            // Group by document and rewrite from the pre-replacement root
+            // so later SourceSpans stay valid after the first identifier
+            // in that file is replaced.
+            foreach (var group in externalReferences
+                .Where(reference => reference.Document.Id != document.Id)
+                .GroupBy(reference => reference.Document.Id))
             {
-                if (reference.Document.Id == document.Id)
-                    continue;
-
-                var refDoc = newSolution.GetDocument(reference.Document.Id);
+                var refDoc = newSolution.GetDocument(group.Key);
                 if (refDoc == null) continue;
 
                 var refRoot = await refDoc.GetSyntaxRootAsync(cancellationToken);
                 if (refRoot == null) continue;
 
-                var refNode = refRoot.FindNode(reference.Location.SourceSpan);
-                if (refNode is IdentifierNameSyntax identifier &&
-                    identifier.Identifier.Text == @params.FieldName)
+                var identifiers = new List<IdentifierNameSyntax>();
+                var seen = new HashSet<IdentifierNameSyntax>();
+                foreach (var reference in group)
                 {
-                    var newIdentifier = SyntaxFactory.IdentifierName(referenceReplacement)
-                        .WithTriviaFrom(identifier);
-                    var newRefRoot = refRoot.ReplaceNode(identifier, newIdentifier);
-                    newSolution = refDoc.WithSyntaxRoot(newRefRoot).Project.Solution;
+                    var refNode = refRoot.FindNode(
+                        reference.Location.SourceSpan, getInnermostNodeForTie: true);
+                    if (refNode is IdentifierNameSyntax identifier &&
+                        identifier.Identifier.Text == fieldName &&
+                        seen.Add(identifier))
+                    {
+                        identifiers.Add(identifier);
+                    }
                 }
+
+                if (identifiers.Count == 0)
+                    continue;
+
+                var newRefRoot = refRoot.ReplaceNodes(
+                    identifiers,
+                    (original, _) => SyntaxFactory.IdentifierName(referenceReplacement)
+                        .WithTriviaFrom(original));
+                newSolution = refDoc.WithSyntaxRoot(newRefRoot).Project.Solution;
             }
         }
 
-        var referencesUpdated = referenceReplacement != null ? externalReferences.Count : 0;
-
-        // Commit changes
-        var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
-
-        return RefactoringResult.Succeeded(
-            operationId,
-            new FileChanges
-            {
-                FilesModified = commitResult.FilesModified,
-                FilesCreated = commitResult.FilesCreated,
-                FilesDeleted = commitResult.FilesDeleted
-            },
-            new Contracts.Models.SymbolInfo
-            {
-                Name = propertyName,
-                FullyQualifiedName = $"{fieldSymbol.ContainingType.ToDisplayString()}.{propertyName}",
-                Kind = Contracts.Enums.SymbolKind.Property
-            },
-            referencesUpdated,
-            0);
+        return newSolution;
     }
 
     /// <summary>
@@ -405,7 +732,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
         bool IsMatchingFieldDeclarator(VariableDeclaratorSyntax declarator) =>
             declarator.Identifier.Text == fieldName &&
-            declarator.Parent?.Parent is FieldDeclarationSyntax;
+            IsFieldDeclarator(declarator);
     }
 
     private static bool FieldCoversLine(VariableDeclaratorSyntax declarator, int line) =>
@@ -557,7 +884,11 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         }
     }
 
-    private static string DerivePropertyName(string fieldName)
+    /// <summary>
+    /// Derives a property name from <paramref name="fieldName"/> by
+    /// stripping a leading underscore and capitalizing the first letter.
+    /// </summary>
+    internal static string DerivePropertyName(string fieldName)
     {
         // Remove leading underscore if present
         var name = fieldName.TrimStart('_');
@@ -602,10 +933,10 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         {
             new()
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = DescribeReferenceUpdates(
-                    @params.FieldName,
+                    @params.FieldName!,
                     propertyName,
                     @params.UpdateReferences,
                     externalRefCount,

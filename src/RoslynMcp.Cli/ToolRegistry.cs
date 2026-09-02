@@ -203,7 +203,7 @@ public sealed class ToolRegistry
 
         // ── Refactoring: Encapsulate (1) ──────────────────────────────
         r.RegisterRefactoring<EncapsulateFieldOperation, EncapsulateFieldParams>(
-            "encapsulate-field", "Encapsulate a field into a property; line (optional) picks the field whose identifier or declaration span covers that line when several fields share the name; omitted keeps today's fieldName FirstOrDefault pick; column (optional) picks the field whose identifier or declaration span covers that column when set with line; omitted keeps today's fieldName + optional line pick; column without line keeps today's first-match after the fieldName filter; updateReferences (default true) rewrites external references to the new property, false leaves external callers on the field");
+            "encapsulate-field", "Encapsulate a field into a property; line (optional) picks the field whose identifier or declaration span covers that line when several fields share the name; omitted keeps today's fieldName FirstOrDefault pick; column (optional) picks the field whose identifier or declaration span covers that column when set with line; omitted keeps today's fieldName + optional line pick; column without line keeps today's first-match after the fieldName filter; updateReferences (default true) rewrites external references to the new property, false leaves external callers on the field; allFiles (default false) encapsulates every eligible field in every C# file (sourceFile optional when true; cannot be combined with fieldName, line, column, or propertyName)");
 
         // ── Refactoring: Convert (13) ─────────────────────────────────
         r.RegisterRefactoring<ConvertToAsyncOperation, ConvertToAsyncParams>(
