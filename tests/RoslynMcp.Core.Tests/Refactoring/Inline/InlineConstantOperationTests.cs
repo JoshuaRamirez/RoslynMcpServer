@@ -191,6 +191,110 @@ public class InlineConstantOperationTests
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.Validate(new InlineConstantParams
+            {
+                AllFiles = false,
+                ConstantName = "Max"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutConstantName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.Validate(new InlineConstantParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("constantName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrConstantName_DoesNotThrow()
+    {
+        InlineConstantOperation.Validate(new InlineConstantParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithConstantName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.Validate(new InlineConstantParams
+            {
+                AllFiles = true,
+                ConstantName = "Max"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("constantName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.Validate(new InlineConstantParams
+            {
+                AllFiles = true,
+                TypeName = "Limits"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.Validate(new InlineConstantParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InlineConstantOperation.Validate(new InlineConstantParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Inline constant", InlineConstantOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Inline 2 constants", InlineConstantOperation.BuildAllFilesDescription(2));
+    }
+
     #endregion
 
     #region §9.3 Happy Path
@@ -1443,12 +1547,487 @@ public class InlineConstantOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string EligibleFileA = """
+        namespace TestApp;
+
+        public class FileA
+        {
+            private const int MaxRetries = 5;
+            private const string Greeting = "hi";
+
+            public int Run() => MaxRetries;
+            public string Hello() => Greeting;
+
+            public void UseLocal()
+            {
+                const int skipped = 1;
+                _ = skipped;
+            }
+        }
+        """;
+
+    private const string EligibleFileB = """
+        namespace TestApp;
+
+        public class FileB
+        {
+            private const int Capacity = 10;
+
+            public int Run() => Capacity;
+        }
+        """;
+
+    private const string IneligibleFileC = """
+        namespace TestApp;
+
+        internal static class Limits
+        {
+            internal const string Reason = "old";
+        }
+
+        [System.Obsolete(Limits.Reason)]
+        public class Widget
+        {
+        }
+
+        public class FileC
+        {
+            public const int PublicMax = 5;
+            private int NotConst = 3;
+
+            public int Run() => PublicMax + NotConst;
+        }
+        """;
+
+    private const string MixedEligibleAndSkipped = """
+        namespace TestApp;
+
+        internal static class MixedLimits
+        {
+            internal const string Reason = "old";
+        }
+
+        [System.Obsolete(MixedLimits.Reason)]
+        public class MixedWidget
+        {
+        }
+
+        public class Mixed
+        {
+            private const int Eligible = 7;
+            public const int PublicSkip = 2;
+            private int NotConst = 3;
+
+            public int Run() => Eligible + PublicSkip + NotConst;
+
+            public void UseLocal()
+            {
+                const int skipped = 1;
+                _ = skipped;
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesFalse_InlinesOnlySpecifiedConstant()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new InlineConstantOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            AllFiles = false,
+            ConstantName = "MaxRetries"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public int Run() => 5;", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("MaxRetries", updatedA, StringComparison.Ordinal);
+        Assert.Contains("private const string Greeting", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public string Hello() => Greeting;", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_OmittedAllFiles_KeepsSingleSiteInline()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            ConstantName = "MaxRetries"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public int Run() => 5;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("MaxRetries", updated, StringComparison.Ordinal);
+        Assert.Contains("private const string Greeting", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesTrue_InlinesEligibleConstantsAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new InlineConstantOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains("public int Run() => 5;", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public string Hello() => \"hi\";", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("MaxRetries", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("Greeting", updatedA, StringComparison.Ordinal);
+        Assert.Contains("const int skipped = 1;", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public int Run() => 10;", updatedB, StringComparison.Ordinal);
+        Assert.DoesNotContain("Capacity", updatedB, StringComparison.Ordinal);
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesTrue_WithoutSourceFileOrConstantName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineConstantParams
+            {
+                AllFiles = false,
+                ConstantName = "MaxRetries"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesFalse_WithoutConstantName_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineConstantParams
+            {
+                AllFiles = false,
+                SourceFile = workspace.SourcePath
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("constantName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesTrue_WithConstantName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineConstantParams
+            {
+                AllFiles = true,
+                ConstantName = "MaxRetries"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("constantName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineConstantParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineConstantParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesTrue_WithTypeName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineConstantParams
+            {
+                AllFiles = true,
+                TypeName = "FileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new InlineConstantOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("Inline", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet != null &&
+            (c.AfterSnippet.Contains("=> 5;", StringComparison.Ordinal) ||
+             c.AfterSnippet.Contains("=> 10;", StringComparison.Ordinal)));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", IneligibleFileC),
+            ("FileC2.cs", IneligibleFileC
+                .Replace("Limits", "Limits2", StringComparison.Ordinal)
+                .Replace("Widget", "Widget2", StringComparison.Ordinal)
+                .Replace("FileC", "FileC2", StringComparison.Ordinal)));
+        var operation = new InlineConstantOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesTrue_SkipsAttributePublicApiAndLocals()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Mixed.cs", MixedEligibleAndSkipped));
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Mixed.cs"]));
+        Assert.Contains("public int Run() => 7 + PublicSkip + NotConst;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("Eligible + PublicSkip", updated, StringComparison.Ordinal);
+        Assert.Contains("internal const string Reason = \"old\";", updated, StringComparison.Ordinal);
+        Assert.Contains("[System.Obsolete(MixedLimits.Reason)]", updated, StringComparison.Ordinal);
+        Assert.Contains("public const int PublicSkip = 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("private int NotConst = 3;", updated, StringComparison.Ordinal);
+        Assert.Contains("const int skipped = 1;", updated, StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesTrue_RemoveConstantFalse_InlinesPublicApiAndKeepsDeclaration()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", IneligibleFileC));
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            AllFiles = true,
+            RemoveConstant = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains("public const int PublicMax = 5;", updated, StringComparison.Ordinal);
+        Assert.Contains("public int Run() => 5 + NotConst;", updated, StringComparison.Ordinal);
+        Assert.Contains("internal const string Reason = \"old\";", updated, StringComparison.Ordinal);
+        Assert.Contains("[System.Obsolete(Limits.Reason)]", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new InlineConstantOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public int Run() => 5;", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public string Hello() => \"hi\";", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new InlineConstantOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var flipped = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public int Run() => 5;", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [Fact]
+    public void CollectConstDeclarators_ExcludesLocalsAndNonConstFields()
+    {
+        var root = Parse(EligibleFileA);
+        var fields = InlineConstantOperation.CollectConstDeclarators(root);
+        Assert.Equal(2, fields.Count);
+        Assert.All(fields, d => Assert.True(
+            d.Parent?.Parent is FieldDeclarationSyntax field &&
+            field.Modifiers.Any(Microsoft.CodeAnalysis.CSharp.SyntaxKind.ConstKeyword)));
+        Assert.Contains(fields, d => d.Identifier.Text == "MaxRetries");
+        Assert.Contains(fields, d => d.Identifier.Text == "Greeting");
+        Assert.DoesNotContain(fields, d => d.Identifier.Text == "skipped");
+    }
+
+    #endregion
+
     #region Helpers
 
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpInlineConstantMissing.cs");
 
     private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
 
     private static SyntaxNode Parse(string source) =>
         CSharpSyntaxTree.ParseText(NormalizeNewlines(source)).GetRoot();
@@ -1495,12 +2074,16 @@ public class InlineConstantOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
         public string GetPath(string relativePath) => Path.Combine(DirectoryPath, relativePath);
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Limits.cs") =>
             CreateMultiFileAsync((fileName, source));
+
+        public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
+            CreateMultiFileAsync(files);
 
         public static async Task<TempWorkspace> CreateMultiFileAsync(params (string FileName, string Source)[] files)
         {
@@ -1510,11 +2093,17 @@ public class InlineConstantOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
@@ -1525,10 +2114,11 @@ public class InlineConstantOperationTests
                 var sourcePath = Path.Combine(directory, fileName);
                 Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
                 await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
                 firstSource ??= sourcePath;
             }
 
-            return await LoadAsync(directory, projectPath, firstSource!);
+            return await LoadAsync(directory, projectPath, firstSource!, sourcePaths);
         }
 
         public static async Task<TempWorkspace> CreateCrossProjectAsync()
@@ -1603,10 +2193,22 @@ public class InlineConstantOperationTests
                 EndGlobal
                 """);
 
-            return await LoadAsync(directory, solutionPath, libSource);
+            return await LoadAsync(
+                directory,
+                solutionPath,
+                libSource,
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [Path.Combine("Lib", "Limits.cs")] = libSource,
+                    [Path.Combine("App", "Worker.cs")] = appSource
+                });
         }
 
-        private static async Task<TempWorkspace> LoadAsync(string directory, string projectPath, string sourcePath)
+        private static async Task<TempWorkspace> LoadAsync(
+            string directory,
+            string projectPath,
+            string sourcePath,
+            IReadOnlyDictionary<string, string> sourcePaths)
         {
             try
             {
@@ -1623,6 +2225,7 @@ public class InlineConstantOperationTests
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
                     SourcePath = sourcePath,
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }
