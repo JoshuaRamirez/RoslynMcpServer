@@ -1505,6 +1505,59 @@ public class MakeNonStaticOperationTests
     }
 
     [SkippableFact]
+    public async Task MakeNonStatic_PreviewAllFiles_PartialMethod_DescribesBothDeclarationFiles()
+    {
+        const string definition = """
+            namespace TestApp;
+
+            public partial class Calculator
+            {
+                public static partial int Add(int a, int b);
+
+                public int Use()
+                {
+                    var other = new Calculator();
+                    return Calculator.Add(1, 2);
+                }
+            }
+            """;
+
+        const string implementation = """
+            namespace TestApp;
+
+            public partial class Calculator
+            {
+                public static partial int Add(int a, int b) => a + b;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Calculator.Definition.cs", definition),
+            ("Calculator.Implementation.cs", implementation));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var beforeDef = await File.ReadAllTextAsync(workspace.SourcePaths["Calculator.Definition.cs"]);
+        var beforeImpl = await File.ReadAllTextAsync(workspace.SourcePaths["Calculator.Implementation.cs"]);
+
+        var result = await operation.ExecuteAsync(new MakeNonStaticParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        var def = Assert.Single(result.PendingChanges, c =>
+            PathEquals(c.File, workspace.SourcePaths["Calculator.Definition.cs"]));
+        var impl = Assert.Single(result.PendingChanges, c =>
+            PathEquals(c.File, workspace.SourcePaths["Calculator.Implementation.cs"]));
+        Assert.Equal("Make method an instance method", def.Description);
+        Assert.Equal("Make method an instance method", impl.Description);
+        Assert.Equal(beforeDef, await File.ReadAllTextAsync(workspace.SourcePaths["Calculator.Definition.cs"]));
+        Assert.Equal(beforeImpl, await File.ReadAllTextAsync(workspace.SourcePaths["Calculator.Implementation.cs"]));
+    }
+
+    [SkippableFact]
     public async Task MakeNonStatic_AllFilesTrue_SkipsConditionalAccess()
     {
         const string source = """

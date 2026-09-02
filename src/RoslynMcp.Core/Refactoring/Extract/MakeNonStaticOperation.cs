@@ -261,8 +261,13 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
 
                     acceptedDeclarations.AddRange(plan.Declarations);
                     acceptedCallSites.AddRange(plan.CallSites);
-                    convertedCountByDoc[document.Id] =
-                        convertedCountByDoc.GetValueOrDefault(document.Id) + 1;
+                    foreach (var declarationDocumentId in declarationDocuments
+                        .Select(declarationDocument => declarationDocument.Id)
+                        .Distinct())
+                    {
+                        convertedCountByDoc[declarationDocumentId] =
+                            convertedCountByDoc.GetValueOrDefault(declarationDocumentId) + 1;
+                    }
                 }
                 catch (RefactoringException)
                 {
