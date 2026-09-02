@@ -3274,9 +3274,11 @@ public class GenerateToStringOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("public override string ToString()", updated, StringComparison.Ordinal);
-        Assert.Contains("{Name}", updated, StringComparison.Ordinal);
-        Assert.DoesNotContain("ISkip", ExtractToStringMethod(updated));
+        var fileA = GetTypes(updated, "FileA").Single();
+        var iSkip = GetTypes(updated, "ISkip").Single();
+        Assert.True(TypeHasMethod(fileA, "ToString"));
+        Assert.Contains("{Name}", ExtractOwnToString(fileA), StringComparison.Ordinal);
+        Assert.False(TypeHasMethod(iSkip, "ToString"));
     }
 
     [SkippableFact]
