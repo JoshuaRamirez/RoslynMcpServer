@@ -3799,6 +3799,90 @@ public class GenerateOverridesOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_NewHider_IsSkipped_OtherMembersStillGenerated()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual void Speak() { }
+
+                public override string ToString() => "animal";
+
+                public override bool Equals(object? obj) => false;
+
+                public override int GetHashCode() => 0;
+            }
+
+            public class HiddenHost : Animal
+            {
+                public new void Speak() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Hidden.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Hidden.cs")));
+        var hidden = FindType(updated, "HiddenHost").ToFullString();
+        Assert.Contains("public new void Speak()", hidden, StringComparison.Ordinal);
+        Assert.DoesNotContain("public override void Speak()", hidden, StringComparison.Ordinal);
+        Assert.True(HasOverrideToString(hidden));
+        Assert.Contains("public override bool Equals(", hidden, StringComparison.Ordinal);
+        Assert.Contains("public override int GetHashCode()", hidden, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_OnlyNewHiders_SucceedsWithoutDuplicateOverride()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Animal
+            {
+                public virtual void Speak() { }
+
+                public override string ToString() => "animal";
+
+                public override bool Equals(object? obj) => false;
+
+                public override int GetHashCode() => 0;
+            }
+
+            public class HiddenOnly : Animal
+            {
+                public new void Speak() { }
+
+                public new string ToString() => "hid";
+
+                public override bool Equals(object? obj) => false;
+
+                public override int GetHashCode() => 1;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "HiddenOnly.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.PathFor("HiddenOnly.cs"));
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.PathFor("HiddenOnly.cs")));
+    }
+
+    [SkippableFact]
     public async Task GenerateOverrides_AllFilesTrue_CallBaseFalse_HasNoBaseCall()
     {
         await using var workspace = await TempWorkspace.CreateAsync(

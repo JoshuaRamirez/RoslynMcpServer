@@ -480,6 +480,15 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
             return null;
         }
 
+        // Bulk skip-not-throw: today's collect only drops `new` / other
+        // non-override hiders when replaceExisting is true. Emitting an
+        // override beside `public new void M()` / `public new string
+        // ToString()` is CS0111. Filter those collisions here without
+        // changing single-site CollectMembersToOverride.
+        membersToOverride = membersToOverride
+            .Where(member => !IsHiddenByNonOverride(typeSymbol, member))
+            .ToList();
+
         if (membersToOverride.Count == 0)
             return null;
 
