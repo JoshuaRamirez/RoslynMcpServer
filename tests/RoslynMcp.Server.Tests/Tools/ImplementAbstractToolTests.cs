@@ -62,8 +62,9 @@ public class ImplementAbstractToolTests
         }
 
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("typeName", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+        Assert.DoesNotContain("typeName", requiredFields);
+        Assert.DoesNotContain("allFiles", requiredFields);
     }
 
     [Fact]
@@ -76,6 +77,7 @@ public class ImplementAbstractToolTests
 
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.True(properties.TryGetProperty("typeName", out _));
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("column", out _));
@@ -83,6 +85,32 @@ public class ImplementAbstractToolTests
         Assert.True(properties.TryGetProperty("throwNotImplemented", out _));
         Assert.True(properties.TryGetProperty("replaceExisting", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_AllFilesProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var allFiles = doc.RootElement.GetProperty("properties").GetProperty("allFiles");
+
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("sourceFile is optional", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("typeName", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("members", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsAllFiles()
+    {
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -204,6 +232,24 @@ public class ImplementAbstractToolTests
         var result = await _tool.ExecuteAsync(args);
 
         Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        // ThrowingWorkspaceProvider rejects workspace creation; args including allFiles parsed.
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Failed to parse arguments", GetResultText(result));
+        Assert.DoesNotContain("Arguments required", GetResultText(result));
     }
 
     #endregion
