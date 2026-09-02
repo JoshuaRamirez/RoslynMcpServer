@@ -1986,6 +1986,47 @@ public class InlineConstantOperationTests
         Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
     }
 
+    [SkippableFact]
+    public async Task InlineConstant_AllFilesTrue_NameofKeepsFirstSameNamedConst_StillInlinesSecond()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Outer
+            {
+                private const int Max = 5;
+
+                public int Run() => Max;
+                public string Name() => nameof(Max);
+
+                public class Inner
+                {
+                    private const int Max = 7;
+
+                    public int Run() => Max;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Limits.cs", source));
+        var operation = new InlineConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Limits.cs"]));
+        Assert.Contains("private const int Max = 5;", updated, StringComparison.Ordinal);
+        Assert.Contains("public int Run() => 5;", updated, StringComparison.Ordinal);
+        Assert.Contains("public string Name() => nameof(Max);", updated, StringComparison.Ordinal);
+        Assert.Contains("public int Run() => 7;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private const int Max = 7;", updated, StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
     [Fact]
     public void CollectConstDeclarators_ExcludesLocalsAndNonConstFields()
     {

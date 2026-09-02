@@ -22,8 +22,6 @@ namespace RoslynMcp.Core.Refactoring.Inline;
 /// </summary>
 public sealed class InlineConstantOperation : RefactoringOperationBase<InlineConstantParams>
 {
-    private static readonly SyntaxAnnotation TargetConstantAnnotation = new("RoslynMcp.InlineConstant.Target");
-
     /// <summary>
     /// Creates a new inline constant operation.
     /// </summary>
@@ -934,13 +932,21 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
     {
         var solution = declaringDocument.Project.Solution;
 
+        // Fresh instance per apply. A static annotation is shared across
+        // calls; when the declaration is kept (nameof / other
+        // non-replaceable refs) the mark stays on the tree and a later
+        // same-named const in the same file can hit multi-annotated →
+        // name fallback → SymbolAmbiguous. Same instance-not-kind
+        // matching as encapsulate_field / simplify_name.
+        var targetAnnotation = new SyntaxAnnotation("RoslynMcp.InlineConstant.Target");
+
         var declaringRoot = await declaringDocument.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         var currentDeclarator = RematchDeclarator(declaringRoot, declarator)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Constant declaration disappeared.");
         declaringRoot = declaringRoot.ReplaceNode(
             currentDeclarator,
-            currentDeclarator.WithAdditionalAnnotations(TargetConstantAnnotation));
+            currentDeclarator.WithAdditionalAnnotations(targetAnnotation));
         solution = declaringDocument.WithSyntaxRoot(declaringRoot).Project.Solution;
 
         var documentsToRewrite = replaceable.Select(r => r.Document.Id).ToHashSet();
@@ -973,12 +979,16 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             }
 
             if (removeConstant && documentId == declaringDocument.Id)
-                root = RemoveAnnotatedConstant(root, declarator.Identifier.ValueText);
+                root = RemoveAnnotatedConstant(root, declarator.Identifier.ValueText, targetAnnotation);
 
             solution = document.WithSyntaxRoot(root).Project.Solution;
         }
 
-        return solution;
+        return await StripTargetAnnotationAsync(
+            solution,
+            declaringDocument.Id,
+            targetAnnotation,
+            cancellationToken);
     }
 
     private static VariableDeclaratorSyntax? RematchDeclarator(SyntaxNode root, VariableDeclaratorSyntax original)
@@ -988,9 +998,12 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             .FirstOrDefault(v => v.Span == original.Span && v.Identifier.Text == original.Identifier.Text);
     }
 
-    private static SyntaxNode RemoveAnnotatedConstant(SyntaxNode root, string constantName)
+    private static SyntaxNode RemoveAnnotatedConstant(
+        SyntaxNode root,
+        string constantName,
+        SyntaxAnnotation targetAnnotation)
     {
-        var annotated = root.GetAnnotatedNodes(TargetConstantAnnotation)
+        var annotated = root.GetAnnotatedNodes(targetAnnotation)
             .OfType<VariableDeclaratorSyntax>()
             .ToList();
 
@@ -1017,6 +1030,33 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         }
 
         return root.RemoveNode(declarator, SyntaxRemoveOptions.KeepNoTrivia) ?? root;
+    }
+
+    /// <summary>
+    /// Drops leftover target annotations when the declaration is kept
+    /// (nameof / other non-replaceable refs) so a later bulk apply in
+    /// the same file cannot see a stale mark.
+    /// </summary>
+    private static async Task<Solution> StripTargetAnnotationAsync(
+        Solution solution,
+        DocumentId declaringDocumentId,
+        SyntaxAnnotation targetAnnotation,
+        CancellationToken cancellationToken)
+    {
+        var document = solution.GetDocument(declaringDocumentId);
+        if (document == null)
+            return solution;
+
+        var root = await document.GetSyntaxRootAsync(cancellationToken);
+        if (root == null)
+            return solution;
+
+        var leftover = root.GetAnnotatedNodes(targetAnnotation).ToList();
+        if (leftover.Count == 0)
+            return solution;
+
+        root = root.ReplaceNodes(leftover, (original, _) => original.WithoutAnnotations(targetAnnotation));
+        return document.WithSyntaxRoot(root).Project.Solution;
     }
 
     private static async Task<RefactoringResult> CreatePreviewResultAsync(
