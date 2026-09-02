@@ -64,6 +64,7 @@ public class ImplementInterfaceOperationTests
         Assert.False(@params.ExplicitImplementation);
         Assert.False(@params.ReplaceExisting);
         Assert.False(@params.Preview);
+        Assert.False(@params.AllFiles);
         Assert.Null(@params.Line);
         Assert.Null(@params.Column);
     }
@@ -2259,6 +2260,870 @@ public class ImplementInterfaceOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string EligibleFileA = """
+        namespace TestApp;
+
+        public interface IFileA
+        {
+            void WorkA();
+        }
+
+        public class FileA : IFileA
+        {
+        }
+
+        public static class StaticSkip
+        {
+        }
+
+        public interface ISkip
+        {
+            void Skip();
+        }
+        """;
+
+    private const string EligibleFileB = """
+        namespace TestApp;
+
+        public interface IFileB
+        {
+            int Value { get; }
+        }
+
+        public class FileB : IFileB
+        {
+        }
+        """;
+
+    private const string IneligibleFileC = """
+        namespace TestApp;
+
+        public static class Limits
+        {
+        }
+
+        public interface IWidget
+        {
+            void Draw();
+        }
+
+        public struct Point
+        {
+        }
+
+        public class AlreadyImplemented : IWidget
+        {
+            public void Draw() { }
+        }
+
+        public class Empty
+        {
+        }
+        """;
+
+    private const string MixedEligibleAndSkipped = """
+        namespace TestApp;
+
+        public interface IWork
+        {
+            void Work();
+        }
+
+        public class Eligible : IWork
+        {
+        }
+
+        public static class StaticSkip
+        {
+        }
+
+        public interface ISkip
+        {
+            void Skip();
+        }
+
+        public struct PointSkip
+        {
+        }
+
+        public class Empty
+        {
+        }
+
+        public interface IOuter
+        {
+            void OuterWork();
+        }
+
+        public class Outer : IOuter
+        {
+            public interface INested
+            {
+                int NestedWork();
+            }
+
+            public class Nested : INested
+            {
+            }
+        }
+        """;
+
+    private const string UndeclaredInterfaceSource = """
+        namespace TestApp;
+
+        public interface IKnown
+        {
+            void Known();
+        }
+
+        public interface IUndeclared
+        {
+            void HuntMe();
+        }
+
+        public class Eligible : IKnown
+        {
+        }
+
+        public class NoInterface
+        {
+        }
+        """;
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementInterfaceOperation.Validate(new ImplementInterfaceParams
+            {
+                AllFiles = false,
+                TypeName = "Widget",
+                InterfaceName = "IWidget"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementInterfaceOperation.Validate(new ImplementInterfaceParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath(),
+                InterfaceName = "IWidget"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutInterfaceName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementInterfaceOperation.Validate(new ImplementInterfaceParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath(),
+                TypeName = "Widget"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("interfaceName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileTypeNameOrInterfaceName_DoesNotThrow()
+    {
+        ImplementInterfaceOperation.Validate(new ImplementInterfaceParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementInterfaceOperation.Validate(new ImplementInterfaceParams
+            {
+                AllFiles = true,
+                TypeName = "Widget"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithInterfaceName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementInterfaceOperation.Validate(new ImplementInterfaceParams
+            {
+                AllFiles = true,
+                InterfaceName = "IWidget"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("interfaceName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementInterfaceOperation.Validate(new ImplementInterfaceParams
+            {
+                AllFiles = true,
+                Members = new[] { "Work" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithEmptyMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementInterfaceOperation.Validate(new ImplementInterfaceParams
+            {
+                AllFiles = true,
+                Members = Array.Empty<string>()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TypeWalkKey_IncludesProjectIdentity()
+    {
+        var projectA = ProjectId.CreateNewId();
+        var projectB = ProjectId.CreateNewId();
+        const string fqn = "global::TestApp.Widget";
+
+        var keyA = ImplementInterfaceOperation.TypeWalkKey(projectA, fqn);
+        var keyB = ImplementInterfaceOperation.TypeWalkKey(projectB, fqn);
+
+        Assert.NotEqual(keyA, keyB);
+        Assert.Equal(keyA, ImplementInterfaceOperation.TypeWalkKey(projectA, fqn));
+        Assert.NotEqual(keyA, ImplementInterfaceOperation.TypeWalkKey(projectA, "global::TestApp.Other"));
+    }
+
+    [Fact]
+    public void TypeWalkKey_FileLocalIdentity_DistinguishesSameFqn()
+    {
+        var project = ProjectId.CreateNewId();
+        const string fqn = "global::TestApp.Worker";
+
+        var ordinary = ImplementInterfaceOperation.TypeWalkKey(project, fqn);
+        var fileA = ImplementInterfaceOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs");
+        var fileB = ImplementInterfaceOperation.TypeWalkKey(project, fqn, "/tmp/FileB.cs");
+
+        Assert.NotEqual(ordinary, fileA);
+        Assert.NotEqual(ordinary, fileB);
+        Assert.NotEqual(fileA, fileB);
+        Assert.Equal(fileA, ImplementInterfaceOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs"));
+        Assert.Equal(ordinary, ImplementInterfaceOperation.TypeWalkKey(project, fqn));
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementInterfaceOperation.Validate(new ImplementInterfaceParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ImplementInterfaceOperation.Validate(new ImplementInterfaceParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Implement interface members", ImplementInterfaceOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Implement interface members on 2 types", ImplementInterfaceOperation.BuildAllFilesDescription(2));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesFalse_ImplementsOnlySpecifiedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.PathFor("FileB.cs"));
+        var beforeC = await File.ReadAllTextAsync(workspace.PathFor("FileC.cs"));
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.PathFor("FileA.cs"),
+            AllFiles = false,
+            TypeName = "FileA",
+            InterfaceName = "IFileA"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        Assert.Contains("public void WorkA()", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("public void Skip(", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.PathFor("FileC.cs")));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileA.cs")));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_OmittedAllFiles_KeepsSingleSiteImplement()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "FileA",
+            InterfaceName = "IFileA"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public void WorkA()", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public void Skip(", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_ImplementsEligibleTypesAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.PathFor("FileC.cs"));
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
+        Assert.Contains("public void WorkA()", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("public void Skip(", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public int Value", updatedB, StringComparison.Ordinal);
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.PathFor("FileC.cs")));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileA.cs")));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileB.cs")));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileC.cs")));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_WithoutSourceFileTypeNameOrInterfaceName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementInterfaceParams
+            {
+                AllFiles = false,
+                TypeName = "FileA",
+                InterfaceName = "IFileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesFalse_WithoutTypeName_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementInterfaceParams
+            {
+                AllFiles = false,
+                SourceFile = workspace.SourcePath,
+                InterfaceName = "IFileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesFalse_WithoutInterfaceName_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementInterfaceParams
+            {
+                AllFiles = false,
+                SourceFile = workspace.SourcePath,
+                TypeName = "FileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("interfaceName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_WithTypeName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementInterfaceParams
+            {
+                AllFiles = true,
+                TypeName = "FileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_WithInterfaceName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementInterfaceParams
+            {
+                AllFiles = true,
+                InterfaceName = "IFileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("interfaceName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_WithMembers_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementInterfaceParams
+            {
+                AllFiles = true,
+                Members = new[] { "WorkA" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementInterfaceParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA, "FileA.cs");
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ImplementInterfaceParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.PathFor("FileA.cs"));
+        var beforeB = await File.ReadAllTextAsync(workspace.PathFor("FileB.cs"));
+        var beforeC = await File.ReadAllTextAsync(workspace.PathFor("FileC.cs"));
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.PathFor("FileA.cs")));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.PathFor("FileB.cs")));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.PathFor("FileC.cs")));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("Implement", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet != null &&
+            (c.AfterSnippet.Contains("WorkA", StringComparison.Ordinal) ||
+             c.AfterSnippet.Contains("Value", StringComparison.Ordinal)));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.PathFor("FileC.cs")));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileC.cs", IneligibleFileC),
+            ("FileC2.cs", IneligibleFileC
+                .Replace("Limits", "Limits2", StringComparison.Ordinal)
+                .Replace("IWidget", "IWidget2", StringComparison.Ordinal)
+                .Replace("Point", "Point2", StringComparison.Ordinal)
+                .Replace("AlreadyImplemented", "AlreadyImplemented2", StringComparison.Ordinal)
+                .Replace("Empty", "Empty2", StringComparison.Ordinal)));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.PathFor("FileC.cs"));
+        var beforeB = await File.ReadAllTextAsync(workspace.PathFor("FileC2.cs"));
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.PathFor("FileC.cs")));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("FileC2.cs")));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_SkipsNoInterfacesAlreadyImplementedAndIneligible()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Mixed.cs", MixedEligibleAndSkipped));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Mixed.cs")));
+        Assert.Contains("public void Work()", updated, StringComparison.Ordinal);
+        Assert.Contains("public void OuterWork()", updated, StringComparison.Ordinal);
+        Assert.Contains("public int NestedWork()", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public void Skip(", updated, StringComparison.Ordinal);
+        var pointStart = updated.IndexOf("public struct PointSkip", StringComparison.Ordinal);
+        Assert.True(pointStart >= 0);
+        var pointEnd = updated.IndexOf('}', pointStart);
+        Assert.DoesNotContain("Work()", updated[pointStart..(pointEnd + 1)], StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.PathFor("FileB.cs"));
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.PathFor("FileA.cs")
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        Assert.Contains("public void WorkA()", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileA.cs")));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.PathFor("FileB.cs"));
+        var flipped = FlipPathCasing(workspace.PathFor("FileA.cs"));
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        Assert.Contains("public void WorkA()", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileA.cs")));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_ReplaceExisting_ReplacesMatchingImplementation()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Widget.cs", AlreadyImplementedMethodSource));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true,
+            ReplaceExisting = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Widget.cs")));
+        Assert.Equal(1, CountOccurrences(updated, "public void DoWork()"));
+        Assert.DoesNotContain("old-body", updated, StringComparison.Ordinal);
+        Assert.Contains("NotImplementedException", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_ThrowNotImplementedFalse_UsesDefaultBodies()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true,
+            ThrowNotImplemented = false
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        Assert.Contains("public void WorkA()", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("NotImplementedException", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_ExplicitImplementation_EmitsExplicitStubs()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true,
+            ExplicitImplementation = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        Assert.Contains("void IFileA.WorkA()", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_DoesNotAddUndeclaredInterfaceViaTypeResolver()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", UndeclaredInterfaceSource));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Types.cs")));
+        Assert.Contains("public void Known()", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("HuntMe", updated, StringComparison.Ordinal);
+        var noInterfaceStart = updated.IndexOf("public class NoInterface", StringComparison.Ordinal);
+        Assert.True(noInterfaceStart >= 0);
+        var noInterfaceEnd = updated.IndexOf('}', noInterfaceStart);
+        Assert.DoesNotContain("Known()", updated[noInterfaceStart..(noInterfaceEnd + 1)], StringComparison.Ordinal);
+        Assert.DoesNotContain("HuntMe", updated[noInterfaceStart..(noInterfaceEnd + 1)], StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_SameNamedFileLocalTypes_BothGetStubs()
+    {
+        const string fileA = """
+            namespace TestApp;
+
+            public interface IWorker
+            {
+                void Work();
+            }
+
+            file class Worker : IWorker
+            {
+            }
+            """;
+
+        const string fileB = """
+            namespace TestApp;
+
+            file class Worker : IWorker
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", fileA),
+            ("FileB.cs", fileB));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
+        Assert.Contains("public void Work()", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public void Work()", updatedB, StringComparison.Ordinal);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileA.cs")));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileB.cs")));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_AllFilesTrue_GenuinePartial_ImplementedOnce()
+    {
+        const string partA = """
+            namespace TestApp;
+
+            public interface IWidget
+            {
+                void Draw();
+            }
+
+            public partial class Widget : IWidget
+            {
+            }
+            """;
+
+        const string partB = """
+            namespace TestApp;
+
+            public partial class Widget
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Widget.PartA.cs", partA),
+            ("Widget.PartB.cs", partB));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.PathFor("Widget.PartB.cs"));
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Widget.PartA.cs")));
+        Assert.Contains("public void Draw()", updatedA, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(updatedA, "public void Draw()"));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("Widget.PartB.cs")));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("Widget.PartA.cs")));
+    }
+
+    [Fact]
+    public void CollectTypeDeclarations_IncludesNestedAndInterface()
+    {
+        var root = CSharpSyntaxTree.ParseText(NormalizeNewlines(MixedEligibleAndSkipped)).GetRoot();
+        var types = ImplementInterfaceOperation.CollectTypeDeclarations(root);
+        var names = types.Select(t => t.Identifier.Text).ToList();
+        Assert.Contains("Eligible", names);
+        Assert.Contains("StaticSkip", names);
+        Assert.Contains("ISkip", names);
+        Assert.Contains("PointSkip", names);
+        Assert.Contains("Outer", names);
+        Assert.Contains("Nested", names);
+        Assert.Contains("INested", names);
+        Assert.True(names.IndexOf("Outer") < names.IndexOf("Nested"));
+    }
+
+    #endregion
+
     #region Helpers
 
     private const string AlreadyImplementedMethodSource = """
@@ -2292,6 +3157,26 @@ public class ImplementInterfaceOperationTests
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace("\r", "\n", StringComparison.Ordinal);
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
 
     // Single-line snippets only — IndexOf of an LF-only snippet missed
     // CRLF checkouts (FindMethod_ColumnOnContinuationLine on #200 / #214).
