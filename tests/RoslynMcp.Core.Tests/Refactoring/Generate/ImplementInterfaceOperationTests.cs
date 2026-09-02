@@ -2992,7 +2992,10 @@ public class ImplementInterfaceOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("FileA.cs")));
-        Assert.Contains("void IFileA.WorkA()", updated, StringComparison.Ordinal);
+        var method = FindMethod(updated, "FileA", "WorkA");
+        Assert.NotNull(method);
+        Assert.NotNull(method!.ExplicitInterfaceSpecifier);
+        Assert.Contains("IFileA", method.ExplicitInterfaceSpecifier!.Name.ToString());
     }
 
     [SkippableFact]
@@ -3010,12 +3013,11 @@ public class ImplementInterfaceOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Types.cs")));
         Assert.Contains("public void Known()", updated, StringComparison.Ordinal);
-        Assert.DoesNotContain("HuntMe", updated, StringComparison.Ordinal);
-        var noInterfaceStart = updated.IndexOf("public class NoInterface", StringComparison.Ordinal);
-        Assert.True(noInterfaceStart >= 0);
-        var noInterfaceEnd = updated.IndexOf('}', noInterfaceStart);
-        Assert.DoesNotContain("Known()", updated[noInterfaceStart..(noInterfaceEnd + 1)], StringComparison.Ordinal);
-        Assert.DoesNotContain("HuntMe", updated[noInterfaceStart..(noInterfaceEnd + 1)], StringComparison.Ordinal);
+        Assert.NotNull(FindMethod(updated, "Eligible", "Known"));
+        Assert.Null(FindMethod(updated, "Eligible", "HuntMe"));
+        Assert.Null(FindMethod(updated, "NoInterface", "Known"));
+        Assert.Null(FindMethod(updated, "NoInterface", "HuntMe"));
+        Assert.Single(result.Changes!.FilesModified);
     }
 
     [SkippableFact]

@@ -214,7 +214,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.TypeName,
+                Name = @params.TypeName!,
                 FullyQualifiedName = typeSymbol.ToDisplayString(),
                 Kind = Contracts.Enums.SymbolKind.Class
             },
@@ -544,7 +544,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
 
     /// <summary>
     /// Eligible members across every already-declared interface
-    /// (<see cref="INamedTypeSymbol.AllInterfaces"/>). Does not
+    /// (<c>typeSymbol.AllInterfaces</c>). Does not
     /// <c>TypeResolver</c>-hunt undeclared interfaces.
     /// </summary>
     internal static List<ISymbol> CollectMembersToImplementAllDeclared(
