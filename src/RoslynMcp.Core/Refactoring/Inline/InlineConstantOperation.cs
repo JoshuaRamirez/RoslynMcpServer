@@ -1058,7 +1058,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         {
             pendingChanges.Add(new PendingChange
             {
-                    File = @params.SourceFile!,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = $"Inline constant '{@params.ConstantName}' ({usageCount} usage(s))",
                 BeforeSnippet = null,
