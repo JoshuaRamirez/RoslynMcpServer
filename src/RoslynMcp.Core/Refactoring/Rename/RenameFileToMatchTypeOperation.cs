@@ -32,6 +32,20 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
     /// </summary>
     internal static void Validate(RenameFileToMatchTypeParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.TypeName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with typeName, line, or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -79,13 +93,33 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
         }
     }
 
+    /// <summary>
+    /// True when the document can receive a path or text edit. AllFiles skips
+    /// rather than throwing the single-file <see cref="ErrorCodes.DocumentNotEditable"/>.
+    /// </summary>
+    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
+    {
+        if (document is SourceGeneratedDocument)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
+            return false;
+
+        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument)
+               || workspace.CanApplyChange(ApplyChangesKind.ChangeDocumentInfo);
+    }
+
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
         RenameFileToMatchTypeParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var sourceFile = @params.SourceFile!;
+        var document = GetDocumentOrThrow(sourceFile);
         ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -96,16 +130,16 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
         var types = FindTopLevelTypes(root);
         var selected = ResolvePrimaryType(types, @params);
         var typeName = selected.Name;
-        var newFilePath = GetTargetFilePath(@params.SourceFile, typeName);
+        var newFilePath = GetTargetFilePath(sourceFile, typeName);
 
-        if (FileNameMatchesType(@params.SourceFile, typeName))
+        if (FileNameMatchesType(sourceFile, typeName))
         {
             throw new RefactoringException(
                 ErrorCodes.SameLocation,
                 $"File already matches type '{typeName}'.");
         }
 
-        if (IsDestinationOccupiedByDifferentFile(@params.SourceFile, newFilePath))
+        if (IsDestinationOccupiedByDifferentFile(sourceFile, newFilePath))
         {
             throw new RefactoringException(
                 ErrorCodes.TargetFileExists,
@@ -114,13 +148,13 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
 
         var symbol = semanticModel.GetDeclaredSymbol(selected.Node, cancellationToken);
         var projectPath = document.Project.FilePath;
-        var updatedProjectText = TryGetUpdatedProjectText(projectPath, @params.SourceFile, newFilePath);
+        var updatedProjectText = TryGetUpdatedProjectText(projectPath, sourceFile, newFilePath);
 
         if (@params.Preview)
         {
             return CreatePreviewResult(
                 operationId,
-                @params.SourceFile,
+                sourceFile,
                 newFilePath,
                 typeName,
                 updatedProjectText != null ? projectPath : null);
@@ -128,7 +162,7 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
 
         try
         {
-            MoveSourceFile(@params.SourceFile, newFilePath);
+            MoveSourceFile(sourceFile, newFilePath);
         }
         catch (IOException ex)
         {
@@ -162,9 +196,172 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
             {
                 FilesModified = updatedProjectText != null && projectPath != null ? [projectPath] : [],
                 FilesCreated = [newFilePath],
-                FilesDeleted = [@params.SourceFile]
+                FilesDeleted = [sourceFile]
             },
-            CreateSymbolInfo(symbol, typeName, selected.Node, @params.SourceFile, newFilePath),
+            CreateSymbolInfo(symbol, typeName, selected.Node, sourceFile, newFilePath),
+            0,
+            0);
+    }
+
+    /// <summary>
+    /// Renames every C# document in the solution whose file name does not match
+    /// its single top-level type (same document filter as
+    /// <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>:
+    /// <c>FilePath != null &amp;&amp; EndsWith(".cs")</c>).
+    /// Multi-type, zero-type, already-matching, destination-occupied, and
+    /// uneditable documents are skipped. Destination collisions skip both
+    /// claimants so a half-applied rename is never left on disk.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        RenameFileToMatchTypeParams @params,
+        CancellationToken cancellationToken)
+    {
+        var allDocuments = Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var seenSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var candidates = new List<FileRenamePlan>();
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var sourceFile = document.FilePath;
+            if (string.IsNullOrWhiteSpace(sourceFile))
+                continue;
+
+            var sourceKey = PathResolver.NormalizePath(sourceFile);
+            if (!seenSources.Add(sourceKey))
+                continue;
+
+            if (!IsDocumentEditable(document, Context.Workspace))
+                continue;
+
+            var root = await document.GetSyntaxRootAsync(cancellationToken);
+            if (root == null)
+                continue;
+
+            var types = FindTopLevelTypes(root);
+            if (types.Count != 1)
+                continue;
+
+            var typeName = types[0].Name;
+            if (FileNameMatchesType(sourceFile, typeName))
+                continue;
+
+            var destinationFile = GetTargetFilePath(sourceFile, typeName);
+            if (IsDestinationOccupiedByDifferentFile(sourceFile, destinationFile))
+                continue;
+
+            candidates.Add(new FileRenamePlan(document, sourceFile, destinationFile, typeName));
+        }
+
+        var collidingDests = candidates
+            .GroupBy(p => PathResolver.NormalizePath(p.DestinationFile), StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var plans = candidates
+            .Where(p => !collidingDests.Contains(PathResolver.NormalizePath(p.DestinationFile)))
+            .ToList();
+
+        var projectUpdates = CollectProjectUpdates(plans);
+
+        if (@params.Preview)
+        {
+            var pendingChanges = new List<PendingChange>();
+            foreach (var plan in plans)
+            {
+                AddRenamePendingChanges(
+                    pendingChanges,
+                    plan.SourceFile,
+                    plan.DestinationFile,
+                    plan.TypeName,
+                    projectPath: null);
+            }
+
+            foreach (var projectPath in projectUpdates.Keys)
+            {
+                pendingChanges.Add(new PendingChange
+                {
+                    File = projectPath,
+                    ChangeType = ChangeKind.Modify,
+                    Description = "Update explicit Compile item to the renamed file"
+                });
+            }
+
+            return RefactoringResult.PreviewResult(operationId, pendingChanges);
+        }
+
+        if (plans.Count == 0)
+        {
+            return RefactoringResult.Succeeded(
+                operationId,
+                new FileChanges
+                {
+                    FilesModified = [],
+                    FilesCreated = [],
+                    FilesDeleted = []
+                },
+                null,
+                0,
+                0);
+        }
+
+        var filesCreated = new List<string>();
+        var filesDeleted = new List<string>();
+        var newSolution = Context.Solution;
+
+        try
+        {
+            foreach (var plan in plans)
+            {
+                MoveSourceFile(plan.SourceFile, plan.DestinationFile);
+                newSolution = newSolution.WithDocumentFilePath(plan.Document.Id, plan.DestinationFile);
+                filesCreated.Add(plan.DestinationFile);
+                filesDeleted.Add(plan.SourceFile);
+            }
+        }
+        catch (IOException ex)
+        {
+            throw new RefactoringException(
+                ErrorCodes.FilesystemError,
+                $"Failed to rename file: {ex.Message}",
+                ex);
+        }
+
+        var filesModified = new List<string>();
+        foreach (var (projectPath, updatedProjectText) in projectUpdates)
+        {
+            try
+            {
+                File.WriteAllText(projectPath, updatedProjectText);
+                filesModified.Add(projectPath);
+            }
+            catch (IOException ex)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.FilesystemError,
+                    $"Failed to update project file: {ex.Message}",
+                    ex);
+            }
+        }
+
+        Context.UpdateSolution(newSolution);
+
+        return RefactoringResult.Succeeded(
+            operationId,
+            new FileChanges
+            {
+                FilesModified = filesModified,
+                FilesCreated = filesCreated,
+                FilesDeleted = filesDeleted
+            },
+            null,
             0,
             0);
     }
@@ -539,6 +736,40 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
         return serialized;
     }
 
+    private static Dictionary<string, string> CollectProjectUpdates(IReadOnlyList<FileRenamePlan> plans)
+    {
+        var originals = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var updates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var plan in plans)
+        {
+            var projectPath = plan.Document.Project.FilePath;
+            if (string.IsNullOrWhiteSpace(projectPath) || !File.Exists(projectPath))
+                continue;
+
+            var projectDirectory = Path.GetDirectoryName(projectPath);
+            if (string.IsNullOrEmpty(projectDirectory))
+                continue;
+
+            if (!originals.TryGetValue(projectPath, out var original))
+            {
+                original = File.ReadAllText(projectPath);
+                originals[projectPath] = original;
+            }
+
+            var current = updates.TryGetValue(projectPath, out var pending) ? pending : original;
+            var updated = UpdateExplicitCompileItems(
+                current,
+                projectDirectory,
+                plan.SourceFile,
+                plan.DestinationFile);
+            if (!string.Equals(current, updated, StringComparison.Ordinal))
+                updates[projectPath] = updated;
+        }
+
+        return updates;
+    }
+
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,
         string sourceFile,
@@ -546,21 +777,30 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
         string typeName,
         string? projectPath)
     {
-        var pendingChanges = new List<PendingChange>
+        var pendingChanges = new List<PendingChange>();
+        AddRenamePendingChanges(pendingChanges, sourceFile, newFilePath, typeName, projectPath);
+        return RefactoringResult.PreviewResult(operationId, pendingChanges);
+    }
+
+    private static void AddRenamePendingChanges(
+        List<PendingChange> pendingChanges,
+        string sourceFile,
+        string newFilePath,
+        string typeName,
+        string? projectPath)
+    {
+        pendingChanges.Add(new PendingChange
         {
-            new()
-            {
-                File = sourceFile,
-                ChangeType = ChangeKind.Delete,
-                Description = $"Rename file to match type '{typeName}'"
-            },
-            new()
-            {
-                File = newFilePath,
-                ChangeType = ChangeKind.Create,
-                Description = $"Rename '{Path.GetFileName(sourceFile)}' to '{Path.GetFileName(newFilePath)}'"
-            }
-        };
+            File = sourceFile,
+            ChangeType = ChangeKind.Delete,
+            Description = $"Rename file to match type '{typeName}'"
+        });
+        pendingChanges.Add(new PendingChange
+        {
+            File = newFilePath,
+            ChangeType = ChangeKind.Create,
+            Description = $"Rename '{Path.GetFileName(sourceFile)}' to '{Path.GetFileName(newFilePath)}'"
+        });
 
         if (!string.IsNullOrWhiteSpace(projectPath))
         {
@@ -571,9 +811,13 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
                 Description = "Update explicit Compile item to the renamed file"
             });
         }
-
-        return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
+
+    private readonly record struct FileRenamePlan(
+        Document Document,
+        string SourceFile,
+        string DestinationFile,
+        string TypeName);
 
     private static Contracts.Models.SymbolInfo CreateSymbolInfo(
         ISymbol? symbol,

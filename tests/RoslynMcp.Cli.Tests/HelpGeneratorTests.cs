@@ -1316,4 +1316,29 @@ public class HelpGeneratorTests
         Assert.Contains("--system-first", optionalSection);
         Assert.Contains("--preview", optionalSection);
     }
+
+    [Fact]
+    public void GenerateToolHelp_RenameFileToMatchType_ShowsAllFiles()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("rename-file-to-match-type")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("rename-file-to-match-type", help);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--type-name", optionalSection);
+        Assert.Contains("--line", optionalSection);
+        Assert.Contains("--column", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+    }
 }
