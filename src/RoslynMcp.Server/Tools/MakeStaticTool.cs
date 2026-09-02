@@ -32,13 +32,14 @@ public sealed class MakeStaticTool : IToolHandler
     public string Name => "make_static";
 
     /// <inheritdoc />
-    public string Description => "Make a selected instance method static when it does not use instance state. Adds the static modifier and updates call sites and method-group conversions to the containing type name.";
+    public string Description =>
+        "Make a selected instance method static when it does not use instance state. Adds the static modifier and updates call sites and method-group conversions to the containing type name. allFiles: true walks every C# file and makes every eligible ordinary instance method static (sourceFile optional when true; cannot be combined with startLine, startColumn, endLine, endColumn, or symbolName).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "startLine", "startColumn", "endLine", "endColumn" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -49,32 +50,38 @@ public sealed class MakeStaticTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with startLine, startColumn, endLine, endColumn, or symbolName.",
+                @default = false
             },
             startLine = new
             {
                 type = "integer",
-                description = "Start line of the selected method (1-based)"
+                description = "Start line of the selected method (1-based). Single-site only; cannot be combined with allFiles."
             },
             startColumn = new
             {
                 type = "integer",
-                description = "Start column of the selected method (1-based)"
+                description = "Start column of the selected method (1-based). Single-site only; cannot be combined with allFiles."
             },
             endLine = new
             {
                 type = "integer",
-                description = "End line of the selected method (1-based)"
+                description = "End line of the selected method (1-based). Single-site only; cannot be combined with allFiles."
             },
             endColumn = new
             {
                 type = "integer",
-                description = "End column of the selected method (1-based)"
+                description = "End column of the selected method (1-based). Single-site only; cannot be combined with allFiles."
             },
             symbolName = new
             {
                 type = "string",
-                description = "Optional method name used to confirm the selection"
+                description = "Optional method name used to confirm the selection. Single-site only; cannot be combined with allFiles."
             },
             preview = new
             {
@@ -110,6 +117,7 @@ public sealed class MakeStaticTool : IToolHandler
             var @params = new MakeStaticParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 StartLine = args.StartLine,
                 StartColumn = args.StartColumn,
                 EndLine = args.EndLine,
@@ -143,11 +151,12 @@ public sealed class MakeStaticTool : IToolHandler
     private sealed class MakeStaticArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public int StartLine { get; init; }
-        public int StartColumn { get; init; }
-        public int EndLine { get; init; }
-        public int EndColumn { get; init; }
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public int? StartLine { get; init; }
+        public int? StartColumn { get; init; }
+        public int? EndLine { get; init; }
+        public int? EndColumn { get; init; }
         public string? SymbolName { get; init; }
         public bool? Preview { get; init; }
     }

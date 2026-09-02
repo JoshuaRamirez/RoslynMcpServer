@@ -169,7 +169,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<SafeDeleteOperation, SafeDeleteParams>(
             "safe-delete", "Delete a selected symbol only when it has no remaining references");
         r.RegisterRefactoring<MakeStaticOperation, MakeStaticParams>(
-            "make-static", "Make a selected instance method static when it does not use instance state");
+            "make-static", "Make a selected instance method static when it does not use instance state; sourceFile and selection (startLine / startColumn / endLine / endColumn) are required when allFiles is omitted or false; allFiles (default false) makes every eligible ordinary instance method static in every C# file (sourceFile optional when true; cannot be combined with startLine, startColumn, endLine, endColumn, or symbolName)");
         r.RegisterRefactoring<MakeNonStaticOperation, MakeNonStaticParams>(
             "make-non-static", "Make a selected static method an instance method when a valid instance receiver exists");
 
