@@ -811,6 +811,99 @@ public class EncapsulateFieldOperationTests
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                AllFiles = false,
+                FieldName = "name"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutFieldName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("fieldName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrFieldName_DoesNotThrow()
+    {
+        EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithFieldName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                AllFiles = true,
+                FieldName = "name"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("fieldName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithPropertyName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            EncapsulateFieldOperation.Validate(new EncapsulateFieldParams
+            {
+                AllFiles = true,
+                PropertyName = "Name"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("propertyName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [SkippableFact]
     public async Task EncapsulateField_OmittedColumn_KeepsFieldNameFirstOrDefaultPick()
     {
@@ -1176,9 +1269,421 @@ public class EncapsulateFieldOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string EligibleFileA = """
+        namespace TestApp;
+
+        public class FileA
+        {
+            public string _name;
+            public int _age;
+
+            public void UseLocal()
+            {
+                string local = "x";
+            }
+        }
+        """;
+
+    private const string EligibleFileB = """
+        namespace TestApp;
+
+        public class FileB
+        {
+            public string _path;
+        }
+        """;
+
+    private const string IneligibleFileC = """
+        namespace TestApp;
+
+        public class FileC
+        {
+            public const int Max = 1;
+            public string _name;
+            public string Name { get; set; } = "";
+        }
+        """;
+
+    private const string MixedEligibleAndSkipped = """
+        namespace TestApp;
+
+        public class Mixed
+        {
+            public string _eligible;
+            public const string SkipConst = "x";
+            public string _collision;
+            public string Collision { get; set; } = "";
+
+            public void UseLocal()
+            {
+                int skipped = 1;
+            }
+        }
+        """;
+
+    private const string CallerOfFileA = """
+        namespace TestApp;
+
+        public class Caller
+        {
+            public static string Read(FileA person) => person._name;
+        }
+        """;
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesFalse_EncapsulatesOnlySpecifiedField()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            AllFiles = false,
+            FieldName = "_name"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public string Name", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("public int Age", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public int _age;", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_OmittedAllFiles_KeepsSingleSiteEncapsulate()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            FieldName = "_name"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public string Name", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_EncapsulatesAcrossEligibleFieldsAndFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains("public string Name", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public int Age", updatedA, StringComparison.Ordinal);
+        Assert.Contains("string local = \"x\"", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("public string Local", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public string Path", updatedB, StringComparison.Ordinal);
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_WithoutSourceFileOrFieldName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                AllFiles = false,
+                FieldName = "_name"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesFalse_WithoutFieldName_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                AllFiles = false,
+                SourceFile = workspace.SourcePath
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("fieldName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_WithFieldName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                AllFiles = true,
+                FieldName = "_name"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("fieldName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_WithPropertyName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PersonSource);
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new EncapsulateFieldParams
+            {
+                AllFiles = true,
+                PropertyName = "Name"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("propertyName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("Encapsulate", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet != null &&
+            (c.AfterSnippet.Contains("public string Name", StringComparison.Ordinal) ||
+             c.AfterSnippet.Contains("public string Path", StringComparison.Ordinal)));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", IneligibleFileC),
+            ("FileC2.cs", IneligibleFileC.Replace("FileC", "FileC2", StringComparison.Ordinal)));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_SkipsConstCollisionAndLocals()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Mixed.cs", MixedEligibleAndSkipped));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Mixed.cs"]));
+        Assert.Contains("public string Eligible", updated, StringComparison.Ordinal);
+        Assert.Contains("public const string SkipConst", updated, StringComparison.Ordinal);
+        Assert.Contains("public string _collision;", updated, StringComparison.Ordinal);
+        Assert.Contains("public string Collision { get; set; }", updated, StringComparison.Ordinal);
+        Assert.Contains("int skipped = 1;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public int Skipped", updated, StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_HonorsUpdateReferences()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("Caller.cs", CallerOfFileA));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true,
+            UpdateReferences = true
+        });
+
+        Assert.True(result.Success);
+        var caller = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Caller.cs"]));
+        Assert.Contains("person.Name", caller, StringComparison.Ordinal);
+        Assert.DoesNotContain("person._name", caller, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_ReadOnly_CreatesGetterOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true,
+            ReadOnly = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("public string Name", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("set", updated, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Encapsulate field", EncapsulateFieldOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Encapsulate 2 fields", EncapsulateFieldOperation.BuildAllFilesDescription(2));
+    }
+
+    [Fact]
+    public void CollectFieldDeclarators_ExcludesLocals()
+    {
+        var root = Parse(EligibleFileA);
+        var fields = EncapsulateFieldOperation.CollectFieldDeclarators(root);
+        Assert.Equal(2, fields.Count);
+        Assert.All(fields, d => Assert.True(d.Parent?.Parent is FieldDeclarationSyntax));
+        Assert.Contains(fields, d => d.Identifier.Text == "_name");
+        Assert.Contains(fields, d => d.Identifier.Text == "_age");
+        Assert.DoesNotContain(fields, d => d.Identifier.Text == "local");
+    }
+
+    [Fact]
+    public void DerivePropertyName_MatchesToday()
+    {
+        Assert.Equal("Name", EncapsulateFieldOperation.DerivePropertyName("_name"));
+        Assert.Equal("Name", EncapsulateFieldOperation.DerivePropertyName("name"));
+        Assert.Equal("Age", EncapsulateFieldOperation.DerivePropertyName("_age"));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpEncapsulateField_Missing.cs");
@@ -1254,10 +1759,15 @@ public class EncapsulateFieldOperationTests
         public required IReadOnlyDictionary<string, string> FilePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
+        public IReadOnlyDictionary<string, string> SourcePaths => FilePaths;
+
         public string GetPath(string fileName) => FilePaths[fileName];
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Person.cs") =>
             CreateAsync((fileName, source));
+
+        public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
+            CreateAsync(files);
 
         public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
         {
@@ -1267,11 +1777,15 @@ public class EncapsulateFieldOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);

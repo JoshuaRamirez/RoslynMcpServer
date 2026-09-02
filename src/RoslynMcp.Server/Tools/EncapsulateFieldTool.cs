@@ -33,13 +33,13 @@ public sealed class EncapsulateFieldTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a field to a property with backing field. line (optional) picks the field whose identifier or declaration span covers that line when several fields share the name; omitted keeps today's fieldName FirstOrDefault pick. column (optional) picks the field whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering declarator/field); omitted keeps today's fieldName + optional line pick; column without line keeps today's first-match after the fieldName filter. updateReferences (default true) rewrites external references to the new property; false still encapsulates (private field + property) but leaves external callers on the field. Same-class references stay on the field. Preview describes whether references will be updated and writes nothing.";
+        "Convert a field to a property with backing field. line (optional) picks the field whose identifier or declaration span covers that line when several fields share the name; omitted keeps today's fieldName FirstOrDefault pick. column (optional) picks the field whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering declarator/field); omitted keeps today's fieldName + optional line pick; column without line keeps today's first-match after the fieldName filter. updateReferences (default true) rewrites external references to the new property; false still encapsulates (private field + property) but leaves external callers on the field. Same-class references stay on the field. Preview describes whether references will be updated and writes nothing. allFiles: true walks every C# file and encapsulates every eligible field (sourceFile optional when true; cannot be combined with fieldName, line, column, or propertyName).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "fieldName" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,29 +50,35 @@ public sealed class EncapsulateFieldTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file containing the field. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with fieldName, line, column, or propertyName.",
+                @default = false
             },
             fieldName = new
             {
                 type = "string",
-                description = "Name of the field to encapsulate"
+                description = "Name of the field to encapsulate. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number for disambiguation when several fields share the name. When set, selects the field whose identifier or declaration span covers that line (identifier preferred, then smallest covering declarator/field). Omitted keeps today's fieldName FirstOrDefault pick.",
+                description = "1-based line number for disambiguation when several fields share the name. When set, selects the field whose identifier or declaration span covers that line (identifier preferred, then smallest covering declarator/field). Omitted keeps today's fieldName FirstOrDefault pick. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set with line, selects the field whose identifier or declaration span covers that column (identifier preferred, then smallest covering declarator/field). Omitted keeps today's fieldName + optional line pick. Column without line keeps today's first-match after the fieldName filter.",
+                description = "1-based column for disambiguation. When set with line, selects the field whose identifier or declaration span covers that column (identifier preferred, then smallest covering declarator/field). Omitted keeps today's fieldName + optional line pick. Column without line keeps today's first-match after the fieldName filter. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             propertyName = new
             {
                 type = "string",
-                description = "Name for the property. If not specified, derives from field name (e.g., _name -> Name)"
+                description = "Name for the property. If not specified, derives from field name (e.g., _name -> Name). Single-site only; cannot be combined with allFiles."
             },
             readOnly = new
             {
@@ -120,6 +126,7 @@ public sealed class EncapsulateFieldTool : IToolHandler
             var @params = new EncapsulateFieldParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 FieldName = args.FieldName,
                 Line = args.Line,
                 Column = args.Column,
@@ -154,8 +161,9 @@ public sealed class EncapsulateFieldTool : IToolHandler
     private sealed class EncapsulateFieldArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string FieldName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? FieldName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
         public string? PropertyName { get; init; }

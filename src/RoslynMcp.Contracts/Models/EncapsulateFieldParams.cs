@@ -7,13 +7,23 @@ public sealed class EncapsulateFieldParams
 {
     /// <summary>
     /// Absolute path to the source file.
+    /// Required when <see cref="AllFiles"/> is false.
     /// </summary>
-    public required string SourceFile { get; init; }
+    public string? SourceFile { get; init; }
 
     /// <summary>
-    /// Name of the field to encapsulate.
+    /// When true, process all C# documents in the solution instead of a single field.
+    /// When true, <see cref="SourceFile"/> is optional. Cannot be combined with
+    /// <see cref="FieldName"/>, <see cref="Line"/>, <see cref="Column"/>, or
+    /// <see cref="PropertyName"/> (bulk cannot apply one propertyName).
     /// </summary>
-    public required string FieldName { get; init; }
+    public bool AllFiles { get; init; }
+
+    /// <summary>
+    /// Name of the field to encapsulate. Single-site only.
+    /// Required when <see cref="AllFiles"/> is false.
+    /// </summary>
+    public string? FieldName { get; init; }
 
     /// <summary>
     /// 1-based line number for disambiguation when several fields share
@@ -22,7 +32,7 @@ public sealed class EncapsulateFieldParams
     /// smallest covering declarator/field). Nested types participate.
     /// Omitted keeps today's fieldName first-match on field
     /// <c>VariableDeclaratorSyntax</c>. Locals and other non-field
-    /// declarators stay excluded.
+    /// declarators stay excluded. Single-site only.
     /// </summary>
     public int? Line { get; init; }
 
@@ -33,11 +43,13 @@ public sealed class EncapsulateFieldParams
     /// Omitted keeps today's fieldName + optional line pick. Column without
     /// line keeps today's omitted-line <c>FirstOrDefault</c> after the
     /// fieldName filter (field <c>VariableDeclaratorSyntax</c> only).
+    /// Single-site only.
     /// </summary>
     public int? Column { get; init; }
 
     /// <summary>
     /// Name for the property. If null, derives from field name.
+    /// Single-site only; cannot be combined with <see cref="AllFiles"/>.
     /// </summary>
     public string? PropertyName { get; init; }
 
