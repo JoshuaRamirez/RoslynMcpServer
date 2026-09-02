@@ -2227,8 +2227,9 @@ public class UseBaseTypeOperationTests
     private const string DogImplementsIAnimalSource = """
         namespace TestApp;
 
-        public class Dog : Animal, IAnimal
+        public class Dog : IAnimal
         {
+            public int Eat() => 1;
             public int Bark() => 2;
         }
 
