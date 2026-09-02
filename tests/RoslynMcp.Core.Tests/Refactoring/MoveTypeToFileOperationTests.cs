@@ -1091,10 +1091,10 @@ public class MoveTypeToFileOperationTests
     {
         await using var workspace = await TempWorkspace.CreateAsync(
             ("Already.cs", WellPlacedSource),
-            ("NestedOnly.cs", NestedWidgetSource));
+            ("Outer.cs", NestedWidgetSource));
         var operation = new MoveTypeToFileOperation(workspace.Context);
         var beforeAlready = await File.ReadAllTextAsync(workspace.FilePaths["Already.cs"]);
-        var beforeNested = await File.ReadAllTextAsync(workspace.FilePaths["NestedOnly.cs"]);
+        var beforeOuter = await File.ReadAllTextAsync(workspace.FilePaths["Outer.cs"]);
 
         var result = await operation.ExecuteAsync(new MoveTypeToFileParams
         {
@@ -1108,7 +1108,7 @@ public class MoveTypeToFileOperationTests
         Assert.Empty(result.Changes.FilesDeleted);
         Assert.Empty(result.Changes.FilesModified);
         Assert.Equal(beforeAlready, await File.ReadAllTextAsync(workspace.FilePaths["Already.cs"]));
-        Assert.Equal(beforeNested, await File.ReadAllTextAsync(workspace.FilePaths["NestedOnly.cs"]));
+        Assert.Equal(beforeOuter, await File.ReadAllTextAsync(workspace.FilePaths["Outer.cs"]));
         Assert.False(File.Exists(workspace.TargetPath("Nested.cs")));
         Assert.False(File.Exists(workspace.TargetPath("Widget.cs")));
     }
