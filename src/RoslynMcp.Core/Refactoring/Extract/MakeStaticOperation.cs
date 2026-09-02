@@ -1103,20 +1103,28 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
 
             var methodAnn = new SyntaxAnnotation("make-static-method");
             var rewriteAnn = new SyntaxAnnotation("make-static-call");
-            var methodSet = methods.Cast<SyntaxNode>().ToHashSet();
-            var rewriteSet = rewriteTargets.ToHashSet();
-            var annotateTargets = methodSet.Concat(rewriteSet).ToList();
-            if (annotateTargets.Count > 0)
+
+            // Annotate methods and call sites in separate ReplaceNodes
+            // passes. A later method's declaration can contain an earlier
+            // method's call site; Roslyn ignores descendant replacements
+            // when the ancestor is in the same list.
+            if (methods.Count > 0)
             {
-                root = root.ReplaceNodes(annotateTargets, (original, _) =>
+                root = root.ReplaceNodes(methods, (original, _) =>
+                    original.WithAdditionalAnnotations(methodAnn));
+            }
+
+            if (rewriteTargets.Count > 0)
+            {
+                var rewriteSpans = rewriteTargets.Select(target => target.Span).ToHashSet();
+                var currentRewrites = root.DescendantNodes()
+                    .Where(node => rewriteSpans.Contains(node.Span) && node is MemberAccessExpressionSyntax)
+                    .ToList();
+                if (currentRewrites.Count > 0)
                 {
-                    var node = original;
-                    if (methodSet.Contains(original))
-                        node = node.WithAdditionalAnnotations(methodAnn);
-                    if (rewriteSet.Contains(original))
-                        node = node.WithAdditionalAnnotations(rewriteAnn);
-                    return node;
-                });
+                    root = root.ReplaceNodes(currentRewrites, (original, _) =>
+                        original.WithAdditionalAnnotations(rewriteAnn));
+                }
             }
 
             var annotatedRewrites = root.GetAnnotatedNodes(rewriteAnn).ToList();
