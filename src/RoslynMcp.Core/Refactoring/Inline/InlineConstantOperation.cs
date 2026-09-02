@@ -827,7 +827,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
     {
         var references = await SymbolFinder.FindReferencesAsync(
             fieldSymbol,
-            document.Project.Solution,
+            declaringDocument.Project.Solution,
             cancellationToken);
 
         var results = new List<ConstantReference>();
