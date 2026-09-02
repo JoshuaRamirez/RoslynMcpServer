@@ -35,6 +35,7 @@ public class UseBaseTypeToolTests
         Assert.Contains("line", _tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("column", _tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("FirstOrDefault", _tool.Description);
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -48,6 +49,7 @@ public class UseBaseTypeToolTests
         Assert.Equal("object", root.GetProperty("type").GetString());
         Assert.True(root.TryGetProperty("properties", out _));
         Assert.True(root.TryGetProperty("required", out _));
+        Assert.False(root.GetProperty("additionalProperties").GetBoolean());
     }
 
     [Fact]
@@ -64,9 +66,12 @@ public class UseBaseTypeToolTests
             requiredFields.Add(item.GetString()!);
         }
 
+        // solutionPath is required; sourceFile / typeName are optional (allFiles mode)
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("typeName", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+        Assert.DoesNotContain("typeName", requiredFields);
+        Assert.DoesNotContain("allFiles", requiredFields);
+        Assert.DoesNotContain("column", requiredFields);
     }
 
     [Fact]
@@ -84,6 +89,34 @@ public class UseBaseTypeToolTests
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("targetBaseType", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
+        Assert.False(RequiredFieldsContains(doc, "line"));
+        Assert.False(RequiredFieldsContains(doc, "column"));
+        Assert.False(RequiredFieldsContains(doc, "allFiles"));
+    }
+
+    [Fact]
+    public void GetDefinition_AllFilesProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var allFiles = doc.RootElement.GetProperty("properties").GetProperty("allFiles");
+
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("sourceFile is optional", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("typeName", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsAllFiles()
+    {
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -183,9 +216,38 @@ public class UseBaseTypeToolTests
         Assert.True(result.IsError);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        // ThrowingWorkspaceProvider rejects workspace creation; args including allFiles parsed.
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Failed to parse arguments", GetResultText(result));
+        Assert.DoesNotContain("Arguments required", GetResultText(result));
+    }
+
     #endregion
 
     #region Helper Methods
+
+    private static bool RequiredFieldsContains(JsonDocument doc, string name)
+    {
+        foreach (var item in doc.RootElement.GetProperty("required").EnumerateArray())
+        {
+            if (item.GetString() == name)
+                return true;
+        }
+
+        return false;
+    }
 
     private static string GetResultText(ToolResult result)
     {

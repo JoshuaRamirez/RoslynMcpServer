@@ -13,7 +13,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Hierarchy;
 
 /// <summary>
 /// Operation-level tests for <see cref="UseBaseTypeOperation"/>, including optional
-/// <c>line</c>, <c>column</c>, <c>targetBaseType</c>, and <c>preview</c>.
+/// <c>line</c>, <c>column</c>, <c>targetBaseType</c>, <c>preview</c>, and
+/// <c>allFiles</c>.
 /// </summary>
 public class UseBaseTypeOperationTests
 {
@@ -69,6 +70,85 @@ public class UseBaseTypeOperationTests
             }));
 
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            UseBaseTypeOperation.Validate(new UseBaseTypeParams
+            {
+                AllFiles = false,
+                TypeName = "Dog"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            UseBaseTypeOperation.Validate(new UseBaseTypeParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrTypeName_DoesNotThrow()
+    {
+        UseBaseTypeOperation.Validate(new UseBaseTypeParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            UseBaseTypeOperation.Validate(new UseBaseTypeParams
+            {
+                AllFiles = true,
+                TypeName = "Dog"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            UseBaseTypeOperation.Validate(new UseBaseTypeParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            UseBaseTypeOperation.Validate(new UseBaseTypeParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion
@@ -255,6 +335,7 @@ public class UseBaseTypeOperationTests
         };
 
         Assert.Null(@params.Line);
+        Assert.False(@params.AllFiles);
     }
 
     [Fact]
@@ -2073,7 +2154,412 @@ public class UseBaseTypeOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string AnimalSource = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int Eat() => 1;
+        }
+
+        public interface IAnimal
+        {
+            int Eat();
+        }
+        """;
+
+    private const string EligibleDogSource = """
+        namespace TestApp;
+
+        public class Dog : Animal
+        {
+            public int Bark() => 2;
+        }
+
+        public static class DogUse
+        {
+            public static int Feed(Dog dog) => dog.Eat();
+        }
+        """;
+
+    private const string EligibleCatSource = """
+        namespace TestApp;
+
+        public class Cat : Animal
+        {
+        }
+
+        public static class CatUse
+        {
+            public static int Pet(Cat cat) => cat.Eat();
+        }
+        """;
+
+    private const string IneligibleTypesSource = """
+        namespace TestApp;
+
+        public class Standalone
+        {
+        }
+
+        public class Horse : Animal
+        {
+            public int Neigh() => 3;
+        }
+
+        public static class HorseUse
+        {
+            public static int Speak(Horse horse) => horse.Neigh();
+        }
+
+        public class Fish : Animal
+        {
+        }
+
+        public static class FishUse
+        {
+            public static object Create() => new Fish();
+        }
+        """;
+
+    private const string DogImplementsIAnimalSource = """
+        namespace TestApp;
+
+        public class Dog : Animal, IAnimal
+        {
+            public int Bark() => 2;
+        }
+
+        public static class DogUse
+        {
+            public static int Feed(Dog dog) => dog.Eat();
+        }
+        """;
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesFalse_RewritesOnlySpecifiedType()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", EligibleDogSource),
+            ("Cat.cs", EligibleCatSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var beforeCat = await File.ReadAllTextAsync(workspace.SourcePaths["Cat.cs"]);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePaths["Dog.cs"],
+            AllFiles = false,
+            TypeName = "Dog"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedDog = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Dog.cs"]));
+        Assert.Contains("Feed(Animal dog)", updatedDog);
+        Assert.DoesNotContain("Feed(Dog dog)", updatedDog);
+        Assert.Equal(beforeCat, await File.ReadAllTextAsync(workspace.SourcePaths["Cat.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["Dog.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Cat.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_OmittedAllFiles_KeepsSingleSiteRewrite()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleDogSource + "\n" + AnimalSource.Replace("namespace TestApp;", ""));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Dog"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("Feed(Animal dog)", updated);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_RewritesAcrossEligibleTypesAndFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", EligibleDogSource),
+            ("Cat.cs", EligibleCatSource),
+            ("Skip.cs", IneligibleTypesSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var beforeSkip = await File.ReadAllTextAsync(workspace.SourcePaths["Skip.cs"]);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedDog = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Dog.cs"]));
+        var updatedCat = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Cat.cs"]));
+        Assert.Contains("Feed(Animal dog)", updatedDog);
+        Assert.DoesNotContain("Feed(Dog dog)", updatedDog);
+        Assert.Contains("Pet(Animal cat)", updatedCat);
+        Assert.DoesNotContain("Pet(Cat cat)", updatedCat);
+        Assert.Equal(beforeSkip, await File.ReadAllTextAsync(workspace.SourcePaths["Skip.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["Dog.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Cat.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Skip.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_WithoutSourceFileOrTypeName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", EligibleDogSource),
+            ("Cat.cs", EligibleCatSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleDogSource + "\n" + AnimalSource.Replace("namespace TestApp;", ""));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                AllFiles = false,
+                TypeName = "Dog"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesFalse_WithoutTypeName_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleDogSource + "\n" + AnimalSource.Replace("namespace TestApp;", ""));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                AllFiles = false,
+                SourceFile = workspace.SourcePath
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_WithTypeName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleDogSource + "\n" + AnimalSource.Replace("namespace TestApp;", ""));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                AllFiles = true,
+                TypeName = "Dog"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleDogSource + "\n" + AnimalSource.Replace("namespace TestApp;", ""));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleDogSource + "\n" + AnimalSource.Replace("namespace TestApp;", ""));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", EligibleDogSource),
+            ("Cat.cs", EligibleCatSource),
+            ("Skip.cs", IneligibleTypesSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var beforeDog = await File.ReadAllTextAsync(workspace.SourcePaths["Dog.cs"]);
+        var beforeCat = await File.ReadAllTextAsync(workspace.SourcePaths["Cat.cs"]);
+        var beforeSkip = await File.ReadAllTextAsync(workspace.SourcePaths["Skip.cs"]);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["Dog.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["Cat.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["Skip.cs"]));
+        Assert.Contains(result.PendingChanges, c =>
+            c.AfterSnippet != null && c.AfterSnippet.Contains("Animal", StringComparison.Ordinal));
+        Assert.Equal(beforeDog, await File.ReadAllTextAsync(workspace.SourcePaths["Dog.cs"]));
+        Assert.Equal(beforeCat, await File.ReadAllTextAsync(workspace.SourcePaths["Cat.cs"]));
+        Assert.Equal(beforeSkip, await File.ReadAllTextAsync(workspace.SourcePaths["Skip.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_EveryTypeIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Skip.cs", IneligibleTypesSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var beforeAnimal = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        var beforeSkip = await File.ReadAllTextAsync(workspace.SourcePaths["Skip.cs"]);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeAnimal, await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]));
+        Assert.Equal(beforeSkip, await File.ReadAllTextAsync(workspace.SourcePaths["Skip.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_SkipsNoBaseNoEligibleRefsAndIncompatibleMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", EligibleDogSource),
+            ("Skip.cs", IneligibleTypesSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedSkip = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Skip.cs"]));
+        Assert.Contains("Speak(Horse horse)", updatedSkip);
+        Assert.Contains("new Fish()", updatedSkip);
+        Assert.Contains("class Standalone", updatedSkip);
+        var updatedDog = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Dog.cs"]));
+        Assert.Contains("Feed(Animal dog)", updatedDog);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_TargetBaseTypeFiltersTypesWithoutThatBase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", DogImplementsIAnimalSource),
+            ("Cat.cs", EligibleCatSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var beforeCat = await File.ReadAllTextAsync(workspace.SourcePaths["Cat.cs"]);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            AllFiles = true,
+            TargetBaseType = "IAnimal"
+        });
+
+        Assert.True(result.Success);
+        var updatedDog = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Dog.cs"]));
+        Assert.Contains("Feed(IAnimal dog)", updatedDog);
+        Assert.Equal(beforeCat, await File.ReadAllTextAsync(workspace.SourcePaths["Cat.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["Dog.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Cat.cs"]));
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal(
+            "Replace derived-type reference with a compatible base type",
+            UseBaseTypeOperation.BuildAllFilesDescription(1));
+        Assert.Equal(
+            "Replace 2 derived-type references with compatible base types",
+            UseBaseTypeOperation.BuildAllFilesDescription(2));
+    }
+
+    [Fact]
+    public void CollectTypeDeclarations_IncludesClassStructInterface_ExcludesEnumAndDelegate()
+    {
+        const string source = """
+            namespace TestApp;
+            public class C { }
+            public struct S { }
+            public interface I { }
+            public enum E { A }
+            public delegate void D();
+            public record R();
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var types = UseBaseTypeOperation.CollectTypeDeclarations(root);
+        Assert.Equal(4, types.Count);
+        Assert.Contains(types, t => t.Identifier.Text == "C");
+        Assert.Contains(types, t => t.Identifier.Text == "S");
+        Assert.Contains(types, t => t.Identifier.Text == "I");
+        Assert.Contains(types, t => t.Identifier.Text == "R");
+        Assert.DoesNotContain(types, t => t.Identifier.Text == "E");
+        Assert.DoesNotContain(types, t => t.Identifier.Text == "D");
+    }
+
+    #endregion
+
     #region Helpers
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
     private static string AbsoluteTestPath() =>
         OperatingSystem.IsWindows() ? @"C:\test\file.cs" : "/test/file.cs";
@@ -2127,9 +2613,18 @@ public class UseBaseTypeOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> FilePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public IReadOnlyDictionary<string, string> SourcePaths => FilePaths;
+
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateAsync((fileName, source));
+
+        public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
+            CreateAsync(files);
+
+        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -2137,17 +2632,33 @@ public class UseBaseTypeOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
-
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            var filePaths = new Dictionary<string, string>(StringComparer.Ordinal);
+            string? sourcePath = null;
+            foreach (var (fileName, source) in files)
+            {
+                var path = Path.Combine(directory, fileName);
+                var parent = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(parent))
+                    Directory.CreateDirectory(parent);
+                await File.WriteAllTextAsync(path, source);
+                filePaths[fileName] = path;
+                sourcePath ??= path;
+            }
+
+            sourcePath ??= Path.Combine(directory, "Types.cs");
 
             try
             {
@@ -2164,6 +2675,7 @@ public class UseBaseTypeOperationTests
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
                     SourcePath = sourcePath,
+                    FilePaths = filePaths,
                     Context = context
                 };
             }
