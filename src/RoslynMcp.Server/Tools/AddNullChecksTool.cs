@@ -32,13 +32,14 @@ public sealed class AddNullChecksTool : IToolHandler
     public string Name => "add_null_checks";
 
     /// <inheritdoc />
-    public string Description => "Add null-check statements to method or constructor parameters for non-nullable reference types.";
+    public string Description =>
+        "Add null-check statements to method or constructor parameters for non-nullable reference types. column (optional) picks the smallest method or constructor whose identifier or declaration span covers that column. Omitted keeps today's MethodName and optional Line start-line pick. style is throw (ArgumentNullException.ThrowIfNull) or guard (if-throw). Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and adds checks to every eligible method or constructor with a block body (sourceFile optional when true; cannot be combined with methodName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "methodName" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -49,23 +50,29 @@ public sealed class AddNullChecksTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the method"
+                description = "Absolute path to the source file containing the method. Required when allFiles is false."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with methodName, line, or column.",
+                @default = false
             },
             methodName = new
             {
                 type = "string",
-                description = "Name of the method or constructor to add null checks to"
+                description = "Name of the method or constructor to add null checks to. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number for disambiguation when multiple overloads exist",
+                description = "1-based line number for disambiguation when multiple overloads exist. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set, selects the smallest method or constructor whose identifier or declaration span covers that column. Omitted keeps today's MethodName and optional Line start-line pick."
+                description = "1-based column for disambiguation. When set, selects the smallest method or constructor whose identifier or declaration span covers that column. Omitted keeps today's MethodName and optional Line start-line pick. Single-site only; cannot be combined with allFiles."
             },
             style = new
             {
@@ -109,6 +116,7 @@ public sealed class AddNullChecksTool : IToolHandler
             var @params = new AddNullChecksParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 MethodName = args.MethodName,
                 Line = args.Line,
                 Column = args.Column,
@@ -141,8 +149,9 @@ public sealed class AddNullChecksTool : IToolHandler
     private sealed class AddNullChecksArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string MethodName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? MethodName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
         public string? Style { get; init; }

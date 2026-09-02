@@ -50,6 +50,7 @@ public class AddNullChecksToolTests
         Assert.Equal("object", root.GetProperty("type").GetString());
         Assert.True(root.TryGetProperty("properties", out _));
         Assert.True(root.TryGetProperty("required", out _));
+        Assert.False(root.GetProperty("additionalProperties").GetBoolean());
     }
 
     [Fact]
@@ -68,9 +69,11 @@ public class AddNullChecksToolTests
             requiredFields.Add(item.GetString()!);
         }
 
+        // solutionPath is required; sourceFile / methodName are optional (allFiles mode)
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("methodName", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+        Assert.DoesNotContain("methodName", requiredFields);
+        Assert.DoesNotContain("allFiles", requiredFields);
         Assert.DoesNotContain("column", requiredFields);
     }
 
@@ -86,6 +89,31 @@ public class AddNullChecksToolTests
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("style", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_AllFilesProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var allFiles = doc.RootElement.GetProperty("properties").GetProperty("allFiles");
+
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("sourceFile is optional", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("methodName", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsAllFiles()
+    {
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion
@@ -115,6 +143,24 @@ public class AddNullChecksToolTests
         // Assert
         // The tool will try to deserialize and proceed, but fail when accessing workspace
         Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        // ThrowingWorkspaceProvider rejects workspace creation; args including allFiles parsed.
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Failed to parse arguments", GetResultText(result));
+        Assert.DoesNotContain("Arguments required", GetResultText(result));
     }
 
     #endregion

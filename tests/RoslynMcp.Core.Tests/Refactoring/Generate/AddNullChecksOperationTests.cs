@@ -107,6 +107,85 @@ public class AddNullChecksOperationTests
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddNullChecksOperation.Validate(new AddNullChecksParams
+            {
+                AllFiles = false,
+                MethodName = "Process"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutMethodName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddNullChecksOperation.Validate(new AddNullChecksParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrMethodName_DoesNotThrow()
+    {
+        AddNullChecksOperation.Validate(new AddNullChecksParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMethodName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddNullChecksOperation.Validate(new AddNullChecksParams
+            {
+                AllFiles = true,
+                MethodName = "Process"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddNullChecksOperation.Validate(new AddNullChecksParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddNullChecksOperation.Validate(new AddNullChecksParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     #endregion
 
     #region P0 omitted column keeps today's methodName + optional line start-line pick
@@ -550,6 +629,397 @@ public class AddNullChecksOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string EligibleFileA = """
+        namespace TestApp;
+
+        public class FileA
+        {
+            public void Process(string name) { }
+
+            public FileA(string extra) { }
+        }
+        """;
+
+    private const string EligibleFileB = """
+        namespace TestApp;
+
+        public class FileB
+        {
+            public void Fetch(string path) { }
+        }
+        """;
+
+    private const string IneligibleFileC = """
+        namespace TestApp;
+
+        public abstract class FileC
+        {
+            public void Already(string name)
+            {
+                ArgumentNullException.ThrowIfNull(name);
+            }
+
+            public void ValueOnly(int count) { }
+
+            public void ExpressionBodied(string name) => System.Console.WriteLine(name);
+
+            public abstract void NoBody(string name);
+        }
+        """;
+
+    private const string MixedEligibleAndSkipped = """
+        namespace TestApp;
+
+        public abstract class Mixed
+        {
+            public void Eligible(string name) { }
+
+            public void AlreadyThrow(string name)
+            {
+                ArgumentNullException.ThrowIfNull(name);
+            }
+
+            public void AlreadyGuard(string extra)
+            {
+                if (extra is null) throw new ArgumentNullException(nameof(extra));
+            }
+
+            public void ValueOnly(int count) { }
+
+            public void ExpressionBodied(string name) => System.Console.WriteLine(name);
+
+            public abstract void NoBody(string name);
+
+            public void Partial(string name, string extra)
+            {
+                ArgumentNullException.ThrowIfNull(name);
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task AddNullChecks_AllFilesFalse_AddsOnlySpecifiedMethod()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new AddNullChecksOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new AddNullChecksParams
+        {
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            AllFiles = false,
+            MethodName = "Process"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("ThrowIfNull(name)", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("ThrowIfNull(extra)", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task AddNullChecks_OmittedAllFiles_KeepsSingleSiteAdd()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleMethodSource);
+        var operation = new AddNullChecksOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddNullChecksParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("ThrowIfNull(name)", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task AddNullChecks_AllFilesTrue_AddsChecksAcrossEligibleMethodsAndFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new AddNullChecksOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new AddNullChecksParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains("ThrowIfNull(name)", updatedA, StringComparison.Ordinal);
+        Assert.Contains("ThrowIfNull(extra)", updatedA, StringComparison.Ordinal);
+        Assert.Contains("ThrowIfNull(path)", updatedB, StringComparison.Ordinal);
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task AddNullChecks_AllFilesTrue_WithoutSourceFileOrMethodName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new AddNullChecksOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddNullChecksParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task AddNullChecks_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleMethodSource);
+        var operation = new AddNullChecksOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddNullChecksParams
+            {
+                AllFiles = false,
+                MethodName = "Process"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task AddNullChecks_AllFilesFalse_WithoutMethodName_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleMethodSource);
+        var operation = new AddNullChecksOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddNullChecksParams
+            {
+                AllFiles = false,
+                SourceFile = workspace.SourcePath
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task AddNullChecks_AllFilesTrue_WithMethodName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleMethodSource);
+        var operation = new AddNullChecksOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddNullChecksParams
+            {
+                AllFiles = true,
+                MethodName = "Process"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task AddNullChecks_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleMethodSource);
+        var operation = new AddNullChecksOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddNullChecksParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task AddNullChecks_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleMethodSource);
+        var operation = new AddNullChecksOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddNullChecksParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task AddNullChecks_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new AddNullChecksOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new AddNullChecksParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("null check", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet != null &&
+            (c.AfterSnippet.Contains("ThrowIfNull(name)", StringComparison.Ordinal) ||
+             c.AfterSnippet.Contains("ThrowIfNull(path)", StringComparison.Ordinal)));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task AddNullChecks_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", IneligibleFileC),
+            ("FileC2.cs", IneligibleFileC.Replace("FileC", "FileC2", StringComparison.Ordinal)));
+        var operation = new AddNullChecksOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]);
+
+        var result = await operation.ExecuteAsync(new AddNullChecksParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task AddNullChecks_AllFilesTrue_SkipsAlreadyCheckedNoBodyAndExpressionBodied()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Mixed.cs", MixedEligibleAndSkipped));
+        var operation = new AddNullChecksOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddNullChecksParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Mixed.cs"]));
+        Assert.Contains("ThrowIfNull(name)", GetMethodBody(updated, "Eligible"), StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(GetMethodBody(updated, "AlreadyThrow"), "ThrowIfNull(name)"));
+        Assert.DoesNotContain("ThrowIfNull(extra)", GetMethodBody(updated, "AlreadyGuard"), StringComparison.Ordinal);
+        Assert.Contains("if (extra is null)", GetMethodBody(updated, "AlreadyGuard"), StringComparison.Ordinal);
+        Assert.DoesNotContain("ThrowIfNull", GetMethodBody(updated, "ValueOnly"), StringComparison.Ordinal);
+        Assert.Contains("=>", GetMethodDeclaration(updated, "ExpressionBodied"), StringComparison.Ordinal);
+        Assert.DoesNotContain("ThrowIfNull", GetMethodDeclaration(updated, "ExpressionBodied"), StringComparison.Ordinal);
+        Assert.DoesNotContain("ThrowIfNull", GetMethodDeclaration(updated, "NoBody"), StringComparison.Ordinal);
+        var partial = GetMethodBody(updated, "Partial");
+        Assert.Equal(1, CountOccurrences(partial, "ThrowIfNull(name)"));
+        Assert.Contains("ThrowIfNull(extra)", partial, StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task AddNullChecks_AllFilesTrue_StyleGuard_UsesGuardClauses()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA));
+        var operation = new AddNullChecksOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddNullChecksParams
+        {
+            AllFiles = true,
+            Style = "guard"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains("if (name is null)", updated, StringComparison.Ordinal);
+        Assert.Contains("if (extra is null)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("ThrowIfNull", updated, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Add null checks to method", AddNullChecksOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Add null checks to 2 methods", AddNullChecksOperation.BuildAllFilesDescription(2));
+    }
+
+    [Fact]
+    public void HasExistingNullCheck_DetectsThrowIfNullAndGuard()
+    {
+        var throwTree = CSharpSyntaxTree.ParseText("""
+            class C
+            {
+                void M(string name)
+                {
+                    ArgumentNullException.ThrowIfNull(name);
+                }
+            }
+            """);
+        var throwBody = throwTree.GetRoot().DescendantNodes().OfType<BlockSyntax>().First();
+        Assert.True(RoslynMcp.Core.Refactoring.Utilities.NullCheckGenerator.HasExistingNullCheck(throwBody, "name"));
+        Assert.False(RoslynMcp.Core.Refactoring.Utilities.NullCheckGenerator.HasExistingNullCheck(throwBody, "other"));
+
+        var guardTree = CSharpSyntaxTree.ParseText("""
+            class C
+            {
+                void M(string extra)
+                {
+                    if (extra is null) throw new ArgumentNullException(nameof(extra));
+                }
+            }
+            """);
+        var guardBody = guardTree.GetRoot().DescendantNodes().OfType<BlockSyntax>().First();
+        Assert.True(RoslynMcp.Core.Refactoring.Utilities.NullCheckGenerator.HasExistingNullCheck(guardBody, "extra"));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static IReadOnlyList<MethodDeclarationSyntax> GetMethods(string source, string name) =>
@@ -572,6 +1042,42 @@ public class AddNullChecksOperationTests
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace("\r", "\n", StringComparison.Ordinal);
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
+    private static int CountOccurrences(string text, string snippet)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(snippet, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += snippet.Length;
+        }
+
+        return count;
+    }
+
+    private static string GetMethodBody(string source, string methodName)
+    {
+        var method = GetMethodDeclaration(source, methodName);
+        var start = method.IndexOf('{');
+        if (start < 0)
+            return method;
+        var end = method.LastIndexOf('}');
+        return method[start..(end + 1)];
+    }
+
+    private static string GetMethodDeclaration(string source, string methodName)
+    {
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var method = tree.GetRoot()
+            .DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.Text == methodName);
+        return method.ToFullString();
+    }
 
     private static int FindLine(string source, string snippet)
     {
@@ -608,9 +1114,13 @@ public class AddNullChecksOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Worker.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Worker.cs") =>
+            CreateWithFilesAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -618,33 +1128,47 @@ public class AddNullChecksOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = sourcePaths.Values.First(),
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }
