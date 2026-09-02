@@ -977,9 +977,10 @@ public class AddNullChecksOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
-        Assert.Contains("if (name is null)", updated, StringComparison.Ordinal);
-        Assert.Contains("if (extra is null)", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("ThrowIfNull", updated, StringComparison.Ordinal);
+        Assert.Contains("ArgumentNullException", updated, StringComparison.Ordinal);
+        Assert.Contains("nameof(name)", updated, StringComparison.Ordinal);
+        Assert.Contains("nameof(extra)", updated, StringComparison.Ordinal);
     }
 
     [Fact]
