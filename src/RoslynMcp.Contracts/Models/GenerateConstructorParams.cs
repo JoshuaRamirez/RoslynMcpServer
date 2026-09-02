@@ -7,20 +7,32 @@ public sealed class GenerateConstructorParams
 {
     /// <summary>
     /// Absolute path to the source file.
+    /// Required when <see cref="AllFiles"/> is false.
+    /// When <see cref="AllFiles"/> is true, optional and limits the walk
+    /// to that one file when set.
     /// </summary>
-    public required string SourceFile { get; init; }
+    public string? SourceFile { get; init; }
 
     /// <summary>
-    /// Name of the type to add constructor to.
+    /// When true, process every eligible type in every C# document
+    /// (or the optional single <see cref="SourceFile"/>).
+    /// When true, cannot be combined with <see cref="TypeName"/>,
+    /// <see cref="Members"/>, <see cref="Line"/>, or <see cref="Column"/>.
     /// </summary>
-    public required string TypeName { get; init; }
+    public bool AllFiles { get; init; }
+
+    /// <summary>
+    /// Name of the type to add constructor to. Single-site only.
+    /// Required when <see cref="AllFiles"/> is false.
+    /// </summary>
+    public string? TypeName { get; init; }
 
     /// <summary>
     /// 1-based line number for disambiguation when several types share
     /// <see cref="TypeName"/>. When set, selects the type whose identifier
     /// or declaration span covers that line (identifier preferred, then
     /// smallest containing type). Omitted keeps today's typeName
-    /// <c>FirstOrDefault</c> pick.
+    /// <c>FirstOrDefault</c> pick. Single-site only.
     /// </summary>
     public int? Line { get; init; }
 
@@ -30,6 +42,7 @@ public sealed class GenerateConstructorParams
     /// column (identifier preferred, then smallest containing type).
     /// Omitted keeps today's typeName + optional line pick. Column without
     /// line keeps today's first-match after the typeName filter.
+    /// Single-site only.
     /// </summary>
     public int? Column { get; init; }
 
@@ -40,6 +53,7 @@ public sealed class GenerateConstructorParams
     /// resolution also consider accessible inherited members.
     /// When non-empty, listed names are resolved against fields and settable
     /// properties even if <see cref="IncludeProperties"/> is false.
+    /// Single-site only; cannot be combined with <see cref="AllFiles"/>.
     /// </summary>
     public IReadOnlyList<string>? Members { get; init; }
 
@@ -47,6 +61,7 @@ public sealed class GenerateConstructorParams
     /// When true, include settable instance properties as constructor parameters.
     /// When false, collect instance fields only unless <see cref="Members"/> names a property.
     /// Default: true (today's field+settable-property collection).
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool IncludeProperties { get; init; } = true;
 
@@ -58,11 +73,13 @@ public sealed class GenerateConstructorParams
     /// protected-internal; internal when same assembly). Inherited readonly
     /// fields are skipped because a derived constructor cannot assign them.
     /// Default: false (this-type-only collection).
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool IncludeInheritedMembers { get; init; }
 
     /// <summary>
     /// Add null checks for reference type parameters. Default: false.
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool AddNullChecks { get; init; }
 
@@ -74,6 +91,7 @@ public sealed class GenerateConstructorParams
     /// parameter ambiguity without an exact match still fails with
     /// <c>ConstructorExists</c>; this flag does not guess which overload to
     /// replace. Default: false (fail if an exact-signature constructor exists).
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool ReplaceExisting { get; init; }
 
@@ -86,6 +104,7 @@ public sealed class GenerateConstructorParams
     /// constructor, the new constructor uses this visibility rather than
     /// copying the old constructor's accessibility. Structs and record
     /// structs reject the three protected forms (CS0666).
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public string? Visibility { get; init; }
 
@@ -106,6 +125,7 @@ public sealed class GenerateConstructorParams
     /// The copy-constructor signature for
     /// <c>ConstructorExists</c> / <see cref="ReplaceExisting"/> is exactly
     /// one by-value parameter of the target type.
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool CopyConstructor { get; init; }
 
@@ -122,6 +142,7 @@ public sealed class GenerateConstructorParams
     /// <c>: base(...)</c> is emitted and generation still succeeds.
     /// When true without <see cref="CopyConstructor"/>, the request is
     /// rejected. Default: false (today's class copy-constructor shape).
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool ClassBaseCopy { get; init; }
 
@@ -143,11 +164,13 @@ public sealed class GenerateConstructorParams
     /// Ordinary-class matching still requires a class (not record) base.
     /// When true with <see cref="CopyConstructor"/>, the request is
     /// rejected. Default: false (today's non-copy shape).
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool CallBase { get; init; }
 
     /// <summary>
     /// Return computed changes without applying. Default: false.
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool Preview { get; init; }
 }
