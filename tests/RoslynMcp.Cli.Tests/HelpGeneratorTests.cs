@@ -537,6 +537,9 @@ public class HelpGeneratorTests
         var tool = registry.GetTool("generate-tostring")!;
         var help = HelpGenerator.GenerateToolHelp(tool);
 
+        Assert.Contains("generate-tostring", help);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("--include-inherited-members", help);
         Assert.Contains("--include-properties", help);
         Assert.Contains("--format", help);
@@ -591,20 +594,22 @@ public class HelpGeneratorTests
         var tool = registry.GetTool("generate-tostring")!;
         var help = HelpGenerator.GenerateToolHelp(tool);
 
-        var requiredIdx = help.IndexOf("REQUIRED:");
-        var optionalIdx = help.IndexOf("OPTIONAL:");
-        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
-        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
 
-        var requiredSection = help[requiredIdx..optionalIdx];
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
-        Assert.Contains("--type-name", requiredSection);
-        Assert.DoesNotContain("--include-properties", requiredSection);
-        Assert.DoesNotContain("--call-super", requiredSection);
-        Assert.DoesNotContain("--line", requiredSection);
-        Assert.DoesNotContain("--column", requiredSection);
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--type-name", optionalSection);
+        Assert.DoesNotContain("--include-properties", help[..optionalIdx]);
+        Assert.DoesNotContain("--call-super", help[..optionalIdx]);
+        Assert.DoesNotContain("--line", help[..optionalIdx]);
+        Assert.DoesNotContain("--column", help[..optionalIdx]);
 
         Assert.Contains("--include-properties", optionalSection);
         Assert.Contains("--call-super", optionalSection);
