@@ -1676,6 +1676,106 @@ public class EncapsulateFieldOperationTests
         Assert.Equal("Age", EncapsulateFieldOperation.DerivePropertyName("_age"));
     }
 
+    private const string CallerWithTwoRefs = """
+        namespace TestApp;
+
+        public class Caller
+        {
+            public static string Read(FileA person) => person._name + person._name;
+        }
+        """;
+
+    private const string CollisionWithExistingField = """
+        namespace TestApp;
+
+        public class CollisionField
+        {
+            public string _name;
+            public string Name;
+            public int _age;
+        }
+        """;
+
+    private const string PartialWithField = """
+        namespace TestApp;
+
+        public partial class Split
+        {
+            public string _name;
+            public int _age;
+        }
+        """;
+
+    private const string PartialWithProperty = """
+        namespace TestApp;
+
+        public partial class Split
+        {
+            public string Name { get; set; } = "";
+        }
+        """;
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_UpdatesMultipleExternalRefsInOneFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("Caller.cs", CallerWithTwoRefs));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var caller = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Caller.cs"]));
+        Assert.Contains("person.Name + person.Name", caller, StringComparison.Ordinal);
+        Assert.DoesNotContain("person._name", caller, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_SkipsWhenDerivedNameCollidesWithExistingMember()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Collision.cs", CollisionWithExistingField));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Collision.cs"]));
+        Assert.Contains("public string _name;", updated, StringComparison.Ordinal);
+        Assert.Contains("public string Name;", updated, StringComparison.Ordinal);
+        Assert.Contains("public int Age", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("public string Name {", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_SkipsWhenDerivedNameExistsOnPartial()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("SplitField.cs", PartialWithField),
+            ("SplitProp.cs", PartialWithProperty));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var fieldFile = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["SplitField.cs"]));
+        var propFile = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["SplitProp.cs"]));
+        Assert.Contains("public string _name;", fieldFile, StringComparison.Ordinal);
+        Assert.Contains("public int Age", fieldFile, StringComparison.Ordinal);
+        Assert.Contains("public string Name { get; set; }", propFile, StringComparison.Ordinal);
+        Assert.DoesNotContain("public string Name {", fieldFile, StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region Helpers

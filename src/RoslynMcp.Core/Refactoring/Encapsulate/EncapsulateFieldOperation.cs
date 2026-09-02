@@ -443,11 +443,30 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         if (containingType == null)
             return null;
 
-        var existingProperty = containingType.Members
-            .OfType<PropertyDeclarationSyntax>()
-            .FirstOrDefault(p => p.Identifier.Text == propertyName);
-        if (existingProperty != null)
+        // Skip when the derived name is already a member of this type
+        // (property, field, method, …), including other partial
+        // declarations. Do not treat the field being encapsulated as a
+        // collision with itself (e.g. field `Name` renamed to `_name`).
+        var containingTypeSymbol = fieldSymbol.ContainingType;
+        if (containingTypeSymbol != null &&
+            containingTypeSymbol.GetMembers(propertyName)
+                .Any(member => !SymbolEqualityComparer.Default.Equals(member, fieldSymbol)))
+        {
             return null;
+        }
+
+        var newFieldName = fieldName;
+        var fieldRenamed = false;
+        if (propertyName.Equals(fieldName, StringComparison.OrdinalIgnoreCase))
+        {
+            newFieldName = "_" + char.ToLowerInvariant(fieldName[0]) + fieldName.Substring(1);
+            fieldRenamed = true;
+            if (containingTypeSymbol != null &&
+                containingTypeSymbol.GetMembers(newFieldName).Any())
+            {
+                return null;
+            }
+        }
 
         var property = SyntaxGenerationHelper.CreatePropertyFromField(
             fieldSymbol,
@@ -466,14 +485,6 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             .SelectMany(r => r.Locations)
             .Where(loc => !IsInsideContainingType(loc, fieldSymbol.ContainingType))
             .ToList();
-
-        var newFieldName = fieldName;
-        var fieldRenamed = false;
-        if (propertyName.Equals(fieldName, StringComparison.OrdinalIgnoreCase))
-        {
-            newFieldName = "_" + char.ToLowerInvariant(fieldName[0]) + fieldName.Substring(1);
-            fieldRenamed = true;
-        }
 
         return await ApplyEncapsulateToSolutionAsync(
             document,
@@ -608,26 +619,41 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
         if (referenceReplacement != null)
         {
-            foreach (var reference in externalReferences)
+            // Group by document and rewrite from the pre-replacement root
+            // so later SourceSpans stay valid after the first identifier
+            // in that file is replaced.
+            foreach (var group in externalReferences
+                .Where(reference => reference.Document.Id != document.Id)
+                .GroupBy(reference => reference.Document.Id))
             {
-                if (reference.Document.Id == document.Id)
-                    continue;
-
-                var refDoc = newSolution.GetDocument(reference.Document.Id);
+                var refDoc = newSolution.GetDocument(group.Key);
                 if (refDoc == null) continue;
 
                 var refRoot = await refDoc.GetSyntaxRootAsync(cancellationToken);
                 if (refRoot == null) continue;
 
-                var refNode = refRoot.FindNode(reference.Location.SourceSpan);
-                if (refNode is IdentifierNameSyntax identifier &&
-                    identifier.Identifier.Text == fieldName)
+                var identifiers = new List<IdentifierNameSyntax>();
+                var seen = new HashSet<IdentifierNameSyntax>();
+                foreach (var reference in group)
                 {
-                    var newIdentifier = SyntaxFactory.IdentifierName(referenceReplacement)
-                        .WithTriviaFrom(identifier);
-                    var newRefRoot = refRoot.ReplaceNode(identifier, newIdentifier);
-                    newSolution = refDoc.WithSyntaxRoot(newRefRoot).Project.Solution;
+                    var refNode = refRoot.FindNode(
+                        reference.Location.SourceSpan, getInnermostNodeForTie: true);
+                    if (refNode is IdentifierNameSyntax identifier &&
+                        identifier.Identifier.Text == fieldName &&
+                        seen.Add(identifier))
+                    {
+                        identifiers.Add(identifier);
+                    }
                 }
+
+                if (identifiers.Count == 0)
+                    continue;
+
+                var newRefRoot = refRoot.ReplaceNodes(
+                    identifiers,
+                    (original, _) => SyntaxFactory.IdentifierName(referenceReplacement)
+                        .WithTriviaFrom(original));
+                newSolution = refDoc.WithSyntaxRoot(newRefRoot).Project.Solution;
             }
         }
 
