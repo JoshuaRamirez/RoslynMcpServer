@@ -32,13 +32,13 @@ public sealed class GenerateConstructorTool : IToolHandler
     public string Name => "generate_constructor";
 
     /// <inheritdoc />
-    public string Description => "Generate a constructor that initializes fields and/or properties of a type. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter.";
+    public string Description => "Generate a constructor that initializes fields and/or properties of a type. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. allFiles: true walks every C# file and generates constructors for every eligible type (sourceFile optional when true; cannot be combined with typeName, members, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "typeName" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -49,30 +49,36 @@ public sealed class GenerateConstructorTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the type"
+                description = "Absolute path to the source file containing the type. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with typeName, members, line, or column.",
+                @default = false
             },
             typeName = new
             {
                 type = "string",
-                description = "Name of the type to add constructor to"
+                description = "Name of the type to add constructor to. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter.",
+                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             members = new
             {
                 type = "array",
                 items = new { type = "string" },
-                description = "Names of fields/properties to initialize. If not specified, uses instance fields and (when includeProperties is true) settable properties. When includeInheritedMembers is true, listed names also resolve against accessible inherited members. Listed names still resolve against fields and settable properties even if includeProperties is false."
+                description = "Names of fields/properties to initialize. If not specified, uses instance fields and (when includeProperties is true) settable properties. When includeInheritedMembers is true, listed names also resolve against accessible inherited members. Listed names still resolve against fields and settable properties even if includeProperties is false. Single-site only; cannot be combined with allFiles."
             },
             includeProperties = new
             {
@@ -158,6 +164,7 @@ public sealed class GenerateConstructorTool : IToolHandler
             var @params = new GenerateConstructorParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 TypeName = args.TypeName,
                 Line = args.Line,
                 Column = args.Column,
@@ -198,8 +205,9 @@ public sealed class GenerateConstructorTool : IToolHandler
     private sealed class GenerateConstructorArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string TypeName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? TypeName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
         public List<string>? Members { get; init; }

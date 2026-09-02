@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
+using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
@@ -40,6 +41,9 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// Structs and record structs reject <c>protected</c> /
 /// <c>protected internal</c> / <c>private protected</c> (CS0666) before any
 /// generate, replace, or preview write. Primary constructors are not replaced.
+/// Optional <c>allFiles</c> walks every C# document (or the optional single
+/// <c>sourceFile</c>) and generates a constructor for every eligible type,
+/// skipping ineligible types rather than throwing.
 /// </summary>
 public sealed class GenerateConstructorOperation : RefactoringOperationBase<GenerateConstructorParams>
 {
@@ -80,16 +84,34 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     /// </summary>
     internal static void Validate(GenerateConstructorParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.TypeName) ||
+                @params.Members != null ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with typeName, members, line, or column.");
+            }
+
+            ValidateConstructorShapeFlags(@params);
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (string.IsNullOrWhiteSpace(@params.TypeName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "typeName is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
+        var sourceFile = @params.SourceFile!;
+
+        if (!PathResolver.IsAbsolutePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
 
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
@@ -98,6 +120,18 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
+        ValidateConstructorShapeFlags(@params);
+
+        if (!File.Exists(sourceFile))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {sourceFile}");
+    }
+
+    /// <summary>
+    /// Visibility and constructor-shape flag combos stay valid with
+    /// <c>allFiles</c> and keep today's reject-before-write rules.
+    /// </summary>
+    private static void ValidateConstructorShapeFlags(GenerateConstructorParams @params)
+    {
         if (!string.IsNullOrWhiteSpace(@params.Visibility) && !ValidVisibilities.Contains(@params.Visibility.Trim()))
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
 
@@ -114,9 +148,6 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                 ErrorCodes.CallBaseConflictsWithCopyConstructor,
                 "callBase cannot be combined with copyConstructor. Use classBaseCopy for copy-mode class chaining.");
         }
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
 
     /// <inheritdoc />
@@ -125,7 +156,10 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         GenerateConstructorParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -135,7 +169,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         }
 
         // Find the type declaration (optional line/column disambiguates same-named types)
-        var typeDeclaration = FindTypeDeclaration(root, @params.TypeName, @params.Line, @params.Column);
+        var typeDeclaration = FindTypeDeclaration(root, @params.TypeName!, @params.Line, @params.Column);
 
         if (typeDeclaration == null)
         {
@@ -358,12 +392,436 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.TypeName,
-                FullyQualifiedName = @params.TypeName,
+                Name = @params.TypeName!,
+                FullyQualifiedName = @params.TypeName!,
                 Kind = Contracts.Enums.SymbolKind.Class
             },
             0,
             0);
+    }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
+    /// / <c>InlineConstantOperation.ExecuteAllFilesAsync</c> /
+    /// <c>MakeStaticOperation.ExecuteAllFilesAsync</c> /
+    /// <c>MakeNonStaticOperation.ExecuteAllFilesAsync</c> /
+    /// <c>EncapsulateFieldOperation.ExecuteAllFilesAsync</c>) and generates
+    /// a constructor for every eligible <see cref="TypeDeclarationSyntax"/>
+    /// (class / struct / record / record struct, including nested — same
+    /// node kind as <see cref="FindTypeDeclaration"/>). Optional
+    /// <c>sourceFile</c> limits the walk to that one file. Interface,
+    /// static, no-member, <c>ConstructorExists</c>, uneditable, CS0666,
+    /// CS8878, primary-constructor exact match, and otherwise ineligible
+    /// types are skipped rather than failing the walk. When a later
+    /// rewrite conflicts with an earlier one, the later claim is skipped.
+    /// When every type is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        GenerateConstructorParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var generatedCountByDoc = new Dictionary<DocumentId, int>();
+        var processedTypes = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!IsDocumentEditable(document, Context.Workspace))
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(document.Id);
+                if (currentDocument == null || !IsDocumentEditable(currentDocument, Context.Workspace))
+                    break;
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var typeDeclaration in CollectTypeDeclarations(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var typeSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
+                    if (typeSymbol == null)
+                        continue;
+
+                    var typeKey = TypeWalkKey(currentDocument.Project.Id, typeSymbol);
+                    if (!processedTypes.Add(typeKey))
+                        continue;
+
+                    try
+                    {
+                        updated = await TryGenerateOneAsync(
+                            currentDocument,
+                            typeDeclaration,
+                            typeSymbol,
+                            @params,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        // Skip interface / static / no-members /
+                        // ConstructorExists / uneditable / CS0666 /
+                        // CS8878 / primary-constructor / callBase
+                        // conflicts rather than failing the walk.
+                        updated = null;
+                    }
+
+                    if (updated != null)
+                        break;
+                }
+
+                if (updated == null)
+                    break;
+
+                currentSolution = updated;
+                generatedCountByDoc[document.Id] =
+                    generatedCountByDoc.GetValueOrDefault(document.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var generatedCount = generatedCountByDoc.GetValueOrDefault(document.Id);
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = generatedCount > 0
+                        ? BuildAllFilesDescription(generatedCount)
+                        : "Update constructors generated in other files",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// De-dupes types within one project across rematches and partials.
+    /// Includes <paramref name="projectId"/> so two projects that both
+    /// declare <c>TestApp.Widget</c> are not collapsed onto one walk key.
+    /// </summary>
+    internal static string TypeWalkKey(ProjectId projectId, INamedTypeSymbol typeSymbol) =>
+        TypeWalkKey(projectId, typeSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
+
+    /// <summary>
+    /// Same key shape as <see cref="TypeWalkKey(ProjectId, INamedTypeSymbol)"/>
+    /// for tests that do not have a compilation symbol.
+    /// </summary>
+    internal static string TypeWalkKey(ProjectId projectId, string fullyQualifiedTypeName) =>
+        $"{projectId.Id:D}\0{fullyQualifiedTypeName}";
+
+    /// <summary>
+    /// Preview description for a file that generated
+    /// <paramref name="generatedCount"/> constructors.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int generatedCount) =>
+        generatedCount == 1
+            ? "Generate constructor"
+            : $"Generate {generatedCount} constructors";
+
+    /// <summary>
+    /// Collects every <see cref="TypeDeclarationSyntax"/> in
+    /// <paramref name="root"/> (class / struct / interface / record /
+    /// record struct, including nested — same node kind as
+    /// <see cref="FindTypeDeclaration"/>). Deterministic
+    /// <c>SpanStart</c> then span-length order.
+    /// </summary>
+    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTypeDeclarations(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .OrderBy(type => type.SpanStart)
+            .ThenBy(type => type.Span.Length)
+            .ToList();
+
+    private async Task<Solution?> TryGenerateOneAsync(
+        Document document,
+        TypeDeclarationSyntax typeDeclaration,
+        INamedTypeSymbol typeSymbol,
+        GenerateConstructorParams @params,
+        CancellationToken cancellationToken)
+    {
+        if (!IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        // Interfaces have no instance fields to initialize; skip rather
+        // than inventing a constructor (CS0526).
+        if (typeSymbol.TypeKind == TypeKind.Interface || typeDeclaration is InterfaceDeclarationSyntax)
+            return null;
+
+        if (typeSymbol.IsStatic)
+            return null;
+
+        var visibility = ResolveVisibility(@params.Visibility);
+        if (typeSymbol.TypeKind == TypeKind.Struct && ProtectedVisibilities.Contains(visibility))
+            return null;
+
+        if (@params.CopyConstructor &&
+            typeSymbol.IsRecord &&
+            !typeSymbol.IsSealed &&
+            !UnsealedRecordCopyVisibilities.Contains(visibility))
+        {
+            return null;
+        }
+
+        List<ISymbol> members;
+        try
+        {
+            members = GetMembersToInitialize(
+                typeSymbol,
+                requestedMembers: null,
+                @params.IncludeProperties,
+                @params.IncludeInheritedMembers,
+                @params.CopyConstructor);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+
+        if (members.Count == 0)
+            return null;
+
+        if (@params.CallBase && !@params.CopyConstructor && IsEligibleForCallBase(typeSymbol))
+            members = OrderMembersForCallBase(members, typeSymbol);
+
+        var parameterTypes = @params.CopyConstructor
+            ? new List<ITypeSymbol> { typeSymbol }
+            : members.Select(GetMemberType).ToList();
+        var newParamCount = parameterTypes.Count;
+        var copyParameterName = @params.CopyConstructor ? ChooseCopyParameterName(typeSymbol) : null;
+        IMethodSymbol? exactMatch = null;
+
+        foreach (var ctor in typeSymbol.Constructors.Where(c => !c.IsImplicitlyDeclared))
+        {
+            if (HasExactSignature(ctor, parameterTypes))
+            {
+                if (@params.ReplaceExisting && !IsPrimaryConstructor(ctor))
+                {
+                    exactMatch = ctor;
+                    continue;
+                }
+
+                return null;
+            }
+
+            var requiredParams = ctor.Parameters.TakeWhile(p => !p.IsOptional).ToList();
+
+            if (requiredParams.Count <= newParamCount && ctor.Parameters.Length >= newParamCount)
+            {
+                if (ParametersMatchGeneratedSignature(ctor.Parameters.Take(newParamCount), parameterTypes))
+                    return null;
+            }
+
+            if (requiredParams.Count == newParamCount &&
+                ParametersMatchGeneratedSignature(requiredParams, parameterTypes))
+            {
+                return null;
+            }
+        }
+
+        var addClassBaseCopy = @params.CopyConstructor
+            && @params.ClassBaseCopy
+            && TryGetClassBaseCopyInitializer(typeSymbol);
+
+        CallBaseResolution callBase;
+        try
+        {
+            callBase = @params.CallBase && !@params.CopyConstructor
+                ? ResolveCallBaseInitializer(typeSymbol, members)
+                : CallBaseResolution.None;
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+
+        var bodyMembers = addClassBaseCopy
+            ? members.Where(m => SymbolEqualityComparer.Default.Equals(m.ContainingType, typeSymbol)).ToList()
+            : callBase.PassedThroughCount > 0
+                ? members.Skip(callBase.PassedThroughCount).ToList()
+                : members;
+
+        var constructor = @params.CopyConstructor
+            ? GenerateCopyConstructor(
+                bodyMembers,
+                typeDeclaration,
+                typeSymbol,
+                copyParameterName!,
+                @params.AddNullChecks && typeSymbol.IsReferenceType,
+                visibility,
+                addClassBaseCopy)
+            : GenerateConstructor(members, bodyMembers, typeDeclaration, @params.AddNullChecks, visibility, callBase.Initializer);
+
+        try
+        {
+            return await ApplyConstructorToSolutionAsync(
+                document.Project.Solution,
+                document,
+                typeDeclaration,
+                typeSymbol,
+                constructor,
+                exactMatch,
+                typeSymbol.Name,
+                cancellationToken);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<Solution> ApplyConstructorToSolutionAsync(
+        Solution solution,
+        Document document,
+        TypeDeclarationSyntax typeDeclaration,
+        INamedTypeSymbol typeSymbol,
+        ConstructorDeclarationSyntax constructor,
+        IMethodSymbol? exactMatch,
+        string typeName,
+        CancellationToken cancellationToken)
+    {
+        var root = await document.GetSyntaxRootAsync(cancellationToken)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+        SyntaxAnnotation? targetTypeAnnotation = null;
+        if (exactMatch != null)
+        {
+            targetTypeAnnotation = new SyntaxAnnotation("generate-constructor-target-type");
+            root = root.ReplaceNode(
+                typeDeclaration,
+                typeDeclaration.WithAdditionalAnnotations(targetTypeAnnotation));
+            document = document.WithSyntaxRoot(root);
+            solution = document.Project.Solution;
+
+            solution = await RemoveExistingConstructorAcrossPartialsAsync(
+                solution, typeSymbol, exactMatch, cancellationToken);
+            document = solution.GetDocument(document.Id)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate the document for type '{typeName}'.");
+            root = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+            typeDeclaration = root.GetAnnotatedNodes(targetTypeAnnotation)
+                .OfType<TypeDeclarationSyntax>()
+                .FirstOrDefault()
+                ?? throw new RefactoringException(
+                    ErrorCodes.TypeNotFound,
+                    $"Type '{typeName}' not found in file.");
+        }
+
+        var newTypeDeclaration = InsertConstructor(typeDeclaration, constructor);
+        if (targetTypeAnnotation != null)
+            newTypeDeclaration = (TypeDeclarationSyntax)newTypeDeclaration.WithoutAnnotations(targetTypeAnnotation);
+        var newRoot = root.ReplaceNode(typeDeclaration, newTypeDeclaration);
+        return document.WithSyntaxRoot(newRoot).Project.Solution;
+    }
+
+    private static List<Document> FilterDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        string wanted;
+        try
+        {
+            wanted = PathResolver.NormalizePath(sourceFile);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            wanted = sourceFile;
+        }
+
+        return documents
+            .Where(d => string.Equals(
+                PathResolver.NormalizePath(d.FilePath!),
+                wanted,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Returns whether <paramref name="document"/> can receive source edits
+    /// (skip not throw — same checks as sibling AllFiles operations).
+    /// </summary>
+    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
+    {
+        if (document is SourceGeneratedDocument)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
+            return false;
+
+        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
     }
 
     private static List<ISymbol> GetMembersToInitialize(
@@ -1615,7 +2073,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         {
             new()
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = Contracts.Enums.ChangeKind.Modify,
                 Description = $"{verb} {mode}{inherited} for {@params.TypeName} initializing: {memberNames} ({visibility}){classBaseCopyNote}{callBaseNote}",
                 BeforeSnippet = replacing
@@ -1627,7 +2085,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         if (exactMatch != null)
         {
-            var sourcePath = PathResolver.NormalizePath(@params.SourceFile);
+            var sourcePath = PathResolver.NormalizePath(@params.SourceFile!);
             foreach (var reference in exactMatch.DeclaringSyntaxReferences)
             {
                 var syntax = await reference.GetSyntaxAsync(cancellationToken);

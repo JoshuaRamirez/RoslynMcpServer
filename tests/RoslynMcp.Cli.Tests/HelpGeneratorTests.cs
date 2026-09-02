@@ -619,26 +619,19 @@ public class HelpGeneratorTests
         var tool = registry.GetTool("generate-constructor")!;
         var help = HelpGenerator.GenerateToolHelp(tool);
 
-        var requiredIdx = help.IndexOf("REQUIRED:");
-        var optionalIdx = help.IndexOf("OPTIONAL:");
-        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
-        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        Assert.Contains("generate-constructor", help);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
 
-        var requiredSection = help[requiredIdx..optionalIdx];
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
-        Assert.Contains("--type-name", requiredSection);
-        Assert.DoesNotContain("--line", requiredSection);
-        Assert.DoesNotContain("--column", requiredSection);
-        Assert.DoesNotContain("--include-properties", requiredSection);
-        Assert.DoesNotContain("--include-inherited-members", requiredSection);
-        Assert.DoesNotContain("--replace-existing", requiredSection);
-        Assert.DoesNotContain("--visibility", requiredSection);
-        Assert.DoesNotContain("--copy-constructor", requiredSection);
-        Assert.DoesNotContain("--class-base-copy", requiredSection);
-        Assert.DoesNotContain("--call-base", requiredSection);
-
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--type-name", optionalSection);
         Assert.Contains("--line", optionalSection);
         Assert.Contains("--column", optionalSection);
         Assert.Contains("--include-properties", optionalSection);

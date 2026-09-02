@@ -353,4 +353,150 @@ public class GenerateConstructorParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void AllFiles_DefaultsToFalse()
+    {
+        var @params = new GenerateConstructorParams
+        {
+            SourceFile = AbsoluteTestPath(),
+            TypeName = "MyClass"
+        };
+
+        Assert.False(@params.AllFiles);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                AllFiles = false,
+                TypeName = "MyClass"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrTypeName_DoesNotThrow()
+    {
+        GenerateConstructorOperation.Validate(new GenerateConstructorParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                AllFiles = true,
+                TypeName = "MyClass"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                AllFiles = true,
+                Members = new[] { "Name" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithEmptyMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                AllFiles = true,
+                Members = Array.Empty<string>()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_ClassBaseCopyWithoutCopyConstructor_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                AllFiles = true,
+                ClassBaseCopy = true,
+                CopyConstructor = false
+            }));
+
+        Assert.Equal(ErrorCodes.ClassBaseCopyRequiresCopyConstructor, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_InvalidVisibility_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateConstructorOperation.Validate(new GenerateConstructorParams
+            {
+                AllFiles = true,
+                Visibility = "secret"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+    }
+
 }
