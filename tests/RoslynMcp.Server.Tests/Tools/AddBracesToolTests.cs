@@ -87,6 +87,21 @@ public class AddBracesToolTests
         Assert.True(properties.TryGetProperty("typeName", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
         Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+
+        var column = properties.GetProperty("column");
+        Assert.Equal("integer", column.GetProperty("type").GetString());
+        Assert.Contains("covers that column", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("exclusive-end", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("SpanStart", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("required-line", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsExclusiveEndColumn()
+    {
+        Assert.Contains("covers that column", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("exclusive-end", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("SpanStart", _tool.Description, StringComparison.Ordinal);
     }
 
     [Fact]

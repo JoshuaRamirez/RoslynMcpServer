@@ -133,6 +133,22 @@ public class AddBracesOperationTests
             }));
 
         Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_StatementScope_ColumnWithoutLine_ThrowsInvalidLineNumber()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddBracesOperation.Validate(new AddBracesParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                Scope = "statement",
+                Column = 4
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1003,6 +1019,89 @@ public class AddBracesOperationTests
         await AssertCompilesAsync(workspace);
     }
 
+    [SkippableFact]
+    public async Task AddBraces_OmittedColumn_WrapsFirstStatementOnTheLine()
+    {
+        const string source = SameLineIfsSource;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddBracesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddBracesParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "if (a) if (b)")
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.StatementsModified);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var root = CSharpSyntaxTree.ParseText(updated).GetRoot();
+        var outerIf = root.DescendantNodes().OfType<IfStatementSyntax>()
+            .Single(statement => statement.Condition.ToString() == "a");
+        var innerIf = root.DescendantNodes().OfType<IfStatementSyntax>()
+            .Single(statement => statement.Condition.ToString() == "b");
+        Assert.IsType<BlockSyntax>(outerIf.Statement);
+        Assert.IsNotType<BlockSyntax>(innerIf.Statement);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task AddBraces_ExclusiveEndAtPreviousKeyword_ThrowsNoControlStatement()
+    {
+        const string source = SameLineIfsSource;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new AddBracesOperation(workspace.Context);
+        var line = FindLine(source, "if (a) if (b)");
+        var firstKeywordEndCol = FirstKeywordEndColumn(source);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddBracesParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                Column = firstKeywordEndCol
+            }));
+
+        Assert.Equal(ErrorCodes.NoControlStatement, ex.ErrorCode);
+        Assert.Equal("3155", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task AddBraces_Preview_ColumnSelectsInnerIf_DoesNotModifyFile()
+    {
+        const string source = SameLineIfsSource;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new AddBracesOperation(workspace.Context);
+        var line = FindLine(source, "if (a) if (b)");
+        var innerIfColumn = ColumnOf(source, "if (b)");
+
+        var result = await operation.ExecuteAsync(new AddBracesParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = innerIfColumn,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Equal(1, result.StatementsModified);
+        Assert.Equal("statement", result.Scope);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change =>
+            change.Description.Contains("Add braces", StringComparison.Ordinal) &&
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("{", StringComparison.Ordinal) &&
+            change.AfterSnippet.Contains("b", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     #endregion
 
     #region AllFiles
@@ -1170,6 +1269,118 @@ public class AddBracesOperationTests
 
     #endregion
 
+    #region Column Coverage
+
+    private const string SameLineIfsSource = """
+        namespace TestApp;
+
+        public class SameLine
+        {
+            public string Pick(bool a, bool b)
+            {
+                if (a) if (b) return "both"; else return "a-only"; else return "none";
+            }
+        }
+        """;
+
+    private const string IndentedIfSource = """
+        class C
+        {
+            void M(bool flag)
+            {
+                if (flag) return;
+            }
+        }
+        """;
+
+    [Fact]
+    public void FindControlTarget_OmittedColumn_PicksFirstKeywordBySpanStart()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineIfsSource).GetRoot();
+        var line = FindLine(SameLineIfsSource, "if (a) if (b)");
+
+        var found = AddBracesOperation.FindControlTarget(root, line, column: null);
+
+        Assert.NotNull(found);
+        Assert.Equal("if", found.Value.Keyword.ValueText);
+        var ownerIf = Assert.IsType<IfStatementSyntax>(found.Value.Owner);
+        Assert.Equal("a", ownerIf.Condition.ToString());
+    }
+
+    [Fact]
+    public void FindControlTarget_OmittedColumn_IndentedKeyword_DoesNotForceColumn1()
+    {
+        var root = CSharpSyntaxTree.ParseText(IndentedIfSource).GetRoot();
+        var line = FindLine(IndentedIfSource, "if (flag)");
+        var ifStmt = root.DescendantNodes().OfType<IfStatementSyntax>().Single();
+        var startCol = ifStmt.IfKeyword.GetLocation().GetLineSpan().StartLinePosition.Character + 1;
+        Assert.True(startCol > 1);
+
+        var found = AddBracesOperation.FindControlTarget(root, line, column: null);
+
+        Assert.NotNull(found);
+        var ownerIf = Assert.IsType<IfStatementSyntax>(found.Value.Owner);
+        Assert.Equal("flag", ownerIf.Condition.ToString());
+    }
+
+    [Fact]
+    public void FindControlTarget_ColumnSelectsInnerIfOnSameLine()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineIfsSource).GetRoot();
+        var line = FindLine(SameLineIfsSource, "if (a) if (b)");
+
+        var outer = AddBracesOperation.FindControlTarget(root, line, ColumnOf(SameLineIfsSource, "if (a)"));
+        var inner = AddBracesOperation.FindControlTarget(root, line, ColumnOf(SameLineIfsSource, "if (b)"));
+
+        Assert.NotNull(outer);
+        var outerIf = Assert.IsType<IfStatementSyntax>(outer.Value.Owner);
+        Assert.Equal("a", outerIf.Condition.ToString());
+        Assert.NotNull(inner);
+        var innerIf = Assert.IsType<IfStatementSyntax>(inner.Value.Owner);
+        Assert.Equal("b", innerIf.Condition.ToString());
+    }
+
+    [Fact]
+    public void FindControlTarget_AdjacentKeywords_ExclusiveEndDoesNotStealNext()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineIfsSource).GetRoot();
+        var line = FindLine(SameLineIfsSource, "if (a) if (b)");
+        var first = root.DescendantNodes().OfType<IfStatementSyntax>()
+            .First(statement => statement.Condition.ToString() == "a");
+        var firstKeywordEndCol = first.IfKeyword.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
+        var secondKeyword = ColumnOf(SameLineIfsSource, "if (b)");
+
+        var atExclusiveEnd = AddBracesOperation.FindControlTarget(root, line, firstKeywordEndCol);
+        var atSecond = AddBracesOperation.FindControlTarget(root, line, secondKeyword);
+
+        Assert.False(AddBracesOperation.SpanCoversColumn(
+            first.IfKeyword.GetLocation().GetLineSpan(), line, firstKeywordEndCol));
+        Assert.True(atExclusiveEnd == null
+            || ((IfStatementSyntax)atExclusiveEnd.Value.Owner).Condition.ToString() != "a");
+        Assert.NotNull(atSecond);
+        var secondIf = Assert.IsType<IfStatementSyntax>(atSecond.Value.Owner);
+        Assert.Equal("b", secondIf.Condition.ToString());
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineIfsSource);
+        var first = tree.GetRoot().DescendantNodes().OfType<IfStatementSyntax>()
+            .First(statement => statement.Condition.ToString() == "a");
+        var span = first.IfKeyword.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(AddBracesOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(AddBracesOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(AddBracesOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(AddBracesOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static void AssertIfBodyIsBlock(string updated, string condition)
@@ -1266,6 +1477,25 @@ public class AddBracesOperationTests
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index) + 1;
+        return index - lineStart + 1;
+    }
+
+    private static int FirstKeywordEndColumn(string source)
+    {
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var first = AddBracesOperation.CollectTargets(root)
+            .OrderBy(target => target.Keyword.SpanStart)
+            .First();
+        return first.Keyword.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
+    }
 
     private static int FindLine(string source, string snippet)
     {
