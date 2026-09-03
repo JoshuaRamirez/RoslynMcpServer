@@ -1515,6 +1515,8 @@ public class HelpGeneratorTests
         Assert.Contains("simplify-name", help);
         Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("covers that column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("exclusive-end", tool.Description, StringComparison.OrdinalIgnoreCase);
 
         Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
 
