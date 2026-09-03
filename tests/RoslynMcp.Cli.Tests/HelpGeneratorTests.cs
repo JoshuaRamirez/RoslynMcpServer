@@ -1065,6 +1065,40 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_RenameNamespace_ShowsColumn()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("rename-namespace")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("rename-namespace", help);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("smallest namespace", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("optional line pick", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("omitted-line path", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.Contains("--namespace-name", requiredSection);
+        Assert.Contains("--new-name", requiredSection);
+        Assert.DoesNotContain("--column", requiredSection);
+        Assert.DoesNotContain("--line", requiredSection);
+        Assert.DoesNotContain("--preview", requiredSection);
+
+        Assert.Contains("--line", optionalSection);
+        Assert.Contains("--column", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+        Assert.Contains("--update-folders", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ChangeReturnType_ShowsColumn()
     {
         var registry = ToolRegistry.BuildDefault();
