@@ -83,6 +83,24 @@ public class InlineMethodToolTests
         Assert.True(properties.TryGetProperty("callSiteLocation", out _));
         Assert.True(properties.TryGetProperty("removeMethod", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+        Assert.False(RequiredFieldsContains(doc, "column"));
+
+        var column = properties.GetProperty("column");
+        Assert.Equal("integer", column.GetProperty("type").GetString());
+        Assert.Contains("smallest method", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("covers that column", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("identifier start-line", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+    }
+
+    private static bool RequiredFieldsContains(JsonDocument doc, string name)
+    {
+        foreach (var item in doc.RootElement.GetProperty("required").EnumerateArray())
+        {
+            if (item.GetString() == name)
+                return true;
+        }
+
+        return false;
     }
 
     #endregion
