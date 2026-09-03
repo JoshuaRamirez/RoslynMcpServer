@@ -21,12 +21,18 @@ public sealed class RemoveBracesParams
     /// <summary>
     /// 1-based line of the control-statement keyword. Required when
     /// <see cref="Scope"/> is <c>statement</c>.
+    /// When <see cref="Column"/> is omitted, matching stays today's first
+    /// / leftmost keyword on the line by <c>SpanStart</c>.
     /// </summary>
     public int? Line { get; init; }
 
     /// <summary>
-    /// 1-based column on the control-statement keyword. Optional; used to
-    /// disambiguate when multiple control statements share a line.
+    /// 1-based column on the control-statement keyword. When set with
+    /// <see cref="Line"/>, selects the statement whose keyword span covers
+    /// that column (exclusive-end; today's shortest keyword / First among
+    /// covering). Omitted keeps today's first/leftmost-keyword-on-line-by-
+    /// <c>SpanStart</c> pick. Column without line keeps today's required-line
+    /// validation.
     /// </summary>
     public int? Column { get; init; }
 

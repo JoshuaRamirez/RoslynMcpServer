@@ -33,7 +33,7 @@ public sealed class RemoveBracesTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Remove braces from control statements (if, else, for, foreach, while, using) that have a single-statement braced body, preserving semantics. Process a single file or all files in the solution. scope is statement (default; unwrap the body at line/column; single-file only), file (every eligible single-statement braced control body in the file), or type (bodies inside typeName; single-file only). allFiles: true walks every C# file at file scope (omitted scope uses file) and cannot be combined with scope=statement or scope=type.";
+        "Remove braces from control statements (if, else, for, foreach, while, using) that have a single-statement braced body, preserving semantics. Process a single file or all files in the solution. scope is statement (default; unwrap the body at line/column; single-file only), file (every eligible single-statement braced control body in the file), or type (bodies inside typeName; single-file only). column (optional) picks the control statement whose keyword span covers that column when set with line (exclusive-end; shortest keyword / First among covering); omitted keeps today's first/leftmost-keyword-on-line-by-SpanStart pick; column without line keeps today's required-line validation. allFiles: true walks every C# file at file scope (omitted scope uses file) and cannot be combined with scope=statement or scope=type.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -61,13 +61,13 @@ public sealed class RemoveBracesTool : IToolHandler
             line = new
             {
                 type = "integer",
-                description = "1-based line of the control-statement keyword (required when scope is statement)",
+                description = "1-based line of the control-statement keyword (required when scope is statement). When column is omitted, matching stays today's first/leftmost keyword on the line by SpanStart.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column on the control-statement keyword (optional; disambiguates multiple statements on the same line)",
+                description = "1-based column on the control-statement keyword. When set with line, selects the statement whose keyword span covers that column (exclusive-end; today's shortest keyword / First among covering). Omitted keeps today's first/leftmost-keyword-on-line-by-SpanStart pick. Column without line keeps today's required-line validation.",
                 minimum = 1
             },
             scope = new
