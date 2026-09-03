@@ -1041,7 +1041,7 @@ public class HelpGeneratorTests
         Assert.Contains("inline-method", help);
         Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("smallest method", tool.Description, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("start-line", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("identifier start-line", tool.Description, StringComparison.OrdinalIgnoreCase);
 
         var requiredIdx = help.IndexOf("REQUIRED:");
         var optionalIdx = help.IndexOf("OPTIONAL:");

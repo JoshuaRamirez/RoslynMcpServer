@@ -89,7 +89,7 @@ public class InlineMethodToolTests
         Assert.Equal("integer", column.GetProperty("type").GetString());
         Assert.Contains("smallest method", column.GetProperty("description").GetString(), StringComparison.Ordinal);
         Assert.Contains("covers that column", column.GetProperty("description").GetString(), StringComparison.Ordinal);
-        Assert.Contains("start-line", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("identifier start-line", column.GetProperty("description").GetString(), StringComparison.Ordinal);
     }
 
     private static bool RequiredFieldsContains(JsonDocument doc, string name)

@@ -64,7 +64,7 @@ public sealed class InlineMethodTool : IToolHandler
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set, selects the smallest method whose identifier or declaration span covers that column. Omitted keeps today's MethodName and/or Line start-line pick."
+                description = "1-based column for disambiguation. When set, selects the smallest method whose identifier or declaration span covers that column. Omitted keeps today's MethodName and/or Line identifier start-line pick."
             },
             callSiteLocation = new
             {
