@@ -177,7 +177,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<RenameSymbolOperation, RenameSymbolParams>(
             "rename-symbol", "Rename any C# symbol with automatic reference updates");
         r.RegisterRefactoring<RenameFileToMatchTypeOperation, RenameFileToMatchTypeParams>(
-            "rename-file-to-match-type", "Rename a file so its name matches the primary type declared in it; allFiles (default false) renames every unambiguous mismatched single-type C# file (sourceFile optional when true; cannot be combined with typeName, line, or column)");
+            "rename-file-to-match-type", "Rename a file so its name matches the primary type declared in it; column (optional) picks the smallest type whose identifier or declaration span covers that column when set with line; omitted keeps today's typeName + optional line pick; column without line keeps today's omitted-line path; allFiles (default false) renames every unambiguous mismatched single-type C# file (sourceFile optional when true; cannot be combined with typeName, line, or column)");
         r.RegisterRefactoring<RenameNamespaceOperation, RenameNamespaceParams>(
             "rename-namespace", "Rename a namespace across the solution, updating declarations and references; column (optional) picks the smallest namespace whose name or declaration span covers that column when set with line; omitted keeps today's namespaceName + optional line pick; column without line keeps today's omitted-line path");
 

@@ -26,12 +26,17 @@ public sealed class RenameFileToMatchTypeParams
 
     /// <summary>
     /// 1-based line number used to select a type when the file declares more than one.
+    /// When <see cref="Column"/> is omitted, matching stays today's covering-span line pick.
     /// Single-site only.
     /// </summary>
     public int? Line { get; init; }
 
     /// <summary>
-    /// 1-based column number used with <see cref="Line"/> when multiple types share a line.
+    /// 1-based column for disambiguation. When set with <see cref="Line"/>,
+    /// selects the smallest type whose identifier or declaration span covers
+    /// that column (identifier preferred, then smallest covering declaration).
+    /// Omitted keeps today's typeName + optional line pick. Column without
+    /// line keeps today's omitted-line path.
     /// Single-site only.
     /// </summary>
     public int? Column { get; init; }
