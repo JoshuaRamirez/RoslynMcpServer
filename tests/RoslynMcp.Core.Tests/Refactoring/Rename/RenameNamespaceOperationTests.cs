@@ -1321,8 +1321,8 @@ public class RenameNamespaceOperationTests
             root, model, "Foo", bodyLine, ColumnOf(NestedFooSource, "public class Y"));
 
         Assert.Equal("A.Foo", RenameNamespaceOperation.GetFullName(byOuterName));
-        Assert.Equal("B.Foo", RenameNamespaceOperation.GetFullName(byInnerName));
-        Assert.Equal("B.Foo", RenameNamespaceOperation.GetFullName(byInnerBody));
+        Assert.Equal("A.Foo.B.Foo", RenameNamespaceOperation.GetFullName(byInnerName));
+        Assert.Equal("A.Foo.B.Foo", RenameNamespaceOperation.GetFullName(byInnerBody));
     }
 
     [Fact]
@@ -1405,8 +1405,8 @@ public class RenameNamespaceOperationTests
     public async Task RenameNamespace_Column_SelectsSecondNamespaceOnSameLine()
     {
         await using var workspace = await TempWorkspace.CreateAsync(
-            ( "Foo.cs", SameLineFooSource ),
-            ( "Consumer.cs", """
+            ("Foo.cs", SameLineFooSource),
+            ("Consumer.cs", """
                 namespace Other;
                 public class Consumer
                 {
