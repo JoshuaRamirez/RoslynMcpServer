@@ -1561,6 +1561,10 @@ public class HelpGeneratorTests
         Assert.Contains("rename-file-to-match-type", help);
         Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("smallest type", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("optional line pick", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("omitted-line path", tool.Description, StringComparison.OrdinalIgnoreCase);
 
         Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
 

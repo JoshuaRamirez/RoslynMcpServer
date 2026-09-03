@@ -130,6 +130,42 @@ public class RenameFileToMatchTypeOperationTests
     }
 
     [Fact]
+    public void Validate_InvalidColumn_ThrowsInvalidColumnNumber()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameFileInvalidColumn.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                RenameFileToMatchTypeOperation.Validate(ValidParams(sourceFile: path, column: 0)));
+
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_ThrowsInvalidColumnNumber()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameFileNegativeColumn.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                RenameFileToMatchTypeOperation.Validate(ValidParams(sourceFile: path, column: -1)));
+
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void FileNameMatchesType_ComparesNameWithoutExtension()
     {
         Assert.True(RenameFileToMatchTypeOperation.FileNameMatchesType("/tmp/Bar.cs", "Bar"));
@@ -217,6 +253,308 @@ public class RenameFileToMatchTypeOperationTests
         Assert.Contains(types, t => t.Name == "Status" && t.Node is EnumDeclarationSyntax);
         Assert.Contains(types, t => t.Name == "Callback" && t.Node is DelegateDeclarationSyntax);
     }
+
+    #region Covering-span column
+
+    private const string SameLineTypesSource = "class Alpha {}class Beta {}";
+
+    private const string NestedBodySource = """
+        class Alpha
+        {
+            void M() {}
+        }
+        class Beta {}
+        """;
+
+    private const string IndentedTypeSource = """
+        class Outside {}
+            class Alpha {}
+        """;
+
+    [Fact]
+    public void ResolvePrimaryType_ColumnPicksIdentifier()
+    {
+        var types = RenameFileToMatchTypeOperation.FindTopLevelTypes(
+            CSharpSyntaxTree.ParseText(SameLineTypesSource).GetRoot());
+        var line = FindLine(SameLineTypesSource, "class Alpha");
+
+        var first = RenameFileToMatchTypeOperation.ResolvePrimaryType(
+            types,
+            ValidParams(line: line, column: ColumnOf(SameLineTypesSource, "Alpha")));
+        var second = RenameFileToMatchTypeOperation.ResolvePrimaryType(
+            types,
+            ValidParams(line: line, column: ColumnOf(SameLineTypesSource, "Beta")));
+
+        Assert.Equal("Alpha", first.Name);
+        Assert.Equal("Beta", second.Name);
+    }
+
+    [Fact]
+    public void ResolvePrimaryType_OmittedColumn_SameLine_ThrowsSymbolAmbiguous()
+    {
+        var types = RenameFileToMatchTypeOperation.FindTopLevelTypes(
+            CSharpSyntaxTree.ParseText(SameLineTypesSource).GetRoot());
+        var line = FindLine(SameLineTypesSource, "class Alpha");
+
+        // Omitted column keeps today's line pick: several types that share
+        // a covering line stay SymbolAmbiguous — do not FirstOrDefault
+        // the first same-line declaration.
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameFileToMatchTypeOperation.ResolvePrimaryType(
+                types,
+                ValidParams(line: line)));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ResolvePrimaryType_OmittedColumn_IndentedDeclaration_DoesNotForceColumn1()
+    {
+        var tree = CSharpSyntaxTree.ParseText(IndentedTypeSource);
+        var types = RenameFileToMatchTypeOperation.FindTopLevelTypes(tree.GetRoot());
+        var line = FindLine(IndentedTypeSource, "class Alpha");
+        var alpha = types.Single(t => t.Name == "Alpha");
+        var startCol = alpha.Node.GetLocation().GetLineSpan().StartLinePosition.Character + 1;
+        Assert.True(startCol > 1);
+
+        // Omitted column keeps today's line-only covering-span pick. Forcing
+        // column 1 would miss this indented declaration.
+        var found = RenameFileToMatchTypeOperation.ResolvePrimaryType(
+            types,
+            ValidParams(line: line));
+        Assert.Equal("Alpha", found.Name);
+    }
+
+    [Fact]
+    public void ResolvePrimaryType_OmittedColumn_LineInsideBody_StillPicks()
+    {
+        var types = RenameFileToMatchTypeOperation.FindTopLevelTypes(
+            CSharpSyntaxTree.ParseText(NestedBodySource).GetRoot());
+        var bodyLine = FindLine(NestedBodySource, "void M()");
+
+        // Only Alpha covers the body line. Omitted column keeps today's
+        // line-only covering-span pick rather than requiring the
+        // declaration to start on that line.
+        var found = RenameFileToMatchTypeOperation.ResolvePrimaryType(
+            types,
+            ValidParams(line: bodyLine));
+        Assert.Equal("Alpha", found.Name);
+    }
+
+    [Fact]
+    public void ResolvePrimaryType_ColumnPrefersIdentifierThenSmallestDeclaration()
+    {
+        var types = RenameFileToMatchTypeOperation.FindTopLevelTypes(
+            CSharpSyntaxTree.ParseText(NestedBodySource).GetRoot());
+        var alphaLine = FindLine(NestedBodySource, "class Alpha");
+        var bodyLine = FindLine(NestedBodySource, "void M()");
+        var betaLine = FindLine(NestedBodySource, "class Beta");
+
+        var byAlphaName = RenameFileToMatchTypeOperation.ResolvePrimaryType(
+            types,
+            ValidParams(line: alphaLine, column: ColumnOf(NestedBodySource, "Alpha")));
+        var byAlphaBody = RenameFileToMatchTypeOperation.ResolvePrimaryType(
+            types,
+            ValidParams(line: bodyLine, column: ColumnOf(NestedBodySource, "void M()")));
+        var byBetaName = RenameFileToMatchTypeOperation.ResolvePrimaryType(
+            types,
+            ValidParams(line: betaLine, column: ColumnOf(NestedBodySource, "Beta")));
+
+        Assert.Equal("Alpha", byAlphaName.Name);
+        Assert.Equal("Alpha", byAlphaBody.Name);
+        Assert.Equal("Beta", byBetaName.Name);
+    }
+
+    [Fact]
+    public void ResolvePrimaryType_AdjacentTypes_ExclusiveEndDoesNotStealNext()
+    {
+        var types = RenameFileToMatchTypeOperation.FindTopLevelTypes(
+            CSharpSyntaxTree.ParseText(SameLineTypesSource).GetRoot());
+        var line = FindLine(SameLineTypesSource, "class Alpha");
+        var secondStart = ColumnOf(SameLineTypesSource, "class Beta");
+        var secondName = ColumnOf(SameLineTypesSource, "Beta");
+
+        var atSecondStart = RenameFileToMatchTypeOperation.ResolvePrimaryType(
+            types,
+            ValidParams(line: line, column: secondStart));
+        var atSecondName = RenameFileToMatchTypeOperation.ResolvePrimaryType(
+            types,
+            ValidParams(line: line, column: secondName));
+
+        // Inclusive end would also match Alpha at Beta's start and stay
+        // SymbolAmbiguous. Exclusive end + identifier/smallest-span
+        // uniquely selects Beta.
+        Assert.Equal("Beta", atSecondStart.Name);
+        Assert.Equal("Beta", atSecondName.Name);
+    }
+
+    [Fact]
+    public void ResolvePrimaryType_TypeNameAndColumn_DisambiguatesSameName()
+    {
+        const string source = "namespace A { class Foo {} }namespace B { class Foo {} }";
+        var types = RenameFileToMatchTypeOperation.FindTopLevelTypes(
+            CSharpSyntaxTree.ParseText(source).GetRoot());
+        var line = FindLine(source, "class Foo");
+        var firstFoo = ColumnOf(source, "class Foo") + "class ".Length;
+        var secondFoo = source.LastIndexOf("Foo", StringComparison.Ordinal);
+        var secondLineStart = source.LastIndexOf('\n', secondFoo) + 1;
+        var secondColumn = secondFoo - secondLineStart + 1;
+
+        var first = RenameFileToMatchTypeOperation.ResolvePrimaryType(
+            types,
+            ValidParams(typeName: "Foo", line: line, column: firstFoo));
+        var second = RenameFileToMatchTypeOperation.ResolvePrimaryType(
+            types,
+            ValidParams(typeName: "Foo", line: line, column: secondColumn));
+
+        Assert.Equal("Foo", first.Name);
+        Assert.Equal("Foo", second.Name);
+        Assert.True(first.Node.SpanStart < second.Node.SpanStart);
+    }
+
+    [Fact]
+    public void ResolvePrimaryType_ColumnWithoutLine_KeepsOmittedLinePath()
+    {
+        const string source = """
+            class Alpha {}
+            class Beta {}
+            """;
+        var types = RenameFileToMatchTypeOperation.FindTopLevelTypes(
+            CSharpSyntaxTree.ParseText(source).GetRoot());
+        var column = ColumnOf(source, "Alpha");
+
+        // Column without line cannot disambiguate across lines — today's
+        // omitted-line SymbolAmbiguous. Do not invent column-only pick.
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameFileToMatchTypeOperation.ResolvePrimaryType(
+                types,
+                ValidParams(column: column)));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class Alpha {}class Beta {}";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var alpha = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+            .First(n => n.Identifier.ValueText == "Alpha");
+        var span = alpha.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(RenameFileToMatchTypeOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(RenameFileToMatchTypeOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(RenameFileToMatchTypeOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(RenameFileToMatchTypeOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_OmittedColumn_SameLine_ThrowsSymbolAmbiguous()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineTypesSource, "Foo.cs");
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+        var line = FindLine(SameLineTypesSource, "class Alpha");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameFileToMatchTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.True(File.Exists(workspace.SourcePath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Alpha.cs")));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Beta.cs")));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_Column_SelectsSecondTypeOnSameLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineTypesSource, "Foo.cs");
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+        var line = FindLine(SameLineTypesSource, "class Alpha");
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = ColumnOf(SameLineTypesSource, "Beta")
+        });
+
+        Assert.True(result.Success);
+        var newPath = Path.Combine(workspace.DirectoryPath, "Beta.cs");
+        Assert.False(File.Exists(workspace.SourcePath));
+        Assert.True(File.Exists(newPath));
+        Assert.Equal(original.ReplaceLineEndings(), (await File.ReadAllTextAsync(newPath)).ReplaceLineEndings());
+        Assert.Equal("Beta", result.Symbol!.Name);
+        Assert.Contains("class Alpha", await File.ReadAllTextAsync(newPath));
+        Assert.Contains("class Beta", await File.ReadAllTextAsync(newPath));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_Column_PreviewUnchangedBeyondSelection()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineTypesSource, "Foo.cs");
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+        var line = FindLine(SameLineTypesSource, "class Alpha");
+
+        var result = await operation.ExecuteAsync(new RenameFileToMatchTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = ColumnOf(SameLineTypesSource, "Beta"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => c.File == workspace.SourcePath);
+        Assert.Contains(result.PendingChanges, c => c.File == Path.Combine(workspace.DirectoryPath, "Beta.cs"));
+        Assert.DoesNotContain(result.PendingChanges, c => c.File == Path.Combine(workspace.DirectoryPath, "Alpha.cs"));
+        Assert.Contains(result.PendingChanges!, c =>
+            c.Description.Contains("Beta", StringComparison.Ordinal));
+        Assert.True(File.Exists(workspace.SourcePath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Beta.cs")));
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RenameFile_ColumnWithoutLine_KeepsOmittedLinePath()
+    {
+        const string source = """
+            class Alpha {}
+            class Beta {}
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Foo.cs");
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RenameFileToMatchTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameFileToMatchTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                Column = ColumnOf(source, "Alpha")
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.True(File.Exists(workspace.SourcePath));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Alpha.cs")));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Beta.cs")));
+    }
+
+    #endregion
 
     [Fact]
     public void PathsDifferOnlyByCase_DetectsCaseOnlyPairs()
@@ -1244,12 +1582,29 @@ public class RenameFileToMatchTypeOperationTests
     private static RenameFileToMatchTypeParams ValidParams(
         string? sourceFile = null,
         string? typeName = null,
-        int? line = null) => new()
+        int? line = null,
+        int? column = null) => new()
         {
             SourceFile = sourceFile ?? Path.Combine(Path.GetTempPath(), "RoslynMcpRenameFileMissing.cs"),
             TypeName = typeName,
-            Line = line
+            Line = line,
+            Column = column
         };
+
+    private static int FindLine(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"Snippet '{snippet}' not found.");
+        return source[..index].Count(c => c == '\n') + 1;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"Snippet '{snippet}' not found.");
+        var lineStart = source.LastIndexOf('\n', index) + 1;
+        return index - lineStart + 1;
+    }
 
     private sealed class TempWorkspace : IAsyncDisposable
     {

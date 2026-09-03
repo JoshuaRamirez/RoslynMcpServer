@@ -452,10 +452,45 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
                 return candidates[0];
         }
 
+        // Column without Line is not a source position: do not invent
+        // column-only cross-line disambiguation or substitute each
+        // candidate's own start line.
         if (@params.Line.HasValue)
         {
+            if (@params.Column.HasValue)
+            {
+                // Exclusive-end covering-span: prefer the type identifier
+                // that covers the column, then the smallest covering
+                // declaration. Do not throw SymbolAmbiguous when that
+                // uniquely selects.
+                var covering = candidates
+                    .Select(t => (
+                        Target: t,
+                        IdentifierHit: IdentifierCoversColumn(t.Node, @params.Line.Value, @params.Column.Value),
+                        DeclarationHit: SpanCoversColumn(
+                            t.Node.GetLocation().GetLineSpan(), @params.Line.Value, @params.Column.Value)))
+                    .Where(t => t.IdentifierHit || t.DeclarationHit)
+                    .OrderBy(t => t.IdentifierHit ? 0 : 1)
+                    .ThenBy(t => t.Target.Node.Span.Length)
+                    .ToList();
+
+                if (covering.Count == 0)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.TypeNotFound,
+                        typeName == null
+                            ? $"No type found at line {@params.Line}."
+                            : $"No type named '{typeName}' found at line {@params.Line}.");
+                }
+
+                return covering[0].Target;
+            }
+
+            // Omitted column keeps today's typeName + optional line
+            // pick exactly. SpanCoversLine without a column is multi-line
+            // declaration coverage — do not force column 1.
             var atLocation = candidates
-                .Where(t => SpanCoversLine(t.Node.GetLocation().GetLineSpan(), @params.Line.Value, @params.Column))
+                .Where(t => SpanCoversLine(t.Node.GetLocation().GetLineSpan(), @params.Line.Value, column: null))
                 .ToList();
 
             if (atLocation.Count == 1)
@@ -699,6 +734,16 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
         return SpanCoversColumn(span, line, column.Value);
     }
 
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character of an adjacent type also
+    /// match the previous declaration. Same helper as
+    /// <c>TypeSymbolResolver.SpanCoversColumn</c> /
+    /// <c>RenameNamespaceOperation.SpanCoversColumn</c> /
+    /// <c>InlineMethodOperation.SpanCoversColumn</c>.
+    /// </summary>
     internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
     {
         var startLine = span.StartLinePosition.Line + 1;
@@ -710,10 +755,24 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
             return false;
         if (line == startLine && column < startCol)
             return false;
-        if (line == endLine && column > endCol)
+        if (line == endLine && column >= endCol)
             return false;
         return true;
     }
+
+    private static bool IdentifierCoversColumn(SyntaxNode node, int line, int column)
+    {
+        var identifier = GetTypeIdentifier(node);
+        return identifier != default
+               && SpanCoversColumn(identifier.GetLocation().GetLineSpan(), line, column);
+    }
+
+    internal static SyntaxToken GetTypeIdentifier(SyntaxNode node) => node switch
+    {
+        BaseTypeDeclarationSyntax named => named.Identifier,
+        DelegateDeclarationSyntax del => del.Identifier,
+        _ => default
+    };
 
     internal readonly record struct TypeTarget(string Name, SyntaxNode Node);
 

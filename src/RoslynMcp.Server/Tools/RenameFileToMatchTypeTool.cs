@@ -33,7 +33,7 @@ public sealed class RenameFileToMatchTypeTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Rename a source file so its name matches the primary type declared in it, without renaming the type or its references. Process a single file or all files in the solution. allFiles: true walks every C# file and renames each unambiguous mismatched single-type file (sourceFile optional when true; cannot be combined with typeName, line, or column).";
+        "Rename a source file so its name matches the primary type declared in it, without renaming the type or its references. Process a single file or all files in the solution. allFiles: true walks every C# file and renames each unambiguous mismatched single-type file (sourceFile optional when true; cannot be combined with typeName, line, or column). column (optional) picks the smallest type whose identifier or declaration span covers that column when set with line (identifier preferred, then smallest covering declaration); omitted keeps today's typeName + optional line pick; column without line keeps today's omitted-line path.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -66,13 +66,13 @@ public sealed class RenameFileToMatchTypeTool : IToolHandler
             line = new
             {
                 type = "integer",
-                description = "1-based line number used to select a type when the file declares more than one. Single-site only; cannot be combined with allFiles.",
+                description = "1-based line number used to select a type when the file declares more than one. When column is omitted, matching stays today's covering-span line pick. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column number used with line when multiple types share a line. Single-site only; cannot be combined with allFiles.",
+                description = "1-based column for disambiguation. When set with line, selects the smallest type whose identifier or declaration span covers that column (identifier preferred, then smallest covering declaration). Omitted keeps today's typeName + optional line pick. Column without line keeps today's omitted-line path. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             preview = new

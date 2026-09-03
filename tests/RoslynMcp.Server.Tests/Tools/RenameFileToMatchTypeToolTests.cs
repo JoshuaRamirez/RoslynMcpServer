@@ -33,6 +33,8 @@ public class RenameFileToMatchTypeToolTests
     {
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
+        Assert.Contains("column", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("smallest type", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -84,6 +86,13 @@ public class RenameFileToMatchTypeToolTests
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+
+        var column = properties.GetProperty("column");
+        Assert.Equal("integer", column.GetProperty("type").GetString());
+        Assert.Contains("smallest type", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("covers that column", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("optional line pick", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("omitted-line path", column.GetProperty("description").GetString(), StringComparison.Ordinal);
     }
 
     [Fact]
