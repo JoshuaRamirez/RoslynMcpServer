@@ -1,4 +1,6 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -576,6 +578,548 @@ public class RemoveParameterOperationTests
 
     #endregion
 
+    #region Covering-span column
+
+    private const string SameLineOverloadsSource = """
+        namespace TestApp;
+
+        public class Worker
+        {
+            public void Process(int x, bool flag) { } public void Process(int x, int y, bool extra) { }
+        }
+        """;
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpRemoveParameterInvalidColumn.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                RemoveParameterOperation.Validate(new RemoveParameterParams
+                {
+                    SourceFile = path,
+                    MethodName = "Process",
+                    ParameterName = "unused",
+                    Column = 0
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+            Assert.Equal("1007", ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpRemoveParameterNegativeColumn.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                RemoveParameterOperation.Validate(new RemoveParameterParams
+                {
+                    SourceFile = path,
+                    MethodName = "Process",
+                    ParameterName = "unused",
+                    Column = -1
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+            Assert.Equal("1007", ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void FindMethod_ColumnPicksIdentifierCoverage()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineOverloadsSource);
+        var root = tree.GetRoot();
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x, bool flag) { }");
+        var first = RemoveParameterOperation.FindMethod(
+            root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, bool flag)"));
+        var second = RemoveParameterOperation.FindMethod(
+            root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, int y, bool extra)"));
+        var omitted = RemoveParameterOperation.FindMethod(root, "Process", line, column: null);
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Null(omitted);
+        Assert.Equal(["x", "flag"], ParameterNames(first));
+        Assert.Equal(["x", "y", "extra"], ParameterNames(second));
+    }
+
+    [Fact]
+    public void FindMethod_ColumnOnContinuationLine_PicksMethod()
+    {
+        const string source = """
+            class C
+            {
+                public void
+                Process(int x, bool unused) { }
+
+                public void Process(int x, int y, bool unused) { }
+            }
+            """;
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var startLine = FindLine(source, "public void");
+        var identifierLine = FindLine(source, "Process(int x, bool unused) { }");
+        Assert.NotEqual(startLine, identifierLine);
+
+        // Omitted column keeps today's start-line filter — the split
+        // signature does not start on the identifier line. Column still
+        // selects it.
+        var byStartLineOnly = RemoveParameterOperation.FindMethod(root, "Process", identifierLine, column: null);
+        var byColumn = RemoveParameterOperation.FindMethod(
+            root, "Process", identifierLine, ColumnOf(source, "Process(int x, bool unused) { }"));
+
+        Assert.Null(byStartLineOnly);
+        Assert.NotNull(byColumn);
+        Assert.Equal(["x", "unused"], ParameterNames(byColumn));
+    }
+
+    [Fact]
+    public void FindMethod_AdjacentMethods_ExclusiveEndDoesNotStealNextMethod()
+    {
+        const string source = """
+            class C
+            {
+                public void Other(int x, bool unused){}public void Process(int x, bool unused){}
+            }
+            """;
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var line = FindLine(source, "public void Other");
+        var secondStart = ColumnOf(source, "public void Process");
+        var secondId = ColumnOf(source, "Process(int x, bool unused){}");
+
+        var atSecondStart = RemoveParameterOperation.FindMethod(root, "Process", line, secondStart);
+        var atSecondId = RemoveParameterOperation.FindMethod(root, "Process", line, secondId);
+        var atFirstId = RemoveParameterOperation.FindMethod(root, "Other", line, ColumnOf(source, "Other(int x, bool unused)"));
+        var firstAtSecondStart = RemoveParameterOperation.FindMethod(root, "Other", line, secondStart);
+
+        Assert.NotNull(atSecondStart);
+        Assert.NotNull(atSecondId);
+        Assert.NotNull(atFirstId);
+        Assert.Equal("Process", atSecondStart.Identifier.Text);
+        Assert.Equal("Process", atSecondId.Identifier.Text);
+        Assert.Equal("Other", atFirstId.Identifier.Text);
+        Assert.Null(firstAtSecondStart);
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class C { public void A(int x){}public void B(int x){} }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var method = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "A");
+        var span = method.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(RemoveParameterOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(RemoveParameterOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(RemoveParameterOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(RemoveParameterOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_OmittedColumn_SameLineOverloads_ThrowsSymbolAmbiguous()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x, bool flag) { }");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RemoveParameterParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                ParameterName = "flag",
+                Line = line
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_Column_SelectsSecondOverloadOnSameLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x, bool flag) { }");
+        var secondColumn = ColumnOf(SameLineOverloadsSource, "Process(int x, int y, bool extra)");
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "extra",
+            Line = line,
+            Column = secondColumn
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var processMethods = GetMethods(updated, "Process");
+        Assert.Equal(2, processMethods.Count);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "flag"]);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "y"]);
+        Assert.DoesNotContain(processMethods, m => ParameterNames(m) is ["x"]);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_Column_SelectsFirstOverloadOnSameLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x, bool flag) { }");
+        var firstColumn = ColumnOf(SameLineOverloadsSource, "Process(int x, bool flag)");
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "flag",
+            Line = line,
+            Column = firstColumn
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var processMethods = GetMethods(updated, "Process");
+        Assert.Equal(2, processMethods.Count);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x"]);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "y", "extra"]);
+        Assert.DoesNotContain(processMethods, m => ParameterNames(m) is ["x", "y"]);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_ColumnOnContinuationLine_ChangesThatMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Split
+            {
+                public void
+                Process(int x, bool unused) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "unused",
+            Line = FindLine(source, "Process(int x, bool unused)"),
+            Column = ColumnOf(source, "Process(int x, bool unused)")
+        });
+
+        Assert.True(result.Success);
+        var updated = (await File.ReadAllTextAsync(workspace.SourcePath)).Replace("\r\n", "\n");
+        Assert.Contains("Process(int x)", updated);
+        Assert.DoesNotContain("bool unused", updated);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_OmittedColumn_ContinuationLineIdentifier_ThrowsMethodNotFound()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Split
+            {
+                public void
+                Process(int x, bool unused) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RemoveParameterParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                ParameterName = "unused",
+                Line = FindLine(source, "Process(int x, bool unused)")
+            }));
+
+        Assert.Equal(ErrorCodes.MethodNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AdjacentMethods_ColumnOnSecondDoesNotRewriteFirst()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Adjacent
+            {
+                public void Other(int x, bool unused){}public void Process(int x, bool unused){}
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "unused",
+            Line = FindLine(source, "public void Other"),
+            Column = ColumnOf(source, "Process(int x, bool unused)")
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public void Other(int x, bool unused)", updated);
+        Assert.Contains("public void Process(int x)", updated);
+        Assert.DoesNotContain("public void Other(int x){}", updated);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_ColumnWithoutLine_SameIndentOverloads_ThrowsSymbolAmbiguous()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Foo(int x, bool unused)
+                {
+                }
+
+                public void Foo(int x, int y, bool unused)
+                {
+                }
+            }
+            """;
+
+        var column = ColumnOf(source, "Foo(int x, bool unused)");
+        Assert.Equal(column, ColumnOf(source, "Foo(int x, int y, bool unused)"));
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RemoveParameterParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Foo",
+                ParameterName = "unused",
+                Column = column
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("bool unused", (await File.ReadAllTextAsync(workspace.SourcePath)).Replace("\r\n", "\n"));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_Preview_Column_DescribesRewriteAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x, bool flag) { }");
+        var secondColumn = ColumnOf(SameLineOverloadsSource, "Process(int x, int y, bool extra)");
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "extra",
+            Line = line,
+            Column = secondColumn,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change =>
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("Process(int x, int y)", StringComparison.Ordinal) &&
+            change.AfterSnippet.Contains("bool flag", StringComparison.Ordinal) &&
+            !change.AfterSnippet.Contains("bool extra", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_Force_Column_ReplacesBodyUsagesOnSelectedOverload()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public int Process(int unused) { return unused; } public int Process(int unused, int y) { return y; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var line = FindLine(source, "public int Process(int unused) { return unused; }");
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "unused",
+            Line = line,
+            Column = ColumnOf(source, "Process(int unused) { return unused; }"),
+            Force = true
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var processMethods = GetMethods(updated, "Process");
+        Assert.Equal(2, processMethods.Count);
+        Assert.Contains(processMethods, m => ParameterNames(m) is []);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["unused", "y"]);
+        Assert.Contains("return default(int);", updated);
+        Assert.Contains("return y;", updated);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_Column_UpdateOverridesAndImplementations_StillUpdatesChain()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWorker
+            {
+                void Process(int count, bool unused);
+            }
+
+            public class Worker : IWorker
+            {
+                public virtual void Process(int count, bool unused) { } public void Process(string name, bool unused) { }
+            }
+
+            public class Derived : Worker
+            {
+                public override void Process(int count, bool unused)
+                {
+                }
+            }
+
+            public static class Runner
+            {
+                public static void Run(IWorker worker, Derived derived, Worker host)
+                {
+                    worker.Process(1, false);
+                    derived.Process(2, true);
+                    host.Process("a", false);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "unused",
+            Line = FindLine(source, "public virtual void Process"),
+            Column = ColumnOf(source, "Process(int count, bool unused) { }"),
+            UpdateOverrides = true,
+            UpdateImplementations = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("void Process(int count);", text);
+        Assert.Contains("public virtual void Process(int count)", text);
+        Assert.Contains("public override void Process(int count)", text);
+        Assert.Contains("public void Process(string name, bool unused)", text);
+        Assert.Contains("worker.Process(1)", text);
+        Assert.Contains("derived.Process(2)", text);
+        Assert.Contains("host.Process(\"a\", false)", text);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_Column_UpdateOverridesAndImplementationsFalse_OnlySelectedMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWorker
+            {
+                void Process(int count, bool unused);
+            }
+
+            public class Worker : IWorker
+            {
+                public virtual void Process(int count, bool unused) { } public void Process(string name, bool unused) { }
+            }
+
+            public class Derived : Worker
+            {
+                public override void Process(int count, bool unused)
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        // Column picks the non-virtual same-line sibling so false flags stay
+        // compiling: only that declaration changes. The virtual / interface /
+        // override chain is left alone — same rewrite rules as today.
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "unused",
+            Line = FindLine(source, "public virtual void Process"),
+            Column = ColumnOf(source, "Process(string name, bool unused)"),
+            UpdateOverrides = false,
+            UpdateImplementations = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("void Process(int count, bool unused);", text);
+        Assert.Contains("public virtual void Process(int count, bool unused)", text);
+        Assert.Contains("public override void Process(int count, bool unused)", text);
+        Assert.Contains("public void Process(string name)", text);
+        Assert.DoesNotContain("Process(string name, bool unused)", text);
+    }
+
+    #endregion
+
     #region Helpers
 
     private static RemoveParameterParams ValidParams(
@@ -587,6 +1131,42 @@ public class RemoveParameterOperationTests
             MethodName = methodName,
             ParameterName = parameterName
         };
+
+    private static List<MethodDeclarationSyntax> GetMethods(string source, string methodName) =>
+        CSharpSyntaxTree.ParseText(source).GetRoot()
+            .DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == methodName)
+            .ToList();
+
+    private static string[] ParameterNames(MethodDeclarationSyntax method) =>
+        method.ParameterList.Parameters.Select(p => p.Identifier.Text).ToArray();
+
+    private static int FindLine(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
+    }
 
     private sealed class TempWorkspace : IAsyncDisposable
     {
