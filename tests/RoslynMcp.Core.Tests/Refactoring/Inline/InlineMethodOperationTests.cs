@@ -920,7 +920,7 @@ public class InlineMethodOperationTests
         var startCol = span.StartLinePosition.Character + 1;
         var endCol = span.EndLinePosition.Character + 1;
 
-        var workspace = new AdhocWorkspace();
+        using var workspace = new AdhocWorkspace();
         var project = workspace.AddProject("P", LanguageNames.CSharp);
         var document = project.AddDocument("Calls.cs", source, filePath: filePath);
 
