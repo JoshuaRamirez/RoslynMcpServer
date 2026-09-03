@@ -1022,7 +1022,18 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
         return line >= startLine && line <= endLine;
     }
 
-    private static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character after a covered name also
+    /// match the previous name. Same helper as
+    /// <c>InvertIfOperation.SpanCoversColumn</c> /
+    /// <c>TypeSymbolResolver.SpanCoversColumn</c> /
+    /// <c>RenameFileToMatchTypeOperation.SpanCoversColumn</c> /
+    /// <c>InlineMethodOperation.SpanCoversColumn</c>.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
     {
         var startLine = span.StartLinePosition.Line + 1;
         var endLine = span.EndLinePosition.Line + 1;
@@ -1033,7 +1044,7 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
             return false;
         if (line == startLine && column < startCol)
             return false;
-        if (line == endLine && column > endCol)
+        if (line == endLine && column >= endCol)
             return false;
         return true;
     }

@@ -20,12 +20,17 @@ public sealed class SimplifyNameParams
     /// <summary>
     /// 1-based line of the qualified name. Required when
     /// <see cref="Scope"/> is <c>location</c>.
+    /// When <see cref="Column"/> is omitted, matching stays today's first
+    /// / leftmost name on the line by <c>SpanStart</c>.
     /// </summary>
     public int? Line { get; init; }
 
     /// <summary>
-    /// 1-based column on the qualified name. Optional; used to
-    /// narrow which name on <see cref="Line"/> is simplified.
+    /// 1-based column on the qualified name. When set with <see cref="Line"/>,
+    /// selects the name whose span covers that column
+    /// (exclusive-end; today's FirstOrDefault among covering names).
+    /// Omitted keeps today's first/leftmost-name-on-line-by-<c>SpanStart</c> pick.
+    /// Column without line keeps today's required-line validation.
     /// </summary>
     public int? Column { get; init; }
 

@@ -117,6 +117,22 @@ public class SimplifyNameOperationTests
             }));
 
         Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_LocationScope_ColumnWithoutLine_ThrowsInvalidLineNumber()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SimplifyNameOperation.Validate(new SimplifyNameParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                Scope = "location",
+                Column = 4
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -194,6 +210,22 @@ public class SimplifyNameOperationTests
     }
 
     [Fact]
+    public void FindNameAtLocation_OmittedColumn_IndentedName_DoesNotForceColumn1()
+    {
+        var root = CSharpSyntaxTree.ParseText(IndentedNameSource).GetRoot();
+        var line = FindLine(IndentedNameSource, "System.Text.StringBuilder");
+        var names = SimplifyNameOperation.CollectQualifiedNameNodes(root);
+        var name = names.Single();
+        var startCol = name.GetLocation().GetLineSpan().StartLinePosition.Character + 1;
+        Assert.True(startCol > 1);
+
+        var found = SimplifyNameOperation.FindNameAtLocation(names, line, column: null);
+
+        Assert.NotNull(found);
+        Assert.Contains("StringBuilder", found.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FindNameAtLocation_ColumnNarrowsName()
     {
         const string source = """
@@ -212,6 +244,44 @@ public class SimplifyNameOperationTests
 
         Assert.NotNull(found);
         Assert.Contains("List", found.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FindNameAtLocation_AdjacentNames_ExclusiveEndDoesNotStealNext()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNamesSource).GetRoot();
+        var names = SimplifyNameOperation.CollectQualifiedNameNodes(root);
+        var line = FindLine(SameLineNamesSource, "System.Text.StringBuilder");
+        var first = names.First(node => node.ToString().Contains("StringBuilder", StringComparison.Ordinal));
+        var firstNameEndCol = first.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
+        var secondColumn = ColumnOf(SameLineNamesSource, "System.Collections.Generic.List");
+
+        var atExclusiveEnd = SimplifyNameOperation.FindNameAtLocation(names, line, firstNameEndCol);
+        var atSecond = SimplifyNameOperation.FindNameAtLocation(names, line, secondColumn);
+
+        Assert.False(SimplifyNameOperation.SpanCoversColumn(
+            first.GetLocation().GetLineSpan(), line, firstNameEndCol));
+        Assert.True(atExclusiveEnd == null
+            || !atExclusiveEnd.ToString().Contains("StringBuilder", StringComparison.Ordinal));
+        Assert.NotNull(atSecond);
+        Assert.Contains("List", atSecond.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineNamesSource);
+        var first = SimplifyNameOperation.CollectQualifiedNameNodes(tree.GetRoot())
+            .First(node => node.ToString().Contains("StringBuilder", StringComparison.Ordinal));
+        var span = first.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(SimplifyNameOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(SimplifyNameOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(SimplifyNameOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(SimplifyNameOperation.SpanCoversColumn(span, line, startCol - 1));
     }
 
     [Fact]
@@ -529,6 +599,88 @@ public class SimplifyNameOperationTests
     #endregion
 
     #region P1 Scope and Edge
+
+    [SkippableFact]
+    public async Task SimplifyName_OmittedColumn_SimplifiesFirstNameOnTheLine()
+    {
+        const string source = SameLineSimplifiableSource;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new SimplifyNameOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            SourceFile = workspace.SourcePath,
+            Scope = "location",
+            Line = FindLine(source, "System.Text.StringBuilder A;")
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.SimplificationsApplied);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("System.Text.StringBuilder A;", updated, StringComparison.Ordinal);
+        Assert.Contains("StringBuilder A;", updated, StringComparison.Ordinal);
+        Assert.Contains("System.Collections.Generic.List", updated, StringComparison.Ordinal);
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_ExclusiveEndAtPreviousName_ThrowsNoSimplifiableNames()
+    {
+        const string source = SameLineSimplifiableSource;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var line = FindLine(source, "System.Text.StringBuilder A;");
+        var firstNameEndCol = FirstQualifiedNameEndColumn(source);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SimplifyNameParams
+            {
+                SourceFile = workspace.SourcePath,
+                Scope = "location",
+                Line = line,
+                Column = firstNameEndCol
+            }));
+
+        Assert.Equal(ErrorCodes.NoSimplifiableNames, ex.ErrorCode);
+        Assert.Equal("3159", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_Preview_ColumnSelectsSecondName_DoesNotModifyFile()
+    {
+        const string source = SameLineSimplifiableSource;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var line = FindLine(source, "System.Text.StringBuilder A;");
+        var secondColumn = ColumnOf(source, "System.Collections.Generic.List");
+
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            SourceFile = workspace.SourcePath,
+            Scope = "location",
+            Line = line,
+            Column = secondColumn,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Equal(1, result.SimplificationsApplied);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change =>
+            change.BeforeSnippet != null
+            && change.BeforeSnippet.Contains("List", StringComparison.Ordinal)
+            && change.AfterSnippet != null
+            && change.AfterSnippet.Contains("List", StringComparison.Ordinal)
+            && !change.BeforeSnippet.Contains("StringBuilder", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
 
     [SkippableFact]
     public async Task SimplifyName_Location_SimplifiesOnlyThatName()
@@ -1124,6 +1276,32 @@ public class SimplifyNameOperationTests
         }
         """;
 
+    private const string SameLineNamesSource = """
+        class C
+        {
+            System.Text.StringBuilder a; System.Collections.Generic.List<int> b;
+        }
+        """;
+
+    private const string IndentedNameSource = """
+        class C
+        {
+            System.Text.StringBuilder a;
+        }
+        """;
+
+    private const string SameLineSimplifiableSource = """
+        using System.Collections.Generic;
+        using System.Text;
+
+        namespace TestApp;
+
+        public class Processor
+        {
+            public System.Text.StringBuilder A; public System.Collections.Generic.List<int> B;
+        }
+        """;
+
     private static bool PathEquals(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
@@ -1153,6 +1331,24 @@ public class SimplifyNameOperationTests
     {
         var lineStart = source.LastIndexOf('\n', index) + 1;
         return index - lineStart + 1;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        return ColumnOnLine(source, index);
+    }
+
+    private static int FirstQualifiedNameEndColumn(string source)
+    {
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var first = SimplifyNameOperation.CollectQualifiedNameNodes(root)
+            .OrderBy(node => node.SpanStart)
+            .First();
+        return first.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
     }
 
     private sealed class TempWorkspace : IAsyncDisposable

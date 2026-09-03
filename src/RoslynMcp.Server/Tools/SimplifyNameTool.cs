@@ -33,7 +33,7 @@ public sealed class SimplifyNameTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Remove redundant namespace qualifications from type (and similar) references when a using directive or the current namespace already makes the short name bind to the same symbol. Process a single file or all files in the solution. scope is file (default; every eligible qualified name in the file) or location (the qualified name at line / optional column; single-file only). Names that would become ambiguous or bind differently are skipped and reported. Preview describes the simplifications and writes nothing.";
+        "Remove redundant namespace qualifications from type (and similar) references when a using directive or the current namespace already makes the short name bind to the same symbol. Process a single file or all files in the solution. scope is file (default; every eligible qualified name in the file) or location (the qualified name at line / optional column; single-file only). column (optional) picks the name whose span covers that column when set with line (exclusive-end; FirstOrDefault among covering names); omitted keeps today's first/leftmost-name-on-line-by-SpanStart pick; column without line keeps today's required-line validation. Names that would become ambiguous or bind differently are skipped and reported. Preview describes the simplifications and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -61,13 +61,13 @@ public sealed class SimplifyNameTool : IToolHandler
             line = new
             {
                 type = "integer",
-                description = "1-based line of the qualified name (required when scope is location)",
+                description = "1-based line of the qualified name (required when scope is location). When column is omitted, matching stays today's first/leftmost name on the line by SpanStart.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column on the qualified name (optional; narrows the name at line)",
+                description = "1-based column on the qualified name. When set with line, selects the name whose span covers that column (exclusive-end; today's FirstOrDefault among covering names). Omitted keeps today's first/leftmost-name-on-line-by-SpanStart pick. Column without line keeps today's required-line validation.",
                 minimum = 1
             },
             scope = new
