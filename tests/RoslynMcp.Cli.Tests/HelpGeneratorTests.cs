@@ -1292,6 +1292,8 @@ public class HelpGeneratorTests
         Assert.Contains("convert-foreach-linq", help);
         Assert.Contains("preferQuerySyntax", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("covers that column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("exclusive-end", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
 

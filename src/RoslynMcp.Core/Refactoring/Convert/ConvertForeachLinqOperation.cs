@@ -544,7 +544,21 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         return SpanCoversColumn(statement.ForEachKeyword.GetLocation().GetLineSpan(), line, column);
     }
 
-    private static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character after a covered <c>foreach</c>
+    /// keyword also match the previous keyword. Same helper as
+    /// <c>RemoveBracesOperation.SpanCoversColumn</c> /
+    /// <c>AddBracesOperation.SpanCoversColumn</c> /
+    /// <c>SimplifyNameOperation.SpanCoversColumn</c> /
+    /// <c>InvertIfOperation.SpanCoversColumn</c> /
+    /// <c>TypeSymbolResolver.SpanCoversColumn</c> /
+    /// <c>RenameFileToMatchTypeOperation.SpanCoversColumn</c> /
+    /// <c>InlineMethodOperation.SpanCoversColumn</c>.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
     {
         var startLine = span.StartLinePosition.Line + 1;
         var endLine = span.EndLinePosition.Line + 1;
@@ -555,7 +569,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
             return false;
         if (line == startLine && column < startCol)
             return false;
-        if (line == endLine && column > endCol)
+        if (line == endLine && column >= endCol)
             return false;
         return true;
     }

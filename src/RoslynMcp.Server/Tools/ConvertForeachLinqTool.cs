@@ -33,7 +33,7 @@ public sealed class ConvertForeachLinqTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert foreach loops with Add/accumulate patterns to LINQ. preferQuerySyntax (default false) keeps today's method syntax (.Where().Select().ToList()); true emits query syntax (from … where … select) for filter / project / ToList patterns. Any / All / FirstOrDefault / Count keep method syntax. column (optional) picks the foreach whose keyword covers that column on the given line. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct eligible foreach (sourceFile optional when true; cannot be combined with line or column).";
+        "Convert foreach loops with Add/accumulate patterns to LINQ. preferQuerySyntax (default false) keeps today's method syntax (.Where().Select().ToList()); true emits query syntax (from … where … select) for filter / project / ToList patterns. Any / All / FirstOrDefault / Count keep method syntax. column (optional) picks the foreach whose ForEachKeyword span covers that column when set with line (exclusive-end; FirstOrDefault among covering keywords); omitted keeps today's first-ForEachKeyword-on-line-by-SpanStart pick; column without line keeps today's required-line validation. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct eligible foreach (sourceFile optional when true; cannot be combined with line or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -61,12 +61,12 @@ public sealed class ConvertForeachLinqTool : IToolHandler
             line = new
             {
                 type = "integer",
-                description = "1-based line number of the target statement. Single-foreach only; cannot be combined with allFiles."
+                description = "1-based line number of the foreach keyword. When column is omitted, matching stays today's first ForEachKeyword on the line by SpanStart. Single-foreach only; cannot be combined with allFiles."
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column of the foreach keyword. When set, selects the foreach whose keyword covers that column on the given line. Single-foreach only; cannot be combined with allFiles."
+                description = "1-based column on the foreach keyword. When set with line, selects the foreach whose ForEachKeyword span covers that column (exclusive-end; today's FirstOrDefault among covering keywords). Omitted keeps today's first-ForEachKeyword-on-line-by-SpanStart pick. Column without line keeps today's required-line validation. Single-foreach only; cannot be combined with allFiles."
             },
             preferQuerySyntax = new
             {
