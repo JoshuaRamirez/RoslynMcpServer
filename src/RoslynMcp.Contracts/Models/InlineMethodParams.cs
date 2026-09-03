@@ -21,7 +21,9 @@ public sealed class InlineMethodParams
     public int? Line { get; init; }
 
     /// <summary>
-    /// Column number of the method declaration (1-based). Optional for disambiguation.
+    /// 1-based column for disambiguation. When set, selects the smallest method
+    /// whose identifier or declaration span covers that column. Omitted keeps
+    /// today's MethodName and/or Line identifier start-line pick.
     /// </summary>
     public int? Column { get; init; }
 

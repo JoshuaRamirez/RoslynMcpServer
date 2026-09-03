@@ -1032,6 +1032,39 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_InlineMethod_ShowsColumn()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("inline-method")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("inline-method", help);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("smallest method", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("start-line", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.Contains("--method-name", requiredSection);
+        Assert.DoesNotContain("--column", requiredSection);
+        Assert.DoesNotContain("--line", requiredSection);
+        Assert.DoesNotContain("--preview", requiredSection);
+
+        Assert.Contains("--line", optionalSection);
+        Assert.Contains("--column", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+        Assert.Contains("--call-site-location", optionalSection);
+        Assert.Contains("--remove-method", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ChangeReturnType_ShowsColumn()
     {
         var registry = ToolRegistry.BuildDefault();
