@@ -1326,6 +1326,20 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_ConvertTupleToStruct_ShowsExclusiveEndColumn()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("convert-tuple-to-struct")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("convert-tuple-to-struct", help);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("covers that column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("exclusive-end", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line pick", tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ConvertToInterpolatedString_ShowsColumn()
     {
         var registry = ToolRegistry.BuildDefault();

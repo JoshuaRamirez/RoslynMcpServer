@@ -33,7 +33,7 @@ public sealed class ConvertTupleToStructTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a tuple ((int X, int Y) / (1, 2) / ValueTuple) to a named struct and replace same-shape tuple creations in the solution.";
+        "Convert a tuple ((int X, int Y) / (1, 2) / ValueTuple) to a named struct and replace same-shape tuple creations in the solution. column (optional) picks the tuple creation whose span covers that column when set with line (exclusive-end; unique covering match, else CannotConvert / SymbolAmbiguous); omitted keeps today's line pick.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,7 +55,7 @@ public sealed class ConvertTupleToStructTool : IToolHandler
             line = new
             {
                 type = "integer",
-                description = "1-based line number of the tuple expression"
+                description = "1-based line number of the tuple expression. When column is omitted, matching stays today's line pick (single covering candidate returns; several on the line stay SymbolAmbiguous)."
             },
             newTypeName = new
             {
@@ -65,7 +65,7 @@ public sealed class ConvertTupleToStructTool : IToolHandler
             column = new
             {
                 type = "integer",
-                description = "1-based column number for disambiguation when multiple tuple expressions share a line"
+                description = "1-based column on the tuple expression. When set with line, selects the creation whose span covers that column (exclusive-end; today's unique covering match, else CannotConvert / SymbolAmbiguous). Omitted keeps today's line pick."
             },
             preview = new
             {

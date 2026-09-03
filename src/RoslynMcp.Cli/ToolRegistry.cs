@@ -227,7 +227,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ConvertAnonymousToClassOperation, ConvertAnonymousToClassParams>(
             "convert-anonymous-to-class", "Convert an anonymous type to a named class or record; column (optional) picks the anonymous creation whose span covers that column on the given line (exclusive-end; unique covering match); omitted keeps today's line pick");
         r.RegisterRefactoring<ConvertTupleToStructOperation, ConvertTupleToStructParams>(
-            "convert-tuple-to-struct", "Convert a tuple to a named struct");
+            "convert-tuple-to-struct", "Convert a tuple to a named struct; column (optional) picks the tuple creation whose span covers that column on the given line (exclusive-end; unique covering match); omitted keeps today's line pick");
         r.RegisterRefactoring<ConvertToInterpolatedStringOperation, ConvertToInterpolatedStringParams>(
             "convert-to-interpolated-string", "Convert string.Format() and concatenation to interpolated strings; column (optional) picks the Format invocation or concatenation whose span covers that column on the given line; allFiles (default false) converts every distinct convertible Format invocation and outer concatenation in every C# file (sourceFile optional when true; cannot be combined with line or column)");
         r.RegisterRefactoring<ConvertToPatternMatchingOperation, ConvertToPatternMatchingParams>(

@@ -82,6 +82,20 @@ public class ConvertTupleToStructToolTests
         Assert.True(properties.TryGetProperty("newTypeName", out _));
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+
+        var column = properties.GetProperty("column");
+        Assert.Equal("integer", column.GetProperty("type").GetString());
+        Assert.Contains("covers that column", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("exclusive-end", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("line pick", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsExclusiveEndColumn()
+    {
+        Assert.Contains("covers that column", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("exclusive-end", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line pick", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion

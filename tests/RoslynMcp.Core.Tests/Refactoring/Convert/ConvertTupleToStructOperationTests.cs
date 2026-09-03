@@ -73,6 +73,25 @@ public class ConvertTupleToStructOperationTests
     }
 
     [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertTupleInvalidColumn.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ConvertTupleToStructOperation.Validate(ValidParams(sourceFile: path, column: 0)));
+
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+            Assert.Equal("1007", ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void Validate_InvalidTypeName_Throws()
     {
         var path = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertTupleInvalidName.cs");
@@ -341,6 +360,215 @@ public class ConvertTupleToStructOperationTests
         Assert.Contains("return new Wrapper { @class = 1, value = 2 };", text);
         Assert.DoesNotContain("public int class {", text);
         Assert.DoesNotContain("{ class = 1", text);
+    }
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_ExclusiveEndAtPreviousCreation_ThrowsCannotConvert()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class SameLine
+            {
+                public object Create()
+                {
+                    var first = (1, 2); var second = (A: 3, B: 4);
+                    return first;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+        var line = FindLine(source, "var first = (1, 2)");
+        var firstCreationEndCol = FirstTupleCreationEndColumn(source);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                Column = firstCreationEndCol,
+                NewTypeName = "Pair"
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal("3020", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_Preview_ColumnSelectsSecond_DoesNotModifyFile()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class SameLine
+            {
+                public object Create()
+                {
+                    var first = (1, 2); var second = (A: 3, B: 4);
+                    return first;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+        var line = FindLine(source, "var first = (1, 2)");
+        var secondColumn = ColumnOf(source, "(A: 3, B: 4)");
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = secondColumn,
+            NewTypeName = "NamedPair",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change =>
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("public struct NamedPair") &&
+            change.AfterSnippet.Contains("new NamedPair { A = 3, B = 4 }"));
+        Assert.DoesNotContain(result.PendingChanges, change =>
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("new Pair"));
+        Assert.Contains(result.PendingChanges, change =>
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("(1, 2)"));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
+    #region Covering-span column
+
+    [Fact]
+    public void FindTupleCreation_OmittedColumn_PicksSingleOnLine()
+    {
+        var (root, model) = ParseWithModel(IndentedTupleSource);
+        var line = FindLine(IndentedTupleSource, "return (1, 2)");
+        var creation = root.DescendantNodes().OfType<TupleExpressionSyntax>().Single();
+        var startCol = creation.GetLocation().GetLineSpan().StartLinePosition.Character + 1;
+        Assert.True(startCol > 1);
+
+        var found = ConvertTupleToStructOperation.FindTupleCreation(
+            root,
+            model,
+            new ConvertTupleToStructParams
+            {
+                SourceFile = "/tmp/tuple.cs",
+                Line = line,
+                NewTypeName = "Pair"
+            });
+
+        Assert.Equal(creation.Span, found.Span);
+        Assert.Contains("(1, 2)", found.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FindTupleCreation_OmittedColumn_TwoOnLine_ThrowsSymbolAmbiguous()
+    {
+        var (root, model) = ParseWithModel(SameLineTupleSource);
+        var line = FindLine(SameLineTupleSource, "var first = (1, 2)");
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertTupleToStructOperation.FindTupleCreation(
+                root,
+                model,
+                new ConvertTupleToStructParams
+                {
+                    SourceFile = "/tmp/tuple.cs",
+                    Line = line,
+                    NewTypeName = "Pair"
+                }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FindTupleCreation_ColumnPicksUniqueCoveringCreation()
+    {
+        var (root, model) = ParseWithModel(SameLineTupleSource);
+        var line = FindLine(SameLineTupleSource, "var first = (1, 2)");
+        var secondColumn = ColumnOf(SameLineTupleSource, "(A: 3, B: 4)");
+
+        var found = ConvertTupleToStructOperation.FindTupleCreation(
+            root,
+            model,
+            new ConvertTupleToStructParams
+            {
+                SourceFile = "/tmp/tuple.cs",
+                Line = line,
+                Column = secondColumn,
+                NewTypeName = "NamedPair"
+            });
+
+        Assert.Contains("A: 3", found.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("1, 2", found.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FindTupleCreation_AdjacentCreations_ExclusiveEndDoesNotStealNext()
+    {
+        var (root, model) = ParseWithModel(SameLineTupleSource);
+        var line = FindLine(SameLineTupleSource, "var first = (1, 2)");
+        var first = root.DescendantNodes().OfType<TupleExpressionSyntax>()
+            .First(n => n.ToString().Contains("1, 2", StringComparison.Ordinal));
+        var firstCreationEndCol = first.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
+        var secondColumn = ColumnOf(SameLineTupleSource, "(A: 3, B: 4)");
+
+        Assert.False(ConvertTupleToStructOperation.SpanCoversColumn(
+            first.GetLocation().GetLineSpan(), line, firstCreationEndCol));
+
+        var exclusiveEnd = Assert.Throws<RefactoringException>(() =>
+            ConvertTupleToStructOperation.FindTupleCreation(
+                root,
+                model,
+                new ConvertTupleToStructParams
+                {
+                    SourceFile = "/tmp/tuple.cs",
+                    Line = line,
+                    Column = firstCreationEndCol,
+                    NewTypeName = "Pair"
+                }));
+        Assert.Equal(ErrorCodes.CannotConvert, exclusiveEnd.ErrorCode);
+
+        var atSecond = ConvertTupleToStructOperation.FindTupleCreation(
+            root,
+            model,
+            new ConvertTupleToStructParams
+            {
+                SourceFile = "/tmp/tuple.cs",
+                Line = line,
+                Column = secondColumn,
+                NewTypeName = "NamedPair"
+            });
+        Assert.Contains("A: 3", atSecond.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineTupleSource);
+        var first = tree.GetRoot().DescendantNodes().OfType<TupleExpressionSyntax>()
+            .First(n => n.ToString().Contains("1, 2", StringComparison.Ordinal));
+        var span = first.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(ConvertTupleToStructOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(ConvertTupleToStructOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(ConvertTupleToStructOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(ConvertTupleToStructOperation.SpanCoversColumn(span, line, startCol - 1));
     }
 
     #endregion
@@ -928,15 +1156,79 @@ public class ConvertTupleToStructOperationTests
 
     #region Helpers
 
+    private const string SameLineTupleSource = """
+        class C
+        {
+            void M()
+            {
+                var first = (1, 2); var second = (A: 3, B: 4);
+            }
+        }
+        """;
+
+    private const string IndentedTupleSource = """
+        class C
+        {
+            object M()
+            {
+                return (1, 2);
+            }
+        }
+        """;
+
     private static ConvertTupleToStructParams ValidParams(
         string? sourceFile = null,
         int line = 7,
-        string newTypeName = "Point") => new()
+        string newTypeName = "Point",
+        int? column = null) => new()
         {
             SourceFile = sourceFile ?? Path.Combine(Path.GetTempPath(), "RoslynMcpConvertTupleMissing.cs"),
             Line = line,
-            NewTypeName = newTypeName
+            NewTypeName = newTypeName,
+            Column = column
         };
+
+    private static int FindLine(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"Snippet not found: {snippet}");
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"Snippet not found: {snippet}");
+        var lineStart = source.LastIndexOf('\n', index) + 1;
+        return index - lineStart + 1;
+    }
+
+    private static int FirstTupleCreationEndColumn(string source)
+    {
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var first = root.DescendantNodes().OfType<TupleExpressionSyntax>()
+            .OrderBy(n => n.SpanStart)
+            .First();
+        return first.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
+    }
+
+    private static (SyntaxNode Root, SemanticModel Model) ParseWithModel(string source)
+    {
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+            "TupleFind",
+            [tree],
+            [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        return (tree.GetRoot(), compilation.GetSemanticModel(tree));
+    }
 
     private sealed class TempWorkspace : IAsyncDisposable
     {
