@@ -613,6 +613,19 @@ public class ConvertTupleToStructOperationTests
         Assert.False(ConvertTupleToStructOperation.SpanCoversLine(multiLineSpan, endLine + 1, column: null));
     }
 
+    [Fact]
+    public void SpanCoversLine_TreatsEndAsExclusive()
+    {
+        var span = new FileLinePositionSpan(
+            "t.cs",
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
+
+        Assert.True(ConvertTupleToStructOperation.SpanCoversLine(span, 1, column: null));
+        Assert.True(ConvertTupleToStructOperation.SpanCoversLine(span, 2, column: null));
+        Assert.False(ConvertTupleToStructOperation.SpanCoversLine(span, 3, column: null));
+    }
+
     #endregion
 
     #region Rejects

@@ -608,6 +608,19 @@ public class ConvertAnonymousToClassOperationTests
         Assert.False(ConvertAnonymousToClassOperation.SpanCoversLine(multiLineSpan, endLine + 1, column: null));
     }
 
+    [Fact]
+    public void SpanCoversLine_TreatsEndAsExclusive()
+    {
+        var span = new FileLinePositionSpan(
+            "t.cs",
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
+
+        Assert.True(ConvertAnonymousToClassOperation.SpanCoversLine(span, 1, column: null));
+        Assert.True(ConvertAnonymousToClassOperation.SpanCoversLine(span, 2, column: null));
+        Assert.False(ConvertAnonymousToClassOperation.SpanCoversLine(span, 3, column: null));
+    }
+
     #endregion
 
     #region Rejects
