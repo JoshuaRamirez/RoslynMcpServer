@@ -225,7 +225,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ConvertForeachLinqOperation, ConvertForeachLinqParams>(
             "convert-foreach-linq", "Convert foreach loops with Add patterns to LINQ; preferQuerySyntax (default false) keeps method syntax, true emits query syntax (from … where … select) for filter/project/ToList; Any/All/FirstOrDefault/Count keep method syntax; column (optional) picks the foreach whose ForEachKeyword span covers that column on the given line (exclusive-end; FirstOrDefault among covering keywords); omitted keeps today's first-ForEachKeyword-on-line-by-SpanStart pick; column without line keeps today's required-line validation; allFiles (default false) converts every distinct eligible foreach in every C# file (sourceFile optional when true; cannot be combined with line or column)");
         r.RegisterRefactoring<ConvertAnonymousToClassOperation, ConvertAnonymousToClassParams>(
-            "convert-anonymous-to-class", "Convert an anonymous type to a named class or record");
+            "convert-anonymous-to-class", "Convert an anonymous type to a named class or record; column (optional) picks the anonymous creation whose span covers that column on the given line (exclusive-end; unique covering match); omitted keeps today's line pick");
         r.RegisterRefactoring<ConvertTupleToStructOperation, ConvertTupleToStructParams>(
             "convert-tuple-to-struct", "Convert a tuple to a named struct");
         r.RegisterRefactoring<ConvertToInterpolatedStringOperation, ConvertToInterpolatedStringParams>(

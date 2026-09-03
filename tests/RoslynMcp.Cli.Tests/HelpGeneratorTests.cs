@@ -1312,6 +1312,20 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_ConvertAnonymousToClass_ShowsExclusiveEndColumn()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("convert-anonymous-to-class")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("convert-anonymous-to-class", help);
+        Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("covers that column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("exclusive-end", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("line pick", tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ConvertToInterpolatedString_ShowsColumn()
     {
         var registry = ToolRegistry.BuildDefault();

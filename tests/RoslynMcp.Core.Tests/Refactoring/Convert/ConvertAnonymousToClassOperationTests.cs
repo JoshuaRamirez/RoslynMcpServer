@@ -1,4 +1,6 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -63,6 +65,25 @@ public class ConvertAnonymousToClassOperationTests
                 ConvertAnonymousToClassOperation.Validate(ValidParams(sourceFile: path, line: 0)));
 
             Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertAnonInvalidColumn.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ConvertAnonymousToClassOperation.Validate(ValidParams(sourceFile: path, column: 0)));
+
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+            Assert.Equal("1007", ex.ErrorCode);
         }
         finally
         {
@@ -341,6 +362,210 @@ public class ConvertAnonymousToClassOperationTests
         Assert.DoesNotContain("{ class = 1 }", text);
     }
 
+    [SkippableFact]
+    public async Task ConvertAnonymousToClass_ExclusiveEndAtPreviousCreation_ThrowsCannotConvert()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class SameLine
+            {
+                public object Create()
+                {
+                    var first = new { Name = "Ada" }; var second = new { Age = 1 };
+                    return first;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+        var line = FindLine(source, "var first = new { Name = \"Ada\" }");
+        var firstCreationEndCol = FirstAnonymousCreationEndColumn(source);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertAnonymousToClassParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                Column = firstCreationEndCol,
+                NewTypeName = "Person"
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal("3020", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymousToClass_Preview_ColumnSelectsSecond_DoesNotModifyFile()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class SameLine
+            {
+                public object Create()
+                {
+                    var first = new { Name = "Ada" }; var second = new { Age = 1 };
+                    return first;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+        var line = FindLine(source, "var first = new { Name = \"Ada\" }");
+        var secondColumn = ColumnOf(source, "new { Age = 1 }");
+
+        var result = await operation.ExecuteAsync(new ConvertAnonymousToClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = secondColumn,
+            NewTypeName = "AgeInfo",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change =>
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("public class AgeInfo") &&
+            change.AfterSnippet.Contains("new AgeInfo { Age = 1 }"));
+        Assert.DoesNotContain(result.PendingChanges, change =>
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("new Person"));
+        Assert.Contains(result.PendingChanges, change =>
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("new { Name = \"Ada\" }"));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
+    #region Covering-span column
+
+    [Fact]
+    public void FindAnonymousCreation_OmittedColumn_PicksSingleOnLine()
+    {
+        var root = CSharpSyntaxTree.ParseText(IndentedAnonymousSource).GetRoot();
+        var line = FindLine(IndentedAnonymousSource, "return new { Name = \"Ada\" }");
+        var creation = root.DescendantNodes().OfType<AnonymousObjectCreationExpressionSyntax>().Single();
+        var startCol = creation.GetLocation().GetLineSpan().StartLinePosition.Character + 1;
+        Assert.True(startCol > 1);
+
+        var found = ConvertAnonymousToClassOperation.FindAnonymousCreation(
+            root,
+            new ConvertAnonymousToClassParams
+            {
+                SourceFile = "/tmp/anon.cs",
+                Line = line,
+                NewTypeName = "Person"
+            });
+
+        Assert.Equal(creation.Span, found.Span);
+        Assert.Contains("Name", found.Initializers[0].NameEquals!.Name.Identifier.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FindAnonymousCreation_OmittedColumn_TwoOnLine_ThrowsSymbolAmbiguous()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineAnonymousSource).GetRoot();
+        var line = FindLine(SameLineAnonymousSource, "var first = new { Name = \"Ada\" }");
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertAnonymousToClassOperation.FindAnonymousCreation(
+                root,
+                new ConvertAnonymousToClassParams
+                {
+                    SourceFile = "/tmp/anon.cs",
+                    Line = line,
+                    NewTypeName = "Person"
+                }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FindAnonymousCreation_ColumnPicksUniqueCoveringCreation()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineAnonymousSource).GetRoot();
+        var line = FindLine(SameLineAnonymousSource, "var first = new { Name = \"Ada\" }");
+        var secondColumn = ColumnOf(SameLineAnonymousSource, "new { Age = 1 }");
+
+        var found = ConvertAnonymousToClassOperation.FindAnonymousCreation(
+            root,
+            new ConvertAnonymousToClassParams
+            {
+                SourceFile = "/tmp/anon.cs",
+                Line = line,
+                Column = secondColumn,
+                NewTypeName = "AgeInfo"
+            });
+
+        Assert.Contains("Age", found.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("Name", found.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FindAnonymousCreation_AdjacentCreations_ExclusiveEndDoesNotStealNext()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineAnonymousSource).GetRoot();
+        var line = FindLine(SameLineAnonymousSource, "var first = new { Name = \"Ada\" }");
+        var first = root.DescendantNodes().OfType<AnonymousObjectCreationExpressionSyntax>()
+            .First(n => n.ToString().Contains("Name", StringComparison.Ordinal));
+        var firstCreationEndCol = first.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
+        var secondColumn = ColumnOf(SameLineAnonymousSource, "new { Age = 1 }");
+
+        Assert.False(ConvertAnonymousToClassOperation.SpanCoversColumn(
+            first.GetLocation().GetLineSpan(), line, firstCreationEndCol));
+
+        var exclusiveEnd = Assert.Throws<RefactoringException>(() =>
+            ConvertAnonymousToClassOperation.FindAnonymousCreation(
+                root,
+                new ConvertAnonymousToClassParams
+                {
+                    SourceFile = "/tmp/anon.cs",
+                    Line = line,
+                    Column = firstCreationEndCol,
+                    NewTypeName = "Person"
+                }));
+        Assert.Equal(ErrorCodes.CannotConvert, exclusiveEnd.ErrorCode);
+
+        var atSecond = ConvertAnonymousToClassOperation.FindAnonymousCreation(
+            root,
+            new ConvertAnonymousToClassParams
+            {
+                SourceFile = "/tmp/anon.cs",
+                Line = line,
+                Column = secondColumn,
+                NewTypeName = "AgeInfo"
+            });
+        Assert.Contains("Age", atSecond.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineAnonymousSource);
+        var first = tree.GetRoot().DescendantNodes().OfType<AnonymousObjectCreationExpressionSyntax>()
+            .First(n => n.ToString().Contains("Name", StringComparison.Ordinal));
+        var span = first.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(ConvertAnonymousToClassOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(ConvertAnonymousToClassOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(ConvertAnonymousToClassOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(ConvertAnonymousToClassOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
     #endregion
 
     #region Rejects
@@ -553,15 +778,68 @@ public class ConvertAnonymousToClassOperationTests
 
     #region Helpers
 
+    private const string SameLineAnonymousSource = """
+        class C
+        {
+            void M()
+            {
+                var first = new { Name = "Ada" }; var second = new { Age = 1 };
+            }
+        }
+        """;
+
+    private const string IndentedAnonymousSource = """
+        class C
+        {
+            object M()
+            {
+                return new { Name = "Ada" };
+            }
+        }
+        """;
+
     private static ConvertAnonymousToClassParams ValidParams(
         string? sourceFile = null,
         int line = 7,
-        string newTypeName = "Person") => new()
+        string newTypeName = "Person",
+        int? column = null) => new()
         {
             SourceFile = sourceFile ?? Path.Combine(Path.GetTempPath(), "RoslynMcpConvertAnonMissing.cs"),
             Line = line,
-            NewTypeName = newTypeName
+            NewTypeName = newTypeName,
+            Column = column
         };
+
+    private static int FindLine(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"Snippet not found: {snippet}");
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"Snippet not found: {snippet}");
+        var lineStart = source.LastIndexOf('\n', index) + 1;
+        return index - lineStart + 1;
+    }
+
+    private static int FirstAnonymousCreationEndColumn(string source)
+    {
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var first = root.DescendantNodes().OfType<AnonymousObjectCreationExpressionSyntax>()
+            .OrderBy(n => n.SpanStart)
+            .First();
+        return first.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
+    }
 
     private sealed class TempWorkspace : IAsyncDisposable
     {
