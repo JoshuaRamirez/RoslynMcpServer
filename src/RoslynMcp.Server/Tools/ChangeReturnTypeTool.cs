@@ -69,7 +69,7 @@ public sealed class ChangeReturnTypeTool : IToolHandler
             column = new
             {
                 type = "integer",
-                description = "Column number for disambiguation (1-based)"
+                description = "1-based column for disambiguation. When set, selects the smallest method whose identifier or declaration span covers that column. Omitted keeps today's MethodName and/or Line start-line pick."
             },
             updateOverrides = new
             {
