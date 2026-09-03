@@ -90,6 +90,38 @@ public class ChangeSignatureOperationTests
     }
 
     [Fact]
+    public void Validate_InvalidLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ChangeSignatureOperation.Validate(new ChangeSignatureParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                MethodName = "Process",
+                Parameters = KeepXAddFlag(),
+                Line = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ChangeSignatureOperation.Validate(new ChangeSignatureParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                MethodName = "Process",
+                Parameters = KeepXAddFlag(),
+                Line = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("1006", ex.ErrorCode);
+    }
+
+    [Fact]
     public void Validate_MissingMethodName_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
