@@ -195,7 +195,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<AddParameterOperation, AddParameterParams>(
             "add-parameter", "Add a named parameter to a method and update call sites; column (optional) picks the smallest method whose identifier or declaration span covers that column; omitted keeps today's methodName and/or line start-line pick");
         r.RegisterRefactoring<RemoveParameterOperation, RemoveParameterParams>(
-            "remove-parameter", "Remove a named parameter from a method and update call sites");
+            "remove-parameter", "Remove a named parameter from a method and update call sites; column (optional) picks the smallest method whose identifier or declaration span covers that column; omitted keeps today's methodName and/or line start-line pick");
         r.RegisterRefactoring<ReorderParametersOperation, ReorderParametersParams>(
             "reorder-parameters", "Reorder a method's parameters by a 0-based permutation and update call sites");
         r.RegisterRefactoring<ChangeReturnTypeOperation, ChangeReturnTypeParams>(
