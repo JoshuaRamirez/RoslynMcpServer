@@ -285,6 +285,23 @@ public class SimplifyNameOperationTests
     }
 
     [Fact]
+    public void SpanTouchesLine_TreatsEndAsExclusive()
+    {
+        // Trailing newline puts the compilation unit's exclusive end at (2, 0),
+        // the same FileLinePositionSpan EncapsulateFieldOperationTests pins.
+        const string source = "class C\n{}\n";
+        var node = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var span = node.GetLocation().GetLineSpan();
+
+        Assert.Equal(new LinePosition(0, 0), span.StartLinePosition);
+        Assert.Equal(new LinePosition(2, 0), span.EndLinePosition);
+
+        Assert.True(SimplifyNameOperation.SpanTouchesLine(node, 1));
+        Assert.True(SimplifyNameOperation.SpanTouchesLine(node, 2));
+        Assert.False(SimplifyNameOperation.SpanTouchesLine(node, 3));
+    }
+
+    [Fact]
     public void GetRightmostIdentifier_QualifiedGeneric()
     {
         var name = SyntaxFactory.ParseName("System.Collections.Generic.List<int>");
