@@ -471,6 +471,34 @@ public class ConvertToAsyncOperationTests
     }
 
     [Fact]
+    public void Validate_InvalidLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                MethodName = "Process",
+                Line = 0
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_NegativeLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                MethodName = "Process",
+                Line = -1
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+    }
+
+    [Fact]
     public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -535,6 +563,21 @@ public class ConvertToAsyncOperationTests
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
         Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithInvalidLine_ThrowsMissingRequiredParam()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToAsyncOperation.Validate(new ConvertToAsyncParams
+            {
+                AllFiles = true,
+                Line = 0
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles cannot be combined with methodName, line, or column.", ex.Message);
+        Assert.NotEqual(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
     }
 
     [Fact]
