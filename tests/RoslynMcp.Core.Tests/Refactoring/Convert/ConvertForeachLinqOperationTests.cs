@@ -120,6 +120,21 @@ public class ConvertForeachLinqOperationTests
             }));
 
         Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_ColumnWithoutLine_ThrowsMissingRequiredParam()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertForeachLinqOperation.Validate(new ConvertForeachLinqParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                Column = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -661,6 +676,94 @@ public class ConvertForeachLinqOperationTests
         Assert.Contains("foreach (var b in second) titles.Add(b);", updated, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task ConvertForeachLinq_ExclusiveEndAtPreviousKeyword_ThrowsCannotConvert()
+    {
+        const string source = """
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class SameLine
+            {
+                public void Collect(List<string> first, List<string> second)
+                {
+                    var names = new List<string>();
+                    var titles = new List<string>();
+                    foreach (var a in first) names.Add(a); foreach (var b in second) titles.Add(b);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+        var line = FindLine(source, "foreach (var a in first)");
+        var firstKeywordEndCol = FirstForeachKeywordEndColumn(source);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertForeachLinqParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                Column = firstKeywordEndCol
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal("3020", ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertForeachLinq_Preview_ColumnSelectsSecondForeach_DoesNotModifyFile()
+    {
+        const string source = """
+            using System.Collections.Generic;
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class SameLine
+            {
+                public void Collect(List<string> first, List<string> second)
+                {
+                    var names = new List<string>();
+                    var titles = new List<string>();
+                    foreach (var a in first) names.Add(a); foreach (var b in second) titles.Add(b);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertForeachLinqOperation(workspace.Context);
+        var line = FindLine(source, "foreach (var a in first)");
+        var secondColumn = ColumnOf(source, "foreach (var b in second)");
+
+        var result = await operation.ExecuteAsync(new ConvertForeachLinqParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = secondColumn,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change =>
+            change.Description.Contains("Select", StringComparison.Ordinal) &&
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("titles", StringComparison.Ordinal) &&
+            change.AfterSnippet.Contains(".Select", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.PendingChanges, change =>
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("names", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     [Fact]
     public void FindForeachStatement_ColumnPicksKeywordCoverage()
     {
@@ -686,6 +789,70 @@ public class ConvertForeachLinqOperationTests
         Assert.NotNull(second);
         Assert.Equal("x", first.Identifier.Text);
         Assert.Equal("y", second.Identifier.Text);
+    }
+
+    [Fact]
+    public void FindForeachStatement_OmittedColumn_PicksFirstKeywordBySpanStart()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineForeachsSource).GetRoot();
+        var line = FindLine(SameLineForeachsSource, "foreach (var x in xs)");
+
+        var found = ConvertForeachLinqOperation.FindForeachStatement(root, line, column: null);
+
+        Assert.NotNull(found);
+        Assert.Equal("x", found.Identifier.Text);
+    }
+
+    [Fact]
+    public void FindForeachStatement_OmittedColumn_IndentedKeyword_DoesNotForceColumn1()
+    {
+        var root = CSharpSyntaxTree.ParseText(IndentedForeachSource).GetRoot();
+        var line = FindLine(IndentedForeachSource, "foreach (var item in items)");
+        var foreachStmt = root.DescendantNodes().OfType<ForEachStatementSyntax>().Single();
+        var startCol = foreachStmt.ForEachKeyword.GetLocation().GetLineSpan().StartLinePosition.Character + 1;
+        Assert.True(startCol > 1);
+
+        var found = ConvertForeachLinqOperation.FindForeachStatement(root, line, column: null);
+
+        Assert.NotNull(found);
+        Assert.Equal("item", found.Identifier.Text);
+    }
+
+    [Fact]
+    public void FindForeachStatement_AdjacentKeywords_ExclusiveEndDoesNotStealNext()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineForeachsSource).GetRoot();
+        var line = FindLine(SameLineForeachsSource, "foreach (var x in xs)");
+        var first = root.DescendantNodes().OfType<ForEachStatementSyntax>()
+            .First(statement => statement.Identifier.Text == "x");
+        var firstKeywordEndCol = first.ForEachKeyword.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
+        var secondKeyword = ColumnOf(SameLineForeachsSource, "foreach (var y in ys)");
+
+        var atExclusiveEnd = ConvertForeachLinqOperation.FindForeachStatement(root, line, firstKeywordEndCol);
+        var atSecond = ConvertForeachLinqOperation.FindForeachStatement(root, line, secondKeyword);
+
+        Assert.False(ConvertForeachLinqOperation.SpanCoversColumn(
+            first.ForEachKeyword.GetLocation().GetLineSpan(), line, firstKeywordEndCol));
+        Assert.True(atExclusiveEnd == null || atExclusiveEnd.Identifier.Text != "x");
+        Assert.NotNull(atSecond);
+        Assert.Equal("y", atSecond.Identifier.Text);
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineForeachsSource);
+        var first = tree.GetRoot().DescendantNodes().OfType<ForEachStatementSyntax>()
+            .First(statement => statement.Identifier.Text == "x");
+        var span = first.ForEachKeyword.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(ConvertForeachLinqOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(ConvertForeachLinqOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(ConvertForeachLinqOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(ConvertForeachLinqOperation.SpanCoversColumn(span, line, startCol - 1));
     }
 
     #endregion
@@ -1151,12 +1318,45 @@ public class ConvertForeachLinqOperationTests
         return line;
     }
 
+    private const string SameLineForeachsSource = """
+        class C
+        {
+            void M(int[] xs, int[] ys)
+            {
+                var a = new System.Collections.Generic.List<int>();
+                var b = new System.Collections.Generic.List<int>();
+                foreach (var x in xs) a.Add(x); foreach (var y in ys) b.Add(y);
+            }
+        }
+        """;
+
+    private const string IndentedForeachSource = """
+        class C
+        {
+            void M(int[] items)
+            {
+                var results = new System.Collections.Generic.List<int>();
+                foreach (var item in items)
+                    results.Add(item);
+            }
+        }
+        """;
+
     private static int ColumnOf(string source, string snippet)
     {
         var index = source.IndexOf(snippet, StringComparison.Ordinal);
         Assert.True(index >= 0, $"Snippet not found: {snippet}");
         var lineStart = source.LastIndexOf('\n', index);
         return index - lineStart;
+    }
+
+    private static int FirstForeachKeywordEndColumn(string source)
+    {
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var first = root.DescendantNodes().OfType<ForEachStatementSyntax>()
+            .OrderBy(statement => statement.ForEachKeyword.SpanStart)
+            .First();
+        return first.ForEachKeyword.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
     }
 
     private sealed class TempWorkspace : IAsyncDisposable

@@ -18,16 +18,20 @@ public sealed class ConvertForeachLinqParams
     public bool AllFiles { get; init; }
 
     /// <summary>
-    /// 1-based line number of the foreach statement to convert.
+    /// 1-based line number of the foreach keyword.
     /// Required when <see cref="AllFiles"/> is false. Single-foreach only.
+    /// When <see cref="Column"/> is omitted, matching stays today's first
+    /// <c>ForEachKeyword</c> on the line by <c>SpanStart</c>.
     /// </summary>
     public int? Line { get; init; }
 
     /// <summary>
-    /// 1-based column of the foreach keyword. Optional. When set, selects the
-    /// foreach whose keyword covers that column on <see cref="Line"/>. Spec
-    /// default is 1; omitted keeps today's first-foreach-on-the-line pick so
-    /// indented statements still convert without a column. Single-foreach only.
+    /// 1-based column on the foreach keyword. When set with <see cref="Line"/>,
+    /// selects the foreach whose <c>ForEachKeyword</c> span covers that column
+    /// (exclusive-end; today's FirstOrDefault among covering keywords).
+    /// Omitted keeps today's first-<c>ForEachKeyword</c>-on-line-by-<c>SpanStart</c> pick.
+    /// Column without line keeps today's required-line validation.
+    /// Single-foreach only.
     /// </summary>
     public int? Column { get; init; }
 
