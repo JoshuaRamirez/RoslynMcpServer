@@ -193,7 +193,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ChangeSignatureOperation, ChangeSignatureParams>(
             "change-signature", "Add, remove, or reorder method parameters; column (optional) picks the smallest method whose identifier or declaration span covers that column; omitted keeps today's methodName and/or line start-line pick");
         r.RegisterRefactoring<AddParameterOperation, AddParameterParams>(
-            "add-parameter", "Add a named parameter to a method and update call sites");
+            "add-parameter", "Add a named parameter to a method and update call sites; column (optional) picks the smallest method whose identifier or declaration span covers that column; omitted keeps today's methodName and/or line start-line pick");
         r.RegisterRefactoring<RemoveParameterOperation, RemoveParameterParams>(
             "remove-parameter", "Remove a named parameter from a method and update call sites");
         r.RegisterRefactoring<ReorderParametersOperation, ReorderParametersParams>(
