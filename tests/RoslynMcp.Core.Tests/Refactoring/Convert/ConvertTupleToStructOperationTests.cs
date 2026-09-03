@@ -571,6 +571,48 @@ public class ConvertTupleToStructOperationTests
         Assert.False(ConvertTupleToStructOperation.SpanCoversColumn(span, line, startCol - 1));
     }
 
+    [Fact]
+    public void SpanCoversLine_WithColumn_TreatsEndAsExclusive()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineTupleSource);
+        var first = tree.GetRoot().DescendantNodes().OfType<TupleExpressionSyntax>()
+            .First(n => n.ToString().Contains("1, 2", StringComparison.Ordinal));
+        var span = first.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(ConvertTupleToStructOperation.SpanCoversLine(span, line, startCol));
+        Assert.True(ConvertTupleToStructOperation.SpanCoversLine(span, line, endCol - 1));
+        Assert.False(ConvertTupleToStructOperation.SpanCoversLine(span, line, endCol));
+        Assert.False(ConvertTupleToStructOperation.SpanCoversLine(span, line, startCol - 1));
+
+        const string multiLineSource = """
+            class C
+            {
+                void M()
+                {
+                    var first = (
+                        1,
+                        2
+                    );
+                }
+            }
+            """;
+        var multiLineTree = CSharpSyntaxTree.ParseText(multiLineSource);
+        var multiLineFirst = multiLineTree.GetRoot().DescendantNodes().OfType<TupleExpressionSyntax>()
+            .First(n => n.ToString().Contains("1", StringComparison.Ordinal));
+        var multiLineSpan = multiLineFirst.GetLocation().GetLineSpan();
+        var startLine = multiLineSpan.StartLinePosition.Line + 1;
+        var endLine = multiLineSpan.EndLinePosition.Line + 1;
+
+        for (var coveredLine = startLine; coveredLine <= endLine; coveredLine++)
+            Assert.True(ConvertTupleToStructOperation.SpanCoversLine(multiLineSpan, coveredLine, column: null));
+
+        Assert.False(ConvertTupleToStructOperation.SpanCoversLine(multiLineSpan, startLine - 1, column: null));
+        Assert.False(ConvertTupleToStructOperation.SpanCoversLine(multiLineSpan, endLine + 1, column: null));
+    }
+
     #endregion
 
     #region Rejects

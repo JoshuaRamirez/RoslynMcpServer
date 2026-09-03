@@ -1027,7 +1027,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         return -1;
     }
 
-    private static bool SpanCoversLine(FileLinePositionSpan span, int line, int? column)
+    internal static bool SpanCoversLine(FileLinePositionSpan span, int line, int? column)
     {
         var startLine = span.StartLinePosition.Line + 1;
         var endLine = span.EndLinePosition.Line + 1;
