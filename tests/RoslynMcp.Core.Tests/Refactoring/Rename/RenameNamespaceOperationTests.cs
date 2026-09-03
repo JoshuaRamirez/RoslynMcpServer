@@ -1314,15 +1314,45 @@ public class RenameNamespaceOperationTests
         var bodyLine = FindLine(NestedFooSource, "public class Y");
 
         var byOuterName = RenameNamespaceOperation.FindNamespace(
-            root, model, "Foo", outerLine, ColumnOf(NestedFooSource, "A.Foo"));
+            root, model, "Foo", outerLine, ColumnOf(NestedFooSource, "A.Foo") + "A.".Length);
         var byInnerName = RenameNamespaceOperation.FindNamespace(
-            root, model, "Foo", innerLine, ColumnOf(NestedFooSource, "B.Foo"));
+            root, model, "Foo", innerLine, ColumnOf(NestedFooSource, "B.Foo") + "B.".Length);
         var byInnerBody = RenameNamespaceOperation.FindNamespace(
             root, model, "Foo", bodyLine, ColumnOf(NestedFooSource, "public class Y"));
 
         Assert.Equal("A.Foo", RenameNamespaceOperation.GetFullName(byOuterName));
         Assert.Equal("A.Foo.B.Foo", RenameNamespaceOperation.GetFullName(byInnerName));
         Assert.Equal("A.Foo.B.Foo", RenameNamespaceOperation.GetFullName(byInnerBody));
+    }
+
+    [Fact]
+    public void FindNamespace_Column_RepeatedSegment_PicksMatchingIdentifier()
+    {
+        const string source = "namespace Foo.Bar.Foo { public class X {} }";
+        var (root, model) = Parse(source);
+        var line = FindLine(source, "namespace Foo.Bar.Foo");
+        var firstFoo = ColumnOf(source, "Foo.Bar.Foo");
+        var lastFoo = firstFoo + "Foo.Bar.".Length;
+
+        var outer = RenameNamespaceOperation.FindNamespace(root, model, "Foo", line, firstFoo);
+        var inner = RenameNamespaceOperation.FindNamespace(root, model, "Foo", line, lastFoo);
+
+        Assert.Equal("Foo", RenameNamespaceOperation.GetFullName(outer));
+        Assert.Equal("Foo.Bar.Foo", RenameNamespaceOperation.GetFullName(inner));
+    }
+
+    [Fact]
+    public void FindNamespace_Column_RepeatedSegment_NonFooToken_PicksDeclared()
+    {
+        const string source = "namespace Foo.Bar.Foo { public class X {} }";
+        var (root, model) = Parse(source);
+        var line = FindLine(source, "namespace Foo.Bar.Foo");
+        var bar = ColumnOf(source, "Bar.Foo");
+
+        // Bar is not a Foo segment. Name misses; the declared symbol of
+        // this declaration wins over the ancestor that shares the span.
+        var found = RenameNamespaceOperation.FindNamespace(root, model, "Foo", line, bar);
+        Assert.Equal("Foo.Bar.Foo", RenameNamespaceOperation.GetFullName(found));
     }
 
     [Fact]

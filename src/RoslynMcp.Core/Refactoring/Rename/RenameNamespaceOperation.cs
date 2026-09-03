@@ -241,9 +241,10 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     /// covering-span). <paramref name="column"/> without
     /// <paramref name="line"/> keeps today's omitted-line path — do not
     /// invent column-only disambiguation across lines. When both are set,
-    /// picks the smallest namespace whose name or declaration span covers
-    /// that 1-based column (name preferred, then smallest covering
-    /// declaration).
+    /// picks the smallest namespace whose matching name segment or
+    /// declaration span covers that 1-based column (that candidate's
+    /// identifier preferred, then smallest covering declaration, then
+    /// the declared symbol of that declaration).
     /// </summary>
     internal static INamespaceSymbol FindNamespace(
         SyntaxNode root,
@@ -255,7 +256,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     {
         var requested = namespaceName.Trim();
         var declarations = root.DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>().ToList();
-        var matches = new List<(INamespaceSymbol Symbol, BaseNamespaceDeclarationSyntax Declaration)>();
+        var matches = new List<(INamespaceSymbol Symbol, BaseNamespaceDeclarationSyntax Declaration, INamespaceSymbol Declared)>();
 
         foreach (var declaration in declarations)
         {
@@ -265,7 +266,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             foreach (var candidate in EnumerateNamespaceChain(declared))
             {
                 if (NamespaceMatches(candidate, declaration, requested, declared))
-                    matches.Add((candidate, declaration));
+                    matches.Add((candidate, declaration, declared));
             }
         }
 
@@ -280,22 +281,35 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         {
             if (column.HasValue)
             {
-                // Exclusive-end covering-span: prefer the name token,
-                // then the smallest covering declaration, among
-                // candidates that already match namespaceName. If nothing
-                // covers this position, keep today's not-found.
+                // Exclusive-end covering-span: prefer the name segment
+                // that corresponds to this candidate (not the whole
+                // qualified name), then the smallest covering
+                // declaration, then the declared symbol of that
+                // declaration (chain ancestors of the same node lose).
+                // A repeated segment such as Foo.Bar.Foo must not treat
+                // both Foos as a name hit.
                 var covering = matches
-                    .Where(m => NamespaceCoversColumn(m.Declaration, line.Value, column.Value))
-                    .OrderBy(m => NameCoversColumn(m.Declaration, line.Value, column.Value) ? 0 : 1)
+                    .Select(m => (
+                        m.Symbol,
+                        m.Declared,
+                        m.Declaration,
+                        NameHit: NameCoversColumn(m.Symbol, m.Declared, m.Declaration, line.Value, column.Value),
+                        DeclarationHit: SpanCoversColumn(
+                            m.Declaration.GetLocation().GetLineSpan(), line.Value, column.Value)))
+                    .Where(m => m.NameHit || m.DeclarationHit)
+                    .OrderBy(m => m.NameHit ? 0 : 1)
                     .ThenBy(m => m.Declaration.Span.Length)
-                    .FirstOrDefault();
+                    .ThenBy(m => SymbolEqualityComparer.Default.Equals(m.Symbol, m.Declared) ? 0 : 1)
+                    .ToList();
 
-                if (covering.Declaration != null)
-                    return covering.Symbol;
+                if (covering.Count == 0)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.SymbolNotFound,
+                        $"No namespace named '{requested}' found at line {line}.");
+                }
 
-                throw new RefactoringException(
-                    ErrorCodes.SymbolNotFound,
-                    $"No namespace named '{requested}' found at line {line}.");
+                return covering[0].Symbol;
             }
 
             // Omitted column keeps today's namespaceName + optional line
@@ -486,12 +500,77 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         return true;
     }
 
-    private static bool NamespaceCoversColumn(BaseNamespaceDeclarationSyntax declaration, int line, int column) =>
-        NameCoversColumn(declaration, line, column) ||
-        SpanCoversColumn(declaration.GetLocation().GetLineSpan(), line, column);
+    /// <summary>
+    /// True when the identifier token for <paramref name="candidate"/> in
+    /// <paramref name="declaration"/>'s name covers the column. Walks from
+    /// the declared (rightmost) identifier up through containing segments
+    /// so <c>namespace Foo.Bar.Foo</c> maps the first <c>Foo</c> to the
+    /// ancestor and the last <c>Foo</c> to the declared namespace.
+    /// </summary>
+    private static bool NameCoversColumn(
+        INamespaceSymbol candidate,
+        INamespaceSymbol declared,
+        BaseNamespaceDeclarationSyntax declaration,
+        int line,
+        int column)
+    {
+        var token = FindNameToken(candidate, declared, declaration);
+        return token.HasValue
+               && SpanCoversColumn(token.Value.GetLocation().GetLineSpan(), line, column);
+    }
 
-    private static bool NameCoversColumn(BaseNamespaceDeclarationSyntax declaration, int line, int column) =>
-        SpanCoversColumn(declaration.Name.GetLocation().GetLineSpan(), line, column);
+    private static SyntaxToken? FindNameToken(
+        INamespaceSymbol candidate,
+        INamespaceSymbol declared,
+        BaseNamespaceDeclarationSyntax declaration)
+    {
+        var identifiers = GetNameIdentifiers(declaration.Name);
+        if (identifiers.Count == 0)
+            return null;
+
+        var current = declared;
+        for (var i = identifiers.Count - 1; i >= 0; i--)
+        {
+            if (current is null || current.IsGlobalNamespace)
+                return null;
+
+            if (SymbolEqualityComparer.Default.Equals(current, candidate))
+            {
+                if (!string.Equals(identifiers[i].Text, candidate.Name, StringComparison.Ordinal))
+                    return null;
+                return identifiers[i];
+            }
+
+            current = current.ContainingNamespace;
+        }
+
+        return null;
+    }
+
+    private static List<SyntaxToken> GetNameIdentifiers(NameSyntax name)
+    {
+        var tokens = new List<SyntaxToken>();
+        CollectNameIdentifiers(name, tokens);
+        return tokens;
+    }
+
+    private static void CollectNameIdentifiers(NameSyntax name, List<SyntaxToken> tokens)
+    {
+        switch (name)
+        {
+            case IdentifierNameSyntax identifier:
+                tokens.Add(identifier.Identifier);
+                break;
+            case QualifiedNameSyntax qualified:
+                CollectNameIdentifiers(qualified.Left, tokens);
+                tokens.Add(qualified.Right.Identifier);
+                break;
+            default:
+                foreach (var identifier in name.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+                    tokens.Add(identifier.Identifier);
+                break;
+        }
+    }
 
     /// <summary>
     /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
