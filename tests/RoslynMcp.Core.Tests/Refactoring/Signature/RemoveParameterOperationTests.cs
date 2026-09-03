@@ -837,8 +837,8 @@ public class RemoveParameterOperationTests
         });
 
         Assert.True(result.Success);
-        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
-        Assert.Contains("public void Process(int x)", updated.Replace("\r\n", "\n"));
+        var updated = (await File.ReadAllTextAsync(workspace.SourcePath)).Replace("\r\n", "\n");
+        Assert.Contains("Process(int x)", updated);
         Assert.DoesNotContain("bool unused", updated);
     }
 
