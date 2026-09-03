@@ -539,7 +539,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         return null;
     }
 
-    private static bool MatchesCallSiteLocation(
+    internal static bool MatchesCallSiteLocation(
         Document document,
         InvocationExpressionSyntax invocation,
         CallSiteLocation location)
@@ -548,23 +548,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
             return false;
 
         var span = invocation.GetLocation().GetLineSpan();
-        var startLine = span.StartLinePosition.Line + 1;
-        var startColumn = span.StartLinePosition.Character + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        var endColumn = span.EndLinePosition.Character + 1;
-        if (location.Line < startLine || location.Line > endLine)
-            return false;
-
-        if (startLine == endLine)
-        {
-            return location.Column >= startColumn && location.Column <= endColumn;
-        }
-
-        if (location.Line == startLine)
-            return location.Column >= startColumn;
-        if (location.Line == endLine)
-            return location.Column <= endColumn;
-        return true;
+        return SpanCoversColumn(span, location.Line, location.Column);
     }
 
     private static async Task ValidateCallSitesAsync(

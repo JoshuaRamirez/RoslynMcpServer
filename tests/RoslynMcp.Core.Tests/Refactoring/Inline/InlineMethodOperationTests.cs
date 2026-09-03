@@ -1,3 +1,4 @@
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
@@ -903,6 +904,34 @@ public class InlineMethodOperationTests
         Assert.True(InlineMethodOperation.SpanCoversColumn(span, line, endCol - 1));
         Assert.False(InlineMethodOperation.SpanCoversColumn(span, line, endCol));
         Assert.False(InlineMethodOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [Fact]
+    public void MatchesCallSiteLocation_TreatsEndAsExclusive()
+    {
+        const string source = "class C { void M() { Log();Log(); } void Log() {} }";
+        const string filePath = "Calls.cs";
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var first = tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()
+            .First();
+        var span = first.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+        var document = project.AddDocument("Calls.cs", source, filePath: filePath);
+
+        Assert.True(InlineMethodOperation.MatchesCallSiteLocation(
+            document, first, new CallSiteLocation { File = filePath, Line = line, Column = startCol }));
+        Assert.True(InlineMethodOperation.MatchesCallSiteLocation(
+            document, first, new CallSiteLocation { File = filePath, Line = line, Column = endCol - 1 }));
+        Assert.False(InlineMethodOperation.MatchesCallSiteLocation(
+            document, first, new CallSiteLocation { File = filePath, Line = line, Column = endCol }));
+        Assert.False(InlineMethodOperation.MatchesCallSiteLocation(
+            document, first, new CallSiteLocation { File = filePath, Line = line, Column = startCol - 1 }));
     }
 
     [SkippableFact]
