@@ -69,6 +69,21 @@ public class InvertIfOperationTests
             }));
 
         Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal("1007", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_ColumnWithoutLine_ThrowsMissingRequiredParam()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            InvertIfOperation.Validate(new InvertIfParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                Column = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -588,6 +603,113 @@ public class InvertIfOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("if (a)", updated);
         Assert.Contains("if (!b)", updated);
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_OmittedColumn_InvertsFirstIfOnTheLine()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class SameLine
+            {
+                public string Pick(bool a, bool b)
+                {
+                    if (a) if (b) return "both"; else return "a-only"; else return "none";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InvertIfOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = FindLine(source, "if (a) if (b)")
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal("a", result.OriginalCondition);
+        Assert.Equal("!a", result.InvertedCondition);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("if (!a)", updated);
+        Assert.Contains("if (b)", updated);
+        Assert.DoesNotContain("if (!b)", updated);
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_ExclusiveEndAtPreviousKeyword_ThrowsNoIf()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class SameLine
+            {
+                public string Pick(bool a, bool b)
+                {
+                    if (a) if (b) return "both"; else return "a-only"; else return "none";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InvertIfOperation(workspace.Context);
+        var line = FindLine(source, "if (a) if (b)");
+        var firstKeywordEndCol = FirstIfKeywordEndColumn(source);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InvertIfParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = line,
+                Column = firstKeywordEndCol
+            }));
+
+        Assert.Equal(ErrorCodes.NoIfStatementAtLocation, ex.ErrorCode);
+        Assert.Equal("3153", ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InvertIf_Preview_ColumnSelectsInnerIf_DoesNotModifyFile()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class SameLine
+            {
+                public string Pick(bool a, bool b)
+                {
+                    if (a) if (b) return "both"; else return "a-only"; else return "none";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InvertIfOperation(workspace.Context);
+        var line = FindLine(source, "if (a) if (b)");
+        var innerIfColumn = ColumnOf(source, "if (b)");
+
+        var result = await operation.ExecuteAsync(new InvertIfParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = innerIfColumn,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.Equal("b", result.OriginalCondition);
+        Assert.Equal("!b", result.InvertedCondition);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change =>
+            change.Description.Contains("b", StringComparison.Ordinal) &&
+            change.Description.Contains("!b", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
     [SkippableFact]
@@ -1160,6 +1282,109 @@ public class InvertIfOperationTests
 
     #endregion
 
+    #region Covering-span column
+
+    private const string SameLineIfsSource = """
+        class C
+        {
+            string M(bool a, bool b)
+            {
+                if (a) if (b) return "both"; else return "a"; else return "none";
+            }
+        }
+        """;
+
+    private const string IndentedIfSource = """
+        class C
+        {
+            void M(bool flag)
+            {
+                if (flag) return;
+            }
+        }
+        """;
+
+    [Fact]
+    public void FindIfStatement_OmittedColumn_PicksFirstIfKeywordBySpanStart()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineIfsSource).GetRoot();
+        var line = FindLine(SameLineIfsSource, "if (a) if (b)");
+
+        var found = InvertIfOperation.FindIfStatement(root, line, column: null);
+
+        Assert.NotNull(found);
+        Assert.Equal("a", found.Condition.ToString());
+    }
+
+    [Fact]
+    public void FindIfStatement_OmittedColumn_IndentedIf_DoesNotForceColumn1()
+    {
+        var root = CSharpSyntaxTree.ParseText(IndentedIfSource).GetRoot();
+        var line = FindLine(IndentedIfSource, "if (flag)");
+        var ifStmt = root.DescendantNodes().OfType<IfStatementSyntax>().Single();
+        var startCol = ifStmt.IfKeyword.GetLocation().GetLineSpan().StartLinePosition.Character + 1;
+        Assert.True(startCol > 1);
+
+        var found = InvertIfOperation.FindIfStatement(root, line, column: null);
+
+        Assert.NotNull(found);
+        Assert.Equal("flag", found.Condition.ToString());
+    }
+
+    [Fact]
+    public void FindIfStatement_ColumnSelectsInnerIfOnSameLine()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineIfsSource).GetRoot();
+        var line = FindLine(SameLineIfsSource, "if (a) if (b)");
+
+        var outer = InvertIfOperation.FindIfStatement(root, line, ColumnOf(SameLineIfsSource, "if (a)"));
+        var inner = InvertIfOperation.FindIfStatement(root, line, ColumnOf(SameLineIfsSource, "if (b)"));
+
+        Assert.NotNull(outer);
+        Assert.Equal("a", outer.Condition.ToString());
+        Assert.NotNull(inner);
+        Assert.Equal("b", inner.Condition.ToString());
+    }
+
+    [Fact]
+    public void FindIfStatement_AdjacentKeywords_ExclusiveEndDoesNotStealNext()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineIfsSource).GetRoot();
+        var line = FindLine(SameLineIfsSource, "if (a) if (b)");
+        var first = root.DescendantNodes().OfType<IfStatementSyntax>()
+            .First(statement => statement.Condition.ToString() == "a");
+        var firstKeywordEndCol = first.IfKeyword.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
+        var secondKeyword = ColumnOf(SameLineIfsSource, "if (b)");
+
+        var atExclusiveEnd = InvertIfOperation.FindIfStatement(root, line, firstKeywordEndCol);
+        var atSecond = InvertIfOperation.FindIfStatement(root, line, secondKeyword);
+
+        Assert.False(InvertIfOperation.SpanCoversColumn(
+            first.IfKeyword.GetLocation().GetLineSpan(), line, firstKeywordEndCol));
+        Assert.True(atExclusiveEnd == null || atExclusiveEnd.Condition.ToString() != "a");
+        Assert.NotNull(atSecond);
+        Assert.Equal("b", atSecond.Condition.ToString());
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineIfsSource);
+        var first = tree.GetRoot().DescendantNodes().OfType<IfStatementSyntax>()
+            .First(statement => statement.Condition.ToString() == "a");
+        var span = first.IfKeyword.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(InvertIfOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(InvertIfOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(InvertIfOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(InvertIfOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static void AssertPositiveAfterNonPositive(string updated)
@@ -1191,6 +1416,25 @@ public class InvertIfOperationTests
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index) + 1;
+        return index - lineStart + 1;
+    }
+
+    private static int FirstIfKeywordEndColumn(string source)
+    {
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var first = root.DescendantNodes().OfType<IfStatementSyntax>()
+            .OrderBy(statement => statement.IfKeyword.SpanStart)
+            .First();
+        return first.IfKeyword.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
+    }
 
     private static int FindLine(string source, string snippet)
     {
