@@ -33,7 +33,7 @@ public sealed class ConvertAnonymousToClassTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert an anonymous type (new { ... }) to a named class or record and replace same-shape anonymous creations in the solution.";
+        "Convert an anonymous type (new { ... }) to a named class or record and replace same-shape anonymous creations in the solution. column (optional) picks the anonymous creation whose span covers that column when set with line (exclusive-end; unique covering match, else CannotConvert / SymbolAmbiguous); omitted keeps today's line pick.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,7 +55,7 @@ public sealed class ConvertAnonymousToClassTool : IToolHandler
             line = new
             {
                 type = "integer",
-                description = "1-based line number of the anonymous object creation"
+                description = "1-based line number of the anonymous object creation. When column is omitted, matching stays today's line pick (single covering candidate returns; several on the line stay SymbolAmbiguous)."
             },
             newTypeName = new
             {
@@ -65,7 +65,7 @@ public sealed class ConvertAnonymousToClassTool : IToolHandler
             column = new
             {
                 type = "integer",
-                description = "1-based column number for disambiguation when multiple anonymous creations share a line"
+                description = "1-based column on the anonymous object creation. When set with line, selects the creation whose span covers that column (exclusive-end; today's unique covering match, else CannotConvert / SymbolAmbiguous). Omitted keeps today's line pick."
             },
             asRecord = new
             {
