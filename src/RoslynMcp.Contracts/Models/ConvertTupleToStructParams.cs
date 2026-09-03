@@ -12,6 +12,8 @@ public sealed class ConvertTupleToStructParams
 
     /// <summary>
     /// 1-based line number of the tuple expression (<c>(1, 2)</c> / <c>(X: 1, Y: 2)</c>).
+    /// When <see cref="Column"/> is omitted, matching stays today's line pick
+    /// (single covering candidate returns; several on the line stay SymbolAmbiguous).
     /// </summary>
     public required int Line { get; init; }
 
@@ -21,7 +23,10 @@ public sealed class ConvertTupleToStructParams
     public required string NewTypeName { get; init; }
 
     /// <summary>
-    /// 1-based column number for disambiguation when multiple tuple expressions share a line.
+    /// 1-based column on the tuple expression. When set with
+    /// <see cref="Line"/>, selects the creation whose span covers that column
+    /// (exclusive-end; today's unique covering match, else CannotConvert /
+    /// SymbolAmbiguous). Omitted keeps today's line pick.
     /// </summary>
     public int? Column { get; init; }
 
