@@ -315,7 +315,7 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
     /// inclusive would let the first character of an adjacent member also
     /// match the previous declaration.
     /// </summary>
-    private static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
     {
         var startLine = span.StartLinePosition.Line + 1;
         var endLine = span.EndLinePosition.Line + 1;
