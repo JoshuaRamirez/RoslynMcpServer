@@ -199,7 +199,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ReorderParametersOperation, ReorderParametersParams>(
             "reorder-parameters", "Reorder a method's parameters by a 0-based permutation and update call sites; column (optional) picks the smallest method whose identifier or declaration span covers that column; omitted keeps today's methodName and/or line start-line pick");
         r.RegisterRefactoring<ChangeReturnTypeOperation, ChangeReturnTypeParams>(
-            "change-return-type", "Change a method's return type and update return statements");
+            "change-return-type", "Change a method's return type and update return statements; column (optional) picks the smallest method whose identifier or declaration span covers that column; omitted keeps today's methodName and/or line start-line pick");
 
         // ── Refactoring: Encapsulate (1) ──────────────────────────────
         r.RegisterRefactoring<EncapsulateFieldOperation, EncapsulateFieldParams>(

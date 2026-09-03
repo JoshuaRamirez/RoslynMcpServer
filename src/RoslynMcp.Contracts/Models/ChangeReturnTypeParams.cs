@@ -26,7 +26,9 @@ public sealed class ChangeReturnTypeParams
     public int? Line { get; init; }
 
     /// <summary>
-    /// Column number for disambiguation (1-based).
+    /// 1-based column for disambiguation. When set, selects the smallest method
+    /// whose identifier or declaration span covers that column. Omitted keeps
+    /// today's MethodName and/or Line start-line pick.
     /// </summary>
     public int? Column { get; init; }
 

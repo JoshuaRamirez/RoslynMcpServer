@@ -1,4 +1,6 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -845,7 +847,617 @@ public class ChangeReturnTypeOperationTests
 
     #endregion
 
+    #region Covering-span column
+
+    private const string SameLineOverloadsSource = """
+        namespace TestApp;
+
+        public class Worker
+        {
+            public int Process(int x) { return x; } public int Process(int x, int y) { return x + y; }
+        }
+        """;
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpChangeReturnTypeInvalidColumn.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ChangeReturnTypeOperation.Validate(new ChangeReturnTypeParams
+                {
+                    SourceFile = path,
+                    MethodName = "Process",
+                    NewReturnType = "long",
+                    Column = 0
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+            Assert.Equal("1007", ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpChangeReturnTypeNegativeColumn.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ChangeReturnTypeOperation.Validate(new ChangeReturnTypeParams
+                {
+                    SourceFile = path,
+                    MethodName = "Process",
+                    NewReturnType = "long",
+                    Column = -1
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+            Assert.Equal("1007", ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void FindMethod_ColumnPicksIdentifierCoverage()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineOverloadsSource);
+        var root = tree.GetRoot();
+        var line = FindLine(SameLineOverloadsSource, "public int Process(int x) { return x; }");
+        var first = ChangeReturnTypeOperation.FindMethod(
+            root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x) { return x; }"));
+        var second = ChangeReturnTypeOperation.FindMethod(
+            root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, int y) { return x + y; }"));
+        var omitted = ChangeReturnTypeOperation.FindMethod(root, "Process", line, column: null);
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Null(omitted);
+        Assert.Equal(["x"], ParameterNames(first));
+        Assert.Equal(["x", "y"], ParameterNames(second));
+    }
+
+    [Fact]
+    public void FindMethod_ColumnOnContinuationLine_PicksMethod()
+    {
+        const string source = """
+            class C
+            {
+                public int
+                Process(int x) { return x; }
+
+                public int Process(int x, int y) { return x + y; }
+            }
+            """;
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var startLine = FindLine(source, "public int");
+        var identifierLine = FindLine(source, "Process(int x) { return x; }");
+        Assert.NotEqual(startLine, identifierLine);
+
+        // Omitted column keeps today's start-line filter — the split
+        // signature does not start on the identifier line. Column still
+        // selects it.
+        var byStartLineOnly = ChangeReturnTypeOperation.FindMethod(root, "Process", identifierLine, column: null);
+        var byColumn = ChangeReturnTypeOperation.FindMethod(
+            root, "Process", identifierLine, ColumnOf(source, "Process(int x) { return x; }"));
+
+        Assert.Null(byStartLineOnly);
+        Assert.NotNull(byColumn);
+        Assert.Equal(["x"], ParameterNames(byColumn));
+    }
+
+    [Fact]
+    public void FindMethod_AdjacentMethods_ExclusiveEndDoesNotStealNextMethod()
+    {
+        const string source = """
+            class C
+            {
+                public int Other(int x){return x;}public int Process(int x){return x;}
+            }
+            """;
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var line = FindLine(source, "public int Other");
+        var secondStart = ColumnOf(source, "public int Process");
+        var secondId = ColumnOf(source, "Process(int x){return x;}");
+
+        var atSecondStart = ChangeReturnTypeOperation.FindMethod(root, "Process", line, secondStart);
+        var atSecondId = ChangeReturnTypeOperation.FindMethod(root, "Process", line, secondId);
+        var atFirstId = ChangeReturnTypeOperation.FindMethod(root, "Other", line, ColumnOf(source, "Other(int x)"));
+        var firstAtSecondStart = ChangeReturnTypeOperation.FindMethod(root, "Other", line, secondStart);
+
+        Assert.NotNull(atSecondStart);
+        Assert.NotNull(atSecondId);
+        Assert.NotNull(atFirstId);
+        Assert.Equal("Process", atSecondStart.Identifier.Text);
+        Assert.Equal("Process", atSecondId.Identifier.Text);
+        Assert.Equal("Other", atFirstId.Identifier.Text);
+        Assert.Null(firstAtSecondStart);
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class C { public int A(int x){return x;}public int B(int x){return x;} }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var method = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "A");
+        var span = method.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(ChangeReturnTypeOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(ChangeReturnTypeOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(ChangeReturnTypeOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(ChangeReturnTypeOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_OmittedColumn_SameLineOverloads_ThrowsSymbolAmbiguous()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public int Process(int x) { return x; }");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeReturnTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                NewReturnType = "long",
+                Line = line
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_Column_SelectsSecondOverloadOnSameLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public int Process(int x) { return x; }");
+        var secondColumn = ColumnOf(SameLineOverloadsSource, "Process(int x, int y) { return x + y; }");
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewReturnType = "long",
+            Line = line,
+            Column = secondColumn
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var processMethods = GetMethods(updated, "Process");
+        Assert.Equal(2, processMethods.Count);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x"] && ReturnTypeText(m) == "int");
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "y"] && ReturnTypeText(m) == "long");
+        Assert.DoesNotContain(processMethods, m => ParameterNames(m) is ["x", "y"] && ReturnTypeText(m) == "int");
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_Column_SelectsFirstOverloadOnSameLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public int Process(int x) { return x; }");
+        var firstColumn = ColumnOf(SameLineOverloadsSource, "Process(int x) { return x; }");
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewReturnType = "long",
+            Line = line,
+            Column = firstColumn
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var processMethods = GetMethods(updated, "Process");
+        Assert.Equal(2, processMethods.Count);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x"] && ReturnTypeText(m) == "long");
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "y"] && ReturnTypeText(m) == "int");
+        Assert.DoesNotContain(processMethods, m => ParameterNames(m) is ["x"] && ReturnTypeText(m) == "int");
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_ColumnOnContinuationLine_ChangesThatMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Split
+            {
+                public int
+                Process(int x) { return x; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewReturnType = "long",
+            Line = FindLine(source, "Process(int x) { return x; }"),
+            Column = ColumnOf(source, "Process(int x) { return x; }")
+        });
+
+        Assert.True(result.Success);
+        var updated = (await File.ReadAllTextAsync(workspace.SourcePath)).Replace("\r\n", "\n");
+        Assert.Contains("public long", updated);
+        Assert.Contains("Process(int x)", updated);
+        Assert.DoesNotContain("public int\n                Process", updated);
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_OmittedColumn_ContinuationLineIdentifier_ThrowsMethodNotFound()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Split
+            {
+                public int
+                Process(int x) { return x; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeReturnTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                NewReturnType = "long",
+                Line = FindLine(source, "Process(int x) { return x; }")
+            }));
+
+        Assert.Equal(ErrorCodes.MethodNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_AdjacentMethods_ColumnOnSecondDoesNotRewriteFirst()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Adjacent
+            {
+                public int Other(int x){return x;}public int Process(int x){return x;}
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewReturnType = "long",
+            Line = FindLine(source, "public int Other"),
+            Column = ColumnOf(source, "Process(int x){return x;}")
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public int Other(int x)", updated);
+        Assert.Contains("public long Process(int x)", updated);
+        Assert.DoesNotContain("public long Other", updated);
+        Assert.DoesNotContain("public int Process", updated);
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_ColumnWithoutLine_SameIndentOverloads_ThrowsSymbolAmbiguous()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public int Foo(int x)
+                {
+                    return x;
+                }
+
+                public int Foo(int x, int y)
+                {
+                    return x + y;
+                }
+            }
+            """;
+
+        var column = ColumnOf(source, "Foo(int x)");
+        Assert.Equal(column, ColumnOf(source, "Foo(int x, int y)"));
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeReturnTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Foo",
+                NewReturnType = "long",
+                Column = column
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_Preview_Column_DescribesRewriteAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public int Process(int x) { return x; }");
+        var secondColumn = ColumnOf(SameLineOverloadsSource, "Process(int x, int y) { return x + y; }");
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewReturnType = "long",
+            Line = line,
+            Column = secondColumn,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change =>
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("long Process(int x, int y)", StringComparison.Ordinal) &&
+            change.AfterSnippet.Contains("int Process(int x)", StringComparison.Ordinal) &&
+            !change.AfterSnippet.Contains("int Process(int x, int y)", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_Column_UpdateOverridesAndImplementations_StillUpdatesChain()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWorker
+            {
+                int Process();
+            }
+
+            public class Worker : IWorker
+            {
+                public virtual int Process() { return 1; } public int Process(string name) { return 2; }
+            }
+
+            public class Derived : Worker
+            {
+                public override int Process()
+                {
+                    return 3;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewReturnType = "object",
+            Line = FindLine(source, "public virtual int Process"),
+            Column = ColumnOf(source, "Process() { return 1; }"),
+            UpdateOverrides = true,
+            UpdateImplementations = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("object Process();", text);
+        Assert.Contains("public virtual object Process()", text);
+        Assert.Contains("public override object Process()", text);
+        Assert.Contains("public int Process(string name)", text);
+        Assert.Contains("return 1;", text);
+        Assert.Contains("return 2;", text);
+        Assert.Contains("return 3;", text);
+        Assert.DoesNotContain("int Process();", text);
+        Assert.DoesNotContain("virtual int Process()", text);
+        Assert.DoesNotContain("override int Process()", text);
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_Column_UpdateOverridesAndImplementationsFalse_OnlySelectedMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWorker
+            {
+                int Process();
+            }
+
+            public class Worker : IWorker
+            {
+                public virtual int Process() { return 1; } public int Process(string name) { return 2; }
+            }
+
+            public class Derived : Worker
+            {
+                public override int Process()
+                {
+                    return 3;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        // Column picks the non-virtual same-line sibling so false flags stay
+        // compiling: only that declaration changes. The virtual / interface /
+        // override chain is left alone — same rewrite rules as today.
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewReturnType = "long",
+            Line = FindLine(source, "public virtual int Process"),
+            Column = ColumnOf(source, "Process(string name) { return 2; }"),
+            UpdateOverrides = false,
+            UpdateImplementations = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("int Process();", text);
+        Assert.Contains("public virtual int Process()", text);
+        Assert.Contains("public override int Process()", text);
+        Assert.Contains("public long Process(string name)", text);
+        Assert.DoesNotContain("public int Process(string name)", text);
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_Column_ConvertReturnStatements_StillConvertsSelected()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public int Process(int x) { return x; } public void Process(int x, int y) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewReturnType = "int",
+            Line = FindLine(source, "public int Process(int x)"),
+            Column = ColumnOf(source, "Process(int x, int y)"),
+            ConvertReturnStatements = true
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var processMethods = GetMethods(updated, "Process");
+        Assert.Equal(2, processMethods.Count);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x"] && ReturnTypeText(m) == "int");
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "y"] && ReturnTypeText(m) == "int");
+        Assert.Contains("return default(int);", updated.Replace("\r\n", "\n"));
+        Assert.DoesNotContain("void Process", updated);
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_Column_ConvertReturnStatementsFalse_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public int Process(int x) { return x; } public void Process(int x, int y) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeReturnTypeParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                NewReturnType = "int",
+                Line = FindLine(source, "public int Process(int x)"),
+                Column = ColumnOf(source, "Process(int x, int y)"),
+                ConvertReturnStatements = false
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvertReturn, ex.ErrorCode);
+        Assert.Equal("3134", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Helpers
+
+    private static List<MethodDeclarationSyntax> GetMethods(string source, string methodName) =>
+        CSharpSyntaxTree.ParseText(source).GetRoot()
+            .DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == methodName)
+            .ToList();
+
+    private static string[] ParameterNames(MethodDeclarationSyntax method) =>
+        method.ParameterList.Parameters.Select(p => p.Identifier.Text).ToArray();
+
+    private static string ReturnTypeText(MethodDeclarationSyntax method) =>
+        method.ReturnType.ToString();
+
+    private static int FindLine(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
+    }
 
     private static ChangeReturnTypeParams ValidParams(
         string? sourceFile = null,
