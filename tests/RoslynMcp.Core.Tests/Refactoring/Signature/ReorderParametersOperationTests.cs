@@ -1,4 +1,6 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -754,6 +756,512 @@ public class ReorderParametersOperationTests
 
     #endregion
 
+    #region Covering-span column
+
+    private const string SameLineOverloadsSource = """
+        namespace TestApp;
+
+        public class Worker
+        {
+            public void Process(int x, bool flag) { } public void Process(int x, int y, bool extra) { }
+        }
+        """;
+
+    [Fact]
+    public void Validate_InvalidColumn_Throws()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpReorderParametersInvalidColumn.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ReorderParametersOperation.Validate(new ReorderParametersParams
+                {
+                    SourceFile = path,
+                    MethodName = "Process",
+                    NewOrder = new[] { 1, 0 },
+                    Column = 0
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+            Assert.Equal("1007", ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_Throws()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpReorderParametersNegativeColumn.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ReorderParametersOperation.Validate(new ReorderParametersParams
+                {
+                    SourceFile = path,
+                    MethodName = "Process",
+                    NewOrder = new[] { 1, 0 },
+                    Column = -1
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+            Assert.Equal("1007", ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void FindMethod_ColumnPicksIdentifierCoverage()
+    {
+        var tree = CSharpSyntaxTree.ParseText(SameLineOverloadsSource);
+        var root = tree.GetRoot();
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x, bool flag) { }");
+        var first = ReorderParametersOperation.FindMethod(
+            root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, bool flag)"));
+        var second = ReorderParametersOperation.FindMethod(
+            root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, int y, bool extra)"));
+        var omitted = ReorderParametersOperation.FindMethod(root, "Process", line, column: null);
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Null(omitted);
+        Assert.Equal(["x", "flag"], ParameterNames(first));
+        Assert.Equal(["x", "y", "extra"], ParameterNames(second));
+    }
+
+    [Fact]
+    public void FindMethod_ColumnOnContinuationLine_PicksMethod()
+    {
+        const string source = """
+            class C
+            {
+                public void
+                Process(int x, bool unused) { }
+
+                public void Process(int x, int y, bool unused) { }
+            }
+            """;
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var startLine = FindLine(source, "public void");
+        var identifierLine = FindLine(source, "Process(int x, bool unused) { }");
+        Assert.NotEqual(startLine, identifierLine);
+
+        // Omitted column keeps today's start-line filter — the split
+        // signature does not start on the identifier line. Column still
+        // selects it.
+        var byStartLineOnly = ReorderParametersOperation.FindMethod(root, "Process", identifierLine, column: null);
+        var byColumn = ReorderParametersOperation.FindMethod(
+            root, "Process", identifierLine, ColumnOf(source, "Process(int x, bool unused) { }"));
+
+        Assert.Null(byStartLineOnly);
+        Assert.NotNull(byColumn);
+        Assert.Equal(["x", "unused"], ParameterNames(byColumn));
+    }
+
+    [Fact]
+    public void FindMethod_AdjacentMethods_ExclusiveEndDoesNotStealNextMethod()
+    {
+        const string source = """
+            class C
+            {
+                public void Other(int x, bool unused){}public void Process(int x, bool unused){}
+            }
+            """;
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var line = FindLine(source, "public void Other");
+        var secondStart = ColumnOf(source, "public void Process");
+        var secondId = ColumnOf(source, "Process(int x, bool unused){}");
+
+        var atSecondStart = ReorderParametersOperation.FindMethod(root, "Process", line, secondStart);
+        var atSecondId = ReorderParametersOperation.FindMethod(root, "Process", line, secondId);
+        var atFirstId = ReorderParametersOperation.FindMethod(root, "Other", line, ColumnOf(source, "Other(int x, bool unused)"));
+        var firstAtSecondStart = ReorderParametersOperation.FindMethod(root, "Other", line, secondStart);
+
+        Assert.NotNull(atSecondStart);
+        Assert.NotNull(atSecondId);
+        Assert.NotNull(atFirstId);
+        Assert.Equal("Process", atSecondStart.Identifier.Text);
+        Assert.Equal("Process", atSecondId.Identifier.Text);
+        Assert.Equal("Other", atFirstId.Identifier.Text);
+        Assert.Null(firstAtSecondStart);
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class C { public void A(int x){}public void B(int x){} }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var method = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "A");
+        var span = method.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(ReorderParametersOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(ReorderParametersOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(ReorderParametersOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(ReorderParametersOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_OmittedColumn_SameLineOverloads_ThrowsSymbolAmbiguous()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x, bool flag) { }");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ReorderParametersParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                NewOrder = new[] { 1, 0 },
+                Line = line
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_Column_SelectsSecondOverloadOnSameLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var operation = new ReorderParametersOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x, bool flag) { }");
+        var secondColumn = ColumnOf(SameLineOverloadsSource, "Process(int x, int y, bool extra)");
+
+        var result = await operation.ExecuteAsync(new ReorderParametersParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewOrder = new[] { 1, 0, 2 },
+            Line = line,
+            Column = secondColumn
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var processMethods = GetMethods(updated, "Process");
+        Assert.Equal(2, processMethods.Count);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "flag"]);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["y", "x", "extra"]);
+        Assert.DoesNotContain(processMethods, m => ParameterNames(m) is ["x", "y", "extra"]);
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_Column_SelectsFirstOverloadOnSameLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var operation = new ReorderParametersOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x, bool flag) { }");
+        var firstColumn = ColumnOf(SameLineOverloadsSource, "Process(int x, bool flag)");
+
+        var result = await operation.ExecuteAsync(new ReorderParametersParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewOrder = new[] { 1, 0 },
+            Line = line,
+            Column = firstColumn
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var processMethods = GetMethods(updated, "Process");
+        Assert.Equal(2, processMethods.Count);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["flag", "x"]);
+        Assert.Contains(processMethods, m => ParameterNames(m) is ["x", "y", "extra"]);
+        Assert.DoesNotContain(processMethods, m => ParameterNames(m) is ["x", "flag"]);
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_ColumnOnContinuationLine_ChangesThatMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Split
+            {
+                public void
+                Process(int x, bool unused) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ReorderParametersParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewOrder = new[] { 1, 0 },
+            Line = FindLine(source, "Process(int x, bool unused)"),
+            Column = ColumnOf(source, "Process(int x, bool unused)")
+        });
+
+        Assert.True(result.Success);
+        var updated = (await File.ReadAllTextAsync(workspace.SourcePath)).Replace("\r\n", "\n");
+        Assert.Contains("Process(bool unused, int x)", updated);
+        Assert.DoesNotContain("Process(int x, bool unused)", updated);
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_OmittedColumn_ContinuationLineIdentifier_ThrowsMethodNotFound()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Split
+            {
+                public void
+                Process(int x, bool unused) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ReorderParametersParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                NewOrder = new[] { 1, 0 },
+                Line = FindLine(source, "Process(int x, bool unused)")
+            }));
+
+        Assert.Equal(ErrorCodes.MethodNotFound, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_AdjacentMethods_ColumnOnSecondDoesNotRewriteFirst()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Adjacent
+            {
+                public void Other(int x, bool unused){}public void Process(int x, bool unused){}
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ReorderParametersParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewOrder = new[] { 1, 0 },
+            Line = FindLine(source, "public void Other"),
+            Column = ColumnOf(source, "Process(int x, bool unused)")
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public void Other(int x, bool unused)", updated);
+        Assert.Contains("public void Process(bool unused, int x)", updated);
+        Assert.DoesNotContain("public void Other(bool unused, int x)", updated);
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_ColumnWithoutLine_SameIndentOverloads_ThrowsSymbolAmbiguous()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Foo(int x, bool unused)
+                {
+                }
+
+                public void Foo(int x, int y, bool unused)
+                {
+                }
+            }
+            """;
+
+        var column = ColumnOf(source, "Foo(int x, bool unused)");
+        Assert.Equal(column, ColumnOf(source, "Foo(int x, int y, bool unused)"));
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ReorderParametersParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Foo",
+                NewOrder = new[] { 1, 0 },
+                Column = column
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("bool unused", (await File.ReadAllTextAsync(workspace.SourcePath)).Replace("\r\n", "\n"));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_Preview_Column_DescribesRewriteAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineOverloadsSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ReorderParametersOperation(workspace.Context);
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x, bool flag) { }");
+        var secondColumn = ColumnOf(SameLineOverloadsSource, "Process(int x, int y, bool extra)");
+
+        var result = await operation.ExecuteAsync(new ReorderParametersParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewOrder = new[] { 1, 0, 2 },
+            Line = line,
+            Column = secondColumn,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, change =>
+            change.AfterSnippet != null &&
+            change.AfterSnippet.Contains("Process(int y, int x, bool extra)", StringComparison.Ordinal) &&
+            change.AfterSnippet.Contains("bool flag", StringComparison.Ordinal) &&
+            !change.AfterSnippet.Contains("Process(int x, int y, bool extra)", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_Column_UpdateOverridesAndImplementations_StillUpdatesChain()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWorker
+            {
+                void Process(int count, string name);
+            }
+
+            public class Worker : IWorker
+            {
+                public virtual void Process(int count, string name) { } public void Process(string name, bool unused) { }
+            }
+
+            public class Derived : Worker
+            {
+                public override void Process(int count, string name)
+                {
+                }
+            }
+
+            public static class Runner
+            {
+                public static void Run(IWorker worker, Derived derived, Worker host)
+                {
+                    worker.Process(1, "a");
+                    derived.Process(2, "b");
+                    host.Process("c", false);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ReorderParametersParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewOrder = new[] { 1, 0 },
+            Line = FindLine(source, "public virtual void Process"),
+            Column = ColumnOf(source, "Process(int count, string name) { }"),
+            UpdateOverrides = true,
+            UpdateImplementations = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("void Process(string name, int count);", text);
+        Assert.Contains("public virtual void Process(string name, int count)", text);
+        Assert.Contains("public override void Process(string name, int count)", text);
+        Assert.Contains("public void Process(string name, bool unused)", text);
+        Assert.Contains("worker.Process(\"a\", 1)", text);
+        Assert.Contains("derived.Process(\"b\", 2)", text);
+        Assert.Contains("host.Process(\"c\", false)", text);
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_Column_UpdateOverridesAndImplementationsFalse_OnlySelectedMethod()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IWorker
+            {
+                void Process(int count, string name);
+            }
+
+            public class Worker : IWorker
+            {
+                public virtual void Process(int count, string name) { } public void Process(string name, bool unused) { }
+            }
+
+            public class Derived : Worker
+            {
+                public override void Process(int count, string name)
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ReorderParametersOperation(workspace.Context);
+
+        // Column picks the non-virtual same-line sibling so false flags stay
+        // compiling: only that declaration changes. The virtual / interface /
+        // override chain is left alone — same rewrite rules as today.
+        var result = await operation.ExecuteAsync(new ReorderParametersParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewOrder = new[] { 1, 0 },
+            Line = FindLine(source, "public virtual void Process"),
+            Column = ColumnOf(source, "Process(string name, bool unused)"),
+            UpdateOverrides = false,
+            UpdateImplementations = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("void Process(int count, string name);", text);
+        Assert.Contains("public virtual void Process(int count, string name)", text);
+        Assert.Contains("public override void Process(int count, string name)", text);
+        Assert.Contains("public void Process(bool unused, string name)", text);
+        Assert.DoesNotContain("Process(string name, bool unused)", text);
+    }
+
+    #endregion
+
     #region Helpers
 
     private static ReorderParametersParams ValidParams(
@@ -765,6 +1273,42 @@ public class ReorderParametersOperationTests
             MethodName = methodName,
             NewOrder = newOrder ?? new[] { 1, 0 }
         };
+
+    private static List<MethodDeclarationSyntax> GetMethods(string source, string methodName) =>
+        CSharpSyntaxTree.ParseText(source).GetRoot()
+            .DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == methodName)
+            .ToList();
+
+    private static string[] ParameterNames(MethodDeclarationSyntax method) =>
+        method.ParameterList.Parameters.Select(p => p.Identifier.Text).ToArray();
+
+    private static int FindLine(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index);
+        return index - lineStart;
+    }
 
     private sealed class TempWorkspace : IAsyncDisposable
     {
