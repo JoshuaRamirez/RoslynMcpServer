@@ -33,7 +33,7 @@ public sealed class InvertIfTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Flip an if-statement condition and swap the if/else branches, preserving semantics. Comparison operators are inverted; && / || use De Morgan. An if without else gets an empty if body and the original body as else. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and inverts every distinct eligible if (sourceFile optional when true; cannot be combined with line or column).";
+        "Flip an if-statement condition and swap the if/else branches, preserving semantics. Comparison operators are inverted; && / || use De Morgan. An if without else gets an empty if body and the original body as else. Preview describes the rewrite and writes nothing. column (optional) picks the if whose IfKeyword span covers that column when set with line (exclusive-end; FirstOrDefault among covering keywords); omitted keeps today's first-IfKeyword-on-line-by-SpanStart pick; column without line keeps today's required-line validation. allFiles: true walks every C# file and inverts every distinct eligible if (sourceFile optional when true; cannot be combined with line or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -61,13 +61,13 @@ public sealed class InvertIfTool : IToolHandler
             line = new
             {
                 type = "integer",
-                description = "1-based line number of the if keyword. Single-site only; cannot be combined with allFiles.",
+                description = "1-based line number of the if keyword. When column is omitted, matching stays today's first IfKeyword on the line by SpanStart. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column on the if keyword (optional; disambiguates multiple ifs on the same line). Single-site only; cannot be combined with allFiles.",
+                description = "1-based column on the if keyword. When set with line, selects the if whose IfKeyword span covers that column (exclusive-end; today's FirstOrDefault among covering keywords). Omitted keeps today's first-IfKeyword-on-line-by-SpanStart pick. Column without line keeps today's required-line validation. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             preview = new
