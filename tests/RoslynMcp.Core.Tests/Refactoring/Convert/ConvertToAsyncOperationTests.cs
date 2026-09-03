@@ -1708,6 +1708,28 @@ public class ConvertToAsyncOperationTests
 
     #endregion
 
+    #region SpanCoversColumn
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "class C { public void A(){Task.Delay(1);}public void B(){Task.Delay(2);} }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var method = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "A");
+        var span = method.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(ConvertToAsyncOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(ConvertToAsyncOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(ConvertToAsyncOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(ConvertToAsyncOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
