@@ -1,5 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -251,6 +252,42 @@ public class RenameNamespaceOperationTests
             var ex = Assert.Throws<RefactoringException>(
                 () => RenameNamespaceOperation.Validate(ValidParams(sourceFile: path, line: 0)));
             Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Validate_InvalidColumn_ThrowsInvalidColumnNumber()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameNsInvalidColumn.cs");
+        File.WriteAllText(path, "namespace OldNs;");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(
+                () => RenameNamespaceOperation.Validate(ValidParams(sourceFile: path, column: 0)));
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+            Assert.Equal("1007", ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Validate_NegativeColumn_ThrowsInvalidColumnNumber()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameNsNegativeColumn.cs");
+        File.WriteAllText(path, "namespace OldNs;");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(
+                () => RenameNamespaceOperation.Validate(ValidParams(sourceFile: path, column: -1)));
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+            Assert.Equal("1007", ex.ErrorCode);
         }
         finally
         {
@@ -1173,6 +1210,361 @@ public class RenameNamespaceOperationTests
 
     #endregion
 
+    #region Covering-span column
+
+    private const string SameLineFooSource = """
+        namespace A.Foo { public class X {} }namespace B.Foo { public class Y {} }
+        """;
+
+    private const string NestedFooSource = """
+        namespace A.Foo
+        {
+            namespace B.Foo
+            {
+                public class Y {}
+            }
+        }
+        """;
+
+    private const string IndentedNamespaceSource = """
+        class Outside {}
+            namespace Foo
+            {
+                public class X {}
+            }
+        """;
+
+    [Fact]
+    public void FindNamespace_ColumnPicksNameCoverage()
+    {
+        var (root, model) = Parse(SameLineFooSource);
+        var line = FindLine(SameLineFooSource, "namespace A.Foo");
+        var first = RenameNamespaceOperation.FindNamespace(
+            root, model, "Foo", line, ColumnOf(SameLineFooSource, "A.Foo"));
+        var second = RenameNamespaceOperation.FindNamespace(
+            root, model, "Foo", line, ColumnOf(SameLineFooSource, "B.Foo"));
+
+        Assert.Equal("A.Foo", RenameNamespaceOperation.GetFullName(first));
+        Assert.Equal("B.Foo", RenameNamespaceOperation.GetFullName(second));
+    }
+
+    [Fact]
+    public void FindNamespace_OmittedColumn_SameLineDifferentNames_ThrowsSymbolAmbiguous()
+    {
+        var (root, model) = Parse(SameLineFooSource);
+        var line = FindLine(SameLineFooSource, "namespace A.Foo");
+
+        // Omitted column keeps today's line pick: several different names
+        // that share a covering line stay SymbolAmbiguous — do not
+        // FirstOrDefault the first same-line declaration.
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameNamespaceOperation.FindNamespace(root, model, "Foo", line, column: null));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindNamespace_OmittedColumn_IndentedDeclaration_DoesNotForceColumn1()
+    {
+        var (root, model) = Parse(IndentedNamespaceSource);
+        var line = FindLine(IndentedNamespaceSource, "namespace Foo");
+        var ns = root.DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>().Single();
+        var startCol = ns.GetLocation().GetLineSpan().StartLinePosition.Character + 1;
+        Assert.True(startCol > 1);
+
+        // Omitted column keeps today's line-only covering-span pick. Forcing
+        // column 1 would miss this indented declaration.
+        var found = RenameNamespaceOperation.FindNamespace(root, model, "Foo", line, column: null);
+        Assert.Equal("Foo", RenameNamespaceOperation.GetFullName(found));
+    }
+
+    [Fact]
+    public void FindNamespace_OmittedColumn_LineInsideBody_StillPicks()
+    {
+        var (root, model) = Parse(NestedFooSource);
+        var bodyLine = FindLine(NestedFooSource, "public class Y");
+
+        // Unique simple name on this source is not unique — A.Foo and B.Foo
+        // both cover the inner body line. Omitted column keeps today's
+        // ambiguity rather than rewriting line-only to covering-span pick.
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameNamespaceOperation.FindNamespace(root, model, "Foo", bodyLine, column: null));
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+
+        var uniqueSource = """
+            namespace Foo
+            {
+                public class X {}
+            }
+            """;
+        var (uniqueRoot, uniqueModel) = Parse(uniqueSource);
+        var uniqueBodyLine = FindLine(uniqueSource, "public class X");
+        var found = RenameNamespaceOperation.FindNamespace(
+            uniqueRoot, uniqueModel, "Foo", uniqueBodyLine, column: null);
+        Assert.Equal("Foo", RenameNamespaceOperation.GetFullName(found));
+    }
+
+    [Fact]
+    public void FindNamespace_ColumnPrefersNameThenSmallestDeclaration()
+    {
+        var (root, model) = Parse(NestedFooSource);
+        var outerLine = FindLine(NestedFooSource, "namespace A.Foo");
+        var innerLine = FindLine(NestedFooSource, "namespace B.Foo");
+        var bodyLine = FindLine(NestedFooSource, "public class Y");
+
+        var byOuterName = RenameNamespaceOperation.FindNamespace(
+            root, model, "Foo", outerLine, ColumnOf(NestedFooSource, "A.Foo") + "A.".Length);
+        var byInnerName = RenameNamespaceOperation.FindNamespace(
+            root, model, "Foo", innerLine, ColumnOf(NestedFooSource, "B.Foo") + "B.".Length);
+        var byInnerBody = RenameNamespaceOperation.FindNamespace(
+            root, model, "Foo", bodyLine, ColumnOf(NestedFooSource, "public class Y"));
+
+        Assert.Equal("A.Foo", RenameNamespaceOperation.GetFullName(byOuterName));
+        Assert.Equal("A.Foo.B.Foo", RenameNamespaceOperation.GetFullName(byInnerName));
+        Assert.Equal("A.Foo.B.Foo", RenameNamespaceOperation.GetFullName(byInnerBody));
+    }
+
+    [Fact]
+    public void FindNamespace_Column_RepeatedSegment_PicksMatchingIdentifier()
+    {
+        const string source = "namespace Foo.Bar.Foo { public class X {} }";
+        var (root, model) = Parse(source);
+        var line = FindLine(source, "namespace Foo.Bar.Foo");
+        var firstFoo = ColumnOf(source, "Foo.Bar.Foo");
+        var lastFoo = firstFoo + "Foo.Bar.".Length;
+
+        var outer = RenameNamespaceOperation.FindNamespace(root, model, "Foo", line, firstFoo);
+        var inner = RenameNamespaceOperation.FindNamespace(root, model, "Foo", line, lastFoo);
+
+        Assert.Equal("Foo", RenameNamespaceOperation.GetFullName(outer));
+        Assert.Equal("Foo.Bar.Foo", RenameNamespaceOperation.GetFullName(inner));
+    }
+
+    [Fact]
+    public void FindNamespace_Column_RepeatedSegment_NonFooToken_PicksDeclared()
+    {
+        const string source = "namespace Foo.Bar.Foo { public class X {} }";
+        var (root, model) = Parse(source);
+        var line = FindLine(source, "namespace Foo.Bar.Foo");
+        var bar = ColumnOf(source, "Bar.Foo");
+
+        // Bar is not a Foo segment. Name misses; the declared symbol of
+        // this declaration wins over the ancestor that shares the span.
+        var found = RenameNamespaceOperation.FindNamespace(root, model, "Foo", line, bar);
+        Assert.Equal("Foo.Bar.Foo", RenameNamespaceOperation.GetFullName(found));
+    }
+
+    [Fact]
+    public void FindNamespace_AdjacentNamespaces_ExclusiveEndDoesNotStealNext()
+    {
+        var (root, model) = Parse(SameLineFooSource);
+        var line = FindLine(SameLineFooSource, "namespace A.Foo");
+        var secondStart = ColumnOf(SameLineFooSource, "namespace B.Foo");
+        var secondName = ColumnOf(SameLineFooSource, "B.Foo");
+
+        var atSecondStart = RenameNamespaceOperation.FindNamespace(root, model, "Foo", line, secondStart);
+        var atSecondName = RenameNamespaceOperation.FindNamespace(root, model, "Foo", line, secondName);
+        var firstAtSecondStart = Assert.Throws<RefactoringException>(() =>
+            RenameNamespaceOperation.FindNamespace(root, model, "A.Foo", line, secondStart));
+
+        Assert.Equal("B.Foo", RenameNamespaceOperation.GetFullName(atSecondStart));
+        Assert.Equal("B.Foo", RenameNamespaceOperation.GetFullName(atSecondName));
+        Assert.Equal(ErrorCodes.SymbolNotFound, firstAtSecondStart.ErrorCode);
+    }
+
+    [Fact]
+    public void FindNamespace_ColumnWithoutLine_KeepsOmittedLinePath()
+    {
+        const string source = """
+            namespace A.Foo { public class X {} }
+            namespace B.Foo { public class Y {} }
+            """;
+        var (root, model) = Parse(source);
+        var column = ColumnOf(source, "A.Foo");
+
+        // Column without line cannot disambiguate across lines — today's
+        // omitted-line SymbolAmbiguous. Do not invent column-only pick.
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameNamespaceOperation.FindNamespace(root, model, "Foo", line: null, column));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal("2004", ex.ErrorCode);
+    }
+
+    [Fact]
+    public void SpanCoversColumn_TreatsEndAsExclusive()
+    {
+        const string source = "namespace A { class X {} }namespace B { class Y {} }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var ns = tree.GetRoot().DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>()
+            .First(n => n.Name.ToString() == "A");
+        var span = ns.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(RenameNamespaceOperation.SpanCoversColumn(span, line, startCol));
+        Assert.True(RenameNamespaceOperation.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(RenameNamespaceOperation.SpanCoversColumn(span, line, endCol));
+        Assert.False(RenameNamespaceOperation.SpanCoversColumn(span, line, startCol - 1));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_OmittedColumn_SameLine_ThrowsSymbolAmbiguous()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineFooSource, "Foo.cs");
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var line = FindLine(SameLineFooSource, "namespace A.Foo");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                NamespaceName = "Foo",
+                NewName = "B.Renamed",
+                Line = line
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_Column_SelectsSecondNamespaceOnSameLine()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", SameLineFooSource),
+            ("Consumer.cs", """
+                namespace Other;
+                public class Consumer
+                {
+                    public B.Foo.Y Create() => new B.Foo.Y();
+                    public A.Foo.X Other() => new A.Foo.X();
+                }
+                """));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var line = FindLine(SameLineFooSource, "namespace A.Foo");
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceName = "Foo",
+            NewName = "B.Renamed",
+            Line = line,
+            Column = ColumnOf(SameLineFooSource, "B.Foo")
+        });
+
+        Assert.True(result.Success);
+        var declaration = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("namespace A.Foo", declaration);
+        Assert.Contains("namespace B.Renamed", declaration);
+        Assert.DoesNotContain("namespace B.Foo", declaration);
+        Assert.DoesNotContain("namespace A.Renamed", declaration);
+
+        var usages = await File.ReadAllTextAsync(workspace.SecondarySourcePath);
+        Assert.Contains("B.Renamed.Y", usages);
+        Assert.Contains("A.Foo.X", usages);
+        Assert.DoesNotContain("B.Foo.Y", usages);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AdjacentNamespaces_ColumnOnSecondDoesNotRenameFirst()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SameLineFooSource, "Foo.cs");
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var line = FindLine(SameLineFooSource, "namespace A.Foo");
+        var secondStart = ColumnOf(SameLineFooSource, "namespace B.Foo");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                NamespaceName = "A.Foo",
+                NewName = "Renamed",
+                Line = line,
+                Column = secondStart
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_Preview_Column_DescribesRewriteAndWritesNothing()
+    {
+        const string consumer = """
+            namespace Other;
+            public class Consumer
+            {
+                public B.Foo.Y Create() => new B.Foo.Y();
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", SameLineFooSource),
+            ("Consumer.cs", consumer));
+        var originalSource = await File.ReadAllTextAsync(workspace.SourcePath);
+        var originalConsumer = await File.ReadAllTextAsync(workspace.SecondarySourcePath);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var line = FindLine(SameLineFooSource, "namespace A.Foo");
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceName = "Foo",
+            NewName = "B.Renamed",
+            Line = line,
+            Column = ColumnOf(SameLineFooSource, "B.Foo"),
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.NotEmpty(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description != null &&
+            c.Description.Contains("B.Foo", StringComparison.Ordinal) &&
+            c.Description.Contains("B.Renamed", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.PendingChanges, c =>
+            c.Description != null &&
+            c.Description.Contains("A.Foo", StringComparison.Ordinal) &&
+            c.Description.Contains("A.Renamed", StringComparison.Ordinal));
+        Assert.Equal(originalSource, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(originalConsumer, await File.ReadAllTextAsync(workspace.SecondarySourcePath));
+        Assert.Contains("namespace A.Foo", await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("namespace B.Foo", await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("B.Foo.Y", await File.ReadAllTextAsync(workspace.SecondarySourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_ColumnWithoutLine_SameNameAcrossLines_ThrowsSymbolAmbiguous()
+    {
+        const string source = """
+            namespace A.Foo { public class X {} }
+            namespace B.Foo { public class Y {} }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Foo.cs");
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameNamespaceParams
+            {
+                SourceFile = workspace.SourcePath,
+                NamespaceName = "Foo",
+                NewName = "Renamed",
+                Column = ColumnOf(source, "A.Foo")
+            }));
+
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static RenameNamespaceParams ValidParams(
@@ -1180,14 +1572,38 @@ public class RenameNamespaceOperationTests
         string namespaceName = "OldNs",
         string newName = "NewNs",
         int? line = null,
+        int? column = null,
         bool updateFolders = false) => new()
         {
             SourceFile = sourceFile ?? Path.Combine(Path.GetTempPath(), "RoslynMcpRenameNsMissing.cs"),
             NamespaceName = namespaceName,
             NewName = newName,
             Line = line,
+            Column = column,
             UpdateFolders = updateFolders
         };
+
+    private static (SyntaxNode Root, SemanticModel Model) Parse(string source)
+    {
+        var compilation = CreateCompilation(source);
+        var tree = compilation.SyntaxTrees.Single();
+        return (tree.GetRoot(), compilation.GetSemanticModel(tree));
+    }
+
+    private static int FindLine(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"Snippet '{snippet}' not found.");
+        return source[..index].Count(c => c == '\n') + 1;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"Snippet '{snippet}' not found.");
+        var lineStart = source.LastIndexOf('\n', index) + 1;
+        return index - lineStart + 1;
+    }
 
     private static CSharpCompilation CreateCompilation(string source)
     {

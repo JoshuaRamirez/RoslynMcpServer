@@ -224,9 +224,39 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var requested = @params.NamespaceName.Trim();
+        return FindNamespace(
+            root,
+            semanticModel,
+            @params.NamespaceName,
+            @params.Line,
+            @params.Column,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Resolves the namespace in <paramref name="root"/> that matches
+    /// <paramref name="namespaceName"/>. Omitted <paramref name="column"/>
+    /// keeps today's namespaceName + optional line covering-span pick
+    /// exactly (do not force column 1; do not rewrite line-only to
+    /// covering-span). <paramref name="column"/> without
+    /// <paramref name="line"/> keeps today's omitted-line path — do not
+    /// invent column-only disambiguation across lines. When both are set,
+    /// picks the smallest namespace whose matching name segment or
+    /// declaration span covers that 1-based column (that candidate's
+    /// identifier preferred, then smallest covering declaration, then
+    /// the declared symbol of that declaration).
+    /// </summary>
+    internal static INamespaceSymbol FindNamespace(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        string namespaceName,
+        int? line,
+        int? column,
+        CancellationToken cancellationToken = default)
+    {
+        var requested = namespaceName.Trim();
         var declarations = root.DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>().ToList();
-        var matches = new List<(INamespaceSymbol Symbol, BaseNamespaceDeclarationSyntax Declaration)>();
+        var matches = new List<(INamespaceSymbol Symbol, BaseNamespaceDeclarationSyntax Declaration, INamespaceSymbol Declared)>();
 
         foreach (var declaration in declarations)
         {
@@ -236,7 +266,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             foreach (var candidate in EnumerateNamespaceChain(declared))
             {
                 if (NamespaceMatches(candidate, declaration, requested, declared))
-                    matches.Add((candidate, declaration));
+                    matches.Add((candidate, declaration, declared));
             }
         }
 
@@ -244,10 +274,49 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             .DistinctBy(m => (GetFullName(m.Symbol), m.Declaration.SpanStart))
             .ToList();
 
-        if (@params.Line.HasValue)
+        // Column without Line is not a source position: do not invent
+        // column-only cross-line disambiguation or substitute each
+        // candidate's own start line.
+        if (line.HasValue)
         {
+            if (column.HasValue)
+            {
+                // Exclusive-end covering-span: prefer the name segment
+                // that corresponds to this candidate (not the whole
+                // qualified name), then the smallest covering
+                // declaration, then the declared symbol of that
+                // declaration (chain ancestors of the same node lose).
+                // A repeated segment such as Foo.Bar.Foo must not treat
+                // both Foos as a name hit.
+                var covering = matches
+                    .Select(m => (
+                        m.Symbol,
+                        m.Declared,
+                        m.Declaration,
+                        NameHit: NameCoversColumn(m.Symbol, m.Declared, m.Declaration, line.Value, column.Value),
+                        DeclarationHit: SpanCoversColumn(
+                            m.Declaration.GetLocation().GetLineSpan(), line.Value, column.Value)))
+                    .Where(m => m.NameHit || m.DeclarationHit)
+                    .OrderBy(m => m.NameHit ? 0 : 1)
+                    .ThenBy(m => m.Declaration.Span.Length)
+                    .ThenBy(m => SymbolEqualityComparer.Default.Equals(m.Symbol, m.Declared) ? 0 : 1)
+                    .ToList();
+
+                if (covering.Count == 0)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.SymbolNotFound,
+                        $"No namespace named '{requested}' found at line {line}.");
+                }
+
+                return covering[0].Symbol;
+            }
+
+            // Omitted column keeps today's namespaceName + optional line
+            // pick exactly. SpanCoversLine without a column is multi-line
+            // declaration coverage — do not force column 1.
             var atLocation = matches
-                .Where(m => SpanCoversLine(m.Declaration.GetLocation().GetLineSpan(), @params.Line.Value, @params.Column))
+                .Where(m => SpanCoversLine(m.Declaration.GetLocation().GetLineSpan(), line.Value, column: null))
                 .ToList();
 
             if (atLocation.Count == 1)
@@ -257,7 +326,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             {
                 throw new RefactoringException(
                     ErrorCodes.SymbolNotFound,
-                    $"No namespace named '{requested}' found at line {@params.Line}.");
+                    $"No namespace named '{requested}' found at line {line}.");
             }
 
             var distinct = atLocation.Select(m => GetFullName(m.Symbol)).Distinct(StringComparer.Ordinal).ToList();
@@ -266,7 +335,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
 
             throw new RefactoringException(
                 ErrorCodes.SymbolAmbiguous,
-                $"Multiple namespaces named '{requested}' found at line {@params.Line}. Provide column.");
+                $"Multiple namespaces named '{requested}' found at line {line}. Provide column.");
         }
 
         if (matches.Count == 0)
@@ -427,6 +496,108 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         if (line == startLine && column.Value < startCol)
             return false;
         if (line == endLine && column.Value > endCol)
+            return false;
+        return true;
+    }
+
+    /// <summary>
+    /// True when the identifier token for <paramref name="candidate"/> in
+    /// <paramref name="declaration"/>'s name covers the column. Walks from
+    /// the declared (rightmost) identifier up through containing segments
+    /// so <c>namespace Foo.Bar.Foo</c> maps the first <c>Foo</c> to the
+    /// ancestor and the last <c>Foo</c> to the declared namespace.
+    /// </summary>
+    private static bool NameCoversColumn(
+        INamespaceSymbol candidate,
+        INamespaceSymbol declared,
+        BaseNamespaceDeclarationSyntax declaration,
+        int line,
+        int column)
+    {
+        var token = FindNameToken(candidate, declared, declaration);
+        return token.HasValue
+               && SpanCoversColumn(token.Value.GetLocation().GetLineSpan(), line, column);
+    }
+
+    private static SyntaxToken? FindNameToken(
+        INamespaceSymbol candidate,
+        INamespaceSymbol declared,
+        BaseNamespaceDeclarationSyntax declaration)
+    {
+        var identifiers = GetNameIdentifiers(declaration.Name);
+        if (identifiers.Count == 0)
+            return null;
+
+        var current = declared;
+        for (var i = identifiers.Count - 1; i >= 0; i--)
+        {
+            if (current is null || current.IsGlobalNamespace)
+                return null;
+
+            if (SymbolEqualityComparer.Default.Equals(current, candidate))
+            {
+                if (!string.Equals(identifiers[i].Text, candidate.Name, StringComparison.Ordinal))
+                    return null;
+                return identifiers[i];
+            }
+
+            current = current.ContainingNamespace;
+        }
+
+        return null;
+    }
+
+    private static List<SyntaxToken> GetNameIdentifiers(NameSyntax name)
+    {
+        var tokens = new List<SyntaxToken>();
+        CollectNameIdentifiers(name, tokens);
+        return tokens;
+    }
+
+    private static void CollectNameIdentifiers(NameSyntax name, List<SyntaxToken> tokens)
+    {
+        switch (name)
+        {
+            case IdentifierNameSyntax identifier:
+                tokens.Add(identifier.Identifier);
+                break;
+            case QualifiedNameSyntax qualified:
+                CollectNameIdentifiers(qualified.Left, tokens);
+                tokens.Add(qualified.Right.Identifier);
+                break;
+            default:
+                foreach (var identifier in name.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+                    tokens.Add(identifier.Identifier);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so <paramref name="column"/> must be strictly before the
+    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
+    /// inclusive would let the first character of an adjacent namespace also
+    /// match the previous declaration. Same helper as
+    /// <c>TypeSymbolResolver.SpanCoversColumn</c> /
+    /// <c>InlineMethodOperation.SpanCoversColumn</c> /
+    /// <c>ChangeReturnTypeOperation.SpanCoversColumn</c> /
+    /// <c>ChangeSignatureOperation.SpanCoversColumn</c> /
+    /// <c>AddParameterOperation.SpanCoversColumn</c> /
+    /// <c>RemoveParameterOperation.SpanCoversColumn</c> /
+    /// <c>ReorderParametersOperation.SpanCoversColumn</c>.
+    /// </summary>
+    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == startLine && column < startCol)
+            return false;
+        if (line == endLine && column >= endCol)
             return false;
         return true;
     }

@@ -179,7 +179,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<RenameFileToMatchTypeOperation, RenameFileToMatchTypeParams>(
             "rename-file-to-match-type", "Rename a file so its name matches the primary type declared in it; allFiles (default false) renames every unambiguous mismatched single-type C# file (sourceFile optional when true; cannot be combined with typeName, line, or column)");
         r.RegisterRefactoring<RenameNamespaceOperation, RenameNamespaceParams>(
-            "rename-namespace", "Rename a namespace across the solution, updating declarations and references");
+            "rename-namespace", "Rename a namespace across the solution, updating declarations and references; column (optional) picks the smallest namespace whose name or declaration span covers that column when set with line; omitted keeps today's namespaceName + optional line pick; column without line keeps today's omitted-line path");
 
         // ── Refactoring: Inline (3) ───────────────────────────────────
         r.RegisterRefactoring<InlineVariableOperation, InlineVariableParams>(

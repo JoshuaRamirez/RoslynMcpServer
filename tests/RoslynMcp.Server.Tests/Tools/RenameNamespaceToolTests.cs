@@ -33,6 +33,8 @@ public class RenameNamespaceToolTests
     {
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
+        Assert.Contains("column", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("smallest namespace", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -84,6 +86,25 @@ public class RenameNamespaceToolTests
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("updateFolders", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+        Assert.False(RequiredFieldsContains(doc, "column"));
+
+        var column = properties.GetProperty("column");
+        Assert.Equal("integer", column.GetProperty("type").GetString());
+        Assert.Contains("smallest namespace", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("covers that column", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("optional line pick", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+        Assert.Contains("omitted-line path", column.GetProperty("description").GetString(), StringComparison.Ordinal);
+    }
+
+    private static bool RequiredFieldsContains(JsonDocument doc, string name)
+    {
+        foreach (var item in doc.RootElement.GetProperty("required").EnumerateArray())
+        {
+            if (item.GetString() == name)
+                return true;
+        }
+
+        return false;
     }
 
     #endregion

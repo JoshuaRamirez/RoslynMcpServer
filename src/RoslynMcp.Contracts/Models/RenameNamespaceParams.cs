@@ -22,11 +22,17 @@ public sealed class RenameNamespaceParams
 
     /// <summary>
     /// 1-based line number used to select a namespace declaration when the file has more than one.
+    /// When <see cref="Column"/> is omitted, matching stays today's covering-span line pick.
     /// </summary>
     public int? Line { get; init; }
 
     /// <summary>
-    /// 1-based column number used with <see cref="Line"/> when multiple declarations share a line.
+    /// 1-based column for disambiguation. When set with <see cref="Line"/>,
+    /// selects the smallest namespace whose matching name segment or
+    /// declaration span covers that column (the identifier for that
+    /// candidate preferred, then smallest covering declaration).
+    /// Omitted keeps today's namespaceName + optional line pick. Column
+    /// without line keeps today's omitted-line path.
     /// </summary>
     public int? Column { get; init; }
 

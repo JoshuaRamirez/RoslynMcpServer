@@ -33,7 +33,7 @@ public sealed class RenameNamespaceTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Rename a C# namespace across the solution, updating declarations, using directives, and qualified name references. When updateFolders is true, also move folders whose path matches the old namespace.";
+        "Rename a C# namespace across the solution, updating declarations, using directives, and qualified name references. When updateFolders is true, also move folders whose path matches the old namespace. column (optional) picks the smallest namespace whose name or declaration span covers that column when set with line (name preferred, then smallest covering declaration); omitted keeps today's namespaceName + optional line pick; column without line keeps today's omitted-line path.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -65,13 +65,13 @@ public sealed class RenameNamespaceTool : IToolHandler
             line = new
             {
                 type = "integer",
-                description = "1-based line number used to select a namespace declaration when the file has more than one",
+                description = "1-based line number used to select a namespace declaration when the file has more than one. When column is omitted, matching stays today's covering-span line pick.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column number used with line when multiple declarations share a line",
+                description = "1-based column for disambiguation. When set with line, selects the smallest namespace whose name or declaration span covers that column (name preferred, then smallest covering declaration). Omitted keeps today's namespaceName + optional line pick. Column without line keeps today's omitted-line path.",
                 minimum = 1
             },
             updateFolders = new
