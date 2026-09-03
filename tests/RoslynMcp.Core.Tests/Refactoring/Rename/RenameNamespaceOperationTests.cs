@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -1445,6 +1446,19 @@ public class RenameNamespaceOperationTests
 
         Assert.False(RenameNamespaceOperation.SpanCoversLine(multiLineSpan, startLine - 1, column: null));
         Assert.False(RenameNamespaceOperation.SpanCoversLine(multiLineSpan, endLine + 1, column: null));
+    }
+
+    [Fact]
+    public void SpanCoversLine_TreatsEndAsExclusive()
+    {
+        var span = new FileLinePositionSpan(
+            "t.cs",
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
+
+        Assert.True(RenameNamespaceOperation.SpanCoversLine(span, 1, column: null));
+        Assert.True(RenameNamespaceOperation.SpanCoversLine(span, 2, column: null));
+        Assert.False(RenameNamespaceOperation.SpanCoversLine(span, 3, column: null));
     }
 
     [SkippableFact]

@@ -1033,6 +1033,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         var endLine = span.EndLinePosition.Line + 1;
         if (line < startLine || line > endLine)
             return false;
+        if (line == endLine && span.EndLinePosition.Character == 0)
+            return false;
 
         if (!column.HasValue)
             return true;

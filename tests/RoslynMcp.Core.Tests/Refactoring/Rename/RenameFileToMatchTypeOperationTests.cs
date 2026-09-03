@@ -1,5 +1,7 @@
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
@@ -552,6 +554,19 @@ public class RenameFileToMatchTypeOperationTests
         Assert.True(File.Exists(workspace.SourcePath));
         Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Alpha.cs")));
         Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "Beta.cs")));
+    }
+
+    [Fact]
+    public void SpanCoversLine_TreatsEndAsExclusive()
+    {
+        var span = new FileLinePositionSpan(
+            "t.cs",
+            new LinePosition(0, 0),
+            new LinePosition(2, 0));
+
+        Assert.True(RenameFileToMatchTypeOperation.SpanCoversLine(span, 1, column: null));
+        Assert.True(RenameFileToMatchTypeOperation.SpanCoversLine(span, 2, column: null));
+        Assert.False(RenameFileToMatchTypeOperation.SpanCoversLine(span, 3, column: null));
     }
 
     #endregion
