@@ -1410,6 +1410,43 @@ public class RenameNamespaceOperationTests
         Assert.False(RenameNamespaceOperation.SpanCoversColumn(span, line, startCol - 1));
     }
 
+    [Fact]
+    public void SpanCoversLine_WithColumn_TreatsEndAsExclusive()
+    {
+        const string source = "namespace A { class X {} }namespace B { class Y {} }";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var ns = tree.GetRoot().DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>()
+            .First(n => n.Name.ToString() == "A");
+        var span = ns.GetLocation().GetLineSpan();
+        var line = span.StartLinePosition.Line + 1;
+        var startCol = span.StartLinePosition.Character + 1;
+        var endCol = span.EndLinePosition.Character + 1;
+
+        Assert.True(RenameNamespaceOperation.SpanCoversLine(span, line, startCol));
+        Assert.True(RenameNamespaceOperation.SpanCoversLine(span, line, endCol - 1));
+        Assert.False(RenameNamespaceOperation.SpanCoversLine(span, line, endCol));
+        Assert.False(RenameNamespaceOperation.SpanCoversLine(span, line, startCol - 1));
+
+        const string multiLineSource = """
+            namespace A
+            {
+                class X {}
+            }
+            """;
+        var multiLineTree = CSharpSyntaxTree.ParseText(multiLineSource);
+        var multiLineNs = multiLineTree.GetRoot().DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>()
+            .First(n => n.Name.ToString() == "A");
+        var multiLineSpan = multiLineNs.GetLocation().GetLineSpan();
+        var startLine = multiLineSpan.StartLinePosition.Line + 1;
+        var endLine = multiLineSpan.EndLinePosition.Line + 1;
+
+        for (var coveredLine = startLine; coveredLine <= endLine; coveredLine++)
+            Assert.True(RenameNamespaceOperation.SpanCoversLine(multiLineSpan, coveredLine, column: null));
+
+        Assert.False(RenameNamespaceOperation.SpanCoversLine(multiLineSpan, startLine - 1, column: null));
+        Assert.False(RenameNamespaceOperation.SpanCoversLine(multiLineSpan, endLine + 1, column: null));
+    }
+
     [SkippableFact]
     public async Task RenameNamespace_OmittedColumn_SameLine_ThrowsSymbolAmbiguous()
     {

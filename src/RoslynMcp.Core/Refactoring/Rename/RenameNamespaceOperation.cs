@@ -491,13 +491,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         if (!column.HasValue)
             return true;
 
-        var startCol = span.StartLinePosition.Character + 1;
-        var endCol = span.EndLinePosition.Character + 1;
-        if (line == startLine && column.Value < startCol)
-            return false;
-        if (line == endLine && column.Value > endCol)
-            return false;
-        return true;
+        return SpanCoversColumn(span, line, column.Value);
     }
 
     /// <summary>
