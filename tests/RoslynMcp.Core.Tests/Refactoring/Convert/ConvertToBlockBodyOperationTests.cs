@@ -666,6 +666,23 @@ public class ConvertToBlockBodyOperationTests
         Assert.False(ConvertToBlockBodyOperation.SpanCoversColumn(span, line, startCol - 1));
     }
 
+    [Fact]
+    public void ContainsLine_TreatsEndAsExclusive()
+    {
+        // Trailing newline puts the compilation unit's exclusive end at (2, 0),
+        // the same FileLinePositionSpan EncapsulateFieldOperationTests pins.
+        const string source = "class C\n{}\n";
+        var node = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var span = node.GetLocation().GetLineSpan();
+
+        Assert.Equal(new LinePosition(0, 0), span.StartLinePosition);
+        Assert.Equal(new LinePosition(2, 0), span.EndLinePosition);
+
+        Assert.True(ConvertToBlockBodyOperation.ContainsLine(node, 1));
+        Assert.True(ConvertToBlockBodyOperation.ContainsLine(node, 2));
+        Assert.False(ConvertToBlockBodyOperation.ContainsLine(node, 3));
+    }
+
     #endregion
 
     #region P0 Preview

@@ -1014,12 +1014,24 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
         return false;
     }
 
-    private static bool SpanTouchesLine(SyntaxNode node, int line)
+    /// <summary>
+    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so a span that ends at the start of a line does not
+    /// cover that line. Treating the end as inclusive would let the first
+    /// line of an adjacent name also match the previous name. Same
+    /// exclusive-end idea as <c>EncapsulateFieldOperation.SpanCoversLine</c>.
+    /// </summary>
+    internal static bool SpanTouchesLine(SyntaxNode node, int line)
     {
         var span = node.GetLocation().GetLineSpan();
         var startLine = span.StartLinePosition.Line + 1;
         var endLine = span.EndLinePosition.Line + 1;
-        return line >= startLine && line <= endLine;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == endLine && span.EndLinePosition.Character == 0)
+            return false;
+        return true;
     }
 
     /// <summary>

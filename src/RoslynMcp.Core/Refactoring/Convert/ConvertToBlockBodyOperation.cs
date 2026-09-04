@@ -250,12 +250,24 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         return true;
     }
 
-    private static bool ContainsLine(SyntaxNode node, int line)
+    /// <summary>
+    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so a span that ends at the start of a line does not
+    /// cover that line. Treating the end as inclusive would let the first
+    /// line of an adjacent member also match the previous declaration. Same
+    /// exclusive-end idea as <c>EncapsulateFieldOperation.SpanCoversLine</c>.
+    /// </summary>
+    internal static bool ContainsLine(SyntaxNode node, int line)
     {
         var span = node.GetLocation().GetLineSpan();
         var start = span.StartLinePosition.Line + 1;
         var end = span.EndLinePosition.Line + 1;
-        return line >= start && line <= end;
+
+        if (line < start || line > end)
+            return false;
+        if (line == end && span.EndLinePosition.Character == 0)
+            return false;
+        return true;
     }
 
     private static bool IsConvertibleKind(SyntaxNode node) => node is
