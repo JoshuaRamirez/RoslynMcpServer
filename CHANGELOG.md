@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-07
+
+### Highlights
+
+- Optional `allFiles` bulk mode across many refactoring, generation, and conversion tools
+- Optional covering-span `column` selection with exclusive-end semantics aligned across tools
+- Exclusive-end line helpers (`ContainsLine`, `SpanTouchesLine`, `SpanCoversLine`) and related validation/test hardening
+- Large set of additive API improvements accumulated on master since v0.4.1 (NuGet packages were still at 0.4.0)
+
 ### Changed
 - `convert_tuple_to_struct` now honors optional **`column`**: omitted keeps today's line pick (single covering tuple creation on the line returns; several that share a covering line stay `SymbolAmbiguous` — do not `FirstOrDefault` / invent identifier/declaration preference; do not force column 1; do not rewrite line-only to covering-span). Set with `line` picks the tuple creation whose span covers that 1-based column (creation `GetLocation()` span — same exclusive-end coverage as `convert_anonymous_to_class` / `convert_foreach_linq` / `remove_braces` / `add_braces` / `simplify_name` / `invert_if`; today's unique covering match, else CannotConvert / SymbolAmbiguous). `FileLinePositionSpan.EndLinePosition` is exclusive, so a column on an adjacent same-line creation at the previous tuple-expression span end does not also match the previous one. `column < 1` is `InvalidColumnNumber` (1007). Additive with existing `line` / `newTypeName` / `preview`. Preview describes the rewrite and writes nothing. Tuple-to-struct rewrite / same-shape replacement stay today's rules beyond which creation is selected. This leftover does not invent a second tool, invent AllFiles, invent `convert_to_block_body` / `generate_property` AllFiles, or reopen paid `convert_anonymous_to_class` column (#363/#365), `convert_foreach_linq` column (#361/#362), `remove_braces` column (#359/#360), `add_braces` column (#357/#358), `simplify_name` column (#355/#356), `invert_if` column (#353/#354), or paid AllFiles through `generate_overrides` (#336/#337).
 - `convert_anonymous_to_class` now honors optional **`column`**: omitted keeps today's line pick (single covering anonymous creation on the line returns; several that share a covering line stay `SymbolAmbiguous` — do not `FirstOrDefault` / invent identifier preference; do not force column 1; do not rewrite line-only to covering-span). Set with `line` picks the anonymous creation whose span covers that 1-based column (creation `GetLocation()` span — same exclusive-end coverage as `convert_foreach_linq` / `remove_braces` / `add_braces` / `simplify_name` / `invert_if`; today's unique covering match, else CannotConvert / SymbolAmbiguous). `FileLinePositionSpan.EndLinePosition` is exclusive, so a column on an adjacent same-line creation at the previous creation end does not also match the previous one. `column < 1` is `InvalidColumnNumber` (1007). Additive with existing `line` / `newTypeName` / `asRecord` / `preview`. Preview describes the rewrite and writes nothing. Anonymous-to-class rewrite / same-shape replacement stay today's rules beyond which creation is selected. This leftover does not invent a second tool, invent AllFiles, invent `convert_tuple_to_struct` exclusive-end, invent `convert_to_block_body` / `generate_property` AllFiles, or reopen paid `convert_foreach_linq` column (#361/#362), `remove_braces` column (#359/#360), `add_braces` column (#357/#358), `simplify_name` column (#355/#356), `invert_if` column (#353/#354), or paid AllFiles through `generate_overrides` (#336/#337).
@@ -288,6 +297,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
+[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.4.1...v0.5.0
 [0.4.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.2.1...v0.3.0
