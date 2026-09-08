@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-08
+
 ### Fixed
 - `extract_constant` now validates `endLine` / `endColumn` like `extract_method` (reject `< 1` and exclusive-end empty/inverted selections with `InvalidLineNumber` / `InvalidColumnNumber` / `InvalidSelectionRange`) and resolves positions with the same bounds-checked helper so out-of-range ends map to those errors instead of crashing
 
