@@ -46,11 +46,15 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (@params.StartLine < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "startLine must be >= 1.");
+        if (@params.StartLine < 1 || @params.EndLine < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line numbers must be >= 1.");
 
-        if (@params.StartColumn < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "startColumn must be >= 1.");
+        if (@params.StartColumn < 1 || @params.EndColumn < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column numbers must be >= 1.");
+
+        if (@params.StartLine > @params.EndLine ||
+            (@params.StartLine == @params.EndLine && @params.StartColumn >= @params.EndColumn))
+            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "Selection start must be before end.");
 
         if (!IsValidIdentifier(@params.ConstantName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid constant name: {@params.ConstantName}");
@@ -74,10 +78,10 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         }
 
-        // Get text span from line/column
+        // Get text span from line/column (bounds-checked like extract_method)
         var sourceText = await document.GetTextAsync(cancellationToken);
-        var startPosition = sourceText.Lines[@params.StartLine - 1].Start + @params.StartColumn - 1;
-        var endPosition = sourceText.Lines[@params.EndLine - 1].Start + @params.EndColumn - 1;
+        var startPosition = GetPosition(sourceText, @params.StartLine, @params.StartColumn);
+        var endPosition = GetPosition(sourceText, @params.EndLine, @params.EndColumn);
         var span = TextSpan.FromBounds(startPosition, endPosition);
 
         // Find literal at span
@@ -324,4 +328,30 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (!char.IsLetter(name[0]) && name[0] != '_') return false;
         return name.All(c => char.IsLetterOrDigit(c) || c == '_');
     }
+
+    private static int GetPosition(SourceText text, int line, int column)
+    {
+        var lineIndex = line - 1; // Convert to 0-based
+
+        if (lineIndex < 0 || lineIndex >= text.Lines.Count)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidLineNumber,
+                $"Line {line} is out of range. File has {text.Lines.Count} lines.");
+        }
+
+        var lineInfo = text.Lines[lineIndex];
+        var columnIndex = column - 1; // Convert to 0-based
+        var lineLength = lineInfo.End - lineInfo.Start;
+
+        if (columnIndex < 0 || columnIndex > lineLength)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidColumnNumber,
+                $"Column {column} is out of range for line {line} (line has {lineLength} characters).");
+        }
+
+        return lineInfo.Start + columnIndex;
+    }
+
 }
