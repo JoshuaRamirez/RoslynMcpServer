@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-08
+
 ### Fixed
 - `extract_constant` now validates `endLine` / `endColumn` like `extract_method` (reject `< 1` and exclusive-end empty/inverted selections with `InvalidLineNumber` / `InvalidColumnNumber` / `InvalidSelectionRange`) and resolves positions with the same bounds-checked helper so out-of-range ends map to those errors instead of crashing
 
@@ -300,7 +302,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
-[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.4.1...v0.5.0
 [0.4.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.3.0...v0.3.1
