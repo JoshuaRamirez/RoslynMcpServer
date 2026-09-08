@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- `extract_constant` now validates `endLine` / `endColumn` like `extract_method` (reject `< 1` and exclusive-end empty/inverted selections with `InvalidLineNumber` / `InvalidColumnNumber` / `InvalidSelectionRange`) before indexing source lines
+
 ## [0.5.0] - 2026-09-07
 
 ### Highlights

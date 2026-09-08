@@ -46,11 +46,15 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (@params.StartLine < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "startLine must be >= 1.");
+        if (@params.StartLine < 1 || @params.EndLine < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line numbers must be >= 1.");
 
-        if (@params.StartColumn < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "startColumn must be >= 1.");
+        if (@params.StartColumn < 1 || @params.EndColumn < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column numbers must be >= 1.");
+
+        if (@params.StartLine > @params.EndLine ||
+            (@params.StartLine == @params.EndLine && @params.StartColumn >= @params.EndColumn))
+            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "Selection start must be before end.");
 
         if (!IsValidIdentifier(@params.ConstantName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid constant name: {@params.ConstantName}");
