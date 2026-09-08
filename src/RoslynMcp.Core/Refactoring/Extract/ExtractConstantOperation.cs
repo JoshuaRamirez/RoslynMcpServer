@@ -327,6 +327,8 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (string.IsNullOrEmpty(name)) return false;
         if (!char.IsLetter(name[0]) && name[0] != '_') return false;
         return name.All(c => char.IsLetterOrDigit(c) || c == '_');
+    }
+
     private static int GetPosition(SourceText text, int line, int column)
     {
         var lineIndex = line - 1; // Convert to 0-based
@@ -352,5 +354,4 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         return lineInfo.Start + columnIndex;
     }
 
-    }
 }
