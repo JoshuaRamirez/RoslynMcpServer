@@ -32,7 +32,7 @@ public sealed class AnalyzeControlFlowTool : IToolHandler
     public string Name => "analyze_control_flow";
 
     /// <inheritdoc />
-    public string Description => "Analyze control flow for a region of C# code. Returns reachability information, return statements, and exit points (break, continue, goto, throw). startColumn / endColumn (optional) trim the region (1-based; Roslyn Character = column - 1); omitted keeps today's whole-line span (start of startLine through end of endLine). Do not force column 1 when omitted.";
+    public string Description => "Analyze control flow for a region of C# code. Returns reachability information, return statements, exit points (break, continue, goto, throw), and entry points (nodes that transfer control into the region from outside, e.g. goto-targeted labeled statements). startColumn / endColumn (optional) trim the region (1-based; Roslyn Character = column - 1); omitted keeps today's whole-line span (start of startLine through end of endLine). Do not force column 1 when omitted.";
 
     /// <inheritdoc />
     public object InputSchema => new

@@ -108,6 +108,7 @@ public sealed class AnalyzeControlFlowOperation : QueryOperationBase<AnalyzeCont
 
         var returnStatements = new List<ControlFlowStatement>();
         var exitPoints = new List<ControlFlowStatement>();
+        var entryPoints = new List<ControlFlowStatement>();
 
         foreach (var returnStmt in controlFlowAnalysis.ReturnStatements)
         {
@@ -144,12 +145,31 @@ public sealed class AnalyzeControlFlowOperation : QueryOperationBase<AnalyzeCont
             });
         }
 
+        foreach (var entryPoint in controlFlowAnalysis.EntryPoints)
+        {
+            var lineSpan = entryPoint.GetLocation().GetLineSpan();
+            var kind = entryPoint switch
+            {
+                LabeledStatementSyntax => "Label",
+                _ => "Other"
+            };
+
+            entryPoints.Add(new ControlFlowStatement
+            {
+                Kind = kind,
+                Line = lineSpan.StartLinePosition.Line + 1,
+                Column = lineSpan.StartLinePosition.Character + 1,
+                Text = entryPoint.ToString().Trim()
+            });
+        }
+
         var result = new AnalyzeControlFlowResult
         {
             StartPointReachable = controlFlowAnalysis.StartPointIsReachable,
             EndPointReachable = controlFlowAnalysis.EndPointIsReachable,
             ReturnStatements = returnStatements,
-            ExitPoints = exitPoints
+            ExitPoints = exitPoints,
+            EntryPoints = entryPoints
         };
 
         return QueryResult<AnalyzeControlFlowResult>.Succeeded(operationId, result);
