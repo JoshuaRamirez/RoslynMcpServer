@@ -502,6 +502,167 @@ int a = 1; return a;
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
+    // Source used for EntryPoints tests: a method with a goto that jumps into
+    // a labeled statement, plus a plain method with no gotos.
+    private const string GotoJumpSource =
+        """
+class Sample
+{
+public int Jump(bool flag)
+{
+if (flag)
+goto Skip;
+int x = 1;
+Skip:
+return x;
+}
+public int Ordinary(bool a)
+{
+if (a) return 1;
+return 2;
+}
+}
+""";
+
+    [SkippableFact]
+    public async Task AnalyzeControlFlow_LabeledRegionWithGotoOutside_EntryPointsNonEmpty()
+    {
+        // Region = the labeled statement "Skip: return x;" only.
+        // The goto is outside the region, so Roslyn reports an EntryPoint.
+        await using var workspace = await TempWorkspace.CreateAsync(GotoJumpSource);
+        var operation = new AnalyzeControlFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(GotoJumpSource);
+        var root = tree.GetRoot();
+        var labeled = root.DescendantNodes().OfType<LabeledStatementSyntax>().Single();
+        var labeledSpan = labeled.GetLocation().GetLineSpan();
+        var startLine = labeledSpan.StartLinePosition.Line + 1;
+        var endLine = labeledSpan.EndLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeControlFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = startLine,
+            EndLine = endLine
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotEmpty(result.Data.EntryPoints);
+        Assert.Contains(result.Data.EntryPoints, e => e.Kind == "Label");
+        // ExitPoints / ReturnStatements should still be populated correctly
+        Assert.NotEmpty(result.Data.ReturnStatements);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeControlFlow_FullBodyIncludingGoto_EntryPointsEmpty()
+    {
+        // Region = entire Jump method body (includes the goto), so no external entry.
+        await using var workspace = await TempWorkspace.CreateAsync(GotoJumpSource);
+        var operation = new AnalyzeControlFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(GotoJumpSource);
+        var root = tree.GetRoot();
+        var jumpMethod = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.ValueText == "Jump");
+        var bodySpan = jumpMethod.Body!.GetLocation().GetLineSpan();
+        // Expand to the inner statements (skip braces)
+        var firstStmt = jumpMethod.Body!.Statements.First();
+        var lastStmt = jumpMethod.Body!.Statements.Last();
+        var startLine = firstStmt.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        var endLine = lastStmt.GetLocation().GetLineSpan().EndLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeControlFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = startLine,
+            EndLine = endLine
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.EntryPoints);
+        Assert.NotEmpty(result.Data.ReturnStatements);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeControlFlow_OrdinaryMethod_EntryPointsEmptyAndPropertyPresent()
+    {
+        // An ordinary method with no gotos should always return an empty EntryPoints list.
+        await using var workspace = await TempWorkspace.CreateAsync(GotoJumpSource);
+        var operation = new AnalyzeControlFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(GotoJumpSource);
+        var root = tree.GetRoot();
+        var ordinaryMethod = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.ValueText == "Ordinary");
+        var firstStmt = ordinaryMethod.Body!.Statements.First();
+        var lastStmt = ordinaryMethod.Body!.Statements.Last();
+        var startLine = firstStmt.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        var endLine = lastStmt.GetLocation().GetLineSpan().EndLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeControlFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = startLine,
+            EndLine = endLine
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        // Property must be present (not null) even when empty
+        Assert.NotNull(result.Data.EntryPoints);
+        Assert.Empty(result.Data.EntryPoints);
+        Assert.NotEmpty(result.Data.ReturnStatements);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeControlFlow_UnbracedEmbeddedSingleStatement_AnalyzesAlone()
+    {
+        // Region = only the unbraced return under if. Parent is
+        // IfStatementSyntax, not Block/SwitchSection, so the sibling-list
+        // filter yields empty. Exactly one contained StatementSyntax →
+        // analyze that statement alone (first==last).
+        const string source =
+            """
+class C
+{
+public int M(bool flag)
+{
+if (flag)
+return 1;
+return 0;
+}
+}
+""";
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AnalyzeControlFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var embeddedReturn = root.DescendantNodes()
+            .OfType<ReturnStatementSyntax>()
+            .Single(r => r.Parent is IfStatementSyntax);
+        var returnSpan = embeddedReturn.GetLocation().GetLineSpan();
+        var line = returnSpan.StartLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeControlFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            EndLine = line
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotEmpty(result.Data.ReturnStatements);
+        Assert.Contains(result.Data.ReturnStatements, r => r.Kind == "Return");
+        Assert.False(result.Data.EndPointReachable);
+    }
+
     #endregion
 
     #region Helpers

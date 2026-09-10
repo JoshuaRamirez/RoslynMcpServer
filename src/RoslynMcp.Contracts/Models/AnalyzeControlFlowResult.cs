@@ -24,6 +24,13 @@ public sealed class AnalyzeControlFlowResult
     /// All exit points from the region (return, break, continue, goto, throw).
     /// </summary>
     public required IReadOnlyList<ControlFlowStatement> ExitPoints { get; init; }
+
+    /// <summary>
+    /// Nodes that transfer control into the region from outside (e.g. a labeled
+    /// statement that is the target of a <c>goto</c> originating outside the region).
+    /// Empty for regions with no external entry points.
+    /// </summary>
+    public required IReadOnlyList<ControlFlowStatement> EntryPoints { get; init; }
 }
 
 /// <summary>
