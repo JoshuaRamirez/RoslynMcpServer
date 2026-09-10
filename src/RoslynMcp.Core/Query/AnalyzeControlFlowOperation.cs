@@ -89,9 +89,15 @@ public sealed class AnalyzeControlFlowOperation : QueryOperationBase<AnalyzeCont
         // Find statements in the region. Today's matching: the region's
         // span must fully contain the statement span. Do not invent a
         // covering-span / intersection fallback when nothing is contained.
+        // Only include statements that are direct children of a statement
+        // list (BlockSyntax / SwitchSectionSyntax). Nested statements
+        // (e.g. goto under if, return under a labeled statement) are not
+        // siblings in the same list, and AnalyzeControlFlow(first, last)
+        // rejects mixed parents via ValidateStatementRange.
         var statements = root.DescendantNodes()
             .OfType<StatementSyntax>()
             .Where(s => span.Contains(s.Span))
+            .Where(s => s.Parent is BlockSyntax or SwitchSectionSyntax)
             .ToList();
 
         if (statements.Count == 0)
