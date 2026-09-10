@@ -618,6 +618,51 @@ return 2;
         Assert.NotEmpty(result.Data.ReturnStatements);
     }
 
+    [SkippableFact]
+    public async Task AnalyzeControlFlow_UnbracedEmbeddedSingleStatement_AnalyzesAlone()
+    {
+        // Region = only the unbraced return under if. Parent is
+        // IfStatementSyntax, not Block/SwitchSection, so the sibling-list
+        // filter yields empty. Exactly one contained StatementSyntax →
+        // analyze that statement alone (first==last).
+        const string source =
+            """
+class C
+{
+public int M(bool flag)
+{
+if (flag)
+return 1;
+return 0;
+}
+}
+""";
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AnalyzeControlFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var embeddedReturn = root.DescendantNodes()
+            .OfType<ReturnStatementSyntax>()
+            .Single(r => r.Parent is IfStatementSyntax);
+        var returnSpan = embeddedReturn.GetLocation().GetLineSpan();
+        var line = returnSpan.StartLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeControlFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            EndLine = line
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotEmpty(result.Data.ReturnStatements);
+        Assert.Contains(result.Data.ReturnStatements, r => r.Kind == "Return");
+        Assert.False(result.Data.EndPointReachable);
+    }
+
     #endregion
 
     #region Helpers
