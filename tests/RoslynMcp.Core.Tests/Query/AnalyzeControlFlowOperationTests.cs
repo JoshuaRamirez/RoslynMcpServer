@@ -671,7 +671,8 @@ class C
     public async Task AnalyzeControlFlow_WholeMethodWithNestedIfs_StillSucceedsViaOutermostList()
     {
         // Regression: whole-method region keeps outermost method-block
-        // siblings (the two ifs + final return) and Succeeds.
+        // siblings (the two ifs + final return) and Succeeds with all
+        // three returns/exits and expected reachability.
         const string source =
             """
 class C
@@ -712,7 +713,62 @@ class C
 
         Assert.True(result.Success);
         Assert.NotNull(result.Data);
-        Assert.NotEmpty(result.Data.ReturnStatements);
+        Assert.Equal(3, result.Data.ReturnStatements.Count);
+        Assert.Equal(3, result.Data.ExitPoints.Count);
+        Assert.True(result.Data.StartPointReachable);
+        Assert.False(result.Data.EndPointReachable);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeControlFlow_CrossBlockReturnsWithMiddleOuterStatement_ThrowsInvalidRegion()
+    {
+        // #936 Codex: return1 / Log() / return2 spanning region must not
+        // select outermost method block solely via Log() then silently
+        // analyze only Log(). Nested boundary returns sit outside the
+        // direct-child covered range → InvalidRegion.
+        const string source =
+            """
+class C
+{
+    void Log() { }
+
+    int M(bool a, bool b)
+    {
+        if (a)
+        {
+            return 1;
+        }
+        Log();
+        if (b)
+        {
+            return 2;
+        }
+        return 0;
+    }
+}
+""";
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AnalyzeControlFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var returns = root.DescendantNodes().OfType<ReturnStatementSyntax>().ToList();
+        var r1 = returns.Single(r => r.Expression?.ToString() == "1");
+        var r2 = returns.Single(r => r.Expression?.ToString() == "2");
+        var startLine = r1.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        var endLine = r2.GetLocation().GetLineSpan().EndLinePosition.Line + 1;
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AnalyzeControlFlowParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = startLine,
+                EndLine = endLine
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidRegion, ex.ErrorCode);
+        Assert.Contains("same statement list", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [SkippableFact]

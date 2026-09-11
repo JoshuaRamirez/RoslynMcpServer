@@ -125,9 +125,45 @@ public sealed class AnalyzeControlFlowOperation : QueryOperationBase<AnalyzeCont
 
             if (outermostParent != null)
             {
-                statements = listParentCandidates
+                // Direct children of the outermost list among candidates,
+                // ordered by source position.
+                var directChildren = listParentCandidates
                     .Where(s => s.Parent == outermostParent)
+                    .OrderBy(s => s.SpanStart)
                     .ToList();
+
+                // Nested candidates under outermostParent (different
+                // statement lists). Accept outermost only when every
+                // nested candidate falls within the span from the first
+                // to last direct-child candidate — otherwise a middle
+                // outer statement (e.g. Log()) can win while boundary
+                // nested returns are filtered away → silent wrong
+                // analysis of only Log() instead of InvalidRegion.
+                var nestedCandidates = listParentCandidates
+                    .Where(s => s.Parent != outermostParent && outermostParent.Contains(s))
+                    .ToList();
+
+                if (nestedCandidates.Count > 0)
+                {
+                    if (directChildren.Count == 0)
+                    {
+                        throw new RefactoringException(
+                            ErrorCodes.InvalidRegion,
+                            "Selected statements are not within the same statement list.");
+                    }
+
+                    var coverStart = directChildren.First().Span.Start;
+                    var coverEnd = directChildren.Last().Span.End;
+                    if (nestedCandidates.Any(n =>
+                            n.Span.Start < coverStart || n.Span.End > coverEnd))
+                    {
+                        throw new RefactoringException(
+                            ErrorCodes.InvalidRegion,
+                            "Selected statements are not within the same statement list.");
+                    }
+                }
+
+                statements = directChildren;
             }
             else
             {
