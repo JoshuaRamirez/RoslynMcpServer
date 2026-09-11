@@ -7,8 +7,8 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Rename;
-using RoslynMcp.Core.Workspace;
 using RoslynMcp.Core.Resolution;
+using RoslynMcp.Core.Workspace;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring.Rename;
