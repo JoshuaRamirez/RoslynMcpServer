@@ -8,6 +8,7 @@ using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Rename;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Core.Resolution;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring.Rename;
@@ -449,10 +450,10 @@ public class RenameFileToMatchTypeOperationTests
         var startCol = span.StartLinePosition.Character + 1;
         var endCol = span.EndLinePosition.Character + 1;
 
-        Assert.True(RenameFileToMatchTypeOperation.SpanCoversColumn(span, line, startCol));
-        Assert.True(RenameFileToMatchTypeOperation.SpanCoversColumn(span, line, endCol - 1));
-        Assert.False(RenameFileToMatchTypeOperation.SpanCoversColumn(span, line, endCol));
-        Assert.False(RenameFileToMatchTypeOperation.SpanCoversColumn(span, line, startCol - 1));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, startCol));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, endCol));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, startCol - 1));
     }
 
     [SkippableFact]

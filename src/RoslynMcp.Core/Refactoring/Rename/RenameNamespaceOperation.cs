@@ -10,6 +10,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Rename;
@@ -294,7 +295,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                         m.Declared,
                         m.Declaration,
                         NameHit: NameCoversColumn(m.Symbol, m.Declared, m.Declaration, line.Value, column.Value),
-                        DeclarationHit: SpanCoversColumn(
+                        DeclarationHit: SpanCoverage.SpanCoversColumn(
                             m.Declaration.GetLocation().GetLineSpan(), line.Value, column.Value)))
                     .Where(m => m.NameHit || m.DeclarationHit)
                     .OrderBy(m => m.NameHit ? 0 : 1)
@@ -493,7 +494,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         if (!column.HasValue)
             return true;
 
-        return SpanCoversColumn(span, line, column.Value);
+        return SpanCoverage.SpanCoversColumn(span, line, column.Value);
     }
 
     /// <summary>
@@ -512,7 +513,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     {
         var token = FindNameToken(candidate, declared, declaration);
         return token.HasValue
-               && SpanCoversColumn(token.Value.GetLocation().GetLineSpan(), line, column);
+               && SpanCoverage.SpanCoversColumn(token.Value.GetLocation().GetLineSpan(), line, column);
     }
 
     private static SyntaxToken? FindNameToken(
@@ -568,30 +569,6 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         }
     }
 
-    /// <summary>
-    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so <paramref name="column"/> must be strictly before the
-    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
-    /// inclusive would let the first character of an adjacent namespace also
-    /// match the previous declaration. Same helper as
-    /// <c>SpanCoverage.SpanCoversColumn</c> /
-    /// <c>TypeSymbolResolver.SpanCoversColumn</c>.
-    /// </summary>
-    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        var startCol = span.StartLinePosition.Character + 1;
-        var endCol = span.EndLinePosition.Character + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == startLine && column < startCol)
-            return false;
-        if (line == endLine && column >= endCol)
-            return false;
-        return true;
-    }
 
     private static IEnumerable<INamespaceSymbol> EnumerateNamespaceChain(INamespaceSymbol symbol)
     {
