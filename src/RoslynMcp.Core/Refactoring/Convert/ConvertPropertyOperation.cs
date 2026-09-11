@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Convert;
@@ -512,33 +513,11 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
 
     private static bool PropertyCoversColumn(PropertyDeclarationSyntax property, int line, int column) =>
         IdentifierCoversColumn(property, line, column) ||
-        SpanCoversColumn(property.GetLocation().GetLineSpan(), line, column);
+        SpanCoverage.SpanCoversColumn(property.GetLocation().GetLineSpan(), line, column);
 
     private static bool IdentifierCoversColumn(PropertyDeclarationSyntax property, int line, int column) =>
-        SpanCoversColumn(property.Identifier.GetLocation().GetLineSpan(), line, column);
+        SpanCoverage.SpanCoversColumn(property.Identifier.GetLocation().GetLineSpan(), line, column);
 
-    /// <summary>
-    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so <paramref name="column"/> must be strictly before the
-    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
-    /// inclusive would let the first character of an adjacent property also
-    /// match the previous declaration.
-    /// </summary>
-    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        var startCol = span.StartLinePosition.Character + 1;
-        var endCol = span.EndLinePosition.Character + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == startLine && column < startCol)
-            return false;
-        if (line == endLine && column >= endCol)
-            return false;
-        return true;
-    }
 
     /// <summary>
     /// Visits nested types first, then converts each eligible property in

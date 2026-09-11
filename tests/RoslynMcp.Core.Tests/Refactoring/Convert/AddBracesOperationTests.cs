@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
 
@@ -1353,7 +1354,7 @@ public class AddBracesOperationTests
         var atExclusiveEnd = AddBracesOperation.FindControlTarget(root, line, firstKeywordEndCol);
         var atSecond = AddBracesOperation.FindControlTarget(root, line, secondKeyword);
 
-        Assert.False(AddBracesOperation.SpanCoversColumn(
+        Assert.False(SpanCoverage.SpanCoversColumn(
             first.IfKeyword.GetLocation().GetLineSpan(), line, firstKeywordEndCol));
         Assert.True(atExclusiveEnd == null
             || ((IfStatementSyntax)atExclusiveEnd.Value.Owner).Condition.ToString() != "a");
@@ -1373,10 +1374,10 @@ public class AddBracesOperationTests
         var startCol = span.StartLinePosition.Character + 1;
         var endCol = span.EndLinePosition.Character + 1;
 
-        Assert.True(AddBracesOperation.SpanCoversColumn(span, line, startCol));
-        Assert.True(AddBracesOperation.SpanCoversColumn(span, line, endCol - 1));
-        Assert.False(AddBracesOperation.SpanCoversColumn(span, line, endCol));
-        Assert.False(AddBracesOperation.SpanCoversColumn(span, line, startCol - 1));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, startCol));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, endCol));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, startCol - 1));
     }
 
     #endregion

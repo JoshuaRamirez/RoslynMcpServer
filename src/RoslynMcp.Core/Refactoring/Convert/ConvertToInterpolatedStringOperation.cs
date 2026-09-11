@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Convert;
@@ -284,7 +285,7 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         }
 
         var formatAtColumn = formats
-            .Where(invocation => SpanCoversColumn(invocation.GetLocation().GetLineSpan(), line, column.Value))
+            .Where(invocation => SpanCoverage.SpanCoversColumn(invocation.GetLocation().GetLineSpan(), line, column.Value))
             .OrderBy(invocation => invocation.Span.Length)
             .FirstOrDefault();
         if (formatAtColumn != null)
@@ -296,7 +297,7 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
         // operands. Adjacent independent concatenations still do not share a
         // span, so column continues to distinguish them.
         var concatAtColumn = concats
-            .Where(binary => SpanCoversColumn(binary.GetLocation().GetLineSpan(), line, column.Value))
+            .Where(binary => SpanCoverage.SpanCoversColumn(binary.GetLocation().GetLineSpan(), line, column.Value))
             .OrderByDescending(binary => binary.Span.Length)
             .FirstOrDefault();
         return concatAtColumn == null ? null : OuterConcatenation(concatAtColumn);
@@ -367,28 +368,6 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
     private static bool StartsOnLine(SyntaxNode node, int line) =>
         node.GetLocation().GetLineSpan().StartLinePosition.Line + 1 == line;
 
-    /// <summary>
-    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so <paramref name="column"/> must be strictly before the
-    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
-    /// inclusive would let the first character of an adjacent expression also
-    /// match the previous Format invocation or concatenation.
-    /// </summary>
-    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        var startCol = span.StartLinePosition.Character + 1;
-        var endCol = span.EndLinePosition.Character + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == startLine && column < startCol)
-            return false;
-        if (line == endLine && column >= endCol)
-            return false;
-        return true;
-    }
 
     private static bool IsStringFormatCall(InvocationExpressionSyntax invocation, SemanticModel model)
     {

@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
 
@@ -522,7 +523,7 @@ public class ConvertAnonymousToClassOperationTests
         var firstCreationEndCol = first.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
         var secondColumn = ColumnOf(SameLineAnonymousSource, "new { Age = 1 }");
 
-        Assert.False(ConvertAnonymousToClassOperation.SpanCoversColumn(
+        Assert.False(SpanCoverage.SpanCoversColumn(
             first.GetLocation().GetLineSpan(), line, firstCreationEndCol));
 
         var exclusiveEnd = Assert.Throws<RefactoringException>(() =>
@@ -560,10 +561,10 @@ public class ConvertAnonymousToClassOperationTests
         var startCol = span.StartLinePosition.Character + 1;
         var endCol = span.EndLinePosition.Character + 1;
 
-        Assert.True(ConvertAnonymousToClassOperation.SpanCoversColumn(span, line, startCol));
-        Assert.True(ConvertAnonymousToClassOperation.SpanCoversColumn(span, line, endCol - 1));
-        Assert.False(ConvertAnonymousToClassOperation.SpanCoversColumn(span, line, endCol));
-        Assert.False(ConvertAnonymousToClassOperation.SpanCoversColumn(span, line, startCol - 1));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, startCol));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, endCol));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, startCol - 1));
     }
 
     [Fact]

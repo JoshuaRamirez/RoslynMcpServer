@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Convert;
@@ -614,36 +615,9 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
 
     private static bool KeywordCoversColumn(SyntaxToken keyword, int line, int column)
     {
-        return SpanCoversColumn(keyword.GetLocation().GetLineSpan(), line, column);
+        return SpanCoverage.SpanCoversColumn(keyword.GetLocation().GetLineSpan(), line, column);
     }
 
-    /// <summary>
-    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so <paramref name="column"/> must be strictly before the
-    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
-    /// inclusive would let the first character after a covered keyword also
-    /// match the previous keyword. Same helper as
-    /// <c>SimplifyNameOperation.SpanCoversColumn</c> /
-    /// <c>InvertIfOperation.SpanCoversColumn</c> /
-    /// <c>TypeSymbolResolver.SpanCoversColumn</c> /
-    /// <c>RenameFileToMatchTypeOperation.SpanCoversColumn</c> /
-    /// <c>InlineMethodOperation.SpanCoversColumn</c>.
-    /// </summary>
-    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        var startCol = span.StartLinePosition.Character + 1;
-        var endCol = span.EndLinePosition.Character + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == startLine && column < startCol)
-            return false;
-        if (line == endLine && column >= endCol)
-            return false;
-        return true;
-    }
 
     private static string BuildDescription(string scope, int count, string? typeName)
     {
