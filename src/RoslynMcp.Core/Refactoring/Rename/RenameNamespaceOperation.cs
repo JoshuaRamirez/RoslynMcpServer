@@ -574,13 +574,9 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
     /// inclusive would let the first character of an adjacent namespace also
     /// match the previous declaration. Same helper as
+    /// <c>SpanCoverage.SpanCoversColumn</c> /
     /// <c>TypeSymbolResolver.SpanCoversColumn</c> /
-    /// <c>InlineMethodOperation.SpanCoversColumn</c> /
-    /// <c>ChangeReturnTypeOperation.SpanCoversColumn</c> /
-    /// <c>ChangeSignatureOperation.SpanCoversColumn</c> /
-    /// <c>AddParameterOperation.SpanCoversColumn</c> /
-    /// <c>RemoveParameterOperation.SpanCoversColumn</c> /
-    /// <c>ReorderParametersOperation.SpanCoversColumn</c>.
+    /// <c>InlineMethodOperation.SpanCoversColumn</c>.
     /// </summary>
     internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
     {

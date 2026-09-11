@@ -337,7 +337,7 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
     /// <paramref name="line"/>, picks the smallest method or constructor
     /// whose identifier or declaration span covers that 1-based column
     /// (same exclusive-end coverage as
-    /// <c>ChangeSignatureOperation.SpanCoversColumn</c>). Prefer the
+    /// <c>SpanCoverage.SpanCoversColumn</c>). Prefer the
     /// identifier hit, then the smallest containing declaration. Do not
     /// require the declaration to start on <paramref name="line"/> when
     /// column is set — a split signature may put the identifier on a
@@ -415,7 +415,7 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
     /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
     /// inclusive would let the first character of an adjacent method also
     /// match the previous declaration. Same helper as
-    /// <c>ChangeSignatureOperation.SpanCoversColumn</c>.
+    /// <c>SpanCoverage.SpanCoversColumn</c>.
     /// </summary>
     internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
     {
