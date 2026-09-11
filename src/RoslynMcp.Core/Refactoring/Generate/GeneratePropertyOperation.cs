@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Generate;
@@ -819,35 +820,11 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
 
     private static bool TypeCoversColumn(BaseTypeDeclarationSyntax type, int line, int column) =>
         IdentifierCoversColumn(type, line, column) ||
-        SpanCoversColumn(type.GetLocation().GetLineSpan(), line, column);
+        SpanCoverage.SpanCoversColumn(type.GetLocation().GetLineSpan(), line, column);
 
     private static bool IdentifierCoversColumn(BaseTypeDeclarationSyntax type, int line, int column) =>
-        SpanCoversColumn(type.Identifier.GetLocation().GetLineSpan(), line, column);
+        SpanCoverage.SpanCoversColumn(type.Identifier.GetLocation().GetLineSpan(), line, column);
 
-    /// <summary>
-    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so <paramref name="column"/> must be strictly before the
-    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
-    /// inclusive would let the first character of an adjacent type also
-    /// match the previous declaration. Same helper as
-    /// <c>GenerateConstructorOperation.SpanCoversColumn</c> /
-    /// <c>GenerateOverridesOperation.SpanCoversColumn</c>.
-    /// </summary>
-    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        var startCol = span.StartLinePosition.Character + 1;
-        var endCol = span.EndLinePosition.Character + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == startLine && column < startCol)
-            return false;
-        if (line == endLine && column >= endCol)
-            return false;
-        return true;
-    }
 
     /// <summary>
     /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
