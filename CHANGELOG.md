@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Replaced 3 identical Hierarchy `SpanCoversColumn` copies with shared `SpanCoverage.SpanCoversColumn` (`pull_members_up` / `push_members_down` / `use_base_type`) (#967)
 - Replaced 4 identical Encapsulate/Extract `SpanCoversColumn` copies with shared `SpanCoverage.SpanCoversColumn` (`encapsulate_field` / `introduce_parameter` / `extract_base_class` / `extract_interface`) (#965)
 - Replaced 7 identical Generate-family `SpanCoversColumn` copies with shared `SpanCoverage.SpanCoversColumn` (`generate_constructor` / `generate_equals_hashcode` / `generate_overrides` / `generate_property` / `generate_tostring` / `implement_abstract` / `implement_interface`) (#962)
 - Replaced 13 identical Convert-family `SpanCoversColumn` copies with shared `SpanCoverage.SpanCoversColumn` (`add_braces` / `remove_braces` / `convert_*` / `invert_if` / `simplify_name`) (#959)
