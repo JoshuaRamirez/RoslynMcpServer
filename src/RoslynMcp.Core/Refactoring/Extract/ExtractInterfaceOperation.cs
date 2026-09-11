@@ -656,7 +656,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
     /// is exclusive, so a span that ends at the start of a line does not
     /// cover that line. Treating the end as inclusive would let the first
     /// line of an adjacent type also match the previous declaration. Same
-    /// exclusive-end idea as <c>GenerateToStringOperation.SpanCoversLine</c>.
+    /// exclusive-end idea as <c>SpanCoverage.SpanCoversLine</c>.
     /// </summary>
     internal static bool SpanCoversLine(FileLinePositionSpan span, int line)
     {
