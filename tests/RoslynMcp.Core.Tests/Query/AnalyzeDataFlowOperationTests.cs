@@ -522,6 +522,65 @@ class C
 """;
 
     [SkippableFact]
+    public async Task AnalyzeDataFlow_ExpressionBodiedMethod_SucceedsViaExpressionOverload()
+    {
+        // Region = whole ExprBody line (`int ExprBody() => x + 2;`).
+        // Zero StatementSyntax → expression fallback uses ArrowExpression
+        // `x + 2` via AnalyzeDataFlow(ExpressionSyntax).
+        await using var workspace = await TempWorkspace.CreateAsync(BracedBlockSource);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(BracedBlockSource);
+        var root = tree.GetRoot();
+        var method = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.ValueText == "ExprBody");
+        var methodSpan = method.GetLocation().GetLineSpan();
+        var line = methodSpan.StartLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            EndLine = line
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Contains("this", result.Data.ReadInside);
+        Assert.Contains("this", result.Data.DataFlowsIn);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_ExpressionBodiedProperty_SucceedsViaExpressionOverload()
+    {
+        // Region = whole Prop line (`int Prop => x;`). Zero StatementSyntax
+        // → expression fallback on ArrowExpression `x`.
+        await using var workspace = await TempWorkspace.CreateAsync(BracedBlockSource);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(BracedBlockSource);
+        var root = tree.GetRoot();
+        var prop = root.DescendantNodes()
+            .OfType<PropertyDeclarationSyntax>()
+            .Single(p => p.Identifier.ValueText == "Prop");
+        var propSpan = prop.GetLocation().GetLineSpan();
+        var line = propSpan.StartLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            EndLine = line
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Contains("this", result.Data.ReadInside);
+        Assert.Contains("this", result.Data.DataFlowsIn);
+    }
+
+    [SkippableFact]
     public async Task AnalyzeDataFlow_InnerStatementsOnly_Succeeds()
     {
         // Region = inner statements only (no enclosing BlockSyntax).

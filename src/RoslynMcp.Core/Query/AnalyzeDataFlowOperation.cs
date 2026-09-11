@@ -16,6 +16,9 @@ namespace RoslynMcp.Core.Query;
 /// Omitted columns keep today's whole-line span (start of <c>startLine</c>
 /// through end of <c>endLine</c>). Do not force column 1 when omitted.
 /// Statement matching stays today's <c>span.Contains(s.Span)</c>.
+/// When the region contains no <see cref="StatementSyntax"/>, falls back to
+/// <c>AnalyzeDataFlow(ExpressionSyntax)</c> preferring a contained
+/// <see cref="ArrowExpressionClauseSyntax.Expression"/> (expression-bodied members).
 /// </summary>
 public sealed class AnalyzeDataFlowOperation : QueryOperationBase<AnalyzeDataFlowParams, AnalyzeDataFlowResult>
 {
@@ -137,20 +140,44 @@ public sealed class AnalyzeDataFlowOperation : QueryOperationBase<AnalyzeDataFlo
             }
         }
 
-        if (statements.Count == 0)
+        if (statements.Count == 0 && containedStatements.Count == 1)
+            statements = containedStatements;
+
+        DataFlowAnalysis? dataFlowAnalysis;
+
+        if (statements.Count > 0)
         {
-            if (containedStatements.Count == 1)
-                statements = containedStatements;
-            else
-                throw new RefactoringException(ErrorCodes.InvalidRegion, "No statements found in the specified region.");
+            // Get first and last statement for analysis (first==last for a
+            // single-statement / embedded-statement region).
+            var firstStatement = statements.First();
+            var lastStatement = statements.Last();
+            dataFlowAnalysis = semanticModel.AnalyzeDataFlow(firstStatement, lastStatement);
         }
+        else if (containedStatements.Count == 0)
+        {
+            // Expression-bodied fallback (#932): region has no StatementSyntax
+            // (e.g. `int ExprBody() => x + 2;` / `int Prop => x;`). Prefer
+            // ArrowExpressionClauseSyntax.Expression when the region fully
+            // contains that expression, then AnalyzeDataFlow(ExpressionSyntax).
+            // Do not invent covering-span / intersection fallbacks.
+            var arrowExpression = root.DescendantNodes()
+                .OfType<ArrowExpressionClauseSyntax>()
+                .Select(clause => clause.Expression)
+                .FirstOrDefault(expression => span.Contains(expression.Span));
 
-        // Get first and last statement for analysis (first==last for a
-        // single-statement / embedded-statement region).
-        var firstStatement = statements.First();
-        var lastStatement = statements.Last();
+            if (arrowExpression == null)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.InvalidRegion,
+                    "No statements found in the specified region.");
+            }
 
-        var dataFlowAnalysis = semanticModel.AnalyzeDataFlow(firstStatement, lastStatement);
+            dataFlowAnalysis = semanticModel.AnalyzeDataFlow(arrowExpression);
+        }
+        else
+        {
+            throw new RefactoringException(ErrorCodes.InvalidRegion, "No statements found in the specified region.");
+        }
 
         if (dataFlowAnalysis == null || !dataFlowAnalysis.Succeeded)
             throw new RefactoringException(ErrorCodes.InvalidRegion, "Data flow analysis failed for the specified region.");
