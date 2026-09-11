@@ -590,10 +590,10 @@ public class GenerateToStringOperationTests
             new LinePosition(0, 0),
             new LinePosition(2, 0));
 
-        Assert.True(GenerateToStringOperation.SpanCoversLine(span, 1));
-        Assert.True(GenerateToStringOperation.SpanCoversLine(span, 2));
-        Assert.False(GenerateToStringOperation.SpanCoversLine(span, 3));
-        Assert.False(GenerateToStringOperation.SpanCoversLine(span, 0));
+        Assert.True(SpanCoverage.SpanCoversLine(span, 1));
+        Assert.True(SpanCoverage.SpanCoversLine(span, 2));
+        Assert.False(SpanCoverage.SpanCoversLine(span, 3));
+        Assert.False(SpanCoverage.SpanCoversLine(span, 0));
     }
 
     [SkippableFact]

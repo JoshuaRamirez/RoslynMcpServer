@@ -29,4 +29,25 @@ internal static class SpanCoverage
             return false;
         return true;
     }
+
+    /// <summary>
+    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
+    /// is exclusive, so a span that ends at the start of a line does not
+    /// cover that line (reject when <paramref name="line"/> equals the
+    /// exclusive end line and <c>EndLinePosition.Character == 0</c>).
+    /// Treating the end as inclusive would let the first line of an
+    /// adjacent type also match the previous declaration.
+    /// </summary>
+    internal static bool SpanCoversLine(FileLinePositionSpan span, int line)
+    {
+        var startLine = span.StartLinePosition.Line + 1;
+        var endLine = span.EndLinePosition.Line + 1;
+
+        if (line < startLine || line > endLine)
+            return false;
+        if (line == endLine && span.EndLinePosition.Character == 0)
+            return false;
+        return true;
+    }
 }
+
