@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Signature;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
 
@@ -1000,10 +1001,10 @@ public class ChangeReturnTypeOperationTests
         var startCol = span.StartLinePosition.Character + 1;
         var endCol = span.EndLinePosition.Character + 1;
 
-        Assert.True(ChangeReturnTypeOperation.SpanCoversColumn(span, line, startCol));
-        Assert.True(ChangeReturnTypeOperation.SpanCoversColumn(span, line, endCol - 1));
-        Assert.False(ChangeReturnTypeOperation.SpanCoversColumn(span, line, endCol));
-        Assert.False(ChangeReturnTypeOperation.SpanCoversColumn(span, line, startCol - 1));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, startCol));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, endCol));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, startCol - 1));
     }
 
     [SkippableFact]
