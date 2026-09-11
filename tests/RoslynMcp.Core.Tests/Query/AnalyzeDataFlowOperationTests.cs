@@ -661,6 +661,56 @@ return 0;
         Assert.NotNull(result.Data.WrittenInside);
     }
 
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_TrailingNestedBlock_RestrictsToOneStatementListParent()
+    {
+        // Method ending in if { return }: parent-type filter alone would
+        // keep outer-block statements AND the nested return (different
+        // parents) so First/Last fail ValidateStatementRange. One-parent
+        // restriction keeps only the outermost contained list.
+        const string source =
+            """
+class C
+{
+    void M(bool flag, int x)
+    {
+        var y = x;
+        System.Console.Write(y);
+        if (flag)
+        {
+            return;
+        }
+    }
+}
+""";
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var method = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.ValueText == "M");
+        var methodSpan = method.GetLocation().GetLineSpan();
+        var startLine = methodSpan.StartLinePosition.Line + 1;
+        var endLine = methodSpan.EndLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = startLine,
+            EndLine = endLine
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Contains("y", result.Data.WrittenInside);
+        Assert.Contains("y", result.Data.ReadInside);
+        Assert.Contains("x", result.Data.ReadInside);
+        Assert.Contains("flag", result.Data.ReadInside);
+    }
+
     #endregion
 
     #region Helpers
