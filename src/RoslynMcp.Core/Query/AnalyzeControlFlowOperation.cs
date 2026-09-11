@@ -89,11 +89,15 @@ public sealed class AnalyzeControlFlowOperation : QueryOperationBase<AnalyzeCont
         // Find statements in the region. Today's matching: the region's
         // span must fully contain the statement span. Do not invent a
         // covering-span / intersection fallback when nothing is contained.
-        // Prefer statements that are direct children of a statement list
-        // (BlockSyntax / SwitchSectionSyntax). Nested statements (e.g.
-        // goto under if, return under a labeled statement) are not
-        // siblings in the same list, and AnalyzeControlFlow(first, last)
-        // rejects mixed parents via ValidateStatementRange.
+        // Prefer statements that are direct children of ONE statement-list
+        // parent (BlockSyntax / SwitchSectionSyntax). Parent-type alone
+        // still admits siblings from nested lists (e.g. return 1 under
+        // if (a) and return 2 under if (b)): each Parent is a different
+        // BlockSyntax, so kind filter alone hands mixed parents to
+        // ValidateStatementRange → ArgumentException → RoslynError (#936).
+        // Among candidates, pick the outermost contained list parent
+        // (parity with AnalyzeDataFlowOperation / #931) and keep only its
+        // direct children so First/Last share a parent.
         // If that sibling-list filter yields empty and the region
         // contains exactly one StatementSyntax (e.g. unbraced embedded
         // return under if), analyze that single statement alone.
@@ -102,9 +106,38 @@ public sealed class AnalyzeControlFlowOperation : QueryOperationBase<AnalyzeCont
             .Where(s => span.Contains(s.Span))
             .ToList();
 
-        var statements = containedStatements
+        var listParentCandidates = containedStatements
             .Where(s => s.Parent is BlockSyntax or SwitchSectionSyntax)
             .ToList();
+
+        var statements = listParentCandidates;
+        if (listParentCandidates.Count > 0)
+        {
+            var parents = listParentCandidates
+                .Select(s => s.Parent!)
+                .Distinct()
+                .ToList();
+
+            // Outermost contained statement-list parent: contains every
+            // other candidate parent (or is the only one).
+            var outermostParent = parents.FirstOrDefault(p =>
+                parents.All(other => other == p || p.Contains(other)));
+
+            if (outermostParent != null)
+            {
+                statements = listParentCandidates
+                    .Where(s => s.Parent == outermostParent)
+                    .ToList();
+            }
+            else
+            {
+                // No single parent contains the others (cross-list region).
+                // Reject rather than hand mixed parents to Roslyn (#936).
+                throw new RefactoringException(
+                    ErrorCodes.InvalidRegion,
+                    "Selected statements are not within the same statement list.");
+            }
+        }
 
         if (statements.Count == 0)
         {
