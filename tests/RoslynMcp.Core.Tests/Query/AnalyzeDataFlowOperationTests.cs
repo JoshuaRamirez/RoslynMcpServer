@@ -581,6 +581,39 @@ class C
     }
 
     [SkippableFact]
+    public async Task AnalyzeDataFlow_MultiArrowExpressionRegion_ThrowsInvalidRegion()
+    {
+        // Region spans both ExprBody and Prop lines — two fully contained
+        // ArrowExpressionClause expressions. Must be InvalidRegion (not
+        // silently analyzing only the first via FirstOrDefault).
+        await using var workspace = await TempWorkspace.CreateAsync(BracedBlockSource);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(BracedBlockSource);
+        var root = tree.GetRoot();
+        var method = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.ValueText == "ExprBody");
+        var prop = root.DescendantNodes()
+            .OfType<PropertyDeclarationSyntax>()
+            .Single(p => p.Identifier.ValueText == "Prop");
+        var startLine = method.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        var endLine = prop.GetLocation().GetLineSpan().EndLinePosition.Line + 1;
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AnalyzeDataFlowParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = startLine,
+                EndLine = endLine
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidRegion, ex.ErrorCode);
+        Assert.Contains("multiple", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("arrow", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
     public async Task AnalyzeDataFlow_InnerStatementsOnly_Succeeds()
     {
         // Region = inner statements only (no enclosing BlockSyntax).
