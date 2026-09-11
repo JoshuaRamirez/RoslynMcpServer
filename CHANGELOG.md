@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-11
+
+### Added
+- `analyze_control_flow` now emits `EntryPoints` — regions that are jump targets from outside (e.g. a labeled statement reached by `goto`) appear in the list with `Kind = Label`; regions with no external entries return an empty list so the property is always present (#826)
+
 ## [0.5.2] - 2026-09-09
 
 ### Fixed
