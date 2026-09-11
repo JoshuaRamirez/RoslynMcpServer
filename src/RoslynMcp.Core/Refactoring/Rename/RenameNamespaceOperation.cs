@@ -575,8 +575,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     /// inclusive would let the first character of an adjacent namespace also
     /// match the previous declaration. Same helper as
     /// <c>SpanCoverage.SpanCoversColumn</c> /
-    /// <c>TypeSymbolResolver.SpanCoversColumn</c> /
-    /// <c>InlineMethodOperation.SpanCoversColumn</c>.
+    /// <c>TypeSymbolResolver.SpanCoversColumn</c>.
     /// </summary>
     internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
     {
