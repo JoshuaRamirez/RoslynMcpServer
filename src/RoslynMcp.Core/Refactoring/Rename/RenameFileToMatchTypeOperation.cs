@@ -744,7 +744,7 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
     /// match the previous declaration. Same helper as
     /// <c>TypeSymbolResolver.SpanCoversColumn</c> /
     /// <c>RenameNamespaceOperation.SpanCoversColumn</c> /
-    /// <c>InlineMethodOperation.SpanCoversColumn</c>.
+    /// <c>SpanCoverage.SpanCoversColumn</c>.
     /// </summary>
     internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
     {

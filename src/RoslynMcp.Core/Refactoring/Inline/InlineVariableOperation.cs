@@ -324,38 +324,16 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
 
     private static bool DeclaratorCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
         IdentifierCoversColumn(declarator, line, column) ||
-        SpanCoversColumn(DeclarationSpan(declarator), line, column);
+        SpanCoverage.SpanCoversColumn(DeclarationSpan(declarator), line, column);
 
     private static bool IdentifierCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
-        SpanCoversColumn(declarator.Identifier.GetLocation().GetLineSpan(), line, column);
+        SpanCoverage.SpanCoversColumn(declarator.Identifier.GetLocation().GetLineSpan(), line, column);
 
     private static FileLinePositionSpan DeclarationSpan(VariableDeclaratorSyntax declarator) =>
         declarator.Parent is VariableDeclarationSyntax declaration
             ? declaration.GetLocation().GetLineSpan()
             : declarator.GetLocation().GetLineSpan();
 
-    /// <summary>
-    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so <paramref name="column"/> must be strictly before the
-    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
-    /// inclusive would let the first character of an adjacent declaration also
-    /// match the previous one.
-    /// </summary>
-    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        var startCol = span.StartLinePosition.Character + 1;
-        var endCol = span.EndLinePosition.Character + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == startLine && column < startCol)
-            return false;
-        if (line == endLine && column >= endCol)
-            return false;
-        return true;
-    }
 
     private sealed class InlineRewriter : CSharpSyntaxRewriter
     {
