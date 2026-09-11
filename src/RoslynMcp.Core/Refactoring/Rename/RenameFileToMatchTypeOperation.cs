@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Rename;
@@ -467,7 +468,7 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
                     .Select(t => (
                         Target: t,
                         IdentifierHit: IdentifierCoversColumn(t.Node, @params.Line.Value, @params.Column.Value),
-                        DeclarationHit: SpanCoversColumn(
+                        DeclarationHit: SpanCoverage.SpanCoversColumn(
                             t.Node.GetLocation().GetLineSpan(), @params.Line.Value, @params.Column.Value)))
                     .Where(t => t.IdentifierHit || t.DeclarationHit)
                     .OrderBy(t => t.IdentifierHit ? 0 : 1)
@@ -733,40 +734,15 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
         if (!column.HasValue)
             return true;
 
-        return SpanCoversColumn(span, line, column.Value);
+        return SpanCoverage.SpanCoversColumn(span, line, column.Value);
     }
 
-    /// <summary>
-    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so <paramref name="column"/> must be strictly before the
-    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
-    /// inclusive would let the first character of an adjacent type also
-    /// match the previous declaration. Same helper as
-    /// <c>TypeSymbolResolver.SpanCoversColumn</c> /
-    /// <c>RenameNamespaceOperation.SpanCoversColumn</c> /
-    /// <c>SpanCoverage.SpanCoversColumn</c>.
-    /// </summary>
-    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        var startCol = span.StartLinePosition.Character + 1;
-        var endCol = span.EndLinePosition.Character + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == startLine && column < startCol)
-            return false;
-        if (line == endLine && column >= endCol)
-            return false;
-        return true;
-    }
 
     private static bool IdentifierCoversColumn(SyntaxNode node, int line, int column)
     {
         var identifier = GetTypeIdentifier(node);
         return identifier != default
-               && SpanCoversColumn(identifier.GetLocation().GetLineSpan(), line, column);
+               && SpanCoverage.SpanCoversColumn(identifier.GetLocation().GetLineSpan(), line, column);
     }
 
     internal static SyntaxToken GetTypeIdentifier(SyntaxNode node) => node switch
