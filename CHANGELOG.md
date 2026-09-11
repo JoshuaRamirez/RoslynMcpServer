@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `SpanCoverage.SpanCoversLine` and replaced 7 identical Generate-family copies (`generate_constructor` / `generate_equals_hashcode` / `generate_overrides` / `generate_property` / `generate_tostring` / `implement_abstract` / `implement_interface`) (#975)
 - Replaced 2 identical Rename `SpanCoversColumn` copies with shared `SpanCoverage.SpanCoversColumn` (`rename_namespace` / `rename_file_to_match_type`) (#973)
 - Replaced 3 identical Inline `SpanCoversColumn` copies with shared `SpanCoverage.SpanCoversColumn` (`inline_method` / `inline_constant` / `inline_variable`) (#970)
 - Replaced 3 identical Hierarchy `SpanCoversColumn` copies with shared `SpanCoverage.SpanCoversColumn` (`pull_members_up` / `push_members_down` / `use_base_type`) (#967)

@@ -929,7 +929,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
     /// <paramref name="column"/> keeps today's typeName + optional
     /// <paramref name="line"/> pick, including omitted-line
     /// <c>FirstOrDefault</c> and line-only exclusive-end coverage
-    /// (<see cref="SpanCoversLine"/>). Do not force column 1 when omitted.
+    /// (<see cref="SpanCoverage.SpanCoversLine"/>). Do not force column 1 when omitted.
     /// Column without line keeps today's first-match after the typeName
     /// filter rather than substituting each candidate's own start line.
     /// When column is set with line, picks the type whose identifier or
@@ -1003,10 +1003,10 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
 
     private static bool TypeCoversLine(TypeDeclarationSyntax type, int line) =>
         IdentifierCoversLine(type, line) ||
-        SpanCoversLine(type.GetLocation().GetLineSpan(), line);
+        SpanCoverage.SpanCoversLine(type.GetLocation().GetLineSpan(), line);
 
     private static bool IdentifierCoversLine(TypeDeclarationSyntax type, int line) =>
-        SpanCoversLine(type.Identifier.GetLocation().GetLineSpan(), line);
+        SpanCoverage.SpanCoversLine(type.Identifier.GetLocation().GetLineSpan(), line);
 
     private static bool TypeCoversColumn(TypeDeclarationSyntax type, int line, int column) =>
         IdentifierCoversColumn(type, line, column) ||
@@ -1014,26 +1014,6 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
 
     private static bool IdentifierCoversColumn(TypeDeclarationSyntax type, int line, int column) =>
         SpanCoverage.SpanCoversColumn(type.Identifier.GetLocation().GetLineSpan(), line, column);
-
-
-    /// <summary>
-    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so a span that ends at the start of a line does not
-    /// cover that line. Treating the end as inclusive would let the first
-    /// line of an adjacent type also match the previous declaration. Same
-    /// exclusive-end idea as <c>GenerateOverridesOperation.SpanCoversLine</c>.
-    /// </summary>
-    internal static bool SpanCoversLine(FileLinePositionSpan span, int line)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == endLine && span.EndLinePosition.Character == 0)
-            return false;
-        return true;
-    }
 
     private static TypeDeclarationSyntax StripIEquatableInterface(
         TypeDeclarationSyntax original,

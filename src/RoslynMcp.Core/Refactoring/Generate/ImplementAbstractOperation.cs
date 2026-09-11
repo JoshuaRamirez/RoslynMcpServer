@@ -1627,7 +1627,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// <paramref name="line"/> pick, including omitted-line
     /// <c>BaseTypeDeclarationSyntax</c> <c>FirstOrDefault</c> (enum
     /// participates; <c>DelegateDeclarationSyntax</c> does not) and
-    /// line-only exclusive-end coverage (<see cref="SpanCoversLine"/>).
+    /// line-only exclusive-end coverage (<see cref="SpanCoverage.SpanCoversLine"/>).
     /// Do not force column 1 when omitted. Do not change
     /// omitted-line/omitted-column to <c>TypeDeclarationSyntax</c> /
     /// <c>ClassDeclarationSyntax</c> FirstOrDefault. Do not add delegates
@@ -1745,13 +1745,13 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
 
     private static bool TypeCoversLine(MemberDeclarationSyntax type, int line) =>
         IdentifierCoversLine(type, line) ||
-        SpanCoversLine(type.GetLocation().GetLineSpan(), line);
+        SpanCoverage.SpanCoversLine(type.GetLocation().GetLineSpan(), line);
 
     private static bool IdentifierCoversLine(MemberDeclarationSyntax type, int line)
     {
         var identifier = GetTypeIdentifier(type);
         return identifier != default
-            && SpanCoversLine(identifier.GetLocation().GetLineSpan(), line);
+            && SpanCoverage.SpanCoversLine(identifier.GetLocation().GetLineSpan(), line);
     }
 
     private static bool TypeCoversColumn(MemberDeclarationSyntax type, int line, int column) =>
@@ -1771,26 +1771,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         DelegateDeclarationSyntax del => del.Identifier,
         _ => default
     };
-
-
-    /// <summary>
-    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so a span that ends at the start of a line does not
-    /// cover that line. Treating the end as inclusive would let the first
-    /// line of an adjacent type also match the previous declaration. Same
-    /// exclusive-end idea as <c>GeneratePropertyOperation.SpanCoversLine</c>.
-    /// </summary>
-    internal static bool SpanCoversLine(FileLinePositionSpan span, int line)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == endLine && span.EndLinePosition.Character == 0)
-            return false;
-        return true;
-    }
 
     /// <summary>
     /// Creates a preview result describing generate vs replace.
