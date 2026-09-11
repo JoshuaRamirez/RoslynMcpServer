@@ -619,6 +619,159 @@ return 2;
     }
 
     [SkippableFact]
+    public async Task AnalyzeControlFlow_CrossBlockNestedReturns_ThrowsInvalidRegionNotRoslynError()
+    {
+        // #936: region spanning return 1 under if (a) and return 2 under
+        // if (b). Kind filter alone keeps both (different Block parents);
+        // outermost-parent policy must InvalidRegion, not RoslynError.
+        const string source =
+            """
+class C
+{
+    int M(bool a, bool b)
+    {
+        if (a)
+        {
+            return 1;
+        }
+        if (b)
+        {
+            return 2;
+        }
+        return 0;
+    }
+}
+""";
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AnalyzeControlFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var returns = root.DescendantNodes().OfType<ReturnStatementSyntax>().ToList();
+        var r1 = returns.Single(r => r.Expression?.ToString() == "1");
+        var r2 = returns.Single(r => r.Expression?.ToString() == "2");
+        var startLine = r1.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        var endLine = r2.GetLocation().GetLineSpan().EndLinePosition.Line + 1;
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AnalyzeControlFlowParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = startLine,
+                EndLine = endLine
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidRegion, ex.ErrorCode);
+        Assert.DoesNotContain("Unexpected", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("same statement list", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeControlFlow_WholeMethodWithNestedIfs_StillSucceedsViaOutermostList()
+    {
+        // Regression: whole-method region keeps outermost method-block
+        // siblings (the two ifs + final return) and Succeeds with all
+        // three returns/exits and expected reachability.
+        const string source =
+            """
+class C
+{
+    int M(bool a, bool b)
+    {
+        if (a)
+        {
+            return 1;
+        }
+        if (b)
+        {
+            return 2;
+        }
+        return 0;
+    }
+}
+""";
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AnalyzeControlFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var method = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.ValueText == "M");
+        var methodSpan = method.GetLocation().GetLineSpan();
+        var startLine = methodSpan.StartLinePosition.Line + 1;
+        var endLine = methodSpan.EndLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeControlFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = startLine,
+            EndLine = endLine
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(3, result.Data.ReturnStatements.Count);
+        Assert.Equal(3, result.Data.ExitPoints.Count);
+        Assert.True(result.Data.StartPointReachable);
+        Assert.False(result.Data.EndPointReachable);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeControlFlow_CrossBlockReturnsWithMiddleOuterStatement_ThrowsInvalidRegion()
+    {
+        // #936 Codex: return1 / Log() / return2 spanning region must not
+        // select outermost method block solely via Log() then silently
+        // analyze only Log(). Nested boundary returns sit outside the
+        // direct-child covered range → InvalidRegion.
+        const string source =
+            """
+class C
+{
+    void Log() { }
+
+    int M(bool a, bool b)
+    {
+        if (a)
+        {
+            return 1;
+        }
+        Log();
+        if (b)
+        {
+            return 2;
+        }
+        return 0;
+    }
+}
+""";
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AnalyzeControlFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var returns = root.DescendantNodes().OfType<ReturnStatementSyntax>().ToList();
+        var r1 = returns.Single(r => r.Expression?.ToString() == "1");
+        var r2 = returns.Single(r => r.Expression?.ToString() == "2");
+        var startLine = r1.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        var endLine = r2.GetLocation().GetLineSpan().EndLinePosition.Line + 1;
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AnalyzeControlFlowParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = startLine,
+                EndLine = endLine
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidRegion, ex.ErrorCode);
+        Assert.Contains("same statement list", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
     public async Task AnalyzeControlFlow_UnbracedEmbeddedSingleStatement_AnalyzesAlone()
     {
         // Region = only the unbraced return under if. Parent is
