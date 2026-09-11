@@ -666,7 +666,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
     /// <paramref name="column"/> keeps today's fieldName + optional
     /// <paramref name="line"/> pick, including omitted-line field
     /// <c>VariableDeclaratorSyntax</c> <c>FirstOrDefault</c> and
-    /// line-only exclusive-end coverage (<see cref="SpanCoversLine"/>).
+    /// line-only exclusive-end coverage (<see cref="SpanCoverage.SpanCoversLine"/>).
     /// Do not force column 1 when omitted. Locals and other non-field
     /// declarators stay excluded. Column without line keeps today's
     /// <c>FirstOrDefault</c> after the fieldName filter rather than
@@ -738,12 +738,12 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
 
     private static bool FieldCoversLine(VariableDeclaratorSyntax declarator, int line) =>
         IdentifierCoversLine(declarator, line) ||
-        SpanCoversLine(declarator.GetLocation().GetLineSpan(), line) ||
+        SpanCoverage.SpanCoversLine(declarator.GetLocation().GetLineSpan(), line) ||
         (GetFieldDeclaration(declarator) is { } field &&
-         SpanCoversLine(field.GetLocation().GetLineSpan(), line));
+         SpanCoverage.SpanCoversLine(field.GetLocation().GetLineSpan(), line));
 
     private static bool IdentifierCoversLine(VariableDeclaratorSyntax declarator, int line) =>
-        SpanCoversLine(declarator.Identifier.GetLocation().GetLineSpan(), line);
+        SpanCoverage.SpanCoversLine(declarator.Identifier.GetLocation().GetLineSpan(), line);
 
     private static bool FieldCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
         IdentifierCoversColumn(declarator, line, column) ||
@@ -757,11 +757,11 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
     private static int SmallestCoveringSpanLength(VariableDeclaratorSyntax declarator, int line)
     {
         var smallest = int.MaxValue;
-        if (SpanCoversLine(declarator.GetLocation().GetLineSpan(), line))
+        if (SpanCoverage.SpanCoversLine(declarator.GetLocation().GetLineSpan(), line))
             smallest = Math.Min(smallest, declarator.Span.Length);
 
         if (GetFieldDeclaration(declarator) is { } field &&
-            SpanCoversLine(field.GetLocation().GetLineSpan(), line))
+            SpanCoverage.SpanCoversLine(field.GetLocation().GetLineSpan(), line))
         {
             smallest = Math.Min(smallest, field.Span.Length);
         }
@@ -787,24 +787,6 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
     private static FieldDeclarationSyntax? GetFieldDeclaration(VariableDeclaratorSyntax declarator) =>
         declarator.Parent?.Parent as FieldDeclarationSyntax;
 
-    /// <summary>
-    /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so a span that ends at the start of a line does not
-    /// cover that line. Treating the end as inclusive would let the first
-    /// line of an adjacent field also match the previous declaration. Same
-    /// exclusive-end idea as <c>UseBaseTypeOperation.SpanCoversLine</c>.
-    /// </summary>
-    internal static bool SpanCoversLine(FileLinePositionSpan span, int line)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == endLine && span.EndLinePosition.Character == 0)
-            return false;
-        return true;
-    }
 
     /// <summary>
     /// True when the reference lives in the selected field's containing
