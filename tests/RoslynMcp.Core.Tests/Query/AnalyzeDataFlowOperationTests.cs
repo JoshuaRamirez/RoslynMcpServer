@@ -502,6 +502,215 @@ int a = 1; return a;
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
+    // Fixture for sibling-list filter parity with analyze_control_flow (#931).
+    // Whole-method / braces+body regions contain BlockSyntax + nested
+    // statements; without Parent is Block/SwitchSection filter, First/Last
+    // hit ValidateStatementRange.
+    private const string BracedBlockSource =
+        """
+class C
+{
+    int x = 1;
+    int ExprBody() => x + 2;
+    int Prop => x;
+    void Block()
+    {
+        var y = x;
+        System.Console.Write(y);
+    }
+}
+""";
+
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_InnerStatementsOnly_Succeeds()
+    {
+        // Region = inner statements only (no enclosing BlockSyntax).
+        // Regression: still succeeds after sibling-list filter.
+        await using var workspace = await TempWorkspace.CreateAsync(BracedBlockSource);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(BracedBlockSource);
+        var root = tree.GetRoot();
+        var method = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.ValueText == "Block");
+        var firstStmt = method.Body!.Statements.First();
+        var lastStmt = method.Body!.Statements.Last();
+        var startLine = firstStmt.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        var endLine = lastStmt.GetLocation().GetLineSpan().EndLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = startLine,
+            EndLine = endLine
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Contains("y", result.Data.WrittenInside);
+        Assert.Contains("y", result.Data.ReadInside);
+        Assert.Contains("this", result.Data.ReadInside);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_WholeMethodIncludingBraces_SucceedsWithSiblingFilter()
+    {
+        // Region = whole Block method (signature through closing brace).
+        // Contained StatementSyntax includes enclosing Block + nested
+        // statements (mixed parents). Sibling-list filter keeps only the
+        // statement-list children so AnalyzeDataFlow succeeds.
+        await using var workspace = await TempWorkspace.CreateAsync(BracedBlockSource);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(BracedBlockSource);
+        var root = tree.GetRoot();
+        var method = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.ValueText == "Block");
+        var methodSpan = method.GetLocation().GetLineSpan();
+        var startLine = methodSpan.StartLinePosition.Line + 1;
+        var endLine = methodSpan.EndLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = startLine,
+            EndLine = endLine
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Contains("y", result.Data.WrittenInside);
+        Assert.Contains("y", result.Data.ReadInside);
+        Assert.Contains("this", result.Data.ReadInside);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_BracesAndBodyOnly_SucceedsWithSiblingFilter()
+    {
+        // Region = braces + body only (previously failed: Block + nested).
+        await using var workspace = await TempWorkspace.CreateAsync(BracedBlockSource);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(BracedBlockSource);
+        var root = tree.GetRoot();
+        var method = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.ValueText == "Block");
+        var bodySpan = method.Body!.GetLocation().GetLineSpan();
+        var startLine = bodySpan.StartLinePosition.Line + 1;
+        var endLine = bodySpan.EndLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = startLine,
+            EndLine = endLine
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Contains("y", result.Data.WrittenInside);
+        Assert.Contains("y", result.Data.ReadInside);
+        Assert.Contains("this", result.Data.ReadInside);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_UnbracedEmbeddedSingleStatement_AnalyzesAlone()
+    {
+        // Region = only the unbraced return under if. Parent is
+        // IfStatementSyntax, not Block/SwitchSection, so the sibling-list
+        // filter yields empty. Exactly one contained StatementSyntax →
+        // analyze that statement alone (first==last).
+        const string source =
+            """
+class C
+{
+public int M(bool flag)
+{
+if (flag)
+return 1;
+return 0;
+}
+}
+""";
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var embeddedReturn = root.DescendantNodes()
+            .OfType<ReturnStatementSyntax>()
+            .Single(r => r.Parent is IfStatementSyntax);
+        var returnSpan = embeddedReturn.GetLocation().GetLineSpan();
+        var line = returnSpan.StartLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            EndLine = line
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        // Literal return has no named locals; success without RoslynError is the contract.
+        Assert.NotNull(result.Data.ReadInside);
+        Assert.NotNull(result.Data.WrittenInside);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_TrailingNestedBlock_RestrictsToOneStatementListParent()
+    {
+        // Method ending in if { return }: parent-type filter alone would
+        // keep outer-block statements AND the nested return (different
+        // parents) so First/Last fail ValidateStatementRange. One-parent
+        // restriction keeps only the outermost contained list.
+        const string source =
+            """
+class C
+{
+    void M(bool flag, int x)
+    {
+        var y = x;
+        System.Console.Write(y);
+        if (flag)
+        {
+            return;
+        }
+    }
+}
+""";
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var method = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Single(m => m.Identifier.ValueText == "M");
+        var methodSpan = method.GetLocation().GetLineSpan();
+        var startLine = methodSpan.StartLinePosition.Line + 1;
+        var endLine = methodSpan.EndLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = startLine,
+            EndLine = endLine
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Contains("y", result.Data.WrittenInside);
+        Assert.Contains("y", result.Data.ReadInside);
+        Assert.Contains("x", result.Data.ReadInside);
+        Assert.Contains("flag", result.Data.ReadInside);
+    }
+
     #endregion
 
     #region Helpers
