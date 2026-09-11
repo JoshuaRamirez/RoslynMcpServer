@@ -20,6 +20,9 @@ namespace RoslynMcp.Core.Query;
 /// <c>AnalyzeDataFlow(ExpressionSyntax)</c> for exactly one contained
 /// <see cref="ArrowExpressionClauseSyntax.Expression"/> (expression-bodied members).
 /// Multiple contained arrows are <c>InvalidRegion</c>.
+/// When there are also no arrow expressions, falls back to exactly one
+/// contained <see cref="EqualsValueClauseSyntax.Value"/> (field/const/static/local
+/// initializer). Zero or multiple contained Values are <c>InvalidRegion</c>.
 /// </summary>
 public sealed class AnalyzeDataFlowOperation : QueryOperationBase<AnalyzeDataFlowParams, AnalyzeDataFlowResult>
 {
@@ -161,20 +164,12 @@ public sealed class AnalyzeDataFlowOperation : QueryOperationBase<AnalyzeDataFlo
             // every ArrowExpressionClauseSyntax.Expression fully contained in
             // the region, then AnalyzeDataFlow(ExpressionSyntax) only when
             // exactly one matches. Multiple arrows (ambiguous multi-member
-            // span) or zero → InvalidRegion. Do not invent covering-span /
-            // intersection / EqualsValueClause fallbacks.
+            // span) → InvalidRegion. Do not invent covering-span / intersection.
             var arrowExpressions = root.DescendantNodes()
                 .OfType<ArrowExpressionClauseSyntax>()
                 .Select(clause => clause.Expression)
                 .Where(expression => span.Contains(expression.Span))
                 .ToList();
-
-            if (arrowExpressions.Count == 0)
-            {
-                throw new RefactoringException(
-                    ErrorCodes.InvalidRegion,
-                    "No statements found in the specified region.");
-            }
 
             if (arrowExpressions.Count > 1)
             {
@@ -183,7 +178,39 @@ public sealed class AnalyzeDataFlowOperation : QueryOperationBase<AnalyzeDataFlo
                     "Ambiguous region: multiple expression-bodied members (arrow expressions) are fully contained. Narrow the region to a single arrow expression.");
             }
 
-            dataFlowAnalysis = semanticModel.AnalyzeDataFlow(arrowExpressions[0]);
+            if (arrowExpressions.Count == 1)
+            {
+                dataFlowAnalysis = semanticModel.AnalyzeDataFlow(arrowExpressions[0]);
+            }
+            else
+            {
+                // EqualsValueClause initializer fallback (#933): no statements
+                // and no arrow expressions (field/const/static/local initializer
+                // line, or column-trimmed local Value). Prefer exactly one
+                // EqualsValueClause.Value fully contained in the region.
+                // Multiple Values (ambiguous) or zero → InvalidRegion.
+                var initializerValues = root.DescendantNodes()
+                    .OfType<EqualsValueClauseSyntax>()
+                    .Select(clause => clause.Value)
+                    .Where(value => span.Contains(value.Span))
+                    .ToList();
+
+                if (initializerValues.Count == 0)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.InvalidRegion,
+                        "No statements found in the specified region.");
+                }
+
+                if (initializerValues.Count > 1)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.InvalidRegion,
+                        "Ambiguous region: multiple EqualsValueClause initializer values are fully contained. Narrow the region to a single initializer expression.");
+                }
+
+                dataFlowAnalysis = semanticModel.AnalyzeDataFlow(initializerValues[0]);
+            }
         }
         else
         {
