@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-11
+
+### Added
+- `analyze_control_flow` now emits `EntryPoints` — regions that are jump targets from outside (e.g. a labeled statement reached by `goto`) appear in the list with `Kind = Label`; regions with no external entries return an empty list so the property is always present (#826)
+
 ## [0.5.2] - 2026-09-09
 
 ### Fixed
@@ -307,7 +312,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
-[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.4.1...v0.5.0
