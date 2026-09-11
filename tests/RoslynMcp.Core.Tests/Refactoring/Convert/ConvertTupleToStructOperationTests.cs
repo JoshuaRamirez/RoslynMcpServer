@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Core.Resolution;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring;
@@ -525,7 +526,7 @@ public class ConvertTupleToStructOperationTests
         var firstCreationEndCol = first.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
         var secondColumn = ColumnOf(SameLineTupleSource, "(A: 3, B: 4)");
 
-        Assert.False(ConvertTupleToStructOperation.SpanCoversColumn(
+        Assert.False(SpanCoverage.SpanCoversColumn(
             first.GetLocation().GetLineSpan(), line, firstCreationEndCol));
 
         var exclusiveEnd = Assert.Throws<RefactoringException>(() =>
@@ -565,10 +566,10 @@ public class ConvertTupleToStructOperationTests
         var startCol = span.StartLinePosition.Character + 1;
         var endCol = span.EndLinePosition.Character + 1;
 
-        Assert.True(ConvertTupleToStructOperation.SpanCoversColumn(span, line, startCol));
-        Assert.True(ConvertTupleToStructOperation.SpanCoversColumn(span, line, endCol - 1));
-        Assert.False(ConvertTupleToStructOperation.SpanCoversColumn(span, line, endCol));
-        Assert.False(ConvertTupleToStructOperation.SpanCoversColumn(span, line, startCol - 1));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, startCol));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, endCol));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, startCol - 1));
     }
 
     [Fact]

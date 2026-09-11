@@ -10,6 +10,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Core.Resolution;
 
 namespace RoslynMcp.Core.Refactoring.Convert;
 
@@ -412,7 +413,7 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
         if (column.HasValue)
         {
             var covering = onLine
-                .Where(node => SpanCoversColumn(node.GetLocation().GetLineSpan(), line, column.Value))
+                .Where(node => SpanCoverage.SpanCoversColumn(node.GetLocation().GetLineSpan(), line, column.Value))
                 .OrderBy(node => node.Span.Length)
                 .ToList();
             return covering.FirstOrDefault();
@@ -1034,32 +1035,6 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
         return true;
     }
 
-    /// <summary>
-    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so <paramref name="column"/> must be strictly before the
-    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
-    /// inclusive would let the first character after a covered name also
-    /// match the previous name. Same helper as
-    /// <c>InvertIfOperation.SpanCoversColumn</c> /
-    /// <c>TypeSymbolResolver.SpanCoversColumn</c> /
-    /// <c>RenameFileToMatchTypeOperation.SpanCoversColumn</c> /
-    /// <c>InlineMethodOperation.SpanCoversColumn</c>.
-    /// </summary>
-    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        var startCol = span.StartLinePosition.Character + 1;
-        var endCol = span.EndLinePosition.Character + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == startLine && column < startCol)
-            return false;
-        if (line == endLine && column >= endCol)
-            return false;
-        return true;
-    }
 
     private static string BuildDescription(string scope, int applied, int skipped)
     {

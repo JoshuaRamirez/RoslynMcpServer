@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Core.Resolution;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring;
@@ -1359,7 +1360,7 @@ public class InvertIfOperationTests
         var atExclusiveEnd = InvertIfOperation.FindIfStatement(root, line, firstKeywordEndCol);
         var atSecond = InvertIfOperation.FindIfStatement(root, line, secondKeyword);
 
-        Assert.False(InvertIfOperation.SpanCoversColumn(
+        Assert.False(SpanCoverage.SpanCoversColumn(
             first.IfKeyword.GetLocation().GetLineSpan(), line, firstKeywordEndCol));
         Assert.True(atExclusiveEnd == null || atExclusiveEnd.Condition.ToString() != "a");
         Assert.NotNull(atSecond);
@@ -1377,10 +1378,10 @@ public class InvertIfOperationTests
         var startCol = span.StartLinePosition.Character + 1;
         var endCol = span.EndLinePosition.Character + 1;
 
-        Assert.True(InvertIfOperation.SpanCoversColumn(span, line, startCol));
-        Assert.True(InvertIfOperation.SpanCoversColumn(span, line, endCol - 1));
-        Assert.False(InvertIfOperation.SpanCoversColumn(span, line, endCol));
-        Assert.False(InvertIfOperation.SpanCoversColumn(span, line, startCol - 1));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, startCol));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, endCol));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, startCol - 1));
     }
 
     #endregion

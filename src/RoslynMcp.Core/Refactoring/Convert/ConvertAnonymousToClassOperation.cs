@@ -9,6 +9,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Core.Resolution;
 using SymbolKind = RoslynMcp.Contracts.Enums.SymbolKind;
 
 namespace RoslynMcp.Core.Refactoring.Convert;
@@ -215,7 +216,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         if (@params.Column.HasValue)
         {
             var atColumn = candidates
-                .Where(n => SpanCoversColumn(n.GetLocation().GetLineSpan(), @params.Line, @params.Column.Value))
+                .Where(n => SpanCoverage.SpanCoversColumn(n.GetLocation().GetLineSpan(), @params.Line, @params.Column.Value))
                 .ToList();
             if (atColumn.Count == 1)
                 return atColumn[0];
@@ -804,36 +805,9 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         if (!column.HasValue)
             return true;
 
-        return SpanCoversColumn(span, line, column.Value);
+        return SpanCoverage.SpanCoversColumn(span, line, column.Value);
     }
 
-    /// <summary>
-    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so <paramref name="column"/> must be strictly before the
-    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
-    /// inclusive would let the first character after a covered anonymous
-    /// creation also match the previous creation. Same helper as
-    /// <c>ConvertForeachLinqOperation.SpanCoversColumn</c> /
-    /// <c>RemoveBracesOperation.SpanCoversColumn</c> /
-    /// <c>AddBracesOperation.SpanCoversColumn</c> /
-    /// <c>SimplifyNameOperation.SpanCoversColumn</c> /
-    /// <c>InvertIfOperation.SpanCoversColumn</c>.
-    /// </summary>
-    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        var startCol = span.StartLinePosition.Character + 1;
-        var endCol = span.EndLinePosition.Character + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == startLine && column < startCol)
-            return false;
-        if (line == endLine && column >= endCol)
-            return false;
-        return true;
-    }
 
     private static bool TypeNameBindsToDifferentType(
         string display,

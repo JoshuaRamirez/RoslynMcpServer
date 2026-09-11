@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Replaced 13 identical Convert-family `SpanCoversColumn` copies with shared `SpanCoverage.SpanCoversColumn` (`add_braces` / `remove_braces` / `convert_*` / `invert_if` / `simplify_name`) (#959)
 - Extracted shared `SpanCoverage.SpanCoversColumn` and replaced the five identical Signature-family copies (`add_parameter` / `remove_parameter` / `change_signature` / `change_return_type` / `reorder_parameters`); `TypeSymbolResolver.SpanCoversColumn` delegates to the same helper (#955)
 
 ## [0.6.0] - 2026-09-11

@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Core.Resolution;
 
 namespace RoslynMcp.Core.Refactoring.Convert;
 
@@ -369,34 +370,9 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
     private static bool KeywordCoversColumn(IfStatementSyntax statement, int line, int column)
     {
         var span = statement.IfKeyword.GetLocation().GetLineSpan();
-        return SpanCoversColumn(span, line, column);
+        return SpanCoverage.SpanCoversColumn(span, line, column);
     }
 
-    /// <summary>
-    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so <paramref name="column"/> must be strictly before the
-    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
-    /// inclusive would let the first character after an <c>if</c> keyword also
-    /// match the previous keyword. Same helper as
-    /// <c>TypeSymbolResolver.SpanCoversColumn</c> /
-    /// <c>RenameFileToMatchTypeOperation.SpanCoversColumn</c> /
-    /// <c>InlineMethodOperation.SpanCoversColumn</c>.
-    /// </summary>
-    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        var startCol = span.StartLinePosition.Character + 1;
-        var endCol = span.EndLinePosition.Character + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == startLine && column < startCol)
-            return false;
-        if (line == endLine && column >= endCol)
-            return false;
-        return true;
-    }
 
     internal static ExpressionSyntax InvertCondition(ExpressionSyntax condition, SemanticModel? model)
     {

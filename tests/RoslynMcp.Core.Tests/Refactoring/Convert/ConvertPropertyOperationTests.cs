@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Core.Resolution;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring;
@@ -534,7 +535,7 @@ public class ConvertPropertyOperationTests
         var atExclusiveEnd = ConvertPropertyOperation.FindProperty(root, null, line, firstEndCol);
         var atSecondId = ConvertPropertyOperation.FindProperty(root, null, line, secondId);
 
-        Assert.False(ConvertPropertyOperation.SpanCoversColumn(
+        Assert.False(SpanCoverage.SpanCoversColumn(
             first.GetLocation().GetLineSpan(), line, firstEndCol));
         Assert.True(atExclusiveEnd == null || atExclusiveEnd.Identifier.Text != "Foo");
         Assert.NotNull(atSecondId);
@@ -585,10 +586,10 @@ public class ConvertPropertyOperationTests
         var startCol = span.StartLinePosition.Character + 1;
         var endCol = span.EndLinePosition.Character + 1;
 
-        Assert.True(ConvertPropertyOperation.SpanCoversColumn(span, line, startCol));
-        Assert.True(ConvertPropertyOperation.SpanCoversColumn(span, line, endCol - 1));
-        Assert.False(ConvertPropertyOperation.SpanCoversColumn(span, line, endCol));
-        Assert.False(ConvertPropertyOperation.SpanCoversColumn(span, line, startCol - 1));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, startCol));
+        Assert.True(SpanCoverage.SpanCoversColumn(span, line, endCol - 1));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, endCol));
+        Assert.False(SpanCoverage.SpanCoversColumn(span, line, startCol - 1));
     }
 
     #endregion

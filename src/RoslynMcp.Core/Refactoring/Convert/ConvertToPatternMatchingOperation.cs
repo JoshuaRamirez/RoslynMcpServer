@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Core.Resolution;
 
 namespace RoslynMcp.Core.Refactoring.Convert;
 
@@ -276,7 +277,7 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
 
         return switches.Cast<StatementSyntax>()
             .Concat(ifs)
-            .Where(statement => SpanCoversColumn(statement.GetLocation().GetLineSpan(), line, column.Value))
+            .Where(statement => SpanCoverage.SpanCoversColumn(statement.GetLocation().GetLineSpan(), line, column.Value))
             .OrderBy(statement => statement.Span.Length)
             .FirstOrDefault();
     }
@@ -284,28 +285,6 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
     private static bool StartsOnLine(SyntaxNode node, int line) =>
         node.GetLocation().GetLineSpan().StartLinePosition.Line + 1 == line;
 
-    /// <summary>
-    /// 1-based line/column coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>
-    /// is exclusive, so <paramref name="column"/> must be strictly before the
-    /// exclusive end (reject <c>column &gt;= endCol</c>). Treating the end as
-    /// inclusive would let the first character of an adjacent statement also
-    /// match the previous switch or if.
-    /// </summary>
-    internal static bool SpanCoversColumn(FileLinePositionSpan span, int line, int column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        var startCol = span.StartLinePosition.Character + 1;
-        var endCol = span.EndLinePosition.Character + 1;
-
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == startLine && column < startCol)
-            return false;
-        if (line == endLine && column >= endCol)
-            return false;
-        return true;
-    }
 
     private async Task<RefactoringResult> ConvertSwitchToExpression(
         Guid operationId, Document document, SyntaxNode root,
