@@ -900,6 +900,67 @@ class C
     }
 
     [SkippableFact]
+    public async Task AnalyzeDataFlow_LambdaInitializerWithParameterDefault_IgnoresNestedParameterEquals()
+    {
+        // C# 12+ style: declaration initializer Value is a lambda that itself
+        // contains a ParameterSyntax default EqualsValueClause. Without filtering
+        // Parameter parents, Count>1 rejects a single declaration initializer.
+        const string source =
+            """
+class C
+{
+    void M()
+    {
+        System.Func<int, int> f = (int x = 1) => x;
+        System.Console.Write(f(2));
+    }
+}
+""";
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var local = root.DescendantNodes()
+            .OfType<LocalDeclarationStatementSyntax>()
+            .Single();
+        var line = local.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+        // Whole local line contains LocalDeclarationStatement → statement path.
+        // Use Value-only columns so EqualsValueClause fallback is exercised.
+        var value = local.Declaration.Variables[0].Initializer!.Value;
+        var valueSpan = value.GetLocation().GetLineSpan();
+        var startColumn = valueSpan.StartLinePosition.Character + 1;
+        var endColumn = valueSpan.EndLinePosition.Character + 1;
+
+        var text = SourceText.From(source);
+        var region = AnalyzeDataFlowOperation.BuildRegionSpan(
+            text, Params(line, line, startColumn, endColumn));
+        Assert.False(region.Contains(local.Span));
+        Assert.True(region.Contains(value.Span));
+        // Nested parameter default EqualsValueClause is also fully contained.
+        var paramDefault = root.DescendantNodes()
+            .OfType<EqualsValueClauseSyntax>()
+            .Single(c => c.Parent is ParameterSyntax);
+        Assert.True(region.Contains(paramDefault.Value.Span));
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            EndLine = line,
+            StartColumn = startColumn,
+            EndColumn = endColumn
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.ReadInside);
+        Assert.NotNull(result.Data.WrittenInside);
+    }
+
+    [SkippableFact]
     public async Task AnalyzeDataFlow_MultiEqualsValueClauseRegion_ThrowsInvalidRegion()
     {
         // Region spans static S and field f lines — two fully contained

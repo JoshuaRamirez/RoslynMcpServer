@@ -188,9 +188,12 @@ public sealed class AnalyzeDataFlowOperation : QueryOperationBase<AnalyzeDataFlo
                 // and no arrow expressions (field/const/static/local initializer
                 // line, or column-trimmed local Value). Prefer exactly one
                 // EqualsValueClause.Value fully contained in the region.
+                // Exclude ParameterSyntax defaults (e.g. lambda `(int x = 1) =>`)
+                // so a single declaration initializer is not rejected as multi.
                 // Multiple Values (ambiguous) or zero → InvalidRegion.
                 var initializerValues = root.DescendantNodes()
                     .OfType<EqualsValueClauseSyntax>()
+                    .Where(clause => clause.Parent is not ParameterSyntax)
                     .Select(clause => clause.Value)
                     .Where(value => span.Contains(value.Span))
                     .ToList();
