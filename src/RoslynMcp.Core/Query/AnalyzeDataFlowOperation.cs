@@ -16,6 +16,10 @@ namespace RoslynMcp.Core.Query;
 /// Omitted columns keep today's whole-line span (start of <c>startLine</c>
 /// through end of <c>endLine</c>). Do not force column 1 when omitted.
 /// Statement matching stays today's <c>span.Contains(s.Span)</c>.
+/// When the region contains no <see cref="StatementSyntax"/>, falls back to
+/// <c>AnalyzeDataFlow(ExpressionSyntax)</c> for exactly one contained
+/// <see cref="ArrowExpressionClauseSyntax.Expression"/> (expression-bodied members).
+/// Multiple contained arrows are <c>InvalidRegion</c>.
 /// </summary>
 public sealed class AnalyzeDataFlowOperation : QueryOperationBase<AnalyzeDataFlowParams, AnalyzeDataFlowResult>
 {
@@ -137,20 +141,54 @@ public sealed class AnalyzeDataFlowOperation : QueryOperationBase<AnalyzeDataFlo
             }
         }
 
-        if (statements.Count == 0)
+        if (statements.Count == 0 && containedStatements.Count == 1)
+            statements = containedStatements;
+
+        DataFlowAnalysis? dataFlowAnalysis;
+
+        if (statements.Count > 0)
         {
-            if (containedStatements.Count == 1)
-                statements = containedStatements;
-            else
-                throw new RefactoringException(ErrorCodes.InvalidRegion, "No statements found in the specified region.");
+            // Get first and last statement for analysis (first==last for a
+            // single-statement / embedded-statement region).
+            var firstStatement = statements.First();
+            var lastStatement = statements.Last();
+            dataFlowAnalysis = semanticModel.AnalyzeDataFlow(firstStatement, lastStatement);
         }
+        else if (containedStatements.Count == 0)
+        {
+            // Expression-bodied fallback (#932): region has no StatementSyntax
+            // (e.g. `int ExprBody() => x + 2;` / `int Prop => x;`). Collect
+            // every ArrowExpressionClauseSyntax.Expression fully contained in
+            // the region, then AnalyzeDataFlow(ExpressionSyntax) only when
+            // exactly one matches. Multiple arrows (ambiguous multi-member
+            // span) or zero → InvalidRegion. Do not invent covering-span /
+            // intersection / EqualsValueClause fallbacks.
+            var arrowExpressions = root.DescendantNodes()
+                .OfType<ArrowExpressionClauseSyntax>()
+                .Select(clause => clause.Expression)
+                .Where(expression => span.Contains(expression.Span))
+                .ToList();
 
-        // Get first and last statement for analysis (first==last for a
-        // single-statement / embedded-statement region).
-        var firstStatement = statements.First();
-        var lastStatement = statements.Last();
+            if (arrowExpressions.Count == 0)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.InvalidRegion,
+                    "No statements found in the specified region.");
+            }
 
-        var dataFlowAnalysis = semanticModel.AnalyzeDataFlow(firstStatement, lastStatement);
+            if (arrowExpressions.Count > 1)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.InvalidRegion,
+                    "Ambiguous region: multiple expression-bodied members (arrow expressions) are fully contained. Narrow the region to a single arrow expression.");
+            }
+
+            dataFlowAnalysis = semanticModel.AnalyzeDataFlow(arrowExpressions[0]);
+        }
+        else
+        {
+            throw new RefactoringException(ErrorCodes.InvalidRegion, "No statements found in the specified region.");
+        }
 
         if (dataFlowAnalysis == null || !dataFlowAnalysis.Succeeded)
             throw new RefactoringException(ErrorCodes.InvalidRegion, "Data flow analysis failed for the specified region.");
