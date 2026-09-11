@@ -1020,7 +1020,7 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
     /// is exclusive, so a span that ends at the start of a line does not
     /// cover that line. Treating the end as inclusive would let the first
     /// line of an adjacent name also match the previous name. Same
-    /// exclusive-end idea as <c>EncapsulateFieldOperation.SpanCoversLine</c>.
+    /// exclusive-end idea as <c>SpanCoverage.SpanCoversLine</c>.
     /// </summary>
     internal static bool SpanTouchesLine(SyntaxNode node, int line)
     {

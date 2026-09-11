@@ -734,10 +734,10 @@ public class UseBaseTypeOperationTests
             new LinePosition(0, 0),
             new LinePosition(2, 0));
 
-        Assert.True(UseBaseTypeOperation.SpanCoversLine(span, 1));
-        Assert.True(UseBaseTypeOperation.SpanCoversLine(span, 2));
-        Assert.False(UseBaseTypeOperation.SpanCoversLine(span, 3));
-        Assert.False(UseBaseTypeOperation.SpanCoversLine(span, 0));
+        Assert.True(SpanCoverage.SpanCoversLine(span, 1));
+        Assert.True(SpanCoverage.SpanCoversLine(span, 2));
+        Assert.False(SpanCoverage.SpanCoversLine(span, 3));
+        Assert.False(SpanCoverage.SpanCoversLine(span, 0));
     }
 
     [SkippableFact]

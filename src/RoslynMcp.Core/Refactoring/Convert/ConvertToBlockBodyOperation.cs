@@ -234,7 +234,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     /// is exclusive, so a span that ends at the start of a line does not
     /// cover that line. Treating the end as inclusive would let the first
     /// line of an adjacent member also match the previous declaration. Same
-    /// exclusive-end idea as <c>EncapsulateFieldOperation.SpanCoversLine</c>.
+    /// exclusive-end idea as <c>SpanCoverage.SpanCoversLine</c>.
     /// </summary>
     internal static bool ContainsLine(SyntaxNode node, int line)
     {

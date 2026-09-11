@@ -738,9 +738,9 @@ public class EncapsulateFieldOperationTests
             new LinePosition(0, 0),
             new LinePosition(2, 0));
 
-        Assert.True(EncapsulateFieldOperation.SpanCoversLine(span, 1));
-        Assert.True(EncapsulateFieldOperation.SpanCoversLine(span, 2));
-        Assert.False(EncapsulateFieldOperation.SpanCoversLine(span, 3));
+        Assert.True(SpanCoverage.SpanCoversLine(span, 1));
+        Assert.True(SpanCoverage.SpanCoversLine(span, 2));
+        Assert.False(SpanCoverage.SpanCoversLine(span, 3));
     }
 
     #endregion

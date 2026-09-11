@@ -1523,9 +1523,9 @@ public class InlineConstantOperationTests
             new LinePosition(0, 0),
             new LinePosition(2, 0));
 
-        Assert.True(InlineConstantOperation.SpanCoversLine(span, 1));
-        Assert.True(InlineConstantOperation.SpanCoversLine(span, 2));
-        Assert.False(InlineConstantOperation.SpanCoversLine(span, 3));
+        Assert.True(SpanCoverage.SpanCoversLine(span, 1));
+        Assert.True(SpanCoverage.SpanCoversLine(span, 2));
+        Assert.False(SpanCoverage.SpanCoversLine(span, 3));
     }
 
     [Fact]
