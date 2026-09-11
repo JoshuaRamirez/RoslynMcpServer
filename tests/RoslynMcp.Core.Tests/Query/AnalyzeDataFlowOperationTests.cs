@@ -753,6 +753,246 @@ return 0;
         Assert.NotNull(result.Data.WrittenInside);
     }
 
+    // Fixture for EqualsValueClause initializer fallback (#933).
+    // Field/const/static lines are not StatementSyntax; local Value-only
+    // column trim does not fully contain LocalDeclarationStatement.
+    private const string InitializerSource =
+        """
+class C
+{
+    const int K = 10;
+    static int S = K + 1;
+    int f = K + 2;
+    void M(int p)
+    {
+        int z = S + p;
+        System.Console.Write(z);
+    }
+}
+""";
+
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_FieldInitializerWholeLine_SucceedsViaEqualsValueClause()
+    {
+        // Region = whole field line (`int f = K + 2;`). Zero StatementSyntax
+        // → EqualsValueClause.Value fallback via AnalyzeDataFlow(ExpressionSyntax).
+        await using var workspace = await TempWorkspace.CreateAsync(InitializerSource);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(InitializerSource);
+        var root = tree.GetRoot();
+        var field = root.DescendantNodes()
+            .OfType<FieldDeclarationSyntax>()
+            .Single(f => f.Declaration.Variables.Any(v => v.Identifier.ValueText == "f"));
+        var line = field.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            EndLine = line
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.ReadInside);
+        Assert.NotNull(result.Data.WrittenInside);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_StaticFieldInitializerWholeLine_SucceedsViaEqualsValueClause()
+    {
+        // Region = whole static field line (`static int S = K + 1;`).
+        await using var workspace = await TempWorkspace.CreateAsync(InitializerSource);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(InitializerSource);
+        var root = tree.GetRoot();
+        var field = root.DescendantNodes()
+            .OfType<FieldDeclarationSyntax>()
+            .Single(f => f.Declaration.Variables.Any(v => v.Identifier.ValueText == "S"));
+        var line = field.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            EndLine = line
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.ReadInside);
+        Assert.NotNull(result.Data.WrittenInside);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_LocalInitializerValueOnlyColumns_SucceedsViaEqualsValueClause()
+    {
+        // Region = column-trimmed EqualsValueClause.Value (`S + p`) inside
+        // `int z = S + p;`. LocalDeclarationStatement is NOT fully contained
+        // → expression fallback; ReadInside/DataFlowsIn include p.
+        await using var workspace = await TempWorkspace.CreateAsync(InitializerSource);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(InitializerSource);
+        var root = tree.GetRoot();
+        var local = root.DescendantNodes()
+            .OfType<LocalDeclarationStatementSyntax>()
+            .Single();
+        var value = local.Declaration.Variables[0].Initializer!.Value;
+        var valueSpan = value.GetLocation().GetLineSpan();
+        var line = valueSpan.StartLinePosition.Line + 1;
+        var startColumn = valueSpan.StartLinePosition.Character + 1;
+        var endColumn = valueSpan.EndLinePosition.Character + 1;
+
+        // Sanity: Value-only span does not contain the full local declaration.
+        var text = SourceText.From(InitializerSource);
+        var region = AnalyzeDataFlowOperation.BuildRegionSpan(
+            text, Params(line, line, startColumn, endColumn));
+        Assert.False(region.Contains(local.Span));
+        Assert.True(region.Contains(value.Span));
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            EndLine = line,
+            StartColumn = startColumn,
+            EndColumn = endColumn
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Contains("p", result.Data.ReadInside);
+        Assert.Contains("p", result.Data.DataFlowsIn);
+        // Expression path does not treat the local declarator as WrittenInside.
+        Assert.DoesNotContain("z", result.Data.WrittenInside);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_LocalDeclarationWholeLine_StillSucceedsViaStatementPath()
+    {
+        // Region = whole `int z = S + p;` line. LocalDeclarationStatement is
+        // fully contained → statement path regression (WrittenInside includes z).
+        await using var workspace = await TempWorkspace.CreateAsync(InitializerSource);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(InitializerSource);
+        var root = tree.GetRoot();
+        var local = root.DescendantNodes()
+            .OfType<LocalDeclarationStatementSyntax>()
+            .Single();
+        var line = local.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            EndLine = line
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Contains("p", result.Data.ReadInside);
+        Assert.Contains("p", result.Data.DataFlowsIn);
+        Assert.Contains("z", result.Data.WrittenInside);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_LambdaInitializerWithParameterDefault_IgnoresNestedParameterEquals()
+    {
+        // C# 12+ style: declaration initializer Value is a lambda that itself
+        // contains a ParameterSyntax default EqualsValueClause. Without filtering
+        // Parameter parents, Count>1 rejects a single declaration initializer.
+        const string source =
+            """
+class C
+{
+    void M()
+    {
+        System.Func<int, int> f = (int x = 1) => x;
+        System.Console.Write(f(2));
+    }
+}
+""";
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+        var local = root.DescendantNodes()
+            .OfType<LocalDeclarationStatementSyntax>()
+            .Single();
+        var line = local.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+        // Whole local line contains LocalDeclarationStatement → statement path.
+        // Use Value-only columns so EqualsValueClause fallback is exercised.
+        var value = local.Declaration.Variables[0].Initializer!.Value;
+        var valueSpan = value.GetLocation().GetLineSpan();
+        var startColumn = valueSpan.StartLinePosition.Character + 1;
+        var endColumn = valueSpan.EndLinePosition.Character + 1;
+
+        var text = SourceText.From(source);
+        var region = AnalyzeDataFlowOperation.BuildRegionSpan(
+            text, Params(line, line, startColumn, endColumn));
+        Assert.False(region.Contains(local.Span));
+        Assert.True(region.Contains(value.Span));
+        // Nested parameter default EqualsValueClause is also fully contained.
+        var paramDefault = root.DescendantNodes()
+            .OfType<EqualsValueClauseSyntax>()
+            .Single(c => c.Parent is ParameterSyntax);
+        Assert.True(region.Contains(paramDefault.Value.Span));
+
+        var result = await operation.ExecuteAsync(new AnalyzeDataFlowParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = line,
+            EndLine = line,
+            StartColumn = startColumn,
+            EndColumn = endColumn
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.ReadInside);
+        Assert.NotNull(result.Data.WrittenInside);
+    }
+
+    [SkippableFact]
+    public async Task AnalyzeDataFlow_MultiEqualsValueClauseRegion_ThrowsInvalidRegion()
+    {
+        // Region spans static S and field f lines — two fully contained
+        // EqualsValueClause.Values, zero statements, zero arrows.
+        // Must be InvalidRegion (ambiguous), same spirit as multi-arrow.
+        await using var workspace = await TempWorkspace.CreateAsync(InitializerSource);
+        var operation = new AnalyzeDataFlowOperation(workspace.Context);
+
+        var tree = CSharpSyntaxTree.ParseText(InitializerSource);
+        var root = tree.GetRoot();
+        var staticField = root.DescendantNodes()
+            .OfType<FieldDeclarationSyntax>()
+            .Single(f => f.Declaration.Variables.Any(v => v.Identifier.ValueText == "S"));
+        var instanceField = root.DescendantNodes()
+            .OfType<FieldDeclarationSyntax>()
+            .Single(f => f.Declaration.Variables.Any(v => v.Identifier.ValueText == "f"));
+        var startLine = staticField.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        var endLine = instanceField.GetLocation().GetLineSpan().EndLinePosition.Line + 1;
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AnalyzeDataFlowParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = startLine,
+                EndLine = endLine
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidRegion, ex.ErrorCode);
+        Assert.Contains("multiple", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("EqualsValueClause", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [SkippableFact]
     public async Task AnalyzeDataFlow_TrailingNestedBlock_RestrictsToOneStatementListParent()
     {
