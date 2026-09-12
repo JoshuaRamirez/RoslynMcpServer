@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-12
+
+### Fixed
+- `analyze_data_flow` sibling-list filter: braced method regions / nested statements no longer rejected by ValidateStatementRange (#931)
+- `analyze_data_flow` accepts expression-bodied regions via AnalyzeDataFlow(ExpressionSyntax) (#932)
+- `analyze_data_flow` accepts EqualsValueClause initializer regions (Value expression) (#933)
+- `analyze_control_flow` sibling filter no longer allows cross-block First/Last that tripped RoslynError (#936)
+
 ### Changed
 - Extracted shared `EventFieldDeclarator.TryGet` and replaced 3 identical Generate copies (`generate_overrides` / `implement_interface` / `implement_abstract`) (#1018)
 - Extracted shared `SyntaxIdentifierValidation.IsValidIdentifier` and replaced 6 identical SyntaxFacts Inline/Generate/Signature/Convert copies (`inline_constant` / `generate_method_stub` / `generate_property` / `add_parameter` / `convert_anonymous_to_class` / `convert_tuple_to_struct`) (#1015)
@@ -335,7 +343,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
-[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.0...v0.5.1
