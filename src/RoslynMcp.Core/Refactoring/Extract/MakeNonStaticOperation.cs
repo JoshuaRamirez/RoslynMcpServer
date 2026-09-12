@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -219,7 +220,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!IsDocumentEditable(document, Context.Workspace))
+            if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
                 continue;
 
             var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -245,7 +246,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
 
                     var declarationDocuments = await GetDeclarationDocumentsAsync(canonical, cancellationToken);
                     if (declarationDocuments.Any(declarationDocument =>
-                            !IsDocumentEditable(declarationDocument, Context.Workspace)))
+                            !DocumentEditableHelpers.IsDocumentEditable(declarationDocument, Context.Workspace)))
                     {
                         continue;
                     }
@@ -512,21 +513,6 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         return false;
     }
 
-    /// <summary>
-    /// Non-throwing counterpart of <see cref="ValidateDocumentIsEditable"/>
-    /// for allFiles skips.
-    /// </summary>
-    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-            return false;
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-            return false;
-
-        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
-    }
-
     internal static TextSpan GetSelectionSpan(SourceText sourceText, MakeNonStaticParams @params)
     {
         var startLineNumber = @params.StartLine!.Value;
@@ -597,8 +583,6 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
 
         return symbol;
     }
-
-
 
     private static IMethodSymbol NormalizeMethodSymbol(ISymbol symbol)
     {

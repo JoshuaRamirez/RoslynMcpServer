@@ -238,13 +238,13 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!IsDocumentEditable(document, Context.Workspace))
+            if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
                 continue;
 
             while (true)
             {
                 var currentDocument = currentSolution.GetDocument(document.Id);
-                if (currentDocument == null || !IsDocumentEditable(currentDocument, Context.Workspace))
+                if (currentDocument == null || !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
                     break;
 
                 var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
@@ -429,8 +429,8 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         if (references.Any(r => r.InAttribute))
             return null;
 
-        if (references.Any(r => !IsDocumentEditable(r.Document, Context.Workspace)) ||
-            !IsDocumentEditable(document, Context.Workspace))
+        if (references.Any(r => !DocumentEditableHelpers.IsDocumentEditable(r.Document, Context.Workspace)) ||
+            !DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
         {
             return null;
         }
@@ -469,21 +469,6 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                 wanted,
                 StringComparison.OrdinalIgnoreCase))
             .ToList();
-    }
-
-    /// <summary>
-    /// Returns whether <paramref name="document"/> can receive source edits
-    /// (same checks as <see cref="ValidateDocumentIsEditable"/>, skip not throw).
-    /// </summary>
-    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-            return false;
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-            return false;
-
-        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
     }
 
     /// <summary>

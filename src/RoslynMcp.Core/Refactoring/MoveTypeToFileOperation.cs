@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Rename;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -250,7 +251,7 @@ public sealed class MoveTypeToFileOperation
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!IsDocumentEditable(document, _context.Workspace))
+            if (!DocumentEditableHelpers.IsDocumentEditable(document, _context.Workspace))
                 continue;
 
             var sourceFile = document.FilePath;
@@ -311,7 +312,7 @@ public sealed class MoveTypeToFileOperation
                 if (resolution == null)
                     continue;
 
-                if (!IsDocumentEditable(resolution.Document, _context.Workspace))
+                if (!DocumentEditableHelpers.IsDocumentEditable(resolution.Document, _context.Workspace))
                     continue;
 
                 var moveParams = new MoveTypeToFileParams
@@ -431,21 +432,6 @@ public sealed class MoveTypeToFileOperation
     /// </summary>
     internal static string BuildAllFilesDescription(string typeName, string targetFile) =>
         $"Move {typeName} to {Path.GetFileName(targetFile)}";
-
-    /// <summary>
-    /// True when the document can receive a path or text edit. AllFiles skips
-    /// rather than throwing the single-file <see cref="ErrorCodes.DocumentNotEditable"/>.
-    /// </summary>
-    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-            return false;
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-            return false;
-
-        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
-    }
 
     /// <summary>
     /// True when <paramref name="sourceFile"/> and <paramref name="targetFile"/>
