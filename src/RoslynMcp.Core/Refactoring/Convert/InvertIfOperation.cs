@@ -343,7 +343,7 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
     {
         var onLine = root.DescendantNodes()
             .OfType<IfStatementSyntax>()
-            .Where(statement => KeywordIsOnLine(statement, line))
+            .Where(statement => KeywordCoverage.KeywordIsOnLine(statement.IfKeyword, line))
             .ToList();
 
         if (onLine.Count == 0)
@@ -352,25 +352,13 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
         if (column.HasValue)
         {
             var atColumn = onLine
-                .Where(statement => KeywordCoversColumn(statement, line, column.Value))
+                .Where(statement => KeywordCoverage.KeywordCoversColumn(statement.IfKeyword, line, column.Value))
                 .OrderBy(statement => statement.Span.Length)
                 .ToList();
             return atColumn.FirstOrDefault();
         }
 
         return onLine.OrderBy(statement => statement.IfKeyword.SpanStart).First();
-    }
-
-    private static bool KeywordIsOnLine(IfStatementSyntax statement, int line)
-    {
-        var span = statement.IfKeyword.GetLocation().GetLineSpan();
-        return span.StartLinePosition.Line + 1 == line;
-    }
-
-    private static bool KeywordCoversColumn(IfStatementSyntax statement, int line, int column)
-    {
-        var span = statement.IfKeyword.GetLocation().GetLineSpan();
-        return SpanCoverage.SpanCoversColumn(span, line, column);
     }
 
 

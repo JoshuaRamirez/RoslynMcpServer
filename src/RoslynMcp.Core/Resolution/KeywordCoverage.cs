@@ -10,6 +10,15 @@ namespace RoslynMcp.Core.Resolution;
 internal static class KeywordCoverage
 {
     /// <summary>
+    /// True when <paramref name="keyword"/> starts on 1-based <paramref name="line"/>.
+    /// </summary>
+    internal static bool KeywordIsOnLine(SyntaxToken keyword, int line)
+    {
+        var span = keyword.GetLocation().GetLineSpan();
+        return span.StartLinePosition.Line + 1 == line;
+    }
+
+    /// <summary>
     /// True when <paramref name="keyword"/>'s location covers
     /// <paramref name="line"/> / <paramref name="column"/> (exclusive-end
     /// column rules via <see cref="SpanCoverage.SpanCoversColumn"/>).

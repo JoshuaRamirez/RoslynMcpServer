@@ -544,7 +544,7 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
     internal static ControlTarget? FindControlTarget(SyntaxNode root, int line, int? column)
     {
         var onLine = CollectTargets(root)
-            .Where(target => KeywordIsOnLine(target.Keyword, line))
+            .Where(target => KeywordCoverage.KeywordIsOnLine(target.Keyword, line))
             .ToList();
 
         if (onLine.Count == 0)
@@ -605,12 +605,6 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             return block;
 
         return SyntaxFactory.Block(statement);
-    }
-
-    private static bool KeywordIsOnLine(SyntaxToken keyword, int line)
-    {
-        var span = keyword.GetLocation().GetLineSpan();
-        return span.StartLinePosition.Line + 1 == line;
     }
 
 
