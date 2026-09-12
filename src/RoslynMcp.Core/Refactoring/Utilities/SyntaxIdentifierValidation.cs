@@ -3,8 +3,9 @@ using Microsoft.CodeAnalysis.CSharp;
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
-/// Shared SyntaxFacts-based identifier validation used by inline_constant,
-/// generate_method_stub / generate_property, add_parameter, and
+/// Shared SyntaxFacts-based identifier validation and <c>@</c>-prefix
+/// normalization used by inline_constant, generate_method_stub /
+/// generate_property, add_parameter / remove_parameter, and
 /// convert_anonymous_to_class / convert_tuple_to_struct name checks.
 /// Applies verbatim <c>@</c>-keyword and reserved-keyword rules via
 /// <see cref="SyntaxFacts"/>. Distinct from char-based
@@ -37,4 +38,13 @@ internal static class SyntaxIdentifierValidation
         var keywordKind = SyntaxFacts.GetKeywordKind(name);
         return keywordKind == SyntaxKind.None || !SyntaxFacts.IsReservedKeyword(keywordKind);
     }
+
+    /// <summary>
+    /// Strips a leading verbatim <c>@</c> prefix when present (e.g.
+    /// <c>@class</c> → <c>class</c>); bare names and a lone <c>@</c> are
+    /// returned unchanged. Same body as the former InlineConstant /
+    /// AddParameter / RemoveParameter private copies.
+    /// </summary>
+    internal static string NormalizeIdentifier(string name) =>
+        name.StartsWith('@') && name.Length > 1 ? name[1..] : name;
 }

@@ -963,11 +963,8 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
 
     private static bool NamesMatch(SyntaxToken identifier, string constantName)
     {
-        return identifier.ValueText == NormalizeIdentifier(constantName);
+        return identifier.ValueText == SyntaxIdentifierValidation.NormalizeIdentifier(constantName);
     }
-
-    private static string NormalizeIdentifier(string name) =>
-        name.StartsWith('@') && name.Length > 1 ? name[1..] : name;
 
     private sealed class InlineConstantRewriter : CSharpSyntaxRewriter
     {

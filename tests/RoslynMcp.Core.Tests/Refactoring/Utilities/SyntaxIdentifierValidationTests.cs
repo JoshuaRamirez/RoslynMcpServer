@@ -40,4 +40,15 @@ public class SyntaxIdentifierValidationTests
     {
         Assert.False(SyntaxIdentifierValidation.IsValidIdentifier(name));
     }
+
+    [Theory]
+    [InlineData("@class", "class")]
+    [InlineData("@namespace", "namespace")]
+    [InlineData("MaxRetries", "MaxRetries")]
+    [InlineData("@", "@")]
+    [InlineData("", "")]
+    public void NormalizeIdentifier_StripsLeadingAtWhenLengthGreaterThanOne(string input, string expected)
+    {
+        Assert.Equal(expected, SyntaxIdentifierValidation.NormalizeIdentifier(input));
+    }
 }
