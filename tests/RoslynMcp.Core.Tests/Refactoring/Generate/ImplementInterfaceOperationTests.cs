@@ -2503,37 +2503,6 @@ public class ImplementInterfaceOperationTests
         Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
-    public void TypeWalkKey_IncludesProjectIdentity()
-    {
-        var projectA = ProjectId.CreateNewId();
-        var projectB = ProjectId.CreateNewId();
-        const string fqn = "global::TestApp.Widget";
-
-        var keyA = ImplementInterfaceOperation.TypeWalkKey(projectA, fqn);
-        var keyB = ImplementInterfaceOperation.TypeWalkKey(projectB, fqn);
-
-        Assert.NotEqual(keyA, keyB);
-        Assert.Equal(keyA, ImplementInterfaceOperation.TypeWalkKey(projectA, fqn));
-        Assert.NotEqual(keyA, ImplementInterfaceOperation.TypeWalkKey(projectA, "global::TestApp.Other"));
-    }
-
-    [Fact]
-    public void TypeWalkKey_FileLocalIdentity_DistinguishesSameFqn()
-    {
-        var project = ProjectId.CreateNewId();
-        const string fqn = "global::TestApp.Worker";
-
-        var ordinary = ImplementInterfaceOperation.TypeWalkKey(project, fqn);
-        var fileA = ImplementInterfaceOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs");
-        var fileB = ImplementInterfaceOperation.TypeWalkKey(project, fqn, "/tmp/FileB.cs");
-
-        Assert.NotEqual(ordinary, fileA);
-        Assert.NotEqual(ordinary, fileB);
-        Assert.NotEqual(fileA, fileB);
-        Assert.Equal(fileA, ImplementInterfaceOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs"));
-        Assert.Equal(ordinary, ImplementInterfaceOperation.TypeWalkKey(project, fqn));
-    }
 
     [Fact]
     public void Validate_AllFilesTrue_WithLine_Throws()

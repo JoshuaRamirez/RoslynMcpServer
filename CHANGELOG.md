@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `TypeWalkKeyHelpers.TypeWalkKey` (3 overloads) and replaced 5 identical copies (`implement_abstract` / `implement_interface` / `generate_tostring` / `generate_overrides` / `generate_equals_hashcode`) (#1065)
 - Extracted shared `DocumentSourceFileFilter.FilterDocumentsBySourceFile` and replaced 9 identical copies (`make_static` / `make_non_static` / `generate_overrides` / `generate_equals_hashcode` / `generate_constructor` / `generate_tostring` / `implement_interface` / `implement_abstract` / `inline_constant`) (#1062)
 - Extracted shared `DocumentForTreeHelpers.GetDocumentForTree` and replaced 10 identical copies (`extract_base_class` / `generate_overrides` / `generate_equals_hashcode` / `generate_property` / `generate_constructor` / `generate_tostring` / `implement_interface` / `implement_abstract` / `push_members_down` / `pull_members_up`) (#1059)
 - Extracted shared `DocumentEditableHelpers.ValidateDocumentIsEditable` and replaced 21 identical copies (`add_braces` / `convert_anonymous_to_class` / `convert_to_block_body` / `convert_tuple_to_struct` / `invert_if` / `remove_braces` / `simplify_name` / `introduce_field` / `make_non_static` / `make_static` / `safe_delete` / `generate_method_stub` / `generate_property` / `implement_abstract` / `use_base_type` / `inline_constant` / `rename_namespace` / `add_parameter` / `change_return_type` / `remove_parameter` / `reorder_parameters`) (#1056)
