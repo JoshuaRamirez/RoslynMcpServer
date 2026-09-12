@@ -799,9 +799,8 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
     /// substituting each candidate's own start line. When column is set
     /// with line, picks the type whose identifier or declaration span
     /// covers that 1-based column (same exclusive-end coverage as
-    /// <c>GenerateConstructorOperation.SpanCoversColumn</c> /
-    /// <c>ImplementAbstractOperation.SpanCoversColumn</c> /
-    /// <c>GenerateOverridesOperation.SpanCoversColumn</c>). Prefer the
+    /// <see cref="TypeCoverage.TypeCoversColumn"/> via
+    /// <see cref="SpanCoverage.SpanCoversColumn"/>). Prefer the
     /// identifier hit, then the smallest containing type. Nested types,
     /// enums, and <c>DelegateDeclarationSyntax</c> participate when line
     /// is set so a covering enum or delegate still reaches

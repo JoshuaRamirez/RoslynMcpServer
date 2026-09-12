@@ -64,6 +64,8 @@ public class TypeCoverageTests
         Assert.True(TypeCoverage.IdentifierCoversColumn(type, line, startCol));
         Assert.True(TypeCoverage.IdentifierCoversColumn(type, line, endCol - 1));
         Assert.False(TypeCoverage.IdentifierCoversColumn(type, line, endCol));
+        // endCol is past the identifier exclusive end but still inside "class C { }".
+        Assert.True(TypeCoverage.TypeCoversColumn(type, line, endCol));
         Assert.False(TypeCoverage.IdentifierCoversColumn(type, line, startCol - 1));
     }
 }
