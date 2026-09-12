@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `TypeCoverage` and replaced 7 identical Hierarchy/Extract/Generate copies (`pull_members_up` / `push_members_down` / `use_base_type` / `extract_interface` / `extract_base_class` / `generate_tostring` / `implement_abstract`) (#990)
 - Extracted shared `SignatureReferenceHelpers` and replaced 4 identical Signature-family copies (`add_parameter` / `remove_parameter` / `reorder_parameters` / `change_return_type`) (#986)
 - Replaced `AddNullChecksOperation` type-local `SpanCoversColumn` with shared `SpanCoverage.SpanCoversColumn` (`add_null_checks`) (#983)
 - Replaced 4 identical Convert/Rename optional-column `SpanCoversLine` copies with shared `SpanCoverage.SpanCoversLine` (`convert_anonymous_to_class` / `convert_tuple_to_struct` / `rename_namespace` / `rename_file_to_match_type`) (#981)

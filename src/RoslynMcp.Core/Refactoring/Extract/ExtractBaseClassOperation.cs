@@ -1093,8 +1093,8 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
     /// candidate's own start line. When column is set with line, picks the
     /// type whose identifier or declaration span covers that 1-based
     /// column (same exclusive-end coverage as
-    /// <c>ExtractInterfaceOperation.SpanCoversColumn</c> /
-    /// <c>GenerateToStringOperation.SpanCoversColumn</c>). Prefer the
+    /// <see cref="TypeCoverage.TypeCoversColumn"/> via
+    /// <see cref="SpanCoverage.SpanCoversColumn"/>). Prefer the
     /// identifier hit, then the smallest containing type. Nested types,
     /// enums, structs, interfaces, and <c>DelegateDeclarationSyntax</c>
     /// participate when line is set so a covering enum or delegate still
@@ -1157,8 +1157,8 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             // nothing covers this position, keep today's not-found (null)
             // rather than inventing a first-match.
             return lineCandidates
-                .Where(t => TypeCoversColumn(t, line!.Value, column.Value))
-                .OrderBy(t => IdentifierCoversColumn(t, line!.Value, column.Value) ? 0 : 1)
+                .Where(t => TypeCoverage.TypeCoversColumn(t, line!.Value, column.Value))
+                .OrderBy(t => TypeCoverage.IdentifierCoversColumn(t, line!.Value, column.Value) ? 0 : 1)
                 .ThenBy(t => t.Span.Length)
                 .FirstOrDefault();
         }
@@ -1181,42 +1181,12 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             return null;
 
         return lineCandidates
-            .Where(t => TypeCoversLine(t, line.Value))
-            .OrderBy(t => IdentifierCoversLine(t, line.Value) ? 0 : 1)
+            .Where(t => TypeCoverage.TypeCoversLine(t, line.Value))
+            .OrderBy(t => TypeCoverage.IdentifierCoversLine(t, line.Value) ? 0 : 1)
             .ThenBy(t => t.Span.Length)
             .FirstOrDefault()
             ?? classCandidates.FirstOrDefault();
     }
-
-    private static bool TypeCoversLine(MemberDeclarationSyntax type, int line) =>
-        IdentifierCoversLine(type, line) ||
-        SpanCoverage.SpanCoversLine(type.GetLocation().GetLineSpan(), line);
-
-    private static bool IdentifierCoversLine(MemberDeclarationSyntax type, int line)
-    {
-        var identifier = GetTypeIdentifier(type);
-        return identifier != default
-            && SpanCoverage.SpanCoversLine(identifier.GetLocation().GetLineSpan(), line);
-    }
-
-    private static bool TypeCoversColumn(MemberDeclarationSyntax type, int line, int column) =>
-        IdentifierCoversColumn(type, line, column) ||
-        SpanCoverage.SpanCoversColumn(type.GetLocation().GetLineSpan(), line, column);
-
-    private static bool IdentifierCoversColumn(MemberDeclarationSyntax type, int line, int column)
-    {
-        var identifier = GetTypeIdentifier(type);
-        return identifier != default
-            && SpanCoverage.SpanCoversColumn(identifier.GetLocation().GetLineSpan(), line, column);
-    }
-
-    private static SyntaxToken GetTypeIdentifier(MemberDeclarationSyntax type) => type switch
-    {
-        BaseTypeDeclarationSyntax named => named.Identifier,
-        DelegateDeclarationSyntax del => del.Identifier,
-        _ => default
-    };
-
 
     private static ClassDeclarationSyntax RecoverAnnotatedClass(
         SyntaxNode root,
