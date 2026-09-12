@@ -722,7 +722,6 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
         _ => throw new RefactoringException(ErrorCodes.RoslynError, "Node is not a named type declaration.")
     };
 
-
     private static bool IdentifierCoversColumn(SyntaxNode node, int line, int column)
     {
         var identifier = GetTypeIdentifier(node);

@@ -2,7 +2,6 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
-using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -792,7 +791,6 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
 
         return true;
     }
-
 
     private static bool TypeNameBindsToDifferentType(
         string display,
