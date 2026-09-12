@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `MemberCoverage.MemberCoversColumn` / `IdentifierCoversColumn` and replaced ConvertExpressionBody + ConvertToBlockBody + AddNullChecks copies (`convert_expression_body` / `convert_to_block_body` / `add_null_checks`) (#1039)
 - Retargeted `TypeSymbolResolver.FindCoveringType` onto shared `TypeCoverage`; deleted private TypeCoversColumn / IdentifierCoversColumn copies (#1037)
 - Extracted shared `PropertyCoverage.PropertyCoversColumn` / `IdentifierCoversColumn` and replaced ConvertPropertyOperation copies (`convert_property`) (#1032)
 - Extracted shared `KeywordCoverage.KeywordIsOnLine` and replaced AddBraces + RemoveBraces copies; retargeted InvertIf + ConvertForeachLinq KeywordCoverage wrappers (`add_braces` / `remove_braces` / `invert_if` / `convert_foreach_linq`) (#1028)

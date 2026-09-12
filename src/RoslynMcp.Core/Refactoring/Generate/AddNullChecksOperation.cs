@@ -374,8 +374,8 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
             // not start on `line`. If nothing covers this position, keep
             // today's not-found (null) rather than inventing a first-match.
             return candidates
-                .Where(n => MemberCoversColumn(n, line!.Value, column.Value))
-                .OrderBy(n => IdentifierCoversColumn(n, line!.Value, column.Value) ? 0 : 1)
+                .Where(n => MemberCoverage.MemberCoversColumn(n, line!.Value, column.Value))
+                .OrderBy(n => MemberCoverage.IdentifierCoversColumn(n, line!.Value, column.Value) ? 0 : 1)
                 .ThenBy(n => n.Span.Length)
                 .FirstOrDefault();
         }
@@ -391,24 +391,6 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
 
     private static int StartLine(SyntaxNode node) =>
         node.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
-
-    private static bool MemberCoversColumn(SyntaxNode node, int line, int column) =>
-        IdentifierCoversColumn(node, line, column) ||
-        SpanCoverage.SpanCoversColumn(node.GetLocation().GetLineSpan(), line, column);
-
-    private static bool IdentifierCoversColumn(SyntaxNode node, int line, int column)
-    {
-        var identifier = GetIdentifier(node);
-        return identifier != default &&
-               SpanCoverage.SpanCoversColumn(identifier.GetLocation().GetLineSpan(), line, column);
-    }
-
-    private static SyntaxToken GetIdentifier(SyntaxNode node) => node switch
-    {
-        MethodDeclarationSyntax method => method.Identifier,
-        ConstructorDeclarationSyntax constructor => constructor.Identifier,
-        _ => default
-    };
 
     private static BlockSyntax? GetBody(SyntaxNode node) => node switch
     {

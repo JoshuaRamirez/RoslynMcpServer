@@ -186,8 +186,8 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             // signature's identifier may live on a continuation line whose
             // declaration span still covers that column.
             return filtered
-                .Where(node => MemberCoversColumn(node, line!.Value, column.Value))
-                .OrderBy(node => IdentifierCoversColumn(node, line!.Value, column.Value) ? 0 : 1)
+                .Where(node => MemberCoverage.MemberCoversColumn(node, line!.Value, column.Value))
+                .OrderBy(node => MemberCoverage.IdentifierCoversColumn(node, line!.Value, column.Value) ? 0 : 1)
                 .ThenBy(node => node.Span.Length)
                 .FirstOrDefault();
         }
@@ -200,34 +200,6 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
 
         return filtered.FirstOrDefault();
     }
-
-    private static bool MemberCoversColumn(SyntaxNode member, int line, int column) =>
-        IdentifierCoversColumn(member, line, column) ||
-        SpanCoverage.SpanCoversColumn(member.GetLocation().GetLineSpan(), line, column);
-
-    private static bool IdentifierCoversColumn(SyntaxNode member, int line, int column)
-    {
-        var token = GetIdentifierToken(member);
-        return token != default && SpanCoverage.SpanCoversColumn(token.GetLocation().GetLineSpan(), line, column);
-    }
-
-    private static SyntaxToken GetIdentifierToken(SyntaxNode member) => member switch
-    {
-        MethodDeclarationSyntax method => method.Identifier,
-        PropertyDeclarationSyntax property => property.Identifier,
-        IndexerDeclarationSyntax indexer => indexer.ThisKeyword,
-        OperatorDeclarationSyntax op => op.OperatorToken,
-        ConversionOperatorDeclarationSyntax conversion => conversion.Type.GetFirstToken(),
-        ConstructorDeclarationSyntax constructor => constructor.Identifier,
-        DestructorDeclarationSyntax destructor => destructor.Identifier,
-        LocalFunctionStatementSyntax localFunction => localFunction.Identifier,
-        EventDeclarationSyntax @event => @event.Identifier,
-        FieldDeclarationSyntax field => field.Declaration.Variables.FirstOrDefault()?.Identifier ?? default,
-        EventFieldDeclarationSyntax eventField => eventField.Declaration.Variables.FirstOrDefault()?.Identifier ?? default,
-        TypeDeclarationSyntax type => type.Identifier,
-        _ => default
-    };
-
 
     /// <summary>
     /// 1-based line coverage. <see cref="FileLinePositionSpan.EndLinePosition"/>

@@ -279,8 +279,8 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
             return members.FirstOrDefault();
 
         var atColumn = members
-            .Where(m => MemberCoversColumn(m, line ?? StartLine(m), column.Value))
-            .OrderBy(m => IdentifierCoversColumn(m, line ?? StartLine(m), column.Value) ? 0 : 1)
+            .Where(m => MemberCoverage.MemberCoversColumn(m, line ?? StartLine(m), column.Value))
+            .OrderBy(m => MemberCoverage.IdentifierCoversColumn(m, line ?? StartLine(m), column.Value) ? 0 : 1)
             .ThenBy(m => m.Span.Length)
             .ToList();
         return atColumn.FirstOrDefault();
@@ -288,27 +288,6 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
 
     private static int StartLine(MemberDeclarationSyntax member) =>
         member.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
-
-    private static bool MemberCoversColumn(MemberDeclarationSyntax member, int line, int column) =>
-        IdentifierCoversColumn(member, line, column) ||
-        SpanCoverage.SpanCoversColumn(member.GetLocation().GetLineSpan(), line, column);
-
-    private static bool IdentifierCoversColumn(MemberDeclarationSyntax member, int line, int column)
-    {
-        var token = GetIdentifierToken(member);
-        return token != default && SpanCoverage.SpanCoversColumn(token.GetLocation().GetLineSpan(), line, column);
-    }
-
-    private static SyntaxToken GetIdentifierToken(MemberDeclarationSyntax member) => member switch
-    {
-        MethodDeclarationSyntax method => method.Identifier,
-        PropertyDeclarationSyntax property => property.Identifier,
-        IndexerDeclarationSyntax indexer => indexer.ThisKeyword,
-        OperatorDeclarationSyntax op => op.OperatorToken,
-        ConversionOperatorDeclarationSyntax conversion => conversion.Type.GetFirstToken(),
-        _ => default
-    };
-
 
     private static string? GetMemberName(MemberDeclarationSyntax member) => member switch
     {
