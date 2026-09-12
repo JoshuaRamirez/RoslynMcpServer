@@ -10,6 +10,7 @@ using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Core.Refactoring.Utilities;
 
 namespace RoslynMcp.Core.Refactoring.Signature;
 
@@ -67,33 +68,6 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         }
     }
 
-    /// <summary>
-    /// Rejects documents that cannot receive source edits.
-    /// </summary>
-    internal static void ValidateDocumentIsEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable (source-generated).");
-        }
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable.");
-        }
-
-        if (!workspace.CanApplyChange(ApplyChangesKind.ChangeDocument))
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable (workspace cannot apply changes).");
-        }
-    }
-
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
@@ -101,7 +75,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         CancellationToken cancellationToken)
     {
         var document = GetDocumentOrThrow(@params.SourceFile);
-        ValidateDocumentIsEditable(document, Context.Workspace);
+        DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
@@ -125,12 +99,12 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
 
         var declarationTargets = await CollectDeclarationTargetsAsync(relatedMethods, cancellationToken);
         foreach (var target in declarationTargets)
-            ValidateDocumentIsEditable(target.Document, Context.Workspace);
+            DocumentEditableHelpers.ValidateDocumentIsEditable(target.Document, Context.Workspace);
 
         var fallbackNames = methodSymbol.Parameters.Select(p => p.Name).ToArray();
         var callSites = await CollectCallSitesAsync(relatedMethods, fallbackNames, cancellationToken);
         foreach (var callSite in callSites)
-            ValidateDocumentIsEditable(callSite.Document, Context.Workspace);
+            DocumentEditableHelpers.ValidateDocumentIsEditable(callSite.Document, Context.Workspace);
 
         var newSolution = await ApplyChangesAsync(
             document,

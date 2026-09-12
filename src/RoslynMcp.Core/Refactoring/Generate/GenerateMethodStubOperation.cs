@@ -79,33 +79,6 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
 
-    /// <summary>
-    /// Rejects documents that cannot receive source edits.
-    /// </summary>
-    internal static void ValidateDocumentIsEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable (source-generated).");
-        }
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable.");
-        }
-
-        if (!workspace.CanApplyChange(ApplyChangesKind.ChangeDocument))
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable (workspace cannot apply changes).");
-        }
-    }
-
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
@@ -113,7 +86,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         CancellationToken cancellationToken)
     {
         var callSiteDocument = GetDocumentOrThrow(@params.SourceFile);
-        ValidateDocumentIsEditable(callSiteDocument, Context.Workspace);
+        DocumentEditableHelpers.ValidateDocumentIsEditable(callSiteDocument, Context.Workspace);
 
         var root = await callSiteDocument.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await callSiteDocument.GetSemanticModelAsync(cancellationToken);
@@ -142,7 +115,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             ?? throw new RefactoringException(
                 ErrorCodes.DocumentNotEditable,
                 $"Target type '{target.Type.Name}' is not part of the workspace.");
-        ValidateDocumentIsEditable(targetDocument, Context.Workspace);
+        DocumentEditableHelpers.ValidateDocumentIsEditable(targetDocument, Context.Workspace);
 
         var parameters = InferParameters(invocation, semanticModel);
         var existingMethod = ResolveMethodToReplace(

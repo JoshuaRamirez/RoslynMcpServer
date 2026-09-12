@@ -1480,7 +1480,7 @@ public class GeneratePropertyOperationTests
         var document = workspace.AddDocument(project.Id, "Generated.cs", SourceText.From("class C {}"));
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            GeneratePropertyOperation.ValidateDocumentIsEditable(document, workspace));
+            DocumentEditableHelpers.ValidateDocumentIsEditable(document, workspace));
 
         Assert.Equal(ErrorCodes.DocumentNotEditable, ex.ErrorCode);
     }

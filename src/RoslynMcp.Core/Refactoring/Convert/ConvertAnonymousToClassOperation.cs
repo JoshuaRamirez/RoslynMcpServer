@@ -66,33 +66,6 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         }
     }
 
-    /// <summary>
-    /// Rejects documents that cannot receive source edits.
-    /// </summary>
-    internal static void ValidateDocumentIsEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable (source-generated).");
-        }
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable.");
-        }
-
-        if (!workspace.CanApplyChange(ApplyChangesKind.ChangeDocument))
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable (workspace cannot apply changes).");
-        }
-    }
-
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
@@ -100,7 +73,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         CancellationToken cancellationToken)
     {
         var document = GetDocumentOrThrow(@params.SourceFile);
-        ValidateDocumentIsEditable(document, Context.Workspace);
+        DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
@@ -123,7 +96,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             creations.Add(new CreationTarget(document, creation.Span));
 
         foreach (var target in creations)
-            ValidateDocumentIsEditable(target.Document, Context.Workspace);
+            DocumentEditableHelpers.ValidateDocumentIsEditable(target.Document, Context.Workspace);
 
         var insertPosition = GetTypeInsertionPosition(root, creation);
         ValidateMembersForGeneratedType(members, semanticModel, insertPosition);

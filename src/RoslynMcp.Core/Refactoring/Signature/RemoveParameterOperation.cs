@@ -10,6 +10,7 @@ using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Core.Refactoring.Utilities;
 
 namespace RoslynMcp.Core.Refactoring.Signature;
 
@@ -60,33 +61,6 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
     }
 
-    /// <summary>
-    /// Rejects documents that cannot receive source edits.
-    /// </summary>
-    internal static void ValidateDocumentIsEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable (source-generated).");
-        }
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable.");
-        }
-
-        if (!workspace.CanApplyChange(ApplyChangesKind.ChangeDocument))
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable (workspace cannot apply changes).");
-        }
-    }
-
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
@@ -94,7 +68,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         CancellationToken cancellationToken)
     {
         var document = GetDocumentOrThrow(@params.SourceFile);
-        ValidateDocumentIsEditable(document, Context.Workspace);
+        DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
@@ -121,11 +95,11 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
 
         var declarationTargets = await CollectDeclarationTargetsAsync(relatedMethods, cancellationToken);
         foreach (var target in declarationTargets)
-            ValidateDocumentIsEditable(target.Document, Context.Workspace);
+            DocumentEditableHelpers.ValidateDocumentIsEditable(target.Document, Context.Workspace);
 
         var callSites = await CollectCallSitesAsync(relatedMethods, cancellationToken);
         foreach (var callSite in callSites)
-            ValidateDocumentIsEditable(callSite.Document, Context.Workspace);
+            DocumentEditableHelpers.ValidateDocumentIsEditable(callSite.Document, Context.Workspace);
 
         var bodyUsages = await CollectBodyUsagesAsync(relatedMethods, removeIndex, cancellationToken);
         if (bodyUsages.Count > 0 && !@params.Force)
@@ -149,7 +123,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         }
 
         foreach (var usage in bodyUsages)
-            ValidateDocumentIsEditable(usage.Document, Context.Workspace);
+            DocumentEditableHelpers.ValidateDocumentIsEditable(usage.Document, Context.Workspace);
 
         var newSolution = await ApplyChangesAsync(
             document,

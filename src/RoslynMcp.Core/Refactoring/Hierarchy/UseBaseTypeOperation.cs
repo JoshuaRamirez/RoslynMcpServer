@@ -9,6 +9,7 @@ using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Core.Refactoring.Utilities;
 
 namespace RoslynMcp.Core.Refactoring.Hierarchy;
 
@@ -294,7 +295,7 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
 
         foreach (var candidate in candidates)
         {
-            ValidateDocumentIsEditable(candidate.Document, Context.Workspace);
+            DocumentEditableHelpers.ValidateDocumentIsEditable(candidate.Document, Context.Workspace);
 
             if (!await CanUseBaseTypeAsync(candidate, derivedSymbol, target, cancellationToken))
             {
@@ -708,33 +709,6 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         }
 
         return match;
-    }
-
-    /// <summary>
-    /// Rejects documents that cannot receive source edits.
-    /// </summary>
-    internal static void ValidateDocumentIsEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable (source-generated).");
-        }
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable.");
-        }
-
-        if (!workspace.CanApplyChange(ApplyChangesKind.ChangeDocument))
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable (workspace cannot apply changes).");
-        }
     }
 
     private async Task<List<TypeReference>> FindTypeReferencesAsync(
@@ -1542,7 +1516,7 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
             if (document == null)
                 throw new RefactoringException(ErrorCodes.RoslynError, "Could not locate document to update.");
 
-            ValidateDocumentIsEditable(document, document.Project.Solution.Workspace);
+            DocumentEditableHelpers.ValidateDocumentIsEditable(document, document.Project.Solution.Workspace);
 
             var root = await document.GetSyntaxRootAsync(cancellationToken);
             if (root == null)

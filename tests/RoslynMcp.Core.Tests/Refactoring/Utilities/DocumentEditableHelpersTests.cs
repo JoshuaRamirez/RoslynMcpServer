@@ -3,6 +3,8 @@ using System.IO;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Text;
+using RoslynMcp.Contracts.Errors;
+using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using Xunit;
 
@@ -111,6 +113,120 @@ public class DocumentEditableHelpersTests
         var document = Assert.IsType<SourceGeneratedDocument>(generated[0]);
 
         Assert.False(DocumentEditableHelpers.IsDocumentEditable(document, workspace));
+    }
+
+
+    [Fact]
+    public void ValidateDocumentIsEditable_Throws_WhenFilePathNullOrWhitespace()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+        var document = workspace.AddDocument(project.Id, "C.cs", SourceText.From("class C {}"));
+
+        Assert.True(string.IsNullOrWhiteSpace(document.FilePath));
+        var ex = Assert.Throws<RefactoringException>(() =>
+            DocumentEditableHelpers.ValidateDocumentIsEditable(document, workspace));
+        Assert.Equal(ErrorCodes.DocumentNotEditable, ex.ErrorCode);
+        Assert.Contains("is not editable.", ex.Message);
+    }
+
+    [Fact]
+    public void ValidateDocumentIsEditable_Throws_WhenFilePathMissingOnDisk()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+        var missingPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-missing-" + Path.GetRandomFileName() + ".cs");
+        Assert.False(File.Exists(missingPath));
+
+        var document = workspace.AddDocument(project.Id, "Missing.cs", SourceText.From("class C {}"))
+            .WithFilePath(missingPath);
+        workspace.TryApplyChanges(document.Project.Solution);
+        document = workspace.CurrentSolution.GetDocument(document.Id)!;
+
+        Assert.Equal(missingPath, document.FilePath);
+        var ex = Assert.Throws<RefactoringException>(() =>
+            DocumentEditableHelpers.ValidateDocumentIsEditable(document, workspace));
+        Assert.Equal(ErrorCodes.DocumentNotEditable, ex.ErrorCode);
+        Assert.Contains("is not editable.", ex.Message);
+    }
+
+    [Fact]
+    public void ValidateDocumentIsEditable_Throws_WhenFilePathEmptyString()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+        var document = workspace.AddDocument(project.Id, "EmptyPath.cs", SourceText.From("class C {}"))
+            .WithFilePath(string.Empty);
+        workspace.TryApplyChanges(document.Project.Solution);
+        document = workspace.CurrentSolution.GetDocument(document.Id)!;
+
+        Assert.Equal(string.Empty, document.FilePath);
+        var ex = Assert.Throws<RefactoringException>(() =>
+            DocumentEditableHelpers.ValidateDocumentIsEditable(document, workspace));
+        Assert.Equal(ErrorCodes.DocumentNotEditable, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void ValidateDocumentIsEditable_Throws_WhenFilePathWhitespace()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+        var document = workspace.AddDocument(project.Id, "WhitespacePath.cs", SourceText.From("class C {}"))
+            .WithFilePath("   ");
+        workspace.TryApplyChanges(document.Project.Solution);
+        document = workspace.CurrentSolution.GetDocument(document.Id)!;
+
+        Assert.True(string.IsNullOrWhiteSpace(document.FilePath));
+        var ex = Assert.Throws<RefactoringException>(() =>
+            DocumentEditableHelpers.ValidateDocumentIsEditable(document, workspace));
+        Assert.Equal(ErrorCodes.DocumentNotEditable, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void ValidateDocumentIsEditable_DoesNotThrow_WhenOnDiskAndWorkspaceCanChangeDocument()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+        var path = Path.Combine(Path.GetTempPath(), "roslyn-mcp-editable-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var document = workspace.AddDocument(project.Id, Path.GetFileName(path), SourceText.From("class C {}"))
+                .WithFilePath(path);
+            workspace.TryApplyChanges(document.Project.Solution);
+            document = workspace.CurrentSolution.GetDocument(document.Id)!;
+
+            Assert.True(File.Exists(document.FilePath));
+            Assert.True(workspace.CanApplyChange(ApplyChangesKind.ChangeDocument));
+            DocumentEditableHelpers.ValidateDocumentIsEditable(document, workspace);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task ValidateDocumentIsEditable_Throws_WhenSourceGeneratedDocument()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+        project = project.AddDocument("Host.cs", "namespace Host { public class H { } }").Project;
+        project = project.AddAnalyzerReference(
+            new TestSourceGeneratorReference(new DummySourceGenerator().AsSourceGenerator()));
+
+        Assert.True(workspace.TryApplyChanges(project.Solution));
+        project = workspace.CurrentSolution.GetProject(project.Id)!;
+
+        var generated = (await project.GetSourceGeneratedDocumentsAsync()).ToList();
+        Assert.NotEmpty(generated);
+        var document = Assert.IsType<SourceGeneratedDocument>(generated[0]);
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            DocumentEditableHelpers.ValidateDocumentIsEditable(document, workspace));
+        Assert.Equal(ErrorCodes.DocumentNotEditable, ex.ErrorCode);
+        Assert.Contains("source-generated", ex.Message);
     }
 
     /// <summary>

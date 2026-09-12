@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `DocumentEditableHelpers.ValidateDocumentIsEditable` and replaced 21 identical copies (`add_braces` / `convert_anonymous_to_class` / `convert_to_block_body` / `convert_tuple_to_struct` / `invert_if` / `remove_braces` / `simplify_name` / `introduce_field` / `make_non_static` / `make_static` / `safe_delete` / `generate_method_stub` / `generate_property` / `implement_abstract` / `use_base_type` / `inline_constant` / `rename_namespace` / `add_parameter` / `change_return_type` / `remove_parameter` / `reorder_parameters`) (pending leftover issue)
 - Extracted shared `DocumentEditableHelpers.IsDocumentEditable` and replaced 11 Generate/Inline/Move/Extract copies (`implement_abstract` / `implement_interface` / `generate_tostring` / `generate_constructor` / `generate_equals_hashcode` / `generate_overrides` / `inline_constant` / `move_type_to_namespace` / `move_type_to_file` / `make_non_static` / `make_static`) (#1053)
 - Extracted shared `SignatureOverrideHelpers` (HasSourceDeclaration + ShareOverrideRoot + GetOverrideRoot) and replaced 4 Signature-family copies (`add_parameter` / `remove_parameter` / `reorder_parameters` / `change_return_type`) (#1050)
 - Extracted shared `TypePartRematch` (SameSyntaxTree + RematchTypeDeclaration) and replaced 7 Generate + Pull/Push/ExtractBaseClass copies (#1048)

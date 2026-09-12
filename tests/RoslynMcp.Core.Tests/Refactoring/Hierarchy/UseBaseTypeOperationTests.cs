@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Hierarchy;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -1792,7 +1793,7 @@ public class UseBaseTypeOperationTests
         var document = workspace.AddDocument(project.Id, "Generated.cs", SourceText.From("class C {}"));
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            UseBaseTypeOperation.ValidateDocumentIsEditable(document, workspace));
+            DocumentEditableHelpers.ValidateDocumentIsEditable(document, workspace));
 
         Assert.Equal(ErrorCodes.DocumentNotEditable, ex.ErrorCode);
     }
