@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `VisibilityTokenHelpers.ParseVisibilityTokens` + `ParseVisibilityKeyword` and replaced 2 identical copies (`generate_constructor` / `generate_property`) (#1087)
 - Extracted shared `SyntaxIdentifierValidation.NormalizeIdentifier` and replaced 3 identical copies (`inline_constant` / `add_parameter` / `remove_parameter`) (#1084)
 - Extracted shared `SymbolSelectionHelpers.ConfirmSymbolName` + `IsDefinitionLocation` and replaced 3 identical copies (`make_static` / `make_non_static` / `safe_delete`) (#1081)
 - Extracted shared `HierarchyConflictHelpers.HasConflict` + `SignaturesMatch` + `IndexerSignaturesMatch` and replaced 2 identical copies (`pull_members_up` / `push_members_down`) (#1078)

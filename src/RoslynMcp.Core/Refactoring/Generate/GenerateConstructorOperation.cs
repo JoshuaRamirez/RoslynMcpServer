@@ -1326,7 +1326,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         // Build constructor
         var constructor = SyntaxFactory.ConstructorDeclaration(typeDeclaration.Identifier)
-            .WithModifiers(SyntaxFactory.TokenList(ParseVisibilityTokens(visibility)))
+            .WithModifiers(SyntaxFactory.TokenList(VisibilityTokenHelpers.ParseVisibilityTokens(visibility)))
             .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(parameters)))
             .WithBody(SyntaxFactory.Block(statements));
 
@@ -1385,7 +1385,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         }
 
         var constructor = SyntaxFactory.ConstructorDeclaration(typeDeclaration.Identifier)
-            .WithModifiers(SyntaxFactory.TokenList(ParseVisibilityTokens(visibility)))
+            .WithModifiers(SyntaxFactory.TokenList(VisibilityTokenHelpers.ParseVisibilityTokens(visibility)))
             .WithParameterList(SyntaxFactory.ParameterList(SyntaxFactory.SingletonSeparatedList(parameter)))
             .WithBody(SyntaxFactory.Block(statements));
 
@@ -1741,33 +1741,6 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                                     SyntaxFactory.Argument(
                                         SyntaxFactory.IdentifierName(paramName)))))))))));
     }
-
-    /// <summary>
-    /// Same token split as generate_property / generate_method_stub: one token
-    /// per whitespace-separated keyword so <c>protected internal</c> and
-    /// <c>private protected</c> emit both modifiers.
-    /// </summary>
-    private static IEnumerable<SyntaxToken> ParseVisibilityTokens(string visibility)
-    {
-        var tokens = visibility
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(ParseVisibilityKeyword)
-            .ToList();
-
-        if (tokens.Count == 0)
-            tokens.Add(SyntaxFactory.Token(SyntaxKind.PublicKeyword));
-
-        return tokens;
-    }
-
-    private static SyntaxToken ParseVisibilityKeyword(string keyword) => keyword.ToLowerInvariant() switch
-    {
-        "public" => SyntaxFactory.Token(SyntaxKind.PublicKeyword),
-        "private" => SyntaxFactory.Token(SyntaxKind.PrivateKeyword),
-        "protected" => SyntaxFactory.Token(SyntaxKind.ProtectedKeyword),
-        "internal" => SyntaxFactory.Token(SyntaxKind.InternalKeyword),
-        _ => SyntaxFactory.Token(SyntaxKind.PublicKeyword)
-    };
 
     private static TypeDeclarationSyntax InsertConstructor(
         TypeDeclarationSyntax typeDeclaration,
