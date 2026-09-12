@@ -632,7 +632,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
     internal static ControlTarget? FindControlTarget(SyntaxNode root, int line, int? column)
     {
         var onLine = CollectTargets(root)
-            .Where(target => KeywordIsOnLine(target.Keyword, line))
+            .Where(target => KeywordCoverage.KeywordIsOnLine(target.Keyword, line))
             .ToList();
 
         if (onLine.Count == 0)
@@ -706,12 +706,6 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
     private static IEnumerable<SyntaxTrivia> NonWhitespaceTrivia(SyntaxTriviaList trivia) =>
         trivia.Where(item => !item.IsKind(SyntaxKind.WhitespaceTrivia)
             && !item.IsKind(SyntaxKind.EndOfLineTrivia));
-
-    private static bool KeywordIsOnLine(SyntaxToken keyword, int line)
-    {
-        var span = keyword.GetLocation().GetLineSpan();
-        return span.StartLinePosition.Line + 1 == line;
-    }
 
 
     private static string BuildDescription(string scope, int count, string? typeName)

@@ -312,7 +312,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
     {
         var onLine = root.DescendantNodes()
             .OfType<ForEachStatementSyntax>()
-            .Where(statement => KeywordIsOnLine(statement, line))
+            .Where(statement => KeywordCoverage.KeywordIsOnLine(statement.ForEachKeyword, line))
             .ToList();
 
         if (onLine.Count == 0)
@@ -321,7 +321,7 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         if (column.HasValue)
         {
             var atColumn = onLine
-                .Where(statement => KeywordCoversColumn(statement, line, column.Value))
+                .Where(statement => KeywordCoverage.KeywordCoversColumn(statement.ForEachKeyword, line, column.Value))
                 .OrderBy(statement => statement.ForEachKeyword.Span.Length)
                 .ToList();
             return atColumn.FirstOrDefault();
@@ -533,17 +533,6 @@ public sealed class ConvertForeachLinqOperation : RefactoringOperationBase<Conve
         SyntaxFactory.ExpressionStatement(linqExpr)
             .WithLeadingTrivia(foreach_.GetLeadingTrivia())
             .WithTrailingTrivia(foreach_.GetTrailingTrivia());
-
-    private static bool KeywordIsOnLine(ForEachStatementSyntax statement, int line)
-    {
-        var span = statement.ForEachKeyword.GetLocation().GetLineSpan();
-        return span.StartLinePosition.Line + 1 == line;
-    }
-
-    private static bool KeywordCoversColumn(ForEachStatementSyntax statement, int line, int column)
-    {
-        return SpanCoverage.SpanCoversColumn(statement.ForEachKeyword.GetLocation().GetLineSpan(), line, column);
-    }
 
 }
 
