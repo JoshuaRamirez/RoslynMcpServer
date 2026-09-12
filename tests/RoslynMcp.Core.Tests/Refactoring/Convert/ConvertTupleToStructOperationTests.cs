@@ -113,7 +113,7 @@ public class ConvertTupleToStructOperationTests
     }
 
     [Fact]
-    public void IsValidTypeName_RejectsInvalidAndKeywords()
+    public void IsValidIdentifier_RejectsInvalidAndKeywords()
     {
         Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("123Bad"));
         Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("class"));
