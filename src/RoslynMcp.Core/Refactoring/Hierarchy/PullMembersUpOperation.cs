@@ -1099,7 +1099,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         // when the target lives in the same file. Look up by file path
         // rather than treating the miss as a non-editable base.
         var targetDocument = solution.GetDocument(syntaxRef.SyntaxTree)
-            ?? GetDocumentByFilePath(solution, syntaxRef.SyntaxTree);
+            ?? DocumentForTreeHelpers.GetDocumentByFilePath(solution, syntaxRef.SyntaxTree);
         if (targetDocument == null)
         {
             throw new RefactoringException(
@@ -1137,20 +1137,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         return targetDocument.WithSyntaxRoot(targetRoot.ReplaceNode(currentTarget, newTarget)).Project.Solution;
     }
 
-    private static Document? GetDocumentByFilePath(Solution solution, SyntaxTree tree)
-    {
-        if (string.IsNullOrEmpty(tree.FilePath))
-            return null;
-
-        foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
-        {
-            var document = solution.GetDocument(id);
-            if (document != null)
-                return document;
-        }
-
-        return null;
-    }
 
     private static TypeDeclarationSyntax FindTypeInRoot(SyntaxNode root, string typeName, Microsoft.CodeAnalysis.Text.TextSpan preferredSpan)
     {
