@@ -975,7 +975,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     /// </summary>
     internal static bool CanMoveMember(ISymbol member, INamedTypeSymbol target)
     {
-        if (HasConflict(target, member))
+        if (HierarchyConflictHelpers.HasConflict(target, member))
             return false;
 
         if (target.TypeKind == TypeKind.Interface && !IsInterfaceCompatible(member))
@@ -1051,69 +1051,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
 
         return false;
-    }
-
-    private static bool HasConflict(INamedTypeSymbol target, ISymbol member)
-    {
-        foreach (var existing in target.GetMembers(member.Name))
-        {
-            if (existing.IsImplicitlyDeclared)
-                continue;
-
-            if (member is IMethodSymbol method && existing is IMethodSymbol existingMethod)
-            {
-                if (SignaturesMatch(method, existingMethod))
-                    return true;
-                continue;
-            }
-
-            if (member is IPropertySymbol { IsIndexer: true } indexer
-                && existing is IPropertySymbol { IsIndexer: true } existingIndexer)
-            {
-                if (IndexerSignaturesMatch(indexer, existingIndexer))
-                    return true;
-                continue;
-            }
-
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool SignaturesMatch(IMethodSymbol left, IMethodSymbol right)
-    {
-        if (left.Parameters.Length != right.Parameters.Length)
-            return false;
-
-        if (left.TypeParameters.Length != right.TypeParameters.Length)
-            return false;
-
-        for (var i = 0; i < left.Parameters.Length; i++)
-        {
-            if (!SymbolEqualityComparer.Default.Equals(left.Parameters[i].Type, right.Parameters[i].Type))
-                return false;
-            if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
-                return false;
-        }
-
-        return true;
-    }
-
-    private static bool IndexerSignaturesMatch(IPropertySymbol left, IPropertySymbol right)
-    {
-        if (left.Parameters.Length != right.Parameters.Length)
-            return false;
-
-        for (var i = 0; i < left.Parameters.Length; i++)
-        {
-            if (!SymbolEqualityComparer.Default.Equals(left.Parameters[i].Type, right.Parameters[i].Type))
-                return false;
-            if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
-                return false;
-        }
-
-        return true;
     }
 
     private static bool IsInterfaceCompatible(ISymbol member)
