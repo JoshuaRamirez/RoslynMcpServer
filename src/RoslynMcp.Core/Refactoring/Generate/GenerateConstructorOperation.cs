@@ -433,7 +433,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             .ToList();
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var generatedCountByDoc = new Dictionary<DocumentId, int>();
         var processedTypes = new HashSet<string>(StringComparer.Ordinal);
@@ -791,25 +791,6 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         return document.WithSyntaxRoot(newRoot).Project.Solution;
     }
 
-    private static List<Document> FilterDocumentsBySourceFile(List<Document> documents, string sourceFile)
-    {
-        string wanted;
-        try
-        {
-            wanted = PathResolver.NormalizePath(sourceFile);
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            wanted = sourceFile;
-        }
-
-        return documents
-            .Where(d => string.Equals(
-                PathResolver.NormalizePath(d.FilePath!),
-                wanted,
-                StringComparison.OrdinalIgnoreCase))
-            .ToList();
-    }
 
     private static List<ISymbol> GetMembersToInitialize(
         INamedTypeSymbol typeSymbol,
