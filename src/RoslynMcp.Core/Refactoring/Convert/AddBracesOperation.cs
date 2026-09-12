@@ -553,7 +553,7 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
         if (column.HasValue)
         {
             var atColumn = onLine
-                .Where(target => KeywordCoversColumn(target.Keyword, line, column.Value))
+                .Where(target => KeywordCoverage.KeywordCoversColumn(target.Keyword, line, column.Value))
                 .OrderBy(target => target.Keyword.Span.Length)
                 .ToList();
             return atColumn.Count == 0 ? null : atColumn[0];
@@ -611,11 +611,6 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
     {
         var span = keyword.GetLocation().GetLineSpan();
         return span.StartLinePosition.Line + 1 == line;
-    }
-
-    private static bool KeywordCoversColumn(SyntaxToken keyword, int line, int column)
-    {
-        return SpanCoverage.SpanCoversColumn(keyword.GetLocation().GetLineSpan(), line, column);
     }
 
 

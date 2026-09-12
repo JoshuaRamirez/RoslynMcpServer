@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+- Extracted shared `KeywordCoverage.KeywordCoversColumn` and replaced 2 identical AddBraces + RemoveBraces copies (`add_braces` / `remove_braces`) (#1025)
+
 ## [0.6.1] - 2026-09-12
 
 ### Fixed
