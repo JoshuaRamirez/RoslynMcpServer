@@ -88,7 +88,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (@params.PropertyName != null && !IsValidIdentifier(@params.PropertyName))
+        if (@params.PropertyName != null && !IdentifierValidation.IsValidIdentifier(@params.PropertyName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid property name: {@params.PropertyName}");
     }
 
@@ -869,10 +869,4 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         return $"Encapsulate field '{fieldName}' as property '{propertyName}' ({referenceClause})";
     }
 
-    private static bool IsValidIdentifier(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return false;
-        if (!char.IsLetter(name[0]) && name[0] != '_') return false;
-        return name.All(c => char.IsLetterOrDigit(c) || c == '_');
-    }
 }

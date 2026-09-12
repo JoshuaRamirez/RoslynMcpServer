@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Refactoring.Generate;
 using RoslynMcp.Core.Refactoring.Hierarchy;
 using RoslynMcp.Core.Refactoring.Rename;
@@ -76,7 +77,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (!IsValidIdentifier(@params.BaseClassName))
+        if (!IdentifierValidation.IsValidIdentifier(@params.BaseClassName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid base class name: {@params.BaseClassName}");
 
         if (@params.TargetFile != null)
@@ -1070,12 +1071,6 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
 
-    private static bool IsValidIdentifier(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return false;
-        if (!char.IsLetter(name[0]) && name[0] != '_') return false;
-        return name.All(c => char.IsLetterOrDigit(c) || c == '_');
-    }
 
     /// <summary>
     /// Finds a type by <paramref name="typeName"/>. Omitted
