@@ -542,9 +542,9 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             // candidate. If nothing covers this position, keep today's
             // not-found rather than inventing a first-match.
             var covering = candidates
-                .Where(declarator => FieldCoversColumn(declarator, @params.Line!.Value, @params.Column.Value))
-                .OrderBy(declarator => IdentifierCoversColumn(declarator, @params.Line!.Value, @params.Column.Value) ? 0 : 1)
-                .ThenBy(declarator => SmallestCoveringSpanLength(declarator, @params.Line!.Value, @params.Column.Value))
+                .Where(declarator => FieldCoverage.FieldCoversColumn(declarator, @params.Line!.Value, @params.Column.Value))
+                .OrderBy(declarator => FieldCoverage.IdentifierCoversColumn(declarator, @params.Line!.Value, @params.Column.Value) ? 0 : 1)
+                .ThenBy(declarator => FieldCoverage.SmallestCoveringSpanLength(declarator, @params.Line!.Value, @params.Column.Value))
                 .ToList();
 
             if (covering.Count == 0)
@@ -557,9 +557,9 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             return PickOmittedLineMatch(candidates, semanticModel, @params, cancellationToken);
 
         var lineCovering = candidates
-            .Where(declarator => FieldCoversLine(declarator, @params.Line.Value))
-            .OrderBy(declarator => IdentifierCoversLine(declarator, @params.Line.Value) ? 0 : 1)
-            .ThenBy(declarator => SmallestCoveringSpanLength(declarator, @params.Line.Value))
+            .Where(declarator => FieldCoverage.FieldCoversLine(declarator, @params.Line.Value))
+            .OrderBy(declarator => FieldCoverage.IdentifierCoversLine(declarator, @params.Line.Value) ? 0 : 1)
+            .ThenBy(declarator => FieldCoverage.SmallestCoveringSpanLength(declarator, @params.Line.Value))
             .ToList();
 
         if (lineCovering.Count == 0)
@@ -598,59 +598,6 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             string.IsNullOrWhiteSpace(@params.TypeName)
                 ? $"Constant '{@params.ConstantName}' not found."
                 : $"Constant '{@params.ConstantName}' not found on type '{@params.TypeName}'.");
-
-    private static bool FieldCoversLine(VariableDeclaratorSyntax declarator, int line) =>
-        IdentifierCoversLine(declarator, line) ||
-        SpanCoverage.SpanCoversLine(declarator.GetLocation().GetLineSpan(), line) ||
-        (GetFieldDeclaration(declarator) is { } field &&
-         SpanCoverage.SpanCoversLine(field.GetLocation().GetLineSpan(), line));
-
-    private static bool IdentifierCoversLine(VariableDeclaratorSyntax declarator, int line) =>
-        SpanCoverage.SpanCoversLine(declarator.Identifier.GetLocation().GetLineSpan(), line);
-
-    private static bool FieldCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
-        IdentifierCoversColumn(declarator, line, column) ||
-        SpanCoverage.SpanCoversColumn(declarator.GetLocation().GetLineSpan(), line, column) ||
-        (GetFieldDeclaration(declarator) is { } field &&
-         SpanCoverage.SpanCoversColumn(field.GetLocation().GetLineSpan(), line, column));
-
-    private static bool IdentifierCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
-        SpanCoverage.SpanCoversColumn(declarator.Identifier.GetLocation().GetLineSpan(), line, column);
-
-    private static int SmallestCoveringSpanLength(VariableDeclaratorSyntax declarator, int line)
-    {
-        var smallest = int.MaxValue;
-        if (SpanCoverage.SpanCoversLine(declarator.GetLocation().GetLineSpan(), line))
-            smallest = Math.Min(smallest, declarator.Span.Length);
-
-        if (GetFieldDeclaration(declarator) is { } field &&
-            SpanCoverage.SpanCoversLine(field.GetLocation().GetLineSpan(), line))
-        {
-            smallest = Math.Min(smallest, field.Span.Length);
-        }
-
-        return smallest;
-    }
-
-    private static int SmallestCoveringSpanLength(VariableDeclaratorSyntax declarator, int line, int column)
-    {
-        var smallest = int.MaxValue;
-        if (SpanCoverage.SpanCoversColumn(declarator.GetLocation().GetLineSpan(), line, column))
-            smallest = Math.Min(smallest, declarator.Span.Length);
-
-        if (GetFieldDeclaration(declarator) is { } field &&
-            SpanCoverage.SpanCoversColumn(field.GetLocation().GetLineSpan(), line, column))
-        {
-            smallest = Math.Min(smallest, field.Span.Length);
-        }
-
-        return smallest;
-    }
-
-    private static FieldDeclarationSyntax? GetFieldDeclaration(VariableDeclaratorSyntax declarator) =>
-        declarator.Parent?.Parent as FieldDeclarationSyntax;
-
-
 
     private static bool MatchesTypeName(IFieldSymbol? field, string typeName)
     {

@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `FieldCoverage` and replaced EncapsulateField + InlineConstant FieldCovers* / IdentifierCovers* / GetFieldDeclaration / SmallestCoveringSpanLength copies (`encapsulate_field` / `inline_constant`) (#1002)
 - Extracted shared `MethodCoverage` and replaced 7 identical MethodCoversColumn / IdentifierCoversColumn copies (`add_parameter` / `remove_parameter` / `reorder_parameters` / `change_signature` / `change_return_type` / `convert_to_async` / `inline_method`) (#997)
 - Replaced 5 identical Generate-family TypeCovers* / IdentifierCovers* copies with shared TypeCoverage (generate_constructor / generate_equals_hashcode / generate_overrides / generate_property / implement_interface) (#994)
 - Extracted shared `TypeCoverage` and replaced 7 identical Hierarchy/Extract/Generate copies (`pull_members_up` / `push_members_down` / `use_base_type` / `extract_interface` / `extract_base_class` / `generate_tostring` / `implement_abstract`) (#990)
