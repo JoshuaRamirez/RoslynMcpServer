@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `ProjectXmlHelpers.SerializeProjectXml` and replaced 4 identical copies (`move_type_to_namespace` / `rename_file_to_match_type` / `rename_namespace` / `extract_base_class`) (#1069)
 - Extracted shared `TypeWalkKeyHelpers.TypeWalkKey` (3 overloads) and replaced 5 identical copies (`implement_abstract` / `implement_interface` / `generate_tostring` / `generate_overrides` / `generate_equals_hashcode`) (#1065)
 - Extracted shared `DocumentSourceFileFilter.FilterDocumentsBySourceFile` and replaced 9 identical copies (`make_static` / `make_non_static` / `generate_overrides` / `generate_equals_hashcode` / `generate_constructor` / `generate_tostring` / `implement_interface` / `implement_abstract` / `inline_constant`) (#1062)
 - Extracted shared `DocumentForTreeHelpers.GetDocumentForTree` and replaced 10 identical copies (`extract_base_class` / `generate_overrides` / `generate_equals_hashcode` / `generate_property` / `generate_constructor` / `generate_tostring` / `implement_interface` / `implement_abstract` / `push_members_down` / `pull_members_up`) (#1059)
