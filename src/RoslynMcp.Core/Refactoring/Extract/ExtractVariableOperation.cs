@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Refactoring.Utilities;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Extract;
@@ -73,8 +74,8 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
 
         // Get text span from line/column (bounds-checked like extract_method / extract_constant)
         var sourceText = await document.GetTextAsync(cancellationToken);
-        var startPosition = GetPosition(sourceText, @params.StartLine, @params.StartColumn);
-        var endPosition = GetPosition(sourceText, @params.EndLine, @params.EndColumn);
+        var startPosition = SymbolResolver.GetPosition(sourceText, @params.StartLine, @params.StartColumn);
+        var endPosition = SymbolResolver.GetPosition(sourceText, @params.EndLine, @params.EndColumn);
         var span = TextSpan.FromBounds(startPosition, endPosition);
 
         // Find expression at span
@@ -579,30 +580,5 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
 
-
-    private static int GetPosition(SourceText text, int line, int column)
-    {
-        var lineIndex = line - 1; // Convert to 0-based
-
-        if (lineIndex < 0 || lineIndex >= text.Lines.Count)
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidLineNumber,
-                $"Line {line} is out of range. File has {text.Lines.Count} lines.");
-        }
-
-        var lineInfo = text.Lines[lineIndex];
-        var columnIndex = column - 1; // Convert to 0-based
-        var lineLength = lineInfo.End - lineInfo.Start;
-
-        if (columnIndex < 0 || columnIndex > lineLength)
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidColumnNumber,
-                $"Column {column} is out of range for line {line} (line has {lineLength} characters).");
-        }
-
-        return lineInfo.Start + columnIndex;
-    }
 
 }

@@ -10,6 +10,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Rename;
@@ -231,7 +232,7 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         // If line/column provided, find symbol at position
         if (@params.Line.HasValue)
         {
-            var position = GetPosition(root, @params.Line.Value, @params.Column ?? 1);
+            var position = SymbolResolver.GetPosition(root, @params.Line.Value, @params.Column ?? 1);
             var token = root.FindToken(position);
 
             // Walk up to find the symbol declaration or reference
@@ -290,40 +291,6 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         }
 
         return (candidates[0], document);
-    }
-
-    /// <summary>
-    /// Converts 1-based line/column to absolute position with bounds validation.
-    /// </summary>
-    /// <param name="root">Syntax root to get text from.</param>
-    /// <param name="line">1-based line number.</param>
-    /// <param name="column">1-based column number.</param>
-    /// <returns>Absolute position in text.</returns>
-    /// <exception cref="RefactoringException">Thrown if line/column is out of bounds.</exception>
-    private static int GetPosition(SyntaxNode root, int line, int column)
-    {
-        var text = root.GetText();
-        var lineIndex = line - 1; // Convert to 0-based
-
-        if (lineIndex < 0 || lineIndex >= text.Lines.Count)
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidLineNumber,
-                $"Line {line} is out of range. File has {text.Lines.Count} lines.");
-        }
-
-        var lineInfo = text.Lines[lineIndex];
-        var columnIndex = column - 1; // Convert to 0-based
-        var lineLength = lineInfo.End - lineInfo.Start;
-
-        if (columnIndex < 0 || columnIndex > lineLength)
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidColumnNumber,
-                $"Column {column} is out of range for line {line} (line has {lineLength} characters).");
-        }
-
-        return lineInfo.Start + columnIndex;
     }
 
     private static void ValidateRename(ISymbol symbol, RenameSymbolParams @params)

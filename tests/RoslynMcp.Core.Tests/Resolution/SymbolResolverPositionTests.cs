@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Resolution;
@@ -72,5 +73,24 @@ public class SymbolResolverPositionTests
         // Column at end of line should work (column = length + 1 for EOL position)
         var position = SymbolResolver.GetPosition(root, line: 1, column: source.Length + 1);
         Assert.Equal(source.Length, position);
+    }
+
+    [Fact]
+    public void GetPosition_SourceText_FirstColumn_ReturnsZero()
+    {
+        var text = SourceText.From("class C { }");
+        var position = SymbolResolver.GetPosition(text, line: 1, column: 1);
+        Assert.Equal(0, position);
+    }
+
+    [Fact]
+    public void GetPosition_SourceText_LineOutOfRange_ThrowsException()
+    {
+        var text = SourceText.From("class C { }");
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SymbolResolver.GetPosition(text, line: 100, column: 1));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
     }
 }
