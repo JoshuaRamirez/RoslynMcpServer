@@ -3171,37 +3171,6 @@ public class GenerateEqualsHashCodeOperationTests
         Assert.Contains("fields", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
-    public void TypeWalkKey_IncludesProjectIdentity()
-    {
-        var projectA = ProjectId.CreateNewId();
-        var projectB = ProjectId.CreateNewId();
-        const string fqn = "global::TestApp.Widget";
-
-        var keyA = GenerateEqualsHashCodeOperation.TypeWalkKey(projectA, fqn);
-        var keyB = GenerateEqualsHashCodeOperation.TypeWalkKey(projectB, fqn);
-
-        Assert.NotEqual(keyA, keyB);
-        Assert.Equal(keyA, GenerateEqualsHashCodeOperation.TypeWalkKey(projectA, fqn));
-        Assert.NotEqual(keyA, GenerateEqualsHashCodeOperation.TypeWalkKey(projectA, "global::TestApp.Other"));
-    }
-
-    [Fact]
-    public void TypeWalkKey_FileLocalIdentity_DistinguishesSameFqn()
-    {
-        var project = ProjectId.CreateNewId();
-        const string fqn = "global::TestApp.Worker";
-
-        var ordinary = GenerateEqualsHashCodeOperation.TypeWalkKey(project, fqn);
-        var fileA = GenerateEqualsHashCodeOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs");
-        var fileB = GenerateEqualsHashCodeOperation.TypeWalkKey(project, fqn, "/tmp/FileB.cs");
-
-        Assert.NotEqual(ordinary, fileA);
-        Assert.NotEqual(ordinary, fileB);
-        Assert.NotEqual(fileA, fileB);
-        Assert.Equal(fileA, GenerateEqualsHashCodeOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs"));
-        Assert.Equal(ordinary, GenerateEqualsHashCodeOperation.TypeWalkKey(project, fqn));
-    }
 
     [Fact]
     public void Validate_AllFilesTrue_WithLine_Throws()

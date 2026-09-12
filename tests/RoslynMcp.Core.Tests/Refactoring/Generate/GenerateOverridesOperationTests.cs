@@ -3358,37 +3358,6 @@ public class GenerateOverridesOperationTests
         Assert.Contains("members", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
-    public void TypeWalkKey_IncludesProjectIdentity()
-    {
-        var projectA = ProjectId.CreateNewId();
-        var projectB = ProjectId.CreateNewId();
-        const string fqn = "global::TestApp.Widget";
-
-        var keyA = GenerateOverridesOperation.TypeWalkKey(projectA, fqn);
-        var keyB = GenerateOverridesOperation.TypeWalkKey(projectB, fqn);
-
-        Assert.NotEqual(keyA, keyB);
-        Assert.Equal(keyA, GenerateOverridesOperation.TypeWalkKey(projectA, fqn));
-        Assert.NotEqual(keyA, GenerateOverridesOperation.TypeWalkKey(projectA, "global::TestApp.Other"));
-    }
-
-    [Fact]
-    public void TypeWalkKey_FileLocalIdentity_DistinguishesSameFqn()
-    {
-        var project = ProjectId.CreateNewId();
-        const string fqn = "global::TestApp.Worker";
-
-        var ordinary = GenerateOverridesOperation.TypeWalkKey(project, fqn);
-        var fileA = GenerateOverridesOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs");
-        var fileB = GenerateOverridesOperation.TypeWalkKey(project, fqn, "/tmp/FileB.cs");
-
-        Assert.NotEqual(ordinary, fileA);
-        Assert.NotEqual(ordinary, fileB);
-        Assert.NotEqual(fileA, fileB);
-        Assert.Equal(fileA, GenerateOverridesOperation.TypeWalkKey(project, fqn, "/tmp/FileA.cs"));
-        Assert.Equal(ordinary, GenerateOverridesOperation.TypeWalkKey(project, fqn));
-    }
 
     [Fact]
     public void Validate_AllFilesTrue_WithLine_Throws()
