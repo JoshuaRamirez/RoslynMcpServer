@@ -352,20 +352,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     }
 
 
-    private static Document? GetDocumentByFilePath(Solution solution, SyntaxTree tree)
-    {
-        if (string.IsNullOrEmpty(tree.FilePath))
-            return null;
-
-        foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
-        {
-            var document = solution.GetDocument(id);
-            if (document != null)
-                return document;
-        }
-
-        return null;
-    }
 
 
     /// <summary>
@@ -452,7 +438,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             }
 
             var updateDocument = sourceDocument.Project.Solution.GetDocument(update.Original.SyntaxTree)
-                ?? GetDocumentByFilePath(sourceDocument.Project.Solution, update.Original.SyntaxTree);
+                ?? DocumentForTreeHelpers.GetDocumentByFilePath(sourceDocument.Project.Solution, update.Original.SyntaxTree);
             if (updateDocument != null && updateDocument.Id == sourceDocument.Id)
             {
                 var rematchedOriginal = TypePartRematch.RematchTypeDeclaration(sourceRoot, update.Original)
@@ -1886,7 +1872,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             // when a derived type lives in the same file. Look up by file path
             // rather than treating the miss as a non-editable target.
             var document = solution.GetDocument(group.Key)
-                ?? GetDocumentByFilePath(solution, group.Key);
+                ?? DocumentForTreeHelpers.GetDocumentByFilePath(solution, group.Key);
             if (document == null)
             {
                 throw new RefactoringException(

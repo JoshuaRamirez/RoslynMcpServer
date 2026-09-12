@@ -6,8 +6,9 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// <summary>
 /// Shared SyntaxTree → Document lookup used by Generate / Hierarchy / Extract
 /// operations that need a declaring document for a type (GetDocument(tree), then
-/// FilePath fallback). Excludes GenerateMethodStub's nullable overload, which
-/// returns null instead of throwing.
+/// FilePath fallback), plus a nullable FilePath-only fallback used when
+/// GetDocument(tree) already missed. Excludes GenerateMethodStub's nullable
+/// overload, which returns null instead of throwing.
 /// </summary>
 internal static class DocumentForTreeHelpers
 {
@@ -38,5 +39,26 @@ internal static class DocumentForTreeHelpers
         throw new RefactoringException(
             ErrorCodes.DocumentNotEditable,
             $"Could not locate a declaring document for type '{typeName}'.");
+    }
+
+    /// <summary>
+    /// FilePath-only fallback: returns the first solution document whose path
+    /// matches <paramref name="tree"/>.FilePath, or null when FilePath is empty
+    /// or no document matches. Same body as the PullMembersUp / PushMembersDown
+    /// private copies (does not call GetDocument(tree)).
+    /// </summary>
+    internal static Document? GetDocumentByFilePath(Solution solution, SyntaxTree tree)
+    {
+        if (string.IsNullOrEmpty(tree.FilePath))
+            return null;
+
+        foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
+        {
+            var document = solution.GetDocument(id);
+            if (document != null)
+                return document;
+        }
+
+        return null;
     }
 }
