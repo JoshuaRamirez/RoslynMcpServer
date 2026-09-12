@@ -314,8 +314,8 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
             // including those that do not start on `line`. If nothing
             // covers this position, keep today's not-found (null).
             return methods
-                .Where(m => MethodCoversColumn(m, line ?? StartLine(m), column.Value))
-                .OrderBy(m => IdentifierCoversColumn(m, line ?? StartLine(m), column.Value) ? 0 : 1)
+                .Where(m => MethodCoverage.MethodCoversColumn(m, line ?? StartLine(m), column.Value))
+                .OrderBy(m => MethodCoverage.IdentifierCoversColumn(m, line ?? StartLine(m), column.Value) ? 0 : 1)
                 .ThenBy(m => m.Span.Length)
                 .FirstOrDefault();
         }
@@ -332,13 +332,6 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
 
     private static int StartLine(MethodDeclarationSyntax method) =>
         method.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
-
-    private static bool MethodCoversColumn(MethodDeclarationSyntax method, int line, int column) =>
-        IdentifierCoversColumn(method, line, column) ||
-        SpanCoverage.SpanCoversColumn(method.GetLocation().GetLineSpan(), line, column);
-
-    private static bool IdentifierCoversColumn(MethodDeclarationSyntax method, int line, int column) =>
-        SpanCoverage.SpanCoversColumn(method.Identifier.GetLocation().GetLineSpan(), line, column);
 
     internal static int ComputeInsertionIndex(ParameterListSyntax list, int position)
     {
