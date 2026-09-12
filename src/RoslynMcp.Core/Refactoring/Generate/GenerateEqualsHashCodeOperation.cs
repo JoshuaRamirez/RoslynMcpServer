@@ -780,7 +780,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
 
         foreach (var tree in treesToEdit)
         {
-            var document = GetDocumentForTree(solution, tree, typeSymbol.Name);
+            var document = DocumentForTreeHelpers.GetDocumentForTree(solution, tree, typeSymbol.Name);
             var root = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
             var semanticModel = implementIEquatable
@@ -878,26 +878,6 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         }
     }
 
-    private static Document GetDocumentForTree(Solution solution, SyntaxTree tree, string typeName)
-    {
-        var document = solution.GetDocument(tree);
-        if (document != null)
-            return document;
-
-        if (!string.IsNullOrEmpty(tree.FilePath))
-        {
-            foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
-            {
-                document = solution.GetDocument(id);
-                if (document != null)
-                    return document;
-            }
-        }
-
-        throw new RefactoringException(
-            ErrorCodes.DocumentNotEditable,
-            $"Could not locate a declaring document for type '{typeName}'.");
-    }
 
     /// <summary>
     /// Finds a type by <paramref name="typeName"/>. Omitted

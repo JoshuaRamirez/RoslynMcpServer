@@ -1175,7 +1175,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
 
         foreach (var tree in trees)
         {
-            var document = GetDocumentForTree(solution, tree, typeSymbol.Name);
+            var document = DocumentForTreeHelpers.GetDocumentForTree(solution, tree, typeSymbol.Name);
             var treeRoot = await document.GetSyntaxRootAsync(cancellationToken)
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
@@ -1267,26 +1267,6 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         return solution;
     }
 
-    private static Document GetDocumentForTree(Solution solution, SyntaxTree tree, string typeName)
-    {
-        var document = solution.GetDocument(tree);
-        if (document != null)
-            return document;
-
-        if (!string.IsNullOrEmpty(tree.FilePath))
-        {
-            foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
-            {
-                document = solution.GetDocument(id);
-                if (document != null)
-                    return document;
-            }
-        }
-
-        throw new RefactoringException(
-            ErrorCodes.DocumentNotEditable,
-            $"Could not locate a declaring document for type '{typeName}'.");
-    }
 
     private static void AddKeyed<T>(
         Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,

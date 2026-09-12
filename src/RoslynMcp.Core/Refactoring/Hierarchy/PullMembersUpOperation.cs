@@ -155,7 +155,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         // look up by file path and rematch by span (same as
         // extract_base_class / implement_abstract).
         document = annotatedSolution.GetDocument(previousTree)
-            ?? GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName);
+            ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName);
         root = await document.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         derivedDecl = RecoverAnnotatedType(
@@ -329,26 +329,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 $"Type '{typeName}' not found in file.");
     }
 
-    private static Document GetDocumentForTree(Solution solution, SyntaxTree tree, string typeName)
-    {
-        var document = solution.GetDocument(tree);
-        if (document != null)
-            return document;
-
-        if (!string.IsNullOrEmpty(tree.FilePath))
-        {
-            foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
-            {
-                document = solution.GetDocument(id);
-                if (document != null)
-                    return document;
-            }
-        }
-
-        throw new RefactoringException(
-            ErrorCodes.DocumentNotEditable,
-            $"Could not locate a declaring document for type '{typeName}'.");
-    }
 
 
     internal static INamedTypeSymbol GetTargetBaseType(INamedTypeSymbol derived, string? targetTypeName)

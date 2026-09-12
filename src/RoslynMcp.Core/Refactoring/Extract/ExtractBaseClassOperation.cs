@@ -228,7 +228,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         // look up by file path and rematch by span (same as
         // implement_abstract #226).
         document = annotatedSolution.GetDocument(previousTree)
-            ?? GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName);
+            ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName);
         root = await document.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         typeDeclaration = RecoverAnnotatedClass(
@@ -267,7 +267,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         // to an earlier same-named type after the rewrite. After insert,
         // spans have shifted, so do not rematch by SpanStart.
         var updatedDoc = newSolution.GetDocument(document.Id)
-            ?? GetDocumentForTree(newSolution, root.SyntaxTree, @params.TypeName);
+            ?? DocumentForTreeHelpers.GetDocumentForTree(newSolution, root.SyntaxTree, @params.TypeName);
         var updatedRoot = await updatedDoc.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         var updatedTypeDecl = updatedRoot.GetAnnotatedNodes(targetTypeAnnotation)
@@ -1201,26 +1201,6 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 $"Class '{typeName}' not found in file.");
     }
 
-    private static Document GetDocumentForTree(Solution solution, SyntaxTree tree, string typeName)
-    {
-        var document = solution.GetDocument(tree);
-        if (document != null)
-            return document;
-
-        if (!string.IsNullOrEmpty(tree.FilePath))
-        {
-            foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
-            {
-                document = solution.GetDocument(id);
-                if (document != null)
-                    return document;
-            }
-        }
-
-        throw new RefactoringException(
-            ErrorCodes.DocumentNotEditable,
-            $"Could not locate a declaring document for type '{typeName}'.");
-    }
 
     private static ClassDeclarationSyntax? RematchTypeDeclaration(
         SyntaxNode root,
