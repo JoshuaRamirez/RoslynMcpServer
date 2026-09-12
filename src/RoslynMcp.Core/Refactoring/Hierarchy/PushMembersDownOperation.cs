@@ -177,7 +177,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         // look up by file path and rematch by span (same as
         // pull_members_up / extract_base_class / implement_abstract).
         document = annotatedSolution.GetDocument(previousTree)
-            ?? GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName);
+            ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName);
         root = await document.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         sourceDecl = RecoverAnnotatedType(
@@ -351,26 +351,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 $"Type '{typeName}' not found in file.");
     }
 
-    private static Document GetDocumentForTree(Solution solution, SyntaxTree tree, string typeName)
-    {
-        var document = solution.GetDocument(tree);
-        if (document != null)
-            return document;
-
-        if (!string.IsNullOrEmpty(tree.FilePath))
-        {
-            foreach (var id in solution.GetDocumentIdsWithFilePath(tree.FilePath))
-            {
-                document = solution.GetDocument(id);
-                if (document != null)
-                    return document;
-            }
-        }
-
-        throw new RefactoringException(
-            ErrorCodes.DocumentNotEditable,
-            $"Could not locate a declaring document for type '{typeName}'.");
-    }
 
     private static Document? GetDocumentByFilePath(Solution solution, SyntaxTree tree)
     {
