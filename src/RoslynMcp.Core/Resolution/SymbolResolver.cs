@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
@@ -216,9 +217,18 @@ public sealed class SymbolResolver
     /// <param name="line">1-based line number.</param>
     /// <param name="column">1-based column number.</param>
     /// <returns>Absolute position in text.</returns>
-    public static int GetPosition(SyntaxNode root, int line, int column)
+    public static int GetPosition(SyntaxNode root, int line, int column) =>
+        GetPosition(root.GetText(), line, column);
+
+    /// <summary>
+    /// Converts 1-based line/column to absolute position with bounds validation.
+    /// </summary>
+    /// <param name="text">Source text to index into.</param>
+    /// <param name="line">1-based line number.</param>
+    /// <param name="column">1-based column number.</param>
+    /// <returns>Absolute position in text.</returns>
+    public static int GetPosition(SourceText text, int line, int column)
     {
-        var text = root.GetText();
         var lineIndex = line - 1;
 
         if (lineIndex < 0 || lineIndex >= text.Lines.Count)

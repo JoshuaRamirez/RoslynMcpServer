@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Extract;
@@ -88,8 +89,8 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
 
         // Get the selection span
         var text = await document.GetTextAsync(cancellationToken);
-        var startPosition = GetPosition(text, @params.StartLine, @params.StartColumn);
-        var endPosition = GetPosition(text, @params.EndLine, @params.EndColumn);
+        var startPosition = SymbolResolver.GetPosition(text, @params.StartLine, @params.StartColumn);
+        var endPosition = SymbolResolver.GetPosition(text, @params.EndLine, @params.EndColumn);
         var selectionSpan = TextSpan.FromBounds(startPosition, endPosition);
 
         // Find nodes in selection
@@ -162,39 +163,6 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
             },
             0,
             0);
-    }
-
-    /// <summary>
-    /// Converts 1-based line/column to absolute position with bounds validation.
-    /// </summary>
-    /// <param name="text">Source text to navigate.</param>
-    /// <param name="line">1-based line number.</param>
-    /// <param name="column">1-based column number.</param>
-    /// <returns>Absolute position in text.</returns>
-    /// <exception cref="RefactoringException">Thrown if line/column is out of bounds.</exception>
-    private static int GetPosition(SourceText text, int line, int column)
-    {
-        var lineIndex = line - 1; // Convert to 0-based
-
-        if (lineIndex < 0 || lineIndex >= text.Lines.Count)
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidLineNumber,
-                $"Line {line} is out of range. File has {text.Lines.Count} lines.");
-        }
-
-        var lineInfo = text.Lines[lineIndex];
-        var columnIndex = column - 1; // Convert to 0-based
-        var lineLength = lineInfo.End - lineInfo.Start;
-
-        if (columnIndex < 0 || columnIndex > lineLength)
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidColumnNumber,
-                $"Column {column} is out of range for line {line} (line has {lineLength} characters).");
-        }
-
-        return lineInfo.Start + columnIndex;
     }
 
     private static List<SyntaxNode> GetSelectedNodes(SyntaxNode root, TextSpan selection)
