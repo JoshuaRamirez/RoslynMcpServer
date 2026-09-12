@@ -333,7 +333,6 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
     private static bool IdentifierCoversColumn(MethodDeclarationSyntax method, int line, int column) =>
         SpanCoverage.SpanCoversColumn(method.Identifier.GetLocation().GetLineSpan(), line, column);
 
-
     internal static IParameterSymbol FindParameter(IMethodSymbol method, string name)
     {
         var normalized = NormalizeIdentifier(name);
@@ -473,11 +472,11 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                         continue;
 
                     var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
-                    if (IsDeclarationName(node, location.Location.SourceSpan))
+                    if (SignatureReferenceHelpers.IsDeclarationName(node, location.Location.SourceSpan))
                         continue;
 
                     var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-                    if (invocation != null && IsInvokedMethodName(invocation, location.Location.SourceSpan))
+                    if (invocation != null && SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
                     {
                         if (!seen.Add((document.Id, invocation.Span)))
                             continue;
@@ -490,7 +489,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                         continue;
                     }
 
-                    if (IsNameOfArgument(node))
+                    if (SignatureReferenceHelpers.IsNameOfArgument(node))
                         continue;
 
                     throw new RefactoringException(
@@ -758,7 +757,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
 
     private static bool CanReplaceWithDefault(IdentifierNameSyntax identifier)
     {
-        if (IsNameOfArgument(identifier))
+        if (SignatureReferenceHelpers.IsNameOfArgument(identifier))
             return false;
 
         if (identifier.Parent is MemberAccessExpressionSyntax member && member.Expression == identifier)
@@ -794,40 +793,6 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         }
 
         return true;
-    }
-
-    private static bool IsDeclarationName(SyntaxNode node, TextSpan referenceSpan)
-    {
-        return node.AncestorsAndSelf().OfType<MethodDeclarationSyntax>()
-            .Any(m => m.Identifier.Span.IntersectsWith(referenceSpan));
-    }
-
-    private static bool IsInvokedMethodName(InvocationExpressionSyntax invocation, TextSpan referenceSpan)
-    {
-        if (invocation.ArgumentList.Span.Contains(referenceSpan))
-            return false;
-
-        return invocation.Expression switch
-        {
-            IdentifierNameSyntax identifier => identifier.Span.IntersectsWith(referenceSpan),
-            MemberAccessExpressionSyntax member => member.Name.Span.IntersectsWith(referenceSpan),
-            MemberBindingExpressionSyntax binding => binding.Name.Span.IntersectsWith(referenceSpan),
-            _ => invocation.Expression.Span.IntersectsWith(referenceSpan)
-        };
-    }
-
-    private static bool IsNameOfArgument(SyntaxNode node)
-    {
-        foreach (var invocation in node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>())
-        {
-            if (invocation.Expression is IdentifierNameSyntax identifier &&
-                identifier.Identifier.Text == "nameof")
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static bool HasSourceDeclaration(IMethodSymbol method) =>

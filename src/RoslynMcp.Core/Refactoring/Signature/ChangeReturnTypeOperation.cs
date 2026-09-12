@@ -472,7 +472,6 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
     private static bool IdentifierCoversColumn(MethodDeclarationSyntax method, int line, int column) =>
         SpanCoverage.SpanCoversColumn(method.Identifier.GetLocation().GetLineSpan(), line, column);
 
-
     private async Task<List<IMethodSymbol>> GetRelatedMethodsAsync(
         IMethodSymbol method,
         bool updateOverrides,
@@ -869,20 +868,20 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                         continue;
 
                     var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
-                    if (IsDeclarationName(node, location.Location.SourceSpan))
+                    if (SignatureReferenceHelpers.IsDeclarationName(node, location.Location.SourceSpan))
                         continue;
 
                     var model = await document.GetSemanticModelAsync(cancellationToken)
                         ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
                     var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-                    if (invocation != null && IsInvokedMethodName(invocation, location.Location.SourceSpan))
+                    if (invocation != null && SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
                     {
                         ValidateInvocationResultContext(invocation, newReturnType, model);
                         continue;
                     }
 
-                    if (IsNameOfArgument(node))
+                    if (SignatureReferenceHelpers.IsNameOfArgument(node))
                         continue;
 
                     if (MethodGroupStillCompatible(node, newReturnType, model))
@@ -1174,40 +1173,6 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         }
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
-    }
-
-    private static bool IsDeclarationName(SyntaxNode node, TextSpan referenceSpan)
-    {
-        return node.AncestorsAndSelf().OfType<MethodDeclarationSyntax>()
-            .Any(m => m.Identifier.Span.IntersectsWith(referenceSpan));
-    }
-
-    private static bool IsInvokedMethodName(InvocationExpressionSyntax invocation, TextSpan referenceSpan)
-    {
-        if (invocation.ArgumentList.Span.Contains(referenceSpan))
-            return false;
-
-        return invocation.Expression switch
-        {
-            IdentifierNameSyntax identifier => identifier.Span.IntersectsWith(referenceSpan),
-            MemberAccessExpressionSyntax member => member.Name.Span.IntersectsWith(referenceSpan),
-            MemberBindingExpressionSyntax binding => binding.Name.Span.IntersectsWith(referenceSpan),
-            _ => invocation.Expression.Span.IntersectsWith(referenceSpan)
-        };
-    }
-
-    private static bool IsNameOfArgument(SyntaxNode node)
-    {
-        foreach (var invocation in node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>())
-        {
-            if (invocation.Expression is IdentifierNameSyntax identifier &&
-                identifier.Identifier.Text == "nameof")
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static bool HasSourceDeclaration(IMethodSymbol method) =>

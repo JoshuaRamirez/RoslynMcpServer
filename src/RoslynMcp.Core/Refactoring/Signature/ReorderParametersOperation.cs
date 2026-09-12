@@ -475,7 +475,6 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
     private static bool IdentifierCoversColumn(MethodDeclarationSyntax method, int line, int column) =>
         SpanCoverage.SpanCoversColumn(method.Identifier.GetLocation().GetLineSpan(), line, column);
 
-
     private async Task<List<IMethodSymbol>> GetRelatedMethodsAsync(
         IMethodSymbol method,
         bool updateOverrides,
@@ -601,11 +600,11 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                         continue;
 
                     var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
-                    if (IsDeclarationName(node, location.Location.SourceSpan))
+                    if (SignatureReferenceHelpers.IsDeclarationName(node, location.Location.SourceSpan))
                         continue;
 
                     var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-                    if (invocation != null && IsInvokedMethodName(invocation, location.Location.SourceSpan))
+                    if (invocation != null && SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
                     {
                         if (!seen.Add((document.Id, invocation.Span)))
                             continue;
@@ -622,7 +621,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                         continue;
                     }
 
-                    if (IsNameOfArgument(node))
+                    if (SignatureReferenceHelpers.IsNameOfArgument(node))
                         continue;
 
                     throw new RefactoringException(
@@ -852,40 +851,6 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         }
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
-    }
-
-    private static bool IsDeclarationName(SyntaxNode node, TextSpan referenceSpan)
-    {
-        return node.AncestorsAndSelf().OfType<MethodDeclarationSyntax>()
-            .Any(m => m.Identifier.Span.IntersectsWith(referenceSpan));
-    }
-
-    private static bool IsInvokedMethodName(InvocationExpressionSyntax invocation, TextSpan referenceSpan)
-    {
-        if (invocation.ArgumentList.Span.Contains(referenceSpan))
-            return false;
-
-        return invocation.Expression switch
-        {
-            IdentifierNameSyntax identifier => identifier.Span.IntersectsWith(referenceSpan),
-            MemberAccessExpressionSyntax member => member.Name.Span.IntersectsWith(referenceSpan),
-            MemberBindingExpressionSyntax binding => binding.Name.Span.IntersectsWith(referenceSpan),
-            _ => invocation.Expression.Span.IntersectsWith(referenceSpan)
-        };
-    }
-
-    private static bool IsNameOfArgument(SyntaxNode node)
-    {
-        foreach (var invocation in node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>())
-        {
-            if (invocation.Expression is IdentifierNameSyntax identifier &&
-                identifier.Identifier.Text == "nameof")
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private static bool HasSourceDeclaration(IMethodSymbol method) =>
