@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `MemberDisplayHelpers.FormatIndexerParameterDisplay` + `DescribeMemberKind` and replaced 2 identical copies (`implement_abstract` / `implement_interface`) (#1076)
 - Extracted shared `DocumentForTreeHelpers.GetDocumentByFilePath` and replaced 2 identical copies (`pull_members_up` / `push_members_down`) (#1071)
 - Extracted shared `ProjectXmlHelpers.SerializeProjectXml` and replaced 4 identical copies (`move_type_to_namespace` / `rename_file_to_match_type` / `rename_namespace` / `extract_base_class`) (#1069)
 - Extracted shared `TypeWalkKeyHelpers.TypeWalkKey` (3 overloads) and replaced 5 identical copies (`implement_abstract` / `implement_interface` / `generate_tostring` / `generate_overrides` / `generate_equals_hashcode`) (#1065)
