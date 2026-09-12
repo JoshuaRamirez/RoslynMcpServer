@@ -302,7 +302,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
 
     internal static IParameterSymbol FindParameter(IMethodSymbol method, string name)
     {
-        var normalized = NormalizeIdentifier(name);
+        var normalized = SyntaxIdentifierValidation.NormalizeIdentifier(name);
         var parameter = method.Parameters.FirstOrDefault(p => p.Name == normalized);
         if (parameter != null)
             return parameter;
@@ -762,9 +762,6 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         return true;
     }
 
-
-    private static string NormalizeIdentifier(string name) =>
-        name.StartsWith('@') && name.Length > 1 ? name[1..] : name;
 
     private static string GetParameterTypeDisplay(IParameterSymbol parameter)
     {

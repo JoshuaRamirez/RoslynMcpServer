@@ -94,7 +94,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve method symbol.");
 
-        if (methodSymbol.Parameters.Any(p => p.Name == NormalizeIdentifier(@params.ParameterName)))
+        if (methodSymbol.Parameters.Any(p => p.Name == SyntaxIdentifierValidation.NormalizeIdentifier(@params.ParameterName)))
         {
             throw new RefactoringException(
                 ErrorCodes.ParameterAlreadyExists,
@@ -128,7 +128,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
             DocumentEditableHelpers.ValidateDocumentIsEditable(callSite.Document, Context.Workspace);
 
         var declarationDefault = attachDefaultToDeclaration ? @params.DefaultValue : null;
-        var newParameter = CreateParameter(NormalizeIdentifier(@params.ParameterName), @params.ParameterType, declarationDefault);
+        var newParameter = CreateParameter(SyntaxIdentifierValidation.NormalizeIdentifier(@params.ParameterName), @params.ParameterType, declarationDefault);
         var appending = insertIndex >= methodSymbol.Parameters.Length;
 
         var newSolution = await ApplyChangesAsync(
@@ -350,7 +350,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
     {
         var hypothetical = original.Parameters.ToList();
         hypothetical.Insert(insertIndex, CreateParameter(
-            NormalizeIdentifier(@params.ParameterName),
+            SyntaxIdentifierValidation.NormalizeIdentifier(@params.ParameterName),
             @params.ParameterType,
             attachDefaultToDeclaration ? @params.DefaultValue : null));
 
@@ -624,7 +624,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         if (useNamedInsertion && newArg.NameColon == null)
         {
             newArg = newArg.WithNameColon(
-                SyntaxFactory.NameColon(SyntaxFactory.IdentifierName(NormalizeIdentifier(parameterName))));
+                SyntaxFactory.NameColon(SyntaxFactory.IdentifierName(SyntaxIdentifierValidation.NormalizeIdentifier(parameterName))));
         }
 
         var namedOriginal = new Dictionary<string, ArgumentSyntax>();
@@ -850,9 +850,6 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
     private static bool IsOptional(ParameterSyntax parameter) =>
         parameter.Default != null;
 
-
-    private static string NormalizeIdentifier(string name) =>
-        name.StartsWith('@') && name.Length > 1 ? name[1..] : name;
 
     private static SeparatedSyntaxList<T> SeparatedWithSpaces<T>(IReadOnlyList<T> nodes)
         where T : SyntaxNode
