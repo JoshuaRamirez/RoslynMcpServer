@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -220,7 +221,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!IsDocumentEditable(document, Context.Workspace))
+            if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
                 continue;
 
             var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -250,7 +251,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
 
                     var declarationDocuments = await GetDeclarationDocumentsAsync(canonical, cancellationToken);
                     if (declarationDocuments.Any(declarationDocument =>
-                            !IsDocumentEditable(declarationDocument, Context.Workspace)))
+                            !DocumentEditableHelpers.IsDocumentEditable(declarationDocument, Context.Workspace)))
                     {
                         continue;
                     }
@@ -505,21 +506,6 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         return false;
     }
 
-    /// <summary>
-    /// Non-throwing counterpart of <see cref="ValidateDocumentIsEditable"/>
-    /// for allFiles skips.
-    /// </summary>
-    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-            return false;
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-            return false;
-
-        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
-    }
-
     internal static TextSpan GetSelectionSpan(SourceText sourceText, MakeStaticParams @params)
     {
         var startLineNumber = @params.StartLine!.Value;
@@ -590,8 +576,6 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
 
         return symbol;
     }
-
-
 
     private static IMethodSymbol NormalizeMethodSymbol(ISymbol symbol)
     {

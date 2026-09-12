@@ -10,6 +10,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Rename;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -291,7 +292,7 @@ public sealed class MoveTypeToNamespaceOperation
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!IsDocumentEditable(document, _context.Workspace))
+            if (!DocumentEditableHelpers.IsDocumentEditable(document, _context.Workspace))
                 continue;
 
             var sourceFile = document.FilePath;
@@ -320,7 +321,7 @@ public sealed class MoveTypeToNamespaceOperation
                     if (resolution == null)
                         continue;
 
-                    if (!IsDocumentEditable(resolution.Document, _context.Workspace))
+                    if (!DocumentEditableHelpers.IsDocumentEditable(resolution.Document, _context.Workspace))
                         continue;
 
                     var currentNamespace = resolution.Symbol.ContainingNamespace.ToDisplayString();
@@ -486,21 +487,6 @@ public sealed class MoveTypeToNamespaceOperation
     /// </summary>
     internal static bool IsMultiDeclarationType(INamedTypeSymbol symbol) =>
         symbol.DeclaringSyntaxReferences.Length > 1;
-
-    /// <summary>
-    /// True when the document can receive a path or text edit. AllFiles skips
-    /// rather than throwing the single-file <see cref="ErrorCodes.DocumentNotEditable"/>.
-    /// </summary>
-    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-            return false;
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-            return false;
-
-        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
-    }
 
     private async Task<SymbolResolutionResult?> TryResolveTopLevelTypeAsync(
         string sourceFile,

@@ -246,13 +246,13 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!IsDocumentEditable(document, Context.Workspace))
+            if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
                 continue;
 
             while (true)
             {
                 var currentDocument = currentSolution.GetDocument(document.Id);
-                if (currentDocument == null || !IsDocumentEditable(currentDocument, Context.Workspace))
+                if (currentDocument == null || !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
                     break;
 
                 var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
@@ -463,7 +463,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         GenerateToStringParams @params,
         CancellationToken cancellationToken)
     {
-        if (!IsDocumentEditable(document, Context.Workspace))
+        if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
             return null;
 
         if (typeSymbol.TypeKind == TypeKind.Interface || typeDecl is InterfaceDeclarationSyntax)
@@ -596,21 +596,6 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
                 wanted,
                 StringComparison.OrdinalIgnoreCase))
             .ToList();
-    }
-
-    /// <summary>
-    /// Returns whether <paramref name="document"/> can receive source edits
-    /// (skip not throw — same checks as sibling AllFiles operations).
-    /// </summary>
-    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-            return false;
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-            return false;
-
-        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
     }
 
     internal static void ValidateFormat(string? format)
@@ -773,7 +758,6 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
             ErrorCodes.DocumentNotEditable,
             $"Could not locate a declaring document for type '{typeName}'.");
     }
-
 
     /// <summary>
     /// Finds a type by <paramref name="typeName"/>. Omitted

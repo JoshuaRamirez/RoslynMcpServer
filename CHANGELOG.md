@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `DocumentEditableHelpers.IsDocumentEditable` and replaced 11 Generate/Inline/Move/Extract copies (`implement_abstract` / `implement_interface` / `generate_tostring` / `generate_constructor` / `generate_equals_hashcode` / `generate_overrides` / `inline_constant` / `move_type_to_namespace` / `move_type_to_file` / `make_non_static` / `make_static`) (#1053)
 - Extracted shared `SignatureOverrideHelpers` (HasSourceDeclaration + ShareOverrideRoot + GetOverrideRoot) and replaced 4 Signature-family copies (`add_parameter` / `remove_parameter` / `reorder_parameters` / `change_return_type`) (#1050)
 - Extracted shared `TypePartRematch` (SameSyntaxTree + RematchTypeDeclaration) and replaced 7 Generate + Pull/Push/ExtractBaseClass copies (#1048)
 - Extracted shared `LocalCoverage` (FieldCoverage twin) and replaced IntroduceParameter copies; shared `IdentifierCoversColumn` with InlineVariable (`introduce_parameter` / `inline_variable`) (#1045)

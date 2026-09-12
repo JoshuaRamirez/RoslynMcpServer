@@ -268,13 +268,13 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!IsDocumentEditable(document, Context.Workspace))
+            if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
                 continue;
 
             while (true)
             {
                 var currentDocument = currentSolution.GetDocument(document.Id);
-                if (currentDocument == null || !IsDocumentEditable(currentDocument, Context.Workspace))
+                if (currentDocument == null || !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
                     break;
 
                 var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
@@ -484,7 +484,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         ImplementInterfaceParams @params,
         CancellationToken cancellationToken)
     {
-        if (!IsDocumentEditable(document, Context.Workspace))
+        if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
             return null;
 
         if (typeSymbol.AllInterfaces.Length == 0)
@@ -648,21 +648,6 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                 wanted,
                 StringComparison.OrdinalIgnoreCase))
             .ToList();
-    }
-
-    /// <summary>
-    /// Returns whether <paramref name="document"/> can receive source edits
-    /// (skip not throw — same checks as sibling AllFiles operations).
-    /// </summary>
-    internal static bool IsDocumentEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-            return false;
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-            return false;
-
-        return workspace.CanApplyChange(ApplyChangesKind.ChangeDocument);
     }
 
     private async Task<INamedTypeSymbol?> FindInterfaceAsync(
@@ -1302,7 +1287,6 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             ErrorCodes.DocumentNotEditable,
             $"Could not locate a declaring document for type '{typeName}'.");
     }
-
 
     private static void AddKeyed<T>(
         Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,
