@@ -254,9 +254,9 @@ public sealed class IntroduceParameterOperation : RefactoringOperationBase<Intro
         var covering = root.DescendantNodes()
             .OfType<VariableDeclaratorSyntax>()
             .Where(declarator => declarator.Parent?.Parent is LocalDeclarationStatementSyntax)
-            .Where(declarator => DeclaratorCoversColumn(declarator, line, column.Value))
-            .OrderBy(declarator => IdentifierCoversColumn(declarator, line, column.Value) ? 0 : 1)
-            .ThenBy(declarator => SmallestCoveringSpanLength(declarator, line, column.Value))
+            .Where(declarator => LocalCoverage.LocalCoversColumn(declarator, line, column.Value))
+            .OrderBy(declarator => LocalCoverage.IdentifierCoversColumn(declarator, line, column.Value) ? 0 : 1)
+            .ThenBy(declarator => LocalCoverage.SmallestCoveringSpanLength(declarator, line, column.Value))
             .FirstOrDefault();
 
         if (covering == null || covering.Identifier.Text != variableName)
@@ -264,32 +264,5 @@ public sealed class IntroduceParameterOperation : RefactoringOperationBase<Intro
 
         return covering;
     }
-
-    private static bool DeclaratorCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
-        IdentifierCoversColumn(declarator, line, column) ||
-        SpanCoverage.SpanCoversColumn(declarator.GetLocation().GetLineSpan(), line, column) ||
-        (GetLocalDeclaration(declarator) is { } local &&
-         SpanCoverage.SpanCoversColumn(local.GetLocation().GetLineSpan(), line, column));
-
-    private static bool IdentifierCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
-        SpanCoverage.SpanCoversColumn(declarator.Identifier.GetLocation().GetLineSpan(), line, column);
-
-    private static int SmallestCoveringSpanLength(VariableDeclaratorSyntax declarator, int line, int column)
-    {
-        var smallest = int.MaxValue;
-        if (SpanCoverage.SpanCoversColumn(declarator.GetLocation().GetLineSpan(), line, column))
-            smallest = Math.Min(smallest, declarator.Span.Length);
-
-        if (GetLocalDeclaration(declarator) is { } local &&
-            SpanCoverage.SpanCoversColumn(local.GetLocation().GetLineSpan(), line, column))
-        {
-            smallest = Math.Min(smallest, local.Span.Length);
-        }
-
-        return smallest;
-    }
-
-    private static LocalDeclarationStatementSyntax? GetLocalDeclaration(VariableDeclaratorSyntax declarator) =>
-        declarator.Parent?.Parent as LocalDeclarationStatementSyntax;
 
 }
