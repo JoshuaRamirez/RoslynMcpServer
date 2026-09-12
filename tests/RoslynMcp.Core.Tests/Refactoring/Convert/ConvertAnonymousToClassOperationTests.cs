@@ -578,10 +578,10 @@ public class ConvertAnonymousToClassOperationTests
         var startCol = span.StartLinePosition.Character + 1;
         var endCol = span.EndLinePosition.Character + 1;
 
-        Assert.True(ConvertAnonymousToClassOperation.SpanCoversLine(span, line, startCol));
-        Assert.True(ConvertAnonymousToClassOperation.SpanCoversLine(span, line, endCol - 1));
-        Assert.False(ConvertAnonymousToClassOperation.SpanCoversLine(span, line, endCol));
-        Assert.False(ConvertAnonymousToClassOperation.SpanCoversLine(span, line, startCol - 1));
+        Assert.True(SpanCoverage.SpanCoversLine(span, line, startCol));
+        Assert.True(SpanCoverage.SpanCoversLine(span, line, endCol - 1));
+        Assert.False(SpanCoverage.SpanCoversLine(span, line, endCol));
+        Assert.False(SpanCoverage.SpanCoversLine(span, line, startCol - 1));
 
         const string multiLineSource = """
             class C
@@ -603,10 +603,10 @@ public class ConvertAnonymousToClassOperationTests
         var endLine = multiLineSpan.EndLinePosition.Line + 1;
 
         for (var coveredLine = startLine; coveredLine <= endLine; coveredLine++)
-            Assert.True(ConvertAnonymousToClassOperation.SpanCoversLine(multiLineSpan, coveredLine, column: null));
+            Assert.True(SpanCoverage.SpanCoversLine(multiLineSpan, coveredLine, column: null));
 
-        Assert.False(ConvertAnonymousToClassOperation.SpanCoversLine(multiLineSpan, startLine - 1, column: null));
-        Assert.False(ConvertAnonymousToClassOperation.SpanCoversLine(multiLineSpan, endLine + 1, column: null));
+        Assert.False(SpanCoverage.SpanCoversLine(multiLineSpan, startLine - 1, column: null));
+        Assert.False(SpanCoverage.SpanCoversLine(multiLineSpan, endLine + 1, column: null));
     }
 
     [Fact]
@@ -617,9 +617,9 @@ public class ConvertAnonymousToClassOperationTests
             new LinePosition(0, 0),
             new LinePosition(2, 0));
 
-        Assert.True(ConvertAnonymousToClassOperation.SpanCoversLine(span, 1, column: null));
-        Assert.True(ConvertAnonymousToClassOperation.SpanCoversLine(span, 2, column: null));
-        Assert.False(ConvertAnonymousToClassOperation.SpanCoversLine(span, 3, column: null));
+        Assert.True(SpanCoverage.SpanCoversLine(span, 1, column: null));
+        Assert.True(SpanCoverage.SpanCoversLine(span, 2, column: null));
+        Assert.False(SpanCoverage.SpanCoversLine(span, 3, column: null));
     }
 
     #endregion

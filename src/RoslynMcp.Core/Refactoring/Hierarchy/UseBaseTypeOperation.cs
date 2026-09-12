@@ -504,7 +504,7 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
     /// <paramref name="line"/> pick, including omitted-line
     /// <c>TypeDeclarationSyntax</c> <c>PickOmittedLineMatch</c> (enum and
     /// <c>DelegateDeclarationSyntax</c> do not participate) and line-only
-    /// exclusive-end coverage (<see cref="SpanCoverage.SpanCoversLine"/>). Do not force
+    /// exclusive-end coverage (<see cref="SpanCoverage.SpanCoversLine(FileLinePositionSpan, int)"/>). Do not force
     /// column 1 when omitted. Do not change omitted-line/omitted-column to
     /// <c>BaseTypeDeclarationSyntax</c> FirstOrDefault. Do not add enums
     /// or delegates to the omitted-line set. Column without line keeps

@@ -200,7 +200,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
     {
         var candidates = root.DescendantNodes()
             .OfType<AnonymousObjectCreationExpressionSyntax>()
-            .Where(n => SpanCoversLine(n.GetLocation().GetLineSpan(), @params.Line, @params.Column))
+            .Where(n => SpanCoverage.SpanCoversLine(n.GetLocation().GetLineSpan(), @params.Line, @params.Column))
             .ToList();
 
         if (candidates.Count == 1)
@@ -791,21 +791,6 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         }
 
         return true;
-    }
-
-    internal static bool SpanCoversLine(FileLinePositionSpan span, int line, int? column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == endLine && span.EndLinePosition.Character == 0)
-            return false;
-
-        if (!column.HasValue)
-            return true;
-
-        return SpanCoverage.SpanCoversColumn(span, line, column.Value);
     }
 
 

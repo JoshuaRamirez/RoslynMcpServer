@@ -204,7 +204,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
     /// <paramref name="line"/> pick, including omitted-line
     /// <c>TypeDeclarationSyntax</c> <c>FirstOrDefault</c> (enum and
     /// <c>DelegateDeclarationSyntax</c> do not participate) and
-    /// line-only exclusive-end coverage (<see cref="SpanCoverage.SpanCoversLine"/>).
+    /// line-only exclusive-end coverage (<see cref="SpanCoverage.SpanCoversLine(FileLinePositionSpan, int)"/>).
     /// Do not force column 1 when omitted. Do not change
     /// omitted-line/omitted-column to <c>BaseTypeDeclarationSyntax</c>
     /// FirstOrDefault. Do not add enums or delegates to the omitted-line

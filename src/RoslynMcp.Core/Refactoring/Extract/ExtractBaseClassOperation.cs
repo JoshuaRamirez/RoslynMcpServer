@@ -1083,7 +1083,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
     /// <paramref name="line"/> pick, including omitted-line
     /// <c>ClassDeclarationSyntax</c> <c>FirstOrDefault</c> (enum, struct,
     /// interface, and <c>DelegateDeclarationSyntax</c> do not participate)
-    /// and line-only exclusive-end coverage (<see cref="SpanCoverage.SpanCoversLine"/>).
+    /// and line-only exclusive-end coverage (<see cref="SpanCoverage.SpanCoversLine(FileLinePositionSpan, int)"/>).
     /// Do not force column 1 when omitted. Do not change
     /// omitted-line/omitted-column to <c>BaseTypeDeclarationSyntax</c> or
     /// <c>TypeDeclarationSyntax</c> FirstOrDefault. Do not add enums,

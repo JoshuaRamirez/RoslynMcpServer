@@ -317,7 +317,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             // pick exactly. SpanCoversLine without a column is multi-line
             // declaration coverage — do not force column 1.
             var atLocation = matches
-                .Where(m => SpanCoversLine(m.Declaration.GetLocation().GetLineSpan(), line.Value, column: null))
+                .Where(m => SpanCoverage.SpanCoversLine(m.Declaration.GetLocation().GetLineSpan(), line.Value, column: null))
                 .ToList();
 
             if (atLocation.Count == 1)
@@ -482,21 +482,6 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         return current;
     }
 
-    internal static bool SpanCoversLine(FileLinePositionSpan span, int line, int? column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == endLine && span.EndLinePosition.Character == 0)
-            return false;
-
-        if (!column.HasValue)
-            return true;
-
-        return SpanCoverage.SpanCoversColumn(span, line, column.Value);
-    }
-
     /// <summary>
     /// True when the identifier token for <paramref name="candidate"/> in
     /// <paramref name="declaration"/>'s name covers the column. Walks from
@@ -568,7 +553,6 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                 break;
         }
     }
-
 
     private static IEnumerable<INamespaceSymbol> EnumerateNamespaceChain(INamespaceSymbol symbol)
     {

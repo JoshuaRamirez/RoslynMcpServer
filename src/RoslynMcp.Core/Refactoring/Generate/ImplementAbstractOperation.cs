@@ -1627,7 +1627,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// <paramref name="line"/> pick, including omitted-line
     /// <c>BaseTypeDeclarationSyntax</c> <c>FirstOrDefault</c> (enum
     /// participates; <c>DelegateDeclarationSyntax</c> does not) and
-    /// line-only exclusive-end coverage (<see cref="SpanCoverage.SpanCoversLine"/>).
+    /// line-only exclusive-end coverage (<see cref="SpanCoverage.SpanCoversLine(FileLinePositionSpan, int)"/>).
     /// Do not force column 1 when omitted. Do not change
     /// omitted-line/omitted-column to <c>TypeDeclarationSyntax</c> /
     /// <c>ClassDeclarationSyntax</c> FirstOrDefault. Do not add delegates
