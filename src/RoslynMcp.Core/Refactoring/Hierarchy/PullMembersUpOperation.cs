@@ -547,7 +547,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                             : "Only methods, properties, indexers, and events can be pulled up as abstract members.");
             }
 
-            if (HasConflict(target, member.Symbol))
+            if (HierarchyConflictHelpers.HasConflict(target, member.Symbol))
             {
                 throw new RefactoringException(
                     ErrorCodes.ConflictsWithExistingMember,
@@ -569,69 +569,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                     $"Member '{member.Name}' depends on '{dependency}' which is not accessible from '{target.Name}'.");
             }
         }
-    }
-
-    private static bool HasConflict(INamedTypeSymbol target, ISymbol member)
-    {
-        foreach (var existing in target.GetMembers(member.Name))
-        {
-            if (existing.IsImplicitlyDeclared)
-                continue;
-
-            if (member is IMethodSymbol method && existing is IMethodSymbol existingMethod)
-            {
-                if (SignaturesMatch(method, existingMethod))
-                    return true;
-                continue;
-            }
-
-            if (member is IPropertySymbol { IsIndexer: true } indexer
-                && existing is IPropertySymbol { IsIndexer: true } existingIndexer)
-            {
-                if (IndexerSignaturesMatch(indexer, existingIndexer))
-                    return true;
-                continue;
-            }
-
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool SignaturesMatch(IMethodSymbol left, IMethodSymbol right)
-    {
-        if (left.Parameters.Length != right.Parameters.Length)
-            return false;
-
-        if (left.TypeParameters.Length != right.TypeParameters.Length)
-            return false;
-
-        for (var i = 0; i < left.Parameters.Length; i++)
-        {
-            if (!SymbolEqualityComparer.Default.Equals(left.Parameters[i].Type, right.Parameters[i].Type))
-                return false;
-            if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
-                return false;
-        }
-
-        return true;
-    }
-
-    private static bool IndexerSignaturesMatch(IPropertySymbol left, IPropertySymbol right)
-    {
-        if (left.Parameters.Length != right.Parameters.Length)
-            return false;
-
-        for (var i = 0; i < left.Parameters.Length; i++)
-        {
-            if (!SymbolEqualityComparer.Default.Equals(left.Parameters[i].Type, right.Parameters[i].Type))
-                return false;
-            if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
-                return false;
-        }
-
-        return true;
     }
 
     private static bool IsExplicitInterfaceIndexer(IPropertySymbol indexer, MemberDeclarationSyntax syntax) =>
@@ -738,7 +675,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
 
             if (referenced is IMethodSymbol referencedMethod &&
                 member.Symbol is IMethodSymbol memberMethod &&
-                SignaturesMatch(referencedMethod, memberMethod) &&
+                HierarchyConflictHelpers.SignaturesMatch(referencedMethod, memberMethod) &&
                 referenced.Name == member.Name)
             {
                 continue;
