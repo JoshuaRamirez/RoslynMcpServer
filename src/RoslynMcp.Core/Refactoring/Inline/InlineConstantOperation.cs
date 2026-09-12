@@ -496,7 +496,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
     /// that 1-based line (identifier preferred, then smallest covering
     /// declarator/field — same exclusive-end coverage as
     /// <c>EncapsulateFieldOperation.FindFieldDeclarator</c> /
-    /// <see cref="SpanCoverage.SpanCoversLine"/>). When column is set with line, same
+    /// <see cref="SpanCoverage.SpanCoversLine(FileLinePositionSpan, int)"/>). When column is set with line, same
     /// covering-span rules as encapsulate_field (<c>SpanCoverage.SpanCoversColumn</c>,
     /// exclusive end). Nested types participate. Do not require the
     /// declaration to start on line — a split declaration may put the

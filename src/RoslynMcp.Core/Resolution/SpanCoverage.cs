@@ -49,5 +49,21 @@ internal static class SpanCoverage
             return false;
         return true;
     }
+
+    /// <summary>
+    /// 1-based line coverage with optional column. When <paramref name="column"/>
+    /// is omitted, same exclusive-end line rules as <see cref="SpanCoversLine(FileLinePositionSpan, int)"/>.
+    /// When set, also requires <see cref="SpanCoversColumn"/>.
+    /// </summary>
+    internal static bool SpanCoversLine(FileLinePositionSpan span, int line, int? column)
+    {
+        if (!SpanCoversLine(span, line))
+            return false;
+
+        if (!column.HasValue)
+            return true;
+
+        return SpanCoversColumn(span, line, column.Value);
+    }
 }
 

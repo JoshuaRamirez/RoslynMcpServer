@@ -719,7 +719,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
     /// <paramref name="line"/> pick, including omitted-line
     /// <c>BaseTypeDeclarationSyntax</c> <c>FirstOrDefault</c> (enum
     /// participates) and line-only exclusive-end coverage
-    /// (<see cref="SpanCoverage.SpanCoversLine"/>). Do not force column 1 when omitted.
+    /// (<see cref="SpanCoverage.SpanCoversLine(FileLinePositionSpan, int)"/>). Do not force column 1 when omitted.
     /// Do not change omitted-line/omitted-column to
     /// <c>TypeDeclarationSyntax</c> / <c>ClassDeclarationSyntax</c>
     /// FirstOrDefault. Column without line keeps today's first-match after

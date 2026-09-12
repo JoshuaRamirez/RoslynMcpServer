@@ -205,7 +205,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         var candidates = root.DescendantNodes()
             .Where(n => IsTupleCreationNode(n, semanticModel))
-            .Where(n => SpanCoversLine(n.GetLocation().GetLineSpan(), @params.Line, @params.Column))
+            .Where(n => SpanCoverage.SpanCoversLine(n.GetLocation().GetLineSpan(), @params.Line, @params.Column))
             .ToList();
 
         if (candidates.Count == 1)
@@ -1027,22 +1027,6 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         return -1;
     }
-
-    internal static bool SpanCoversLine(FileLinePositionSpan span, int line, int? column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == endLine && span.EndLinePosition.Character == 0)
-            return false;
-
-        if (!column.HasValue)
-            return true;
-
-        return SpanCoverage.SpanCoversColumn(span, line, column.Value);
-    }
-
 
     private static bool TypeNameBindsToDifferentType(
         string display,

@@ -929,7 +929,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
     /// <paramref name="column"/> keeps today's typeName + optional
     /// <paramref name="line"/> pick, including omitted-line
     /// <c>FirstOrDefault</c> and line-only exclusive-end coverage
-    /// (<see cref="SpanCoverage.SpanCoversLine"/>). Do not force column 1 when omitted.
+    /// (<see cref="SpanCoverage.SpanCoversLine(FileLinePositionSpan, int)"/>). Do not force column 1 when omitted.
     /// Column without line keeps today's first-match after the typeName
     /// filter rather than substituting each candidate's own start line.
     /// When column is set with line, picks the type whose identifier or

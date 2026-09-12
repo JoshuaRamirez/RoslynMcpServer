@@ -666,7 +666,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
     /// <paramref name="column"/> keeps today's fieldName + optional
     /// <paramref name="line"/> pick, including omitted-line field
     /// <c>VariableDeclaratorSyntax</c> <c>FirstOrDefault</c> and
-    /// line-only exclusive-end coverage (<see cref="SpanCoverage.SpanCoversLine"/>).
+    /// line-only exclusive-end coverage (<see cref="SpanCoverage.SpanCoversLine(FileLinePositionSpan, int)"/>).
     /// Do not force column 1 when omitted. Locals and other non-field
     /// declarators stay excluded. Column without line keeps today's
     /// <c>FirstOrDefault</c> after the fieldName filter rather than

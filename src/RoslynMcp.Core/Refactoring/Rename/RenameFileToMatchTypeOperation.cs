@@ -491,7 +491,7 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
             // pick exactly. SpanCoversLine without a column is multi-line
             // declaration coverage — do not force column 1.
             var atLocation = candidates
-                .Where(t => SpanCoversLine(t.Node.GetLocation().GetLineSpan(), @params.Line.Value, column: null))
+                .Where(t => SpanCoverage.SpanCoversLine(t.Node.GetLocation().GetLineSpan(), @params.Line.Value, column: null))
                 .ToList();
 
             if (atLocation.Count == 1)
@@ -721,22 +721,6 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
         DelegateDeclarationSyntax del => del.Identifier.ValueText,
         _ => throw new RefactoringException(ErrorCodes.RoslynError, "Node is not a named type declaration.")
     };
-
-    internal static bool SpanCoversLine(FileLinePositionSpan span, int line, int? column)
-    {
-        var startLine = span.StartLinePosition.Line + 1;
-        var endLine = span.EndLinePosition.Line + 1;
-        if (line < startLine || line > endLine)
-            return false;
-        if (line == endLine && span.EndLinePosition.Character == 0)
-            return false;
-
-        if (!column.HasValue)
-            return true;
-
-        return SpanCoverage.SpanCoversColumn(span, line, column.Value);
-    }
-
 
     private static bool IdentifierCoversColumn(SyntaxNode node, int line, int column)
     {

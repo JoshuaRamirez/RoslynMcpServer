@@ -565,9 +565,9 @@ public class RenameFileToMatchTypeOperationTests
             new LinePosition(0, 0),
             new LinePosition(2, 0));
 
-        Assert.True(RenameFileToMatchTypeOperation.SpanCoversLine(span, 1, column: null));
-        Assert.True(RenameFileToMatchTypeOperation.SpanCoversLine(span, 2, column: null));
-        Assert.False(RenameFileToMatchTypeOperation.SpanCoversLine(span, 3, column: null));
+        Assert.True(SpanCoverage.SpanCoversLine(span, 1, column: null));
+        Assert.True(SpanCoverage.SpanCoversLine(span, 2, column: null));
+        Assert.False(SpanCoverage.SpanCoversLine(span, 3, column: null));
     }
 
     #endregion
