@@ -927,7 +927,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         if (member is not IPropertySymbol { IsIndexer: true } indexer)
             return false;
 
-        var withNames = $"this[{string.Join(", ", indexer.Parameters.Select(FormatIndexerParameterDisplay))}]";
+        var withNames = $"this[{string.Join(", ", indexer.Parameters.Select(MemberDisplayHelpers.FormatIndexerParameterDisplay))}]";
         var typesOnly = $"this[{string.Join(",", indexer.Parameters.Select(p => p.Type.ToDisplayString()))}]";
         var typesOnlySpaced = $"this[{string.Join(", ", indexer.Parameters.Select(p => p.Type.ToDisplayString()))}]";
         return requested.Contains(indexer.MetadataName)
@@ -936,18 +936,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             || requested.Contains(typesOnlySpaced);
     }
 
-    private static string FormatIndexerParameterDisplay(IParameterSymbol parameter)
-    {
-        var type = parameter.Type.ToDisplayString();
-        return parameter.RefKind switch
-        {
-            RefKind.Ref => $"ref {type} {parameter.Name}",
-            RefKind.Out => $"out {type} {parameter.Name}",
-            RefKind.In => $"in {type} {parameter.Name}",
-            RefKind.RefReadOnlyParameter => $"ref readonly {type} {parameter.Name}",
-            _ => $"{type} {parameter.Name}"
-        };
-    }
 
     private static List<MemberDeclarationSyntax> GenerateImplementations(
         List<ISymbol> members,
@@ -1646,9 +1634,9 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                     {
                         File = filePath,
                         ChangeType = ChangeKind.Modify,
-                        Description = $"Remove existing {DescribeMemberKind(existing)} '{existing.Name}' from {@params.TypeName}",
+                        Description = $"Remove existing {MemberDisplayHelpers.DescribeMemberKind(existing)} '{existing.Name}' from {@params.TypeName}",
                         BeforeSnippet = memberSyntax.NormalizeWhitespace().ToFullString(),
-                        AfterSnippet = $"// {DescribeMemberKind(existing)} removed"
+                        AfterSnippet = $"// {MemberDisplayHelpers.DescribeMemberKind(existing)} removed"
                     });
                 }
             }
@@ -1671,12 +1659,4 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         return $"Generate abstract members: {generated}; replace existing abstract members: {replaced}";
     }
 
-    private static string DescribeMemberKind(ISymbol member) => member switch
-    {
-        IMethodSymbol => "method",
-        IPropertySymbol { IsIndexer: true } => "indexer",
-        IPropertySymbol => "property",
-        IEventSymbol => "event",
-        _ => "member"
-    };
 }
