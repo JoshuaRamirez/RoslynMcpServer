@@ -967,7 +967,7 @@ public class InlineConstantOperationTests
         var document = workspace.AddDocument(project.Id, "Generated.cs", SourceText.From("class C {}"));
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            InlineConstantOperation.ValidateDocumentIsEditable(document, workspace));
+            DocumentEditableHelpers.ValidateDocumentIsEditable(document, workspace));
 
         Assert.Equal(ErrorCodes.DocumentNotEditable, ex.ErrorCode);
     }

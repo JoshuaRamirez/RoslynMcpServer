@@ -10,6 +10,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -103,33 +104,6 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     internal static bool IsValidNamespaceName(string name) =>
         !string.IsNullOrWhiteSpace(name) && NamespacePattern.IsMatch(name.Trim());
 
-    /// <summary>
-    /// Rejects documents that cannot receive source edits.
-    /// </summary>
-    internal static void ValidateDocumentIsEditable(Document document, Microsoft.CodeAnalysis.Workspace workspace)
-    {
-        if (document is SourceGeneratedDocument)
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable (source-generated).");
-        }
-
-        if (string.IsNullOrWhiteSpace(document.FilePath) || !File.Exists(document.FilePath))
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable.");
-        }
-
-        if (!workspace.CanApplyChange(ApplyChangesKind.ChangeDocument))
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Document '{document.Name}' is not editable (workspace cannot apply changes).");
-        }
-    }
-
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
@@ -137,7 +111,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         CancellationToken cancellationToken)
     {
         var document = GetDocumentOrThrow(@params.SourceFile);
-        ValidateDocumentIsEditable(document, Context.Workspace);
+        DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var namespaceSymbol = await FindNamespaceAsync(document, @params, cancellationToken);
         var oldFullName = GetFullName(namespaceSymbol);
@@ -704,7 +678,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             if (document == null)
                 continue;
 
-            ValidateDocumentIsEditable(document, Context.Workspace);
+            DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
             var root = await document.GetSyntaxRootAsync(cancellationToken);
             var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
@@ -784,7 +758,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             {
                 var document = oldSolution.GetDocument(documentId);
                 if (document != null)
-                    ValidateDocumentIsEditable(document, Context.Workspace);
+                    DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
             }
         }
     }
@@ -1343,7 +1317,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                         $"Source file not found: {document.FilePath}");
                 }
 
-                ValidateDocumentIsEditable(document, workspace);
+                DocumentEditableHelpers.ValidateDocumentIsEditable(document, workspace);
             }
         }
 
