@@ -716,9 +716,9 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             // candidate. If nothing covers this position, keep today's
             // not-found (null) rather than inventing a first-match.
             return matches
-                .Where(declarator => FieldCoversColumn(declarator, line!.Value, column.Value))
-                .OrderBy(declarator => IdentifierCoversColumn(declarator, line!.Value, column.Value) ? 0 : 1)
-                .ThenBy(declarator => SmallestCoveringSpanLength(declarator, line!.Value, column.Value))
+                .Where(declarator => FieldCoverage.FieldCoversColumn(declarator, line!.Value, column.Value))
+                .OrderBy(declarator => FieldCoverage.IdentifierCoversColumn(declarator, line!.Value, column.Value) ? 0 : 1)
+                .ThenBy(declarator => FieldCoverage.SmallestCoveringSpanLength(declarator, line!.Value, column.Value))
                 .FirstOrDefault();
         }
 
@@ -726,67 +726,15 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             return matches.FirstOrDefault();
 
         return matches
-            .Where(declarator => FieldCoversLine(declarator, line.Value))
-            .OrderBy(declarator => IdentifierCoversLine(declarator, line.Value) ? 0 : 1)
-            .ThenBy(declarator => SmallestCoveringSpanLength(declarator, line.Value))
+            .Where(declarator => FieldCoverage.FieldCoversLine(declarator, line.Value))
+            .OrderBy(declarator => FieldCoverage.IdentifierCoversLine(declarator, line.Value) ? 0 : 1)
+            .ThenBy(declarator => FieldCoverage.SmallestCoveringSpanLength(declarator, line.Value))
             .FirstOrDefault();
 
         bool IsMatchingFieldDeclarator(VariableDeclaratorSyntax declarator) =>
             declarator.Identifier.Text == fieldName &&
             IsFieldDeclarator(declarator);
     }
-
-    private static bool FieldCoversLine(VariableDeclaratorSyntax declarator, int line) =>
-        IdentifierCoversLine(declarator, line) ||
-        SpanCoverage.SpanCoversLine(declarator.GetLocation().GetLineSpan(), line) ||
-        (GetFieldDeclaration(declarator) is { } field &&
-         SpanCoverage.SpanCoversLine(field.GetLocation().GetLineSpan(), line));
-
-    private static bool IdentifierCoversLine(VariableDeclaratorSyntax declarator, int line) =>
-        SpanCoverage.SpanCoversLine(declarator.Identifier.GetLocation().GetLineSpan(), line);
-
-    private static bool FieldCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
-        IdentifierCoversColumn(declarator, line, column) ||
-        SpanCoverage.SpanCoversColumn(declarator.GetLocation().GetLineSpan(), line, column) ||
-        (GetFieldDeclaration(declarator) is { } field &&
-         SpanCoverage.SpanCoversColumn(field.GetLocation().GetLineSpan(), line, column));
-
-    private static bool IdentifierCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
-        SpanCoverage.SpanCoversColumn(declarator.Identifier.GetLocation().GetLineSpan(), line, column);
-
-    private static int SmallestCoveringSpanLength(VariableDeclaratorSyntax declarator, int line)
-    {
-        var smallest = int.MaxValue;
-        if (SpanCoverage.SpanCoversLine(declarator.GetLocation().GetLineSpan(), line))
-            smallest = Math.Min(smallest, declarator.Span.Length);
-
-        if (GetFieldDeclaration(declarator) is { } field &&
-            SpanCoverage.SpanCoversLine(field.GetLocation().GetLineSpan(), line))
-        {
-            smallest = Math.Min(smallest, field.Span.Length);
-        }
-
-        return smallest;
-    }
-
-    private static int SmallestCoveringSpanLength(VariableDeclaratorSyntax declarator, int line, int column)
-    {
-        var smallest = int.MaxValue;
-        if (SpanCoverage.SpanCoversColumn(declarator.GetLocation().GetLineSpan(), line, column))
-            smallest = Math.Min(smallest, declarator.Span.Length);
-
-        if (GetFieldDeclaration(declarator) is { } field &&
-            SpanCoverage.SpanCoversColumn(field.GetLocation().GetLineSpan(), line, column))
-        {
-            smallest = Math.Min(smallest, field.Span.Length);
-        }
-
-        return smallest;
-    }
-
-    private static FieldDeclarationSyntax? GetFieldDeclaration(VariableDeclaratorSyntax declarator) =>
-        declarator.Parent?.Parent as FieldDeclarationSyntax;
-
 
     /// <summary>
     /// True when the reference lives in the selected field's containing
