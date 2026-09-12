@@ -564,7 +564,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
             if (tokenNode != null)
             {
                 var declaredOnToken = semanticModel.GetDeclaredSymbol(tokenNode, cancellationToken);
-                if (declaredOnToken != null && IdentifierOverlaps(tokenNode, span))
+                if (declaredOnToken != null && DeclarationIdentifiers.IdentifierOverlaps(tokenNode, span))
                     return ConfirmSymbolName(declaredOnToken, @params.SymbolName);
 
                 if (token.IsKind(SyntaxKind.IdentifierToken))
@@ -578,7 +578,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
 
         var node = root.FindNode(span, getInnermostNodeForTie: true);
         var declared = semanticModel.GetDeclaredSymbol(node, cancellationToken);
-        if (declared != null && IdentifierOverlaps(node, span))
+        if (declared != null && DeclarationIdentifiers.IdentifierOverlaps(node, span))
             return ConfirmSymbolName(declared, @params.SymbolName);
 
         throw new RefactoringException(
@@ -598,28 +598,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         return symbol;
     }
 
-    private static bool IdentifierOverlaps(SyntaxNode node, TextSpan span)
-    {
-        var identifier = GetDeclarationIdentifier(node);
-        return identifier != null &&
-            (identifier.Value.Span.OverlapsWith(span) || span.OverlapsWith(identifier.Value.Span));
-    }
 
-    private static SyntaxToken? GetDeclarationIdentifier(SyntaxNode node) => node switch
-    {
-        MethodDeclarationSyntax method => method.Identifier,
-        LocalFunctionStatementSyntax localFunction => localFunction.Identifier,
-        ConstructorDeclarationSyntax constructor => constructor.Identifier,
-        DestructorDeclarationSyntax destructor => destructor.Identifier,
-        OperatorDeclarationSyntax @operator => @operator.OperatorToken,
-        ConversionOperatorDeclarationSyntax conversion => conversion.Type.GetLastToken(),
-        PropertyDeclarationSyntax property => property.Identifier,
-        EventDeclarationSyntax @event => @event.Identifier,
-        VariableDeclaratorSyntax variable => variable.Identifier,
-        TypeDeclarationSyntax type => type.Identifier,
-        ParameterSyntax parameter => parameter.Identifier,
-        _ => null
-    };
 
     private static IMethodSymbol NormalizeMethodSymbol(ISymbol symbol)
     {
