@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Inline;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -97,11 +98,11 @@ public class InlineConstantOperationTests
     [Fact]
     public void IsValidIdentifier_AcceptsVerbatimAndUnicode()
     {
-        Assert.True(InlineConstantOperation.IsValidIdentifier("@default"));
-        Assert.True(InlineConstantOperation.IsValidIdentifier("Δ"));
-        Assert.True(InlineConstantOperation.IsValidIdentifier("MaxRetries"));
-        Assert.False(InlineConstantOperation.IsValidIdentifier("123bad"));
-        Assert.False(InlineConstantOperation.IsValidIdentifier("class"));
+        Assert.True(SyntaxIdentifierValidation.IsValidIdentifier("@default"));
+        Assert.True(SyntaxIdentifierValidation.IsValidIdentifier("Δ"));
+        Assert.True(SyntaxIdentifierValidation.IsValidIdentifier("MaxRetries"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("123bad"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("class"));
     }
 
     [Fact]

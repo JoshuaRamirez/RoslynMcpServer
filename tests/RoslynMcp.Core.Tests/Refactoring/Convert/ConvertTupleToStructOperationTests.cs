@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -114,12 +115,12 @@ public class ConvertTupleToStructOperationTests
     [Fact]
     public void IsValidTypeName_RejectsInvalidAndKeywords()
     {
-        Assert.False(ConvertTupleToStructOperation.IsValidTypeName("123Bad"));
-        Assert.False(ConvertTupleToStructOperation.IsValidTypeName("class"));
-        Assert.False(ConvertTupleToStructOperation.IsValidTypeName("int"));
-        Assert.False(ConvertTupleToStructOperation.IsValidTypeName("@@@"));
-        Assert.True(ConvertTupleToStructOperation.IsValidTypeName("Point"));
-        Assert.True(ConvertTupleToStructOperation.IsValidTypeName("_Info"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("123Bad"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("class"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("int"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("@@@"));
+        Assert.True(SyntaxIdentifierValidation.IsValidIdentifier("Point"));
+        Assert.True(SyntaxIdentifierValidation.IsValidIdentifier("_Info"));
     }
 
     #endregion

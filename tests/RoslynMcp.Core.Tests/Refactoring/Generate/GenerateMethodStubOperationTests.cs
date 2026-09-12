@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Generate;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Workspace;
 using Xunit;
 
@@ -140,10 +141,10 @@ public class GenerateMethodStubOperationTests
     [Fact]
     public void IsValidIdentifier_ReservedKeyword_IsFalse()
     {
-        Assert.False(GenerateMethodStubOperation.IsValidIdentifier("class"));
-        Assert.False(GenerateMethodStubOperation.IsValidIdentifier("namespace"));
-        Assert.True(GenerateMethodStubOperation.IsValidIdentifier("DoWork"));
-        Assert.True(GenerateMethodStubOperation.IsValidIdentifier("@class"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("class"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("namespace"));
+        Assert.True(SyntaxIdentifierValidation.IsValidIdentifier("DoWork"));
+        Assert.True(SyntaxIdentifierValidation.IsValidIdentifier("@class"));
     }
 
     [Fact]

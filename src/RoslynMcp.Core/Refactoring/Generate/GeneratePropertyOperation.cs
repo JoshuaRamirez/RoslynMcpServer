@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -65,7 +66,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         if (string.IsNullOrWhiteSpace(@params.PropertyType) && !hasField)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "propertyType is required unless fieldName is provided.");
 
-        if (@params.PropertyName != null && !IsValidIdentifier(@params.PropertyName))
+        if (@params.PropertyName != null && !SyntaxIdentifierValidation.IsValidIdentifier(@params.PropertyName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid property name: {@params.PropertyName}");
 
         if (!string.IsNullOrWhiteSpace(@params.Visibility) && !ValidVisibilities.Contains(@params.Visibility.Trim()))
@@ -900,23 +901,4 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         "internal" => SyntaxFactory.Token(SyntaxKind.InternalKeyword),
         _ => SyntaxFactory.Token(SyntaxKind.PublicKeyword)
     };
-
-    internal static bool IsValidIdentifier(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            return false;
-
-        if (name.StartsWith('@') && name.Length > 1)
-        {
-            var bare = name[1..];
-            return SyntaxFacts.IsValidIdentifier(bare) ||
-                   SyntaxFacts.GetKeywordKind(bare) != SyntaxKind.None;
-        }
-
-        if (!SyntaxFacts.IsValidIdentifier(name))
-            return false;
-
-        var keywordKind = SyntaxFacts.GetKeywordKind(name);
-        return keywordKind == SyntaxKind.None || !SyntaxFacts.IsReservedKeyword(keywordKind);
-    }
 }
