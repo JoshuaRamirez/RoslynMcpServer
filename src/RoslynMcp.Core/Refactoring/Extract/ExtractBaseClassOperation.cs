@@ -875,7 +875,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 "Project file has no root element; cannot add an explicit Compile item.");
         }
 
-        return SerializeProjectXml(document, projectXml);
+        return ProjectXmlHelpers.SerializeProjectXml(document, projectXml);
     }
 
     internal static string GetCompileIncludePath(string projectDirectory, string filePath)
@@ -993,27 +993,6 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         return false;
     }
 
-    private static string SerializeProjectXml(XDocument document, string originalXml)
-    {
-        var writerSettings = new XmlWriterSettings
-        {
-            OmitXmlDeclaration = !originalXml.Contains("<?xml", StringComparison.OrdinalIgnoreCase),
-            NewLineHandling = NewLineHandling.Replace,
-            NewLineChars = originalXml.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n",
-            Indent = false
-        };
-
-        using var writer = new StringWriter();
-        using (var xmlWriter = XmlWriter.Create(writer, writerSettings))
-        {
-            document.Save(xmlWriter);
-        }
-
-        var serialized = writer.ToString();
-        if (originalXml.EndsWith('\n') && !serialized.EndsWith('\n'))
-            serialized += writerSettings.NewLineChars;
-        return serialized;
-    }
 
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,

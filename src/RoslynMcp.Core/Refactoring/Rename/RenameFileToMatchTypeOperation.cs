@@ -8,6 +8,7 @@ using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
+using RoslynMcp.Core.Refactoring.Utilities;
 
 namespace RoslynMcp.Core.Refactoring.Rename;
 
@@ -667,7 +668,7 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
         if (!changed)
             return projectXml;
 
-        return SerializeProjectXml(document, projectXml);
+        return ProjectXmlHelpers.SerializeProjectXml(document, projectXml);
     }
 
     /// <summary>
@@ -771,27 +772,6 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
         return true;
     }
 
-    private static string SerializeProjectXml(XDocument document, string originalXml)
-    {
-        var writerSettings = new System.Xml.XmlWriterSettings
-        {
-            OmitXmlDeclaration = !originalXml.Contains("<?xml", StringComparison.OrdinalIgnoreCase),
-            NewLineHandling = System.Xml.NewLineHandling.Replace,
-            NewLineChars = originalXml.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n",
-            Indent = false
-        };
-
-        using var writer = new StringWriter();
-        using (var xmlWriter = System.Xml.XmlWriter.Create(writer, writerSettings))
-        {
-            document.Save(xmlWriter);
-        }
-
-        var serialized = writer.ToString();
-        if (originalXml.EndsWith('\n') && !serialized.EndsWith('\n'))
-            serialized += writerSettings.NewLineChars;
-        return serialized;
-    }
 
     private static Dictionary<string, string> CollectProjectUpdates(IReadOnlyList<FileRenamePlan> plans)
     {
