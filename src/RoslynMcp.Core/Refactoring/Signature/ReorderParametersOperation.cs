@@ -513,7 +513,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                     {
                         var impl = candidate.ContainingType.FindImplementationForInterfaceMember(ifaceMethod);
                         if (impl is not IMethodSymbol implMethod ||
-                            !ShareOverrideRoot(implMethod, candidate))
+                            !SignatureOverrideHelpers.ShareOverrideRoot(implMethod, candidate))
                         {
                             continue;
                         }
@@ -530,7 +530,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
             }
         }
 
-        return results.Where(HasSourceDeclaration).ToList();
+        return results.Where(SignatureOverrideHelpers.HasSourceDeclaration).ToList();
     }
 
     private async Task<List<DeclarationTarget>> CollectDeclarationTargetsAsync(
@@ -846,20 +846,6 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
 
-    private static bool HasSourceDeclaration(IMethodSymbol method) =>
-        method.DeclaringSyntaxReferences.Length > 0 &&
-        method.Locations.Any(l => l.IsInSource);
-
-    private static bool ShareOverrideRoot(IMethodSymbol left, IMethodSymbol right) =>
-        SymbolEqualityComparer.Default.Equals(GetOverrideRoot(left), GetOverrideRoot(right));
-
-    private static IMethodSymbol GetOverrideRoot(IMethodSymbol method)
-    {
-        var current = method;
-        while (current.OverriddenMethod != null)
-            current = current.OverriddenMethod;
-        return current;
-    }
 
     private static bool IsParams(ParameterSyntax parameter) =>
         parameter.Modifiers.Any(m => m.IsKind(SyntaxKind.ParamsKeyword));

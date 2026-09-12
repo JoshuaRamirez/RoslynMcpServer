@@ -386,7 +386,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                     {
                         var impl = candidate.ContainingType.FindImplementationForInterfaceMember(ifaceMethod);
                         if (impl is not IMethodSymbol implMethod ||
-                            !ShareOverrideRoot(implMethod, candidate))
+                            !SignatureOverrideHelpers.ShareOverrideRoot(implMethod, candidate))
                         {
                             continue;
                         }
@@ -403,7 +403,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             }
         }
 
-        return results.Where(HasSourceDeclaration).ToList();
+        return results.Where(SignatureOverrideHelpers.HasSourceDeclaration).ToList();
     }
 
     private async Task<List<DeclarationTarget>> CollectDeclarationTargetsAsync(
@@ -788,20 +788,6 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         return true;
     }
 
-    private static bool HasSourceDeclaration(IMethodSymbol method) =>
-        method.DeclaringSyntaxReferences.Length > 0 &&
-        method.Locations.Any(l => l.IsInSource);
-
-    private static bool ShareOverrideRoot(IMethodSymbol left, IMethodSymbol right) =>
-        SymbolEqualityComparer.Default.Equals(GetOverrideRoot(left), GetOverrideRoot(right));
-
-    private static IMethodSymbol GetOverrideRoot(IMethodSymbol method)
-    {
-        var current = method;
-        while (current.OverriddenMethod != null)
-            current = current.OverriddenMethod;
-        return current;
-    }
 
     private static string NormalizeIdentifier(string name) =>
         name.StartsWith('@') && name.Length > 1 ? name[1..] : name;
