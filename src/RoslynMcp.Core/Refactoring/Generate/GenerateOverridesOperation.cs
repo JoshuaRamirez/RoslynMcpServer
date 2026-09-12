@@ -1217,7 +1217,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
     /// filter rather than substituting each candidate's own start line.
     /// When column is set with line, picks the type whose identifier or
     /// declaration span covers that 1-based column (same exclusive-end
-    /// coverage as <c>AddNullChecksOperation.SpanCoversColumn</c>). Prefer
+    /// coverage as <see cref="SpanCoverage.SpanCoversColumn"/>). Prefer
     /// the identifier hit, then the smallest containing type. Nested types
     /// participate (<c>DescendantNodes</c>). Do not require the declaration
     /// to start on <paramref name="line"/> when column is set — a split

@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Replaced `AddNullChecksOperation` type-local `SpanCoversColumn` with shared `SpanCoverage.SpanCoversColumn` (`add_null_checks`) (#983)
 - Replaced 4 identical Convert/Rename optional-column `SpanCoversLine` copies with shared `SpanCoverage.SpanCoversLine` (`convert_anonymous_to_class` / `convert_tuple_to_struct` / `rename_namespace` / `rename_file_to_match_type`) (#981)
 - Replaced 7 identical Hierarchy/Encapsulate/Extract/Inline `SpanCoversLine` copies with shared `SpanCoverage.SpanCoversLine` (`pull_members_up` / `push_members_down` / `use_base_type` / `encapsulate_field` / `inline_constant` / `extract_interface` / `extract_base_class`) (#978)
 - Extracted shared `SpanCoverage.SpanCoversLine` and replaced 7 identical Generate-family copies (`generate_constructor` / `generate_equals_hashcode` / `generate_overrides` / `generate_property` / `generate_tostring` / `implement_abstract` / `implement_interface`) (#975)
