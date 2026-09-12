@@ -301,7 +301,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             // column.
             return declarators
                 .Where(d => DeclaratorCoversColumn(d, line ?? StartLine(d), column.Value))
-                .OrderBy(d => IdentifierCoversColumn(d, line ?? StartLine(d), column.Value) ? 0 : 1)
+                .OrderBy(d => LocalCoverage.IdentifierCoversColumn(d, line ?? StartLine(d), column.Value) ? 0 : 1)
                 .ThenBy(d => d.Span.Length)
                 .FirstOrDefault();
         }
@@ -323,11 +323,8 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         declarator.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
 
     private static bool DeclaratorCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
-        IdentifierCoversColumn(declarator, line, column) ||
+        LocalCoverage.IdentifierCoversColumn(declarator, line, column) ||
         SpanCoverage.SpanCoversColumn(DeclarationSpan(declarator), line, column);
-
-    private static bool IdentifierCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
-        SpanCoverage.SpanCoversColumn(declarator.Identifier.GetLocation().GetLineSpan(), line, column);
 
     private static FileLinePositionSpan DeclarationSpan(VariableDeclaratorSyntax declarator) =>
         declarator.Parent is VariableDeclarationSyntax declaration
