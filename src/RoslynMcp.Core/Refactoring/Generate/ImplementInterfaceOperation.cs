@@ -1201,7 +1201,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             var eventFieldRewrites = new Dictionary<EventFieldDeclarationSyntax, EventFieldDeclarationSyntax>();
             foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
             {
-                if (!SameSyntaxTree(reference.SyntaxTree, tree))
+                if (!TypePartRematch.SameSyntaxTree(reference.SyntaxTree, tree))
                     continue;
                 if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax originalPart)
                     continue;
@@ -1209,7 +1209,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                 // annotation (new tree). Rematch by span — annotation does
                 // not change SpanStart — so RemoveNodes sees nodes from
                 // this root and keeps the annotation on the selected type.
-                var part = RematchTypeDeclaration(treeRoot, originalPart);
+                var part = TypePartRematch.RematchTypeDeclaration(treeRoot, originalPart);
                 if (part == null)
                     continue;
 
@@ -1303,15 +1303,6 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             $"Could not locate a declaring document for type '{typeName}'.");
     }
 
-    private static bool SameSyntaxTree(SyntaxTree left, SyntaxTree right) =>
-        left == right
-        || (!string.IsNullOrEmpty(left.FilePath)
-            && string.Equals(left.FilePath, right.FilePath, StringComparison.OrdinalIgnoreCase));
-
-    private static TypeDeclarationSyntax? RematchTypeDeclaration(SyntaxNode root, TypeDeclarationSyntax original) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
 
     private static void AddKeyed<T>(
         Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,

@@ -323,7 +323,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         if (annotated != null)
             return annotated;
 
-        return RematchTypeDeclaration(root, original)
+        return TypePartRematch.RematchTypeDeclaration(root, original)
             ?? throw new RefactoringException(
                 ErrorCodes.TypeNotFound,
                 $"Type '{typeName}' not found in file.");
@@ -350,12 +350,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             $"Could not locate a declaring document for type '{typeName}'.");
     }
 
-    private static TypeDeclarationSyntax? RematchTypeDeclaration(
-        SyntaxNode root,
-        TypeDeclarationSyntax original) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
 
     internal static INamedTypeSymbol GetTargetBaseType(INamedTypeSymbol derived, string? targetTypeName)
     {

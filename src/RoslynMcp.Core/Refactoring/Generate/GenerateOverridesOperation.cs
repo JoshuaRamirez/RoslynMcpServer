@@ -1075,7 +1075,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
             var replacements = new Dictionary<TypeDeclarationSyntax, TypeDeclarationSyntax>();
             foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
             {
-                if (!SameSyntaxTree(reference.SyntaxTree, tree))
+                if (!TypePartRematch.SameSyntaxTree(reference.SyntaxTree, tree))
                     continue;
                 if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax originalPart)
                     continue;
@@ -1083,7 +1083,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
                 // annotation (new tree). Rematch by span — annotation does
                 // not change SpanStart — so ReplaceNodes sees nodes from
                 // this root and keeps the annotation on the selected type.
-                var part = RematchTypeDeclaration(root, originalPart);
+                var part = TypePartRematch.RematchTypeDeclaration(root, originalPart);
                 if (part == null)
                     continue;
 
@@ -1158,15 +1158,6 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
             $"Could not locate a declaring document for type '{typeName}'.");
     }
 
-    private static bool SameSyntaxTree(SyntaxTree left, SyntaxTree right) =>
-        left == right
-        || (!string.IsNullOrEmpty(left.FilePath)
-            && string.Equals(left.FilePath, right.FilePath, StringComparison.OrdinalIgnoreCase));
-
-    private static TypeDeclarationSyntax? RematchTypeDeclaration(SyntaxNode root, TypeDeclarationSyntax original) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
 
     private static void AddKeyed<T>(
         Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,

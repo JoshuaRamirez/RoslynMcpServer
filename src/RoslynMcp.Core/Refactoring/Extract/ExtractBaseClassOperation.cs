@@ -1225,7 +1225,5 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
     private static ClassDeclarationSyntax? RematchTypeDeclaration(
         SyntaxNode root,
         ClassDeclarationSyntax original) =>
-        root.DescendantNodes()
-            .OfType<ClassDeclarationSyntax>()
-            .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
+        TypePartRematch.RematchTypeDeclaration(root, original) as ClassDeclarationSyntax;
 }
