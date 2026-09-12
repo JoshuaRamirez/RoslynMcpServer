@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Refactoring.Generate;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -1197,7 +1198,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     private static MemberDeclarationSyntax EnsurePublicAccessibility(MemberDeclarationSyntax member)
     {
-        if (HasAccessibility(member.Modifiers))
+        if (AccessibilityModifiers.HasAccessibility(member.Modifiers))
             return member;
 
         return member.WithModifiers(
@@ -1710,7 +1711,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 SyntaxKind.NewKeyword)
             .ToList();
 
-        if (!HasAccessibility(tokens))
+        if (!AccessibilityModifiers.HasAccessibility(tokens))
             tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
 
         tokens.Add(SyntaxFactory.Token(SyntaxKind.AbstractKeyword));
@@ -1735,7 +1736,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 SyntaxKind.SealedKeyword)
             .ToList();
 
-        if (modifiers.Any(SyntaxKind.PrivateKeyword) || !HasAccessibility(tokens))
+        if (modifiers.Any(SyntaxKind.PrivateKeyword) || !AccessibilityModifiers.HasAccessibility(tokens))
             tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
 
         tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword)
@@ -1752,12 +1753,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         return modifiers.Where(token => !kindSet.Contains(token.Kind()));
     }
 
-    private static bool HasAccessibility(IEnumerable<SyntaxToken> modifiers) =>
-        modifiers.Any(token =>
-            token.IsKind(SyntaxKind.PublicKeyword) ||
-            token.IsKind(SyntaxKind.ProtectedKeyword) ||
-            token.IsKind(SyntaxKind.InternalKeyword) ||
-            token.IsKind(SyntaxKind.PrivateKeyword));
 
     private static TypeDeclarationSyntax BuildSourceReplacement(
         TypeDeclarationSyntax sourceDecl,

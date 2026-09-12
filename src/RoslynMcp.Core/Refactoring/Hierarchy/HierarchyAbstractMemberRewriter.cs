@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
+using RoslynMcp.Core.Refactoring.Utilities;
 
 namespace RoslynMcp.Core.Refactoring.Hierarchy;
 
@@ -239,7 +240,7 @@ internal static class HierarchyAbstractMemberRewriter
                 SyntaxKind.AsyncKeyword)
             .ToList();
 
-        if (!HasAccessibility(tokens))
+        if (!AccessibilityModifiers.HasAccessibility(tokens))
             tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
 
         tokens.Add(SyntaxFactory.Token(SyntaxKind.AbstractKeyword));
@@ -257,7 +258,7 @@ internal static class HierarchyAbstractMemberRewriter
                 SyntaxKind.NewKeyword)
             .ToList();
 
-        if (modifiers.Any(SyntaxKind.PrivateKeyword) || !HasAccessibility(tokens))
+        if (modifiers.Any(SyntaxKind.PrivateKeyword) || !AccessibilityModifiers.HasAccessibility(tokens))
             tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
 
         tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword)
@@ -271,10 +272,4 @@ internal static class HierarchyAbstractMemberRewriter
         return modifiers.Where(token => !kindSet.Contains(token.Kind()));
     }
 
-    private static bool HasAccessibility(IEnumerable<SyntaxToken> modifiers) =>
-        modifiers.Any(token =>
-            token.IsKind(SyntaxKind.PublicKeyword) ||
-            token.IsKind(SyntaxKind.ProtectedKeyword) ||
-            token.IsKind(SyntaxKind.InternalKeyword) ||
-            token.IsKind(SyntaxKind.PrivateKeyword));
 }

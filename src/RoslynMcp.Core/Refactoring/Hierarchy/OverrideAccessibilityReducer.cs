@@ -28,7 +28,7 @@ internal static class OverrideAccessibilityReducer
             return modifiers;
 
         var tokens = modifiers.Where(token => !token.IsKind(SyntaxKind.InternalKeyword)).ToList();
-        if (!HasAccessibility(tokens))
+        if (!AccessibilityModifiers.HasAccessibility(tokens))
             tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
         return SyntaxFactory.TokenList(tokens);
     }
@@ -112,10 +112,4 @@ internal static class OverrideAccessibilityReducer
         return member.WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
     }
 
-    private static bool HasAccessibility(IEnumerable<SyntaxToken> modifiers) =>
-        modifiers.Any(token =>
-            token.IsKind(SyntaxKind.PublicKeyword) ||
-            token.IsKind(SyntaxKind.ProtectedKeyword) ||
-            token.IsKind(SyntaxKind.InternalKeyword) ||
-            token.IsKind(SyntaxKind.PrivateKeyword));
 }

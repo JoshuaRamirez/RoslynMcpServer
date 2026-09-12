@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `AccessibilityModifiers.HasAccessibility` and replaced 4 identical Hierarchy copies (`pull_members_up` / `push_members_down` / HierarchyAbstractMemberRewriter / OverrideAccessibilityReducer) (#1006)
 - Extracted shared `FieldCoverage` and replaced EncapsulateField + InlineConstant FieldCovers* / IdentifierCovers* / GetFieldDeclaration / SmallestCoveringSpanLength copies (`encapsulate_field` / `inline_constant`) (#1002)
 - Extracted shared `MethodCoverage` and replaced 7 identical MethodCoversColumn / IdentifierCoversColumn copies (`add_parameter` / `remove_parameter` / `reorder_parameters` / `change_signature` / `change_return_type` / `convert_to_async` / `inline_method`) (#997)
 - Replaced 5 identical Generate-family TypeCovers* / IdentifierCovers* copies with shared TypeCoverage (generate_constructor / generate_equals_hashcode / generate_overrides / generate_property / implement_interface) (#994)

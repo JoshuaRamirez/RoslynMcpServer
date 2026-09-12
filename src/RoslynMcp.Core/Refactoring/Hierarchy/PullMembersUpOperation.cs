@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Refactoring.Generate;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -985,7 +986,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 SyntaxKind.NewKeyword)
             .ToList();
 
-        if (modifiers.Any(SyntaxKind.PrivateKeyword) || !HasAccessibility(tokens))
+        if (modifiers.Any(SyntaxKind.PrivateKeyword) || !AccessibilityModifiers.HasAccessibility(tokens))
             tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
 
         var alreadyOverridable = tokens.Any(t =>
@@ -1005,12 +1006,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         return modifiers.Where(token => !kindSet.Contains(token.Kind()));
     }
 
-    private static bool HasAccessibility(IEnumerable<SyntaxToken> modifiers) =>
-        modifiers.Any(token =>
-            token.IsKind(SyntaxKind.PublicKeyword) ||
-            token.IsKind(SyntaxKind.ProtectedKeyword) ||
-            token.IsKind(SyntaxKind.InternalKeyword) ||
-            token.IsKind(SyntaxKind.PrivateKeyword));
 
     private static TypeDeclarationSyntax BuildDerivedReplacement(
         TypeDeclarationSyntax derivedDecl,
