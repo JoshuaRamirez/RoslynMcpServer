@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `PropertyCoverage.PropertyCoversColumn` / `IdentifierCoversColumn` and replaced ConvertPropertyOperation copies (`convert_property`) (#1032)
 - Extracted shared `KeywordCoverage.KeywordIsOnLine` and replaced AddBraces + RemoveBraces copies; retargeted InvertIf + ConvertForeachLinq KeywordCoverage wrappers (`add_braces` / `remove_braces` / `invert_if` / `convert_foreach_linq`) (#1028)
 - Extracted shared `KeywordCoverage.KeywordCoversColumn` and replaced 2 identical AddBraces + RemoveBraces copies (`add_braces` / `remove_braces`) (#1025)
 

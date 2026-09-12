@@ -496,8 +496,8 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
             // property's identifier may live on a continuation line whose
             // declaration span still covers that column.
             return properties
-                .Where(p => PropertyCoversColumn(p, line!.Value, column.Value))
-                .OrderBy(p => IdentifierCoversColumn(p, line!.Value, column.Value) ? 0 : 1)
+                .Where(p => PropertyCoverage.PropertyCoversColumn(p, line!.Value, column.Value))
+                .OrderBy(p => PropertyCoverage.IdentifierCoversColumn(p, line!.Value, column.Value) ? 0 : 1)
                 .ThenBy(p => p.Span.Length)
                 .FirstOrDefault();
         }
@@ -510,13 +510,6 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
 
     private static int StartLine(PropertyDeclarationSyntax property) =>
         property.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
-
-    private static bool PropertyCoversColumn(PropertyDeclarationSyntax property, int line, int column) =>
-        IdentifierCoversColumn(property, line, column) ||
-        SpanCoverage.SpanCoversColumn(property.GetLocation().GetLineSpan(), line, column);
-
-    private static bool IdentifierCoversColumn(PropertyDeclarationSyntax property, int line, int column) =>
-        SpanCoverage.SpanCoversColumn(property.Identifier.GetLocation().GetLineSpan(), line, column);
 
 
     /// <summary>
