@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `IdentifierValidation.IsValidIdentifier` and replaced 5 identical char-based Encapsulate/Extract copies (`encapsulate_field` / `extract_constant` / `extract_interface` / `extract_variable` / `extract_base_class`) (#1012)
 - Extracted shared `DeclarationIdentifiers` and replaced MakeStatic + MakeNonStatic GetDeclarationIdentifier / IdentifierOverlaps copies (`make_static` / `make_non_static`) (#1009)
 - Extracted shared `AccessibilityModifiers.HasAccessibility` and replaced 4 identical Hierarchy copies (`pull_members_up` / `push_members_down` / HierarchyAbstractMemberRewriter / OverrideAccessibilityReducer) (#1006)
 - Extracted shared `FieldCoverage` and replaced EncapsulateField + InlineConstant FieldCovers* / IdentifierCovers* / GetFieldDeclaration / SmallestCoveringSpanLength copies (`encapsulate_field` / `inline_constant`) (#1002)

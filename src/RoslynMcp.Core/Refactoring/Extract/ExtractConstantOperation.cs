@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Extract;
@@ -56,7 +57,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             (@params.StartLine == @params.EndLine && @params.StartColumn >= @params.EndColumn))
             throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "Selection start must be before end.");
 
-        if (!IsValidIdentifier(@params.ConstantName))
+        if (!IdentifierValidation.IsValidIdentifier(@params.ConstantName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid constant name: {@params.ConstantName}");
 
         if (!ValidVisibilities.Contains(@params.Visibility))
@@ -322,12 +323,6 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
 
-    private static bool IsValidIdentifier(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return false;
-        if (!char.IsLetter(name[0]) && name[0] != '_') return false;
-        return name.All(c => char.IsLetterOrDigit(c) || c == '_');
-    }
 
     private static int GetPosition(SourceText text, int line, int column)
     {
