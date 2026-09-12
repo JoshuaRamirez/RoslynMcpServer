@@ -7,8 +7,8 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
-using RoslynMcp.Core.Workspace;
 using RoslynMcp.Core.Refactoring.Utilities;
+using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Extract;
 
