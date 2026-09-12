@@ -181,7 +181,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
             .ToList();
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = FilterDocumentsBySourceFile(allDocuments, @params.SourceFile);
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile);
 
         var acceptedDeclarations = new List<DeclarationEdit>();
         var acceptedCallSites = new List<CallSiteEdit>();
@@ -447,25 +447,6 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         }
     }
 
-    private static List<Document> FilterDocumentsBySourceFile(List<Document> documents, string sourceFile)
-    {
-        string wanted;
-        try
-        {
-            wanted = PathResolver.NormalizePath(sourceFile);
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            wanted = sourceFile;
-        }
-
-        return documents
-            .Where(d => string.Equals(
-                PathResolver.NormalizePath(d.FilePath!),
-                wanted,
-                StringComparison.OrdinalIgnoreCase))
-            .ToList();
-    }
 
     private static bool PlanConflictsWithClaimedSpans(
         StaticPlan plan,

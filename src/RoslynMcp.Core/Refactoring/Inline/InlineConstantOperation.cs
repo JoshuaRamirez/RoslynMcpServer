@@ -202,7 +202,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             .ToList();
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var inlinedCountByDoc = new Dictionary<DocumentId, int>();
         var processedFields = new HashSet<IFieldSymbol>(SymbolEqualityComparer.Default);
@@ -424,25 +424,6 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
             cancellationToken);
     }
 
-    private static List<Document> FilterDocumentsBySourceFile(List<Document> documents, string sourceFile)
-    {
-        string wanted;
-        try
-        {
-            wanted = PathResolver.NormalizePath(sourceFile);
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            wanted = sourceFile;
-        }
-
-        return documents
-            .Where(d => string.Equals(
-                PathResolver.NormalizePath(d.FilePath!),
-                wanted,
-                StringComparison.OrdinalIgnoreCase))
-            .ToList();
-    }
 
     /// <summary>
     /// Resolves the target const field. Omitted line/column keeps today's
