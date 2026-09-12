@@ -786,8 +786,8 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
             // every candidate. If nothing covers this position, keep
             // today's not-found (null) rather than inventing a first-match.
             return candidates
-                .Where(t => TypeCoversColumn(t, line!.Value, column.Value))
-                .OrderBy(t => IdentifierCoversColumn(t, line!.Value, column.Value) ? 0 : 1)
+                .Where(t => TypeCoverage.TypeCoversColumn(t, line!.Value, column.Value))
+                .OrderBy(t => TypeCoverage.IdentifierCoversColumn(t, line!.Value, column.Value) ? 0 : 1)
                 .ThenBy(t => t.Span.Length)
                 .FirstOrDefault();
         }
@@ -804,26 +804,12 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         // candidate. If nothing covers this line, keep today's
         // first-match rather than inventing a not-found.
         return candidates
-            .Where(t => TypeCoversLine(t, line.Value))
-            .OrderBy(t => IdentifierCoversLine(t, line.Value) ? 0 : 1)
+            .Where(t => TypeCoverage.TypeCoversLine(t, line.Value))
+            .OrderBy(t => TypeCoverage.IdentifierCoversLine(t, line.Value) ? 0 : 1)
             .ThenBy(t => t.Span.Length)
             .FirstOrDefault()
             ?? candidates.FirstOrDefault();
     }
-
-    private static bool TypeCoversLine(BaseTypeDeclarationSyntax type, int line) =>
-        IdentifierCoversLine(type, line) ||
-        SpanCoverage.SpanCoversLine(type.GetLocation().GetLineSpan(), line);
-
-    private static bool IdentifierCoversLine(BaseTypeDeclarationSyntax type, int line) =>
-        SpanCoverage.SpanCoversLine(type.Identifier.GetLocation().GetLineSpan(), line);
-
-    private static bool TypeCoversColumn(BaseTypeDeclarationSyntax type, int line, int column) =>
-        IdentifierCoversColumn(type, line, column) ||
-        SpanCoverage.SpanCoversColumn(type.GetLocation().GetLineSpan(), line, column);
-
-    private static bool IdentifierCoversColumn(BaseTypeDeclarationSyntax type, int line, int column) =>
-        SpanCoverage.SpanCoversColumn(type.Identifier.GetLocation().GetLineSpan(), line, column);
 
     /// <summary>
     /// Creates a preview result with the generated property code.
