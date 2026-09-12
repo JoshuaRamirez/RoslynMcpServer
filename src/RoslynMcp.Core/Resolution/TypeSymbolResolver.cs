@@ -231,17 +231,10 @@ public sealed class TypeSymbolResolver
         int line,
         int column) =>
         matches
-            .Where(type => TypeCoversColumn(type, line, column))
-            .OrderBy(type => IdentifierCoversColumn(type, line, column) ? 0 : 1)
+            .Where(type => TypeCoverage.TypeCoversColumn(type, line, column))
+            .OrderBy(type => TypeCoverage.IdentifierCoversColumn(type, line, column) ? 0 : 1)
             .ThenBy(type => type.Span.Length)
             .FirstOrDefault();
-
-    private static bool TypeCoversColumn(TypeDeclarationSyntax type, int line, int column) =>
-        IdentifierCoversColumn(type, line, column) ||
-        SpanCoversColumn(type.GetLocation().GetLineSpan(), line, column);
-
-    private static bool IdentifierCoversColumn(TypeDeclarationSyntax type, int line, int column) =>
-        SpanCoversColumn(type.Identifier.GetLocation().GetLineSpan(), line, column);
 
     /// <summary>
     /// 1-based line/column coverage. Delegates to <see cref="SpanCoverage.SpanCoversColumn"/>.
