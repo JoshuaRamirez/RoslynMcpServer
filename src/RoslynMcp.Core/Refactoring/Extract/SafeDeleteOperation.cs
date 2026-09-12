@@ -154,13 +154,13 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
             {
                 var declaredOnToken = semanticModel.GetDeclaredSymbol(tokenNode, cancellationToken);
                 if (declaredOnToken != null && IdentifierOverlaps(tokenNode, span))
-                    return ConfirmSymbolName(declaredOnToken, @params.SymbolName);
+                    return SymbolSelectionHelpers.ConfirmSymbolName(declaredOnToken, @params.SymbolName);
 
                 if (token.IsKind(SyntaxKind.IdentifierToken))
                 {
                     var tokenSymbol = semanticModel.GetSymbolInfo(tokenNode, cancellationToken).Symbol;
                     if (tokenSymbol != null)
-                        return ConfirmSymbolName(tokenSymbol, @params.SymbolName);
+                        return SymbolSelectionHelpers.ConfirmSymbolName(tokenSymbol, @params.SymbolName);
                 }
             }
         }
@@ -168,23 +168,11 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         var node = root.FindNode(span, getInnermostNodeForTie: true);
         var declared = semanticModel.GetDeclaredSymbol(node, cancellationToken);
         if (declared != null && IdentifierOverlaps(node, span))
-            return ConfirmSymbolName(declared, @params.SymbolName);
+            return SymbolSelectionHelpers.ConfirmSymbolName(declared, @params.SymbolName);
 
         throw new RefactoringException(
             ErrorCodes.SymbolNotFound,
             "No symbol found at the specified selection.");
-    }
-
-    private static ISymbol ConfirmSymbolName(ISymbol symbol, string? expectedName)
-    {
-        if (!string.IsNullOrWhiteSpace(expectedName) && symbol.Name != expectedName)
-        {
-            throw new RefactoringException(
-                ErrorCodes.SymbolNotFound,
-                $"No symbol named '{expectedName}' found at the specified selection.");
-        }
-
-        return symbol;
     }
 
     private static bool IdentifierOverlaps(SyntaxNode node, TextSpan span)
@@ -299,7 +287,7 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
                 if (location.Document == null || !location.Location.IsInSource)
                     continue;
 
-                if (IsDefinitionLocation(referencedSymbol.Definition, location.Location))
+                if (SymbolSelectionHelpers.IsDefinitionLocation(referencedSymbol.Definition, location.Location))
                     continue;
 
                 var lineSpan = location.Location.GetLineSpan();
@@ -401,14 +389,6 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
     }
 
     private static bool CanSafelyDelete(IReadOnlyList<UsageLocation> usages) => usages.Count == 0;
-
-    private static bool IsDefinitionLocation(ISymbol symbol, Location location)
-    {
-        return symbol.Locations.Any(definition =>
-            definition.IsInSource &&
-            definition.SourceTree == location.SourceTree &&
-            definition.SourceSpan == location.SourceSpan);
-    }
 
     private static string? GetSnippet(Location location)
     {
