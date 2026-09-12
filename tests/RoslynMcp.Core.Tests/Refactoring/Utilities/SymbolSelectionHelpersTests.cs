@@ -89,6 +89,41 @@ public class SymbolSelectionHelpersTests
         Assert.False(SymbolSelectionHelpers.IsDefinitionLocation(m, nLocation));
     }
 
+    [Fact]
+    public void IsDefinitionLocation_False_WhenSourceTreeDiffers()
+    {
+        var tree1 = CSharpSyntaxTree.ParseText("""
+            class C
+            {
+                public void M() { }
+            }
+            """);
+        var tree2 = CSharpSyntaxTree.ParseText("""
+            class D
+            {
+                public void M() { }
+            }
+            """);
+        var refs = new[]
+        {
+            MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
+        };
+        var compilation = CSharpCompilation.Create(
+            "SymbolSelectionHelpersTests_Trees",
+            new[] { tree1, tree2 },
+            refs,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var diagnostics = compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).ToArray();
+        Assert.True(diagnostics.Length == 0, string.Join("\n", diagnostics.Select(d => d.ToString())));
+
+        var m = compilation.GetTypeByMetadataName("C")!.GetMembers("M").OfType<IMethodSymbol>().Single();
+        var other = compilation.GetTypeByMetadataName("D")!.GetMembers("M").OfType<IMethodSymbol>().Single();
+        var otherLocation = other.Locations.Single(l => l.IsInSource);
+
+        Assert.False(SymbolSelectionHelpers.IsDefinitionLocation(m, otherLocation));
+    }
+
     private static Compilation Compile(string source)
     {
         var tree = CSharpSyntaxTree.ParseText(source);
