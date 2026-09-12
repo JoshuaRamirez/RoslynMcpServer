@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `EventFieldDeclarator.TryGet` and replaced 3 identical Generate copies (`generate_overrides` / `implement_interface` / `implement_abstract`) (#1018)
 - Extracted shared `SyntaxIdentifierValidation.IsValidIdentifier` and replaced 6 identical SyntaxFacts Inline/Generate/Signature/Convert copies (`inline_constant` / `generate_method_stub` / `generate_property` / `add_parameter` / `convert_anonymous_to_class` / `convert_tuple_to_struct`) (#1015)
 - Extracted shared `IdentifierValidation.IsValidIdentifier` and replaced 5 identical char-based Encapsulate/Extract copies (`encapsulate_field` / `extract_constant` / `extract_interface` / `extract_variable` / `extract_base_class`) (#1012)
 - Extracted shared `DeclarationIdentifiers` and replaced MakeStatic + MakeNonStatic GetDeclarationIdentifier / IdentifierOverlaps copies (`make_static` / `make_non_static`) (#1009)

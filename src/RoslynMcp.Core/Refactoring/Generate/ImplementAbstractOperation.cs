@@ -1411,7 +1411,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             foreach (var reference in existing.DeclaringSyntaxReferences)
             {
                 var syntax = await reference.GetSyntaxAsync(cancellationToken);
-                if (TryGetEventFieldDeclarator(syntax, out var eventField, out var declarator)
+                if (EventFieldDeclarator.TryGet(syntax, out var eventField, out var declarator)
                     && eventField.Parent is TypeDeclarationSyntax eventPart)
                 {
                     if (eventField.Declaration.Variables.Count > 1)
@@ -1586,24 +1586,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         }
 
         keys.Add(key);
-    }
-
-    private static bool TryGetEventFieldDeclarator(
-        SyntaxNode syntax,
-        out EventFieldDeclarationSyntax eventField,
-        out VariableDeclaratorSyntax declarator)
-    {
-        if (syntax is VariableDeclaratorSyntax variable
-            && variable.Parent?.Parent is EventFieldDeclarationSyntax field)
-        {
-            eventField = field;
-            declarator = variable;
-            return true;
-        }
-
-        eventField = null!;
-        declarator = null!;
-        return false;
     }
 
     private static MemberDeclarationSyntax? AsRemovableMember(SyntaxNode syntax)
