@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Generate;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -268,10 +269,10 @@ public class GeneratePropertyOperationTests
     [Fact]
     public void IsValidIdentifier_ReservedKeyword_IsFalse()
     {
-        Assert.False(GeneratePropertyOperation.IsValidIdentifier("class"));
-        Assert.False(GeneratePropertyOperation.IsValidIdentifier("namespace"));
-        Assert.True(GeneratePropertyOperation.IsValidIdentifier("Name"));
-        Assert.True(GeneratePropertyOperation.IsValidIdentifier("@class"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("class"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("namespace"));
+        Assert.True(SyntaxIdentifierValidation.IsValidIdentifier("Name"));
+        Assert.True(SyntaxIdentifierValidation.IsValidIdentifier("@class"));
     }
 
     [Fact]

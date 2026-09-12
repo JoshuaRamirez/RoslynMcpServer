@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -56,7 +57,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (!IsValidIdentifier(@params.ParameterName))
+        if (!SyntaxIdentifierValidation.IsValidIdentifier(@params.ParameterName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"'{@params.ParameterName}' is not a valid parameter name.");
 
         if (!IsValidParameterType(@params.ParameterType))
@@ -770,24 +771,6 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
 
-    internal static bool IsValidIdentifier(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            return false;
-
-        if (name.StartsWith('@') && name.Length > 1)
-        {
-            var bare = name[1..];
-            return SyntaxFacts.IsValidIdentifier(bare) ||
-                   SyntaxFacts.GetKeywordKind(bare) != SyntaxKind.None;
-        }
-
-        if (!SyntaxFacts.IsValidIdentifier(name))
-            return false;
-
-        var keywordKind = SyntaxFacts.GetKeywordKind(name);
-        return keywordKind == SyntaxKind.None || !SyntaxFacts.IsReservedKeyword(keywordKind);
-    }
 
     internal static bool IsValidParameterType(string type)
     {

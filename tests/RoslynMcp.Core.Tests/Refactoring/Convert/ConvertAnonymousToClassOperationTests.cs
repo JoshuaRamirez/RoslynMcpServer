@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -112,14 +113,14 @@ public class ConvertAnonymousToClassOperationTests
     }
 
     [Fact]
-    public void IsValidTypeName_RejectsInvalidAndKeywords()
+    public void IsValidIdentifier_RejectsInvalidAndKeywords()
     {
-        Assert.False(ConvertAnonymousToClassOperation.IsValidTypeName("123Bad"));
-        Assert.False(ConvertAnonymousToClassOperation.IsValidTypeName("class"));
-        Assert.False(ConvertAnonymousToClassOperation.IsValidTypeName("int"));
-        Assert.False(ConvertAnonymousToClassOperation.IsValidTypeName("@@@"));
-        Assert.True(ConvertAnonymousToClassOperation.IsValidTypeName("Person"));
-        Assert.True(ConvertAnonymousToClassOperation.IsValidTypeName("_Info"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("123Bad"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("class"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("int"));
+        Assert.False(SyntaxIdentifierValidation.IsValidIdentifier("@@@"));
+        Assert.True(SyntaxIdentifierValidation.IsValidIdentifier("Person"));
+        Assert.True(SyntaxIdentifierValidation.IsValidIdentifier("_Info"));
     }
 
     #endregion

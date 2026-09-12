@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -77,7 +78,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         if (!File.Exists(sourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {sourceFile}");
 
-        if (!IsValidIdentifier(constantName))
+        if (!SyntaxIdentifierValidation.IsValidIdentifier(constantName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"'{constantName}' is not a valid constant name.");
 
         if (@params.TypeName != null && string.IsNullOrWhiteSpace(@params.TypeName))
@@ -1020,25 +1021,6 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         TextSpan Span,
         bool CanReplace,
         bool InAttribute);
-
-    internal static bool IsValidIdentifier(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            return false;
-
-        if (name.StartsWith('@') && name.Length > 1)
-        {
-            var bare = name[1..];
-            return SyntaxFacts.IsValidIdentifier(bare) ||
-                   SyntaxFacts.GetKeywordKind(bare) != SyntaxKind.None;
-        }
-
-        if (!SyntaxFacts.IsValidIdentifier(name))
-            return false;
-
-        var keywordKind = SyntaxFacts.GetKeywordKind(name);
-        return keywordKind == SyntaxKind.None || !SyntaxFacts.IsReservedKeyword(keywordKind);
-    }
 
     private static bool NamesMatch(SyntaxToken identifier, string constantName)
     {

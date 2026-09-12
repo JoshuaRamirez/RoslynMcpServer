@@ -66,7 +66,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         if (@params.Column < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (@params.MethodName != null && !IsValidIdentifier(@params.MethodName))
+        if (@params.MethodName != null && !SyntaxIdentifierValidation.IsValidIdentifier(@params.MethodName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid method name: {@params.MethodName}");
 
         if (!string.IsNullOrWhiteSpace(@params.ReturnType) && !IsValidTypeName(@params.ReturnType))
@@ -521,13 +521,13 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             candidate = argument.NameColon.Name.Identifier.ValueText;
         }
         else if (Unwrap(argument.Expression) is IdentifierNameSyntax identifier
-                 && IsValidIdentifier(identifier.Identifier.ValueText))
+                 && SyntaxIdentifierValidation.IsValidIdentifier(identifier.Identifier.ValueText))
         {
             candidate = identifier.Identifier.ValueText;
         }
         else if (Unwrap(argument.Expression) is DeclarationExpressionSyntax declaration
                  && declaration.Designation is SingleVariableDesignationSyntax single
-                 && IsValidIdentifier(single.Identifier.ValueText))
+                 && SyntaxIdentifierValidation.IsValidIdentifier(single.Identifier.ValueText))
         {
             candidate = single.Identifier.ValueText;
         }
@@ -1480,25 +1480,6 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         "internal" => SyntaxFactory.Token(SyntaxKind.InternalKeyword),
         _ => SyntaxFactory.Token(SyntaxKind.PrivateKeyword)
     };
-
-    internal static bool IsValidIdentifier(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            return false;
-
-        if (name.StartsWith('@') && name.Length > 1)
-        {
-            var bare = name[1..];
-            return SyntaxFacts.IsValidIdentifier(bare) ||
-                   SyntaxFacts.GetKeywordKind(bare) != SyntaxKind.None;
-        }
-
-        if (!SyntaxFacts.IsValidIdentifier(name))
-            return false;
-
-        var keywordKind = SyntaxFacts.GetKeywordKind(name);
-        return keywordKind == SyntaxKind.None || !SyntaxFacts.IsReservedKeyword(keywordKind);
-    }
 
     internal static bool IsValidTypeName(string typeName)
     {
