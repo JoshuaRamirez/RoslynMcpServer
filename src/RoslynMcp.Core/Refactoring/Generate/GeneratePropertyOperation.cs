@@ -647,7 +647,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
             var toRemove = new List<MemberDeclarationSyntax>();
             foreach (var reference in typeSymbol.DeclaringSyntaxReferences)
             {
-                if (!SameSyntaxTree(reference.SyntaxTree, tree))
+                if (!TypePartRematch.SameSyntaxTree(reference.SyntaxTree, tree))
                     continue;
                 if (await reference.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax originalPart)
                     continue;
@@ -655,7 +655,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
                 // annotation (new tree). Rematch by span — annotation does
                 // not change SpanStart — so RemoveNodes sees nodes from
                 // this root and keeps the annotation on the selected type.
-                var part = RematchTypeDeclaration(treeRoot, originalPart);
+                var part = TypePartRematch.RematchTypeDeclaration(treeRoot, originalPart);
                 if (part == null)
                     continue;
                 if (!byPart.TryGetValue(part.SpanStart, out var keys) || keys.Count == 0)
@@ -704,15 +704,6 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
             $"Could not locate a declaring document for type '{typeName}'.");
     }
 
-    private static bool SameSyntaxTree(SyntaxTree left, SyntaxTree right) =>
-        left == right
-        || (!string.IsNullOrEmpty(left.FilePath)
-            && string.Equals(left.FilePath, right.FilePath, StringComparison.OrdinalIgnoreCase));
-
-    private static TypeDeclarationSyntax? RematchTypeDeclaration(SyntaxNode root, TypeDeclarationSyntax original) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
 
     /// <summary>
     /// Finds a type by <paramref name="typeName"/>. Omitted

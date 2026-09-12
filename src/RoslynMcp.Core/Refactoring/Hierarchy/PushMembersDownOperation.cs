@@ -345,7 +345,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (annotated != null)
             return annotated;
 
-        return RematchTypeDeclaration(root, original)
+        return TypePartRematch.RematchTypeDeclaration(root, original)
             ?? throw new RefactoringException(
                 ErrorCodes.TypeNotFound,
                 $"Type '{typeName}' not found in file.");
@@ -387,12 +387,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         return null;
     }
 
-    private static TypeDeclarationSyntax? RematchTypeDeclaration(
-        SyntaxNode root,
-        TypeDeclarationSyntax original) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
 
     /// <summary>
     /// Folds descendant derived-type replacements that
@@ -430,7 +424,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             if (inReplacement == null || transplants.ContainsKey(inReplacement))
                 continue;
 
-            var updated = RematchTypeDeclaration(rewrittenAncestor, nestedOriginal)
+            var updated = TypePartRematch.RematchTypeDeclaration(rewrittenAncestor, nestedOriginal)
                 ?? FindMatchingNestedType(rewrittenAncestor, nestedOriginal)
                 ?? map[nestedOriginal] as TypeDeclarationSyntax;
             if (updated != null)
@@ -449,7 +443,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         TypeDeclarationSyntax container,
         TypeDeclarationSyntax original)
     {
-        var bySpan = RematchTypeDeclaration(container, original);
+        var bySpan = TypePartRematch.RematchTypeDeclaration(container, original);
         if (bySpan != null)
             return bySpan;
 
@@ -481,7 +475,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 ?? GetDocumentByFilePath(sourceDocument.Project.Solution, update.Original.SyntaxTree);
             if (updateDocument != null && updateDocument.Id == sourceDocument.Id)
             {
-                var rematchedOriginal = RematchTypeDeclaration(sourceRoot, update.Original)
+                var rematchedOriginal = TypePartRematch.RematchTypeDeclaration(sourceRoot, update.Original)
                     ?? throw new RefactoringException(
                         ErrorCodes.RoslynError,
                         $"Could not locate declaration for '{update.Type.Name}'.");

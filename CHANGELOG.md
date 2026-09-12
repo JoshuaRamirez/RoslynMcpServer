@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `TypePartRematch` (SameSyntaxTree + RematchTypeDeclaration) and replaced 7 Generate + Pull/Push/ExtractBaseClass copies (#1048)
 - Extracted shared `LocalCoverage` (FieldCoverage twin) and replaced IntroduceParameter copies; shared `IdentifierCoversColumn` with InlineVariable (`introduce_parameter` / `inline_variable`) (#1045)
 - Extracted shared `SymbolResolver.GetPosition(SourceText)` and replaced Extract + Rename private copies (`extract_method` / `extract_variable` / `extract_constant` / `rename_symbol`) (#1042)
 - Extracted shared `MemberCoverage.MemberCoversColumn` / `IdentifierCoversColumn` and replaced ConvertExpressionBody + ConvertToBlockBody + AddNullChecks copies (`convert_expression_body` / `convert_to_block_body` / `add_null_checks`) (#1039)
