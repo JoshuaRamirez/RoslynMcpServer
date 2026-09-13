@@ -511,7 +511,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         return SyntaxFactory.PropertyDeclaration(
                 SyntaxFactory.ParseTypeName(type).WithTrailingTrivia(SyntaxFactory.Space),
                 name)
-            .WithModifiers(SyntaxFactory.TokenList(ParseVisibilityTokens(visibility)))
+            .WithModifiers(SyntaxFactory.TokenList(VisibilityTokenHelpers.ParseVisibilityTokens(visibility)))
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
             .NormalizeWhitespace();
     }
@@ -544,7 +544,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         return SyntaxFactory.PropertyDeclaration(
                 SyntaxFactory.ParseTypeName(type).WithTrailingTrivia(SyntaxFactory.Space),
                 name)
-            .WithModifiers(SyntaxFactory.TokenList(ParseVisibilityTokens(visibility)))
+            .WithModifiers(SyntaxFactory.TokenList(VisibilityTokenHelpers.ParseVisibilityTokens(visibility)))
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(new[] { getAccessor, setAccessor })))
             .NormalizeWhitespace();
     }
@@ -824,25 +824,4 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
 
-    private static IEnumerable<SyntaxToken> ParseVisibilityTokens(string visibility)
-    {
-        var tokens = visibility
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(ParseVisibilityKeyword)
-            .ToList();
-
-        if (tokens.Count == 0)
-            tokens.Add(SyntaxFactory.Token(SyntaxKind.PublicKeyword));
-
-        return tokens;
-    }
-
-    private static SyntaxToken ParseVisibilityKeyword(string keyword) => keyword.ToLowerInvariant() switch
-    {
-        "public" => SyntaxFactory.Token(SyntaxKind.PublicKeyword),
-        "private" => SyntaxFactory.Token(SyntaxKind.PrivateKeyword),
-        "protected" => SyntaxFactory.Token(SyntaxKind.ProtectedKeyword),
-        "internal" => SyntaxFactory.Token(SyntaxKind.InternalKeyword),
-        _ => SyntaxFactory.Token(SyntaxKind.PublicKeyword)
-    };
 }
