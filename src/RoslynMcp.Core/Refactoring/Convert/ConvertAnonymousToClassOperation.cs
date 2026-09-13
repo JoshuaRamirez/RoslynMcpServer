@@ -149,7 +149,6 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             0);
     }
 
-
     internal static AnonymousObjectCreationExpressionSyntax FindAnonymousCreation(
         SyntaxNode root,
         ConvertAnonymousToClassParams @params)
@@ -349,7 +348,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
     internal static string ToContextValidTypeName(ITypeSymbol type, SemanticModel model, int position)
     {
         var display = type.ToMinimalDisplayString(model, position);
-        if (string.IsNullOrWhiteSpace(display) || TypeNameBindsToDifferentType(display, type, model, position))
+        if (string.IsNullOrWhiteSpace(display) || NamespaceEqualityHelpers.TypeNameBindsToDifferentType(display, type, model, position))
         {
             display = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat
                 .WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.Omitted));
@@ -387,7 +386,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             return false;
 
         var display = ToContextValidTypeName(type, model, position);
-        return !TypeNameBindsToDifferentType(display, type, model, position);
+        return !NamespaceEqualityHelpers.TypeNameBindsToDifferentType(display, type, model, position);
     }
 
     internal static bool ContainsTypeParameter(ITypeSymbol type)
@@ -458,7 +457,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
     internal static string? GetContainingNamespaceName(SemanticModel semanticModel, SyntaxNode node)
     {
         var enclosing = semanticModel.GetEnclosingSymbol(node.SpanStart);
-        var fromSymbol = ToNamespaceName(enclosing?.ContainingNamespace);
+        var fromSymbol = NamespaceEqualityHelpers.ToNamespaceName(enclosing?.ContainingNamespace);
         if (!string.IsNullOrEmpty(fromSymbol))
             return fromSymbol;
 
@@ -511,7 +510,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
 
         foreach (var symbol in simpleMatches.OfType<INamedTypeSymbol>())
         {
-            if (NamespacesEqual(symbol.ContainingNamespace, targetNamespace))
+            if (NamespaceEqualityHelpers.NamespacesEqual(symbol.ContainingNamespace, targetNamespace))
             {
                 throw new RefactoringException(
                     ErrorCodes.NameConflictScope,
@@ -676,7 +675,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
     private static string TypeNameForCreation(SyntaxNode creation, string newTypeName, string? targetNamespace)
     {
         var creationNamespace = GetContainingNamespaceName(creation);
-        if (NamespacesEqual(creationNamespace, targetNamespace))
+        if (NamespaceEqualityHelpers.NamespacesEqual(creationNamespace, targetNamespace))
             return newTypeName;
 
         var root = creation.SyntaxTree.GetRoot();
@@ -686,13 +685,6 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         return string.IsNullOrEmpty(targetNamespace)
             ? newTypeName
             : $"{targetNamespace}.{newTypeName}";
-    }
-
-    private static bool NamespacesEqual(string? left, string? right)
-    {
-        if (string.IsNullOrEmpty(left) && string.IsNullOrEmpty(right))
-            return true;
-        return string.Equals(left, right, StringComparison.Ordinal);
     }
 
     internal static string? GetFullNamespaceName(BaseNamespaceDeclarationSyntax? ns)
@@ -717,22 +709,6 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             .Any(u => u.Name != null && u.Name.ToString() == namespaceName);
     }
 
-    private static string? ToNamespaceName(INamespaceSymbol? symbol)
-    {
-        if (symbol == null || symbol.IsGlobalNamespace)
-            return null;
-
-        var name = symbol.ToDisplayString();
-        return string.IsNullOrEmpty(name) ? null : name;
-    }
-
-    private static bool NamespacesEqual(INamespaceSymbol? symbol, string? name)
-    {
-        if (symbol == null || symbol.IsGlobalNamespace)
-            return string.IsNullOrEmpty(name);
-        return string.Equals(symbol.ToDisplayString(), name, StringComparison.Ordinal);
-    }
-
     private static bool MembersMatch(IReadOnlyList<AnonymousMember> left, IReadOnlyList<AnonymousMember> right)
     {
         if (left.Count != right.Count)
@@ -747,20 +723,6 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         }
 
         return true;
-    }
-
-    private static bool TypeNameBindsToDifferentType(
-        string display,
-        ITypeSymbol expected,
-        SemanticModel model,
-        int position)
-    {
-        var parsed = SyntaxFactory.ParseTypeName(display);
-        var spec = model.GetSpeculativeTypeInfo(position, parsed, SpeculativeBindingOption.BindAsTypeOrNamespace);
-        if (spec.Type == null || spec.Type.TypeKind == TypeKind.Error)
-            return true;
-
-        return !SymbolEqualityComparer.Default.Equals(spec.Type, expected);
     }
 
     private static Accessibility MinAccessibility(Accessibility left, Accessibility right)
