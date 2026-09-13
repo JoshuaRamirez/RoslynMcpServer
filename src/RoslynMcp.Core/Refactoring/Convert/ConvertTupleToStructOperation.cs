@@ -421,7 +421,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         var current = symbol.DeclaredAccessibility;
         for (var container = symbol.ContainingType; container != null; container = container.ContainingType)
-            current = MinAccessibility(current, container.DeclaredAccessibility);
+            current = AccessibilityRankHelpers.MinAccessibility(current, container.DeclaredAccessibility);
 
         return current;
     }
@@ -959,22 +959,6 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         return -1;
     }
-
-    private static Accessibility MinAccessibility(Accessibility left, Accessibility right)
-    {
-        return AccessibilityRank(left) <= AccessibilityRank(right) ? left : right;
-    }
-
-    private static int AccessibilityRank(Accessibility accessibility) => accessibility switch
-    {
-        Accessibility.Private => 0,
-        Accessibility.ProtectedAndInternal => 1,
-        Accessibility.Protected => 2,
-        Accessibility.Internal => 3,
-        Accessibility.ProtectedOrInternal => 4,
-        Accessibility.Public => 5,
-        _ => 5
-    };
 
     private static async Task<RefactoringResult> CreatePreviewResultAsync(
         Guid operationId,
