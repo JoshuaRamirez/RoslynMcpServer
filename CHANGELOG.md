@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `AccessibilityRankHelpers.MinAccessibility` + `AccessibilityRank` and replaced 2 identical copies (`convert_anonymous_to_class` / `convert_tuple_to_struct`) (#1094)
 - Extracted shared `NamespaceEqualityHelpers.NamespacesEqual` + `ToNamespaceName` + `TypeNameBindsToDifferentType` and replaced 2 identical copies (`convert_anonymous_to_class` / `convert_tuple_to_struct`) (#1090)
 - Extracted shared `VisibilityTokenHelpers.ParseVisibilityTokens` + `ParseVisibilityKeyword` and replaced 2 identical copies (`generate_constructor` / `generate_property`) (#1087)
 - Extracted shared `SyntaxIdentifierValidation.NormalizeIdentifier` and replaced 3 identical copies (`inline_constant` / `add_parameter` / `remove_parameter`) (#1084)
