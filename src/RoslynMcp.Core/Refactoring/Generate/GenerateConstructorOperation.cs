@@ -793,7 +793,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         {
             for (var baseType = typeSymbol.BaseType; baseType != null; baseType = baseType.BaseType)
             {
-                if (IsObjectOrValueType(baseType))
+                if (NamedTypeHelpers.IsObjectOrValueType(baseType))
                     break;
 
                 CollectDeclaredMembers(
@@ -915,9 +915,6 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             }
         }
     }
-
-    private static bool IsObjectOrValueType(INamedTypeSymbol type) =>
-        type.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
 
     /// <summary>
     /// True when a closer type hides or overrides <paramref name="member"/> so
@@ -1306,7 +1303,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             return false;
 
         var baseType = typeSymbol.BaseType;
-        if (baseType == null || IsObjectOrValueType(baseType))
+        if (baseType == null || NamedTypeHelpers.IsObjectOrValueType(baseType))
             return false;
 
         return baseType.IsRecord;
@@ -1349,7 +1346,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             return false;
 
         var baseType = typeSymbol.BaseType;
-        if (baseType == null || IsObjectOrValueType(baseType))
+        if (baseType == null || NamedTypeHelpers.IsObjectOrValueType(baseType))
             return false;
         if (baseType.IsRecord || baseType.TypeKind != TypeKind.Class)
             return false;
@@ -1416,7 +1413,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             return false;
 
         var baseType = typeSymbol.BaseType;
-        if (baseType == null || IsObjectOrValueType(baseType))
+        if (baseType == null || NamedTypeHelpers.IsObjectOrValueType(baseType))
             return false;
         if (baseType.IsRecord || baseType.TypeKind != TypeKind.Class)
             return false;
@@ -1437,7 +1434,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             return false;
 
         var baseType = typeSymbol.BaseType;
-        if (baseType == null || IsObjectOrValueType(baseType))
+        if (baseType == null || NamedTypeHelpers.IsObjectOrValueType(baseType))
             return false;
         if (baseType.TypeKind != TypeKind.Class)
             return false;
