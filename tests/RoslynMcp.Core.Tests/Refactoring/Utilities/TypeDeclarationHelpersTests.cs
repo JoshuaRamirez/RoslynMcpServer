@@ -85,13 +85,11 @@ public class TypeDeclarationHelpersTests
     }
 
     [Fact]
-    public void CollectTypeDeclarations_SameSpanStart_OrdersBySpanLength()
+    public void CollectTypeDeclarations_OrdersBySpanStart_PreservesSourceOrder()
     {
-        // Two type decls cannot truly share SpanStart in one tree, but ThenBy(Length)
-        // must still produce a deterministic sequence when OrderBy keys collide via
-        // a synthetic root that only wraps already-parsed nodes is impractical.
-        // Cover ThenBy indirectly: nested type has larger SpanStart than outer;
-        // length tie-break is exercised by identical empty classes in sequence.
+        // Distinct type decls in one tree always have different SpanStart values, so
+        // this asserts the primary OrderBy(SpanStart) key — not the ThenBy(Length)
+        // defensive tie-break (same-start ties do not occur for real syntax nodes).
         const string source = """
             class A { }
             class B { }
