@@ -517,7 +517,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                     $"No type named '{typeName}' found in the source file.");
         }
 
-        var newTypeDeclaration = AddMembers(hostTypeDecl, implementations);
+        var newTypeDeclaration = TypeDeclarationHelpers.AddMembers(hostTypeDecl, implementations);
         // Strip the per-execution annotation so it does not linger in the
         // workspace after commit.
         if (targetTypeAnnotation != null)
@@ -1222,22 +1222,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                 SyntaxFactory.Token(SyntaxKind.PublicKeyword).WithTrailingTrivia(SyntaxFactory.Space)
             }
         };
-    }
-
-    private static TypeDeclarationSyntax AddMembers(
-        TypeDeclarationSyntax typeDeclaration,
-        List<MemberDeclarationSyntax> newMembers)
-    {
-        var members = typeDeclaration.Members.ToList();
-
-        foreach (var member in newMembers)
-        {
-            members.Add(member
-                .WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed)
-                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed));
-        }
-
-        return typeDeclaration.WithMembers(SyntaxFactory.List(members));
     }
 
     /// <summary>

@@ -1,13 +1,11 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
-/// Shared type-declaration walk used by Generate-family AllFiles / host
-/// discovery paths. Same body as the six Generate copies
-/// (ImplementAbstract / ImplementInterface / GenerateEqualsHashCode /
-/// GenerateOverrides / GenerateToString / GenerateConstructor).
+/// Shared type-declaration helpers used by Generate-family operations.
 /// </summary>
 internal static class TypeDeclarationHelpers
 {
@@ -23,4 +21,26 @@ internal static class TypeDeclarationHelpers
             .OrderBy(type => type.SpanStart)
             .ThenBy(type => type.Span.Length)
             .ToList();
+
+    /// <summary>
+    /// Appends <paramref name="newMembers"/> onto
+    /// <paramref name="typeDeclaration"/> with a blank-line leading trivia
+    /// and trailing CRLF per member. Same body as the three Generate copies
+    /// (GenerateOverrides / ImplementInterface / ImplementAbstract).
+    /// </summary>
+    internal static TypeDeclarationSyntax AddMembers(
+        TypeDeclarationSyntax typeDeclaration,
+        IReadOnlyList<MemberDeclarationSyntax> newMembers)
+    {
+        var members = typeDeclaration.Members.ToList();
+
+        foreach (var member in newMembers)
+        {
+            members.Add(member
+                .WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed)
+                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed));
+        }
+
+        return typeDeclaration.WithMembers(SyntaxFactory.List(members));
+    }
 }
