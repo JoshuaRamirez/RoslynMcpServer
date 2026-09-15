@@ -78,14 +78,19 @@ public class GotoLabelHelpersTests
                 void M()
                 {
                     if (true)
+                    {
                         label: ;
+                    }
                 }
             }
             """);
         var root = tree.GetRoot();
         var ifStatement = root.DescendantNodes().OfType<IfStatementSyntax>().Single();
-        var body = ifStatement.Statement;
-        var label = Assert.IsType<LabeledStatementSyntax>(body);
+        var body = Assert.IsType<BlockSyntax>(ifStatement.Statement);
+        var label = root.DescendantNodes().OfType<LabeledStatementSyntax>().Single();
+        // Label is a direct statement of body (not body itself), so this hits
+        // the ancestor loop's ancestor == body path rather than label == body.
+        Assert.Same(label, body.Statements[0]);
         Assert.False(GotoLabelHelpers.IsLabelAlreadyNestedInInnerBlock(label, body));
     }
 
@@ -97,7 +102,7 @@ public class GotoLabelHelpersTests
             {
                 void M()
                 {
-                    goto target;
+                    goto @target;
                 }
             }
             """);
