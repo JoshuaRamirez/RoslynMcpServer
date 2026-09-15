@@ -1253,7 +1253,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                     continue;
                 }
 
-                var memberSyntax = AsRemovableMember(syntax);
+                var memberSyntax = RemovableMemberHelpers.AsRemovableMember(syntax);
                 if (memberSyntax == null)
                     continue;
                 if (memberSyntax.Parent is not TypeDeclarationSyntax part)
@@ -1384,20 +1384,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         keys.Add(key);
     }
 
-    private static MemberDeclarationSyntax? AsRemovableMember(SyntaxNode syntax)
-    {
-        if (syntax is MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
-            or EventDeclarationSyntax or EventFieldDeclarationSyntax)
-        {
-            return (MemberDeclarationSyntax)syntax;
-        }
-
-        var ancestor = syntax.FirstAncestorOrSelf<MemberDeclarationSyntax>();
-        return ancestor is MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
-            or EventDeclarationSyntax or EventFieldDeclarationSyntax
-            ? ancestor
-            : null;
-    }
 
     /// <summary>
     /// Finds a type by <paramref name="typeName"/>. Omitted
@@ -1571,7 +1557,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                 foreach (var reference in existing.DeclaringSyntaxReferences)
                 {
                     var syntax = await reference.GetSyntaxAsync(cancellationToken);
-                    var memberSyntax = AsRemovableMember(syntax);
+                    var memberSyntax = RemovableMemberHelpers.AsRemovableMember(syntax);
                     if (memberSyntax == null)
                         continue;
 
