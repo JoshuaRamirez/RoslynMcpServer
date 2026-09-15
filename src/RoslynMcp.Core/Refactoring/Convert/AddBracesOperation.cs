@@ -145,7 +145,7 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
                     "Statement already has braces.");
             }
 
-            if (WouldHideExternallyReferencedLabel(target.Value.Body))
+            if (GotoLabelHelpers.WouldHideExternallyReferencedLabel(target.Value.Body))
             {
                 throw new RefactoringException(
                     ErrorCodes.CompilationError,
@@ -441,55 +441,6 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
         return string.Join(".", parts);
     }
 
-    /// <summary>
-    /// True when wrapping <paramref name="body"/> in a new block would hide a
-    /// label that a <c>goto</c> outside that body currently resolves.
-    /// Labels already nested in an inner block stay hidden either way.
-    /// </summary>
-    internal static bool WouldHideExternallyReferencedLabel(StatementSyntax body)
-    {
-        var container = GetLabelContainer(body);
-        if (container == null)
-            return false;
-
-        foreach (var label in body.DescendantNodesAndSelf().OfType<LabeledStatementSyntax>())
-        {
-            if (GotoLabelHelpers.IsLabelAlreadyNestedInInnerBlock(label, body))
-                continue;
-
-            var name = label.Identifier.ValueText;
-            foreach (var gotoStatement in container.DescendantNodes().OfType<GotoStatementSyntax>())
-            {
-                if (!gotoStatement.IsKind(SyntaxKind.GotoStatement))
-                    continue;
-
-                if (!string.Equals(GotoLabelHelpers.GetGotoLabelName(gotoStatement), name, StringComparison.Ordinal))
-                    continue;
-
-                if (GetLabelContainer(gotoStatement) != container)
-                    continue;
-
-                if (body.Contains(gotoStatement))
-                    continue;
-
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static SyntaxNode? GetLabelContainer(SyntaxNode node) =>
-        node.AncestorsAndSelf().FirstOrDefault(ancestor => ancestor is
-            MethodDeclarationSyntax or
-            LocalFunctionStatementSyntax or
-            AnonymousFunctionExpressionSyntax or
-            AccessorDeclarationSyntax or
-            ConstructorDeclarationSyntax or
-            DestructorDeclarationSyntax or
-            OperatorDeclarationSyntax or
-            ConversionOperatorDeclarationSyntax);
-
     internal static ControlTarget? FindControlTarget(SyntaxNode root, int line, int? column)
     {
         var onLine = CollectTargets(root)
@@ -703,7 +654,7 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             if (originalBody is BlockSyntax || originalBody.IsMissing)
                 return false;
 
-            if (WouldHideExternallyReferencedLabel(originalBody))
+            if (GotoLabelHelpers.WouldHideExternallyReferencedLabel(originalBody))
                 return false;
 
             if (_onlyThese != null)

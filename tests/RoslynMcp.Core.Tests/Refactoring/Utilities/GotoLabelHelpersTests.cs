@@ -127,6 +127,105 @@ public class GotoLabelHelpersTests
         Assert.Null(GotoLabelHelpers.GetGotoLabelName(gotoStatement));
     }
 
+    [Fact]
+    public void GetLabelContainer_MethodDeclaration_ReturnsMethod()
+    {
+        var tree = CSharpSyntaxTree.ParseText("""
+            class C
+            {
+                void M()
+                {
+                    label: ;
+                }
+            }
+            """);
+        var root = tree.GetRoot();
+        var method = root.DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+        var label = root.DescendantNodes().OfType<LabeledStatementSyntax>().Single();
+        Assert.Same(method, GotoLabelHelpers.GetLabelContainer(label));
+    }
+
+    [Fact]
+    public void GetLabelContainer_LocalFunction_ReturnsLocalFunction()
+    {
+        var tree = CSharpSyntaxTree.ParseText("""
+            class C
+            {
+                void M()
+                {
+                    void Local()
+                    {
+                        label: ;
+                    }
+                }
+            }
+            """);
+        var root = tree.GetRoot();
+        var local = root.DescendantNodes().OfType<LocalFunctionStatementSyntax>().Single();
+        var label = root.DescendantNodes().OfType<LabeledStatementSyntax>().Single();
+        Assert.Same(local, GotoLabelHelpers.GetLabelContainer(label));
+    }
+
+    [Fact]
+    public void GetLabelContainer_OutsideAnyContainer_ReturnsNull()
+    {
+        var tree = CSharpSyntaxTree.ParseText("""
+            class C
+            {
+                int field = 1;
+            }
+            """);
+        var field = tree.GetRoot().DescendantNodes().OfType<FieldDeclarationSyntax>().Single();
+        Assert.Null(GotoLabelHelpers.GetLabelContainer(field));
+    }
+
+    [Fact]
+    public void WouldHideExternallyReferencedLabel_ExternalGoto_ReturnsTrue()
+    {
+        var ifStatement = CSharpSyntaxTree.ParseText("""
+            class Loop
+            {
+                void Run(bool condition)
+                {
+                    goto retry;
+                    if (condition)
+                        retry: Work();
+                }
+                static void Work() {}
+            }
+            """).GetRoot()
+            .DescendantNodes()
+            .OfType<IfStatementSyntax>()
+            .Single();
+
+        Assert.True(GotoLabelHelpers.WouldHideExternallyReferencedLabel(ifStatement.Statement));
+    }
+
+    [Fact]
+    public void WouldHideExternallyReferencedLabel_GotoInsideBody_ReturnsFalse()
+    {
+        var ifStatement = CSharpSyntaxTree.ParseText("""
+            class Loop
+            {
+                void Run(bool condition)
+                {
+                    if (condition)
+                    {
+                        goto retry;
+                        retry: Work();
+                    }
+                }
+                static void Work() {}
+            }
+            """).GetRoot()
+            .DescendantNodes()
+            .OfType<IfStatementSyntax>()
+            .Single();
+
+        var body = Assert.IsType<BlockSyntax>(ifStatement.Statement);
+        Assert.False(GotoLabelHelpers.WouldHideExternallyReferencedLabel(body));
+    }
+
     private static LabeledStatementSyntax ParseLabeled(string source)
     {
         var tree = CSharpSyntaxTree.ParseText(source);

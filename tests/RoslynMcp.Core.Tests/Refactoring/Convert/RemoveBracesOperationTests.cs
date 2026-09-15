@@ -242,7 +242,7 @@ public class RemoveBracesOperationTests
             .Single();
 
         var inner = Assert.IsType<BlockSyntax>(method.Statement).Statements[0];
-        Assert.True(RemoveBracesOperation.WouldHideExternallyReferencedLabel(inner));
+        Assert.True(GotoLabelHelpers.WouldHideExternallyReferencedLabel(inner));
     }
 
     [Fact]
