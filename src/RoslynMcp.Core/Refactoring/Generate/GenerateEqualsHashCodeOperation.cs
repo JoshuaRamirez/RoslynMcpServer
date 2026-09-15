@@ -110,7 +110,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         if (typeSymbol == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve type symbol.");
 
-        if (@params.CallSuper && IsObjectOrValueTypeBase(typeSymbol))
+        if (@params.CallSuper && NamedTypeHelpers.IsObjectOrValueTypeBase(typeSymbol))
         {
             throw new RefactoringException(
                 ErrorCodes.CallSuperOnObjectBase,
@@ -431,7 +431,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         if (typeSymbol.TypeKind == TypeKind.Interface || typeDecl is InterfaceDeclarationSyntax)
             return null;
 
-        if (@params.CallSuper && IsObjectOrValueTypeBase(typeSymbol))
+        if (@params.CallSuper && NamedTypeHelpers.IsObjectOrValueTypeBase(typeSymbol))
             return null;
 
         if (@params.CallSuper && HasAbstractBaseEquality(typeSymbol))
@@ -860,13 +860,6 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         }
 
         return typeDecl.WithBaseList(typeDecl.BaseList.AddTypes(interfaceType));
-    }
-
-    private static bool IsObjectOrValueTypeBase(INamedTypeSymbol typeSymbol)
-    {
-        var baseType = typeSymbol.BaseType;
-        return baseType == null
-            || baseType.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
     }
 
     private static bool HasAbstractBaseEquality(INamedTypeSymbol typeSymbol)

@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `NamedTypeHelpers.IsObjectOrValueTypeBase` and replaced 2 identical Generate copies (`generate_equals_hashcode` / `generate_tostring`) (#1142)
 - Extracted shared `TypeDeclarationHelpers.GetSelfTypeName` and replaced 2 identical Generate copies (`generate_equals_hashcode` / `generate_constructor`) (#1138)
 - Extracted shared `RemovableMemberHelpers.AsRemovableMember` and replaced 2 identical Generate copies (`implement_interface` / `implement_abstract`) (#1136)
 - Extracted shared `ThrowNotImplementedBodyHelpers.CreateThrowNotImplementedBody` and replaced 2 identical Generate copies (`implement_abstract` / `generate_method_stub`) (#1131)

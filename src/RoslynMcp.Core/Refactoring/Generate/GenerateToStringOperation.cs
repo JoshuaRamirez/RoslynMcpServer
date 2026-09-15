@@ -132,7 +132,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
                 $"Type '{typeSymbol.Name}' is not a supported target for generate_tostring.");
         }
 
-        if (@params.CallSuper && IsObjectOrValueTypeBase(typeSymbol))
+        if (@params.CallSuper && NamedTypeHelpers.IsObjectOrValueTypeBase(typeSymbol))
         {
             throw new RefactoringException(
                 ErrorCodes.CallSuperOnObjectBase,
@@ -397,7 +397,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         if (typeSymbol.TypeKind == TypeKind.Interface || typeDecl is InterfaceDeclarationSyntax)
             return null;
 
-        if (@params.CallSuper && IsObjectOrValueTypeBase(typeSymbol))
+        if (@params.CallSuper && NamedTypeHelpers.IsObjectOrValueTypeBase(typeSymbol))
             return null;
 
         if (@params.CallSuper && HasAbstractBaseToString(typeSymbol))
@@ -829,13 +829,6 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
                 .WithArgumentList(SyntaxFactory.ArgumentList())));
 
         return CreateToStringMethod(SyntaxFactory.Block(statements));
-    }
-
-    private static bool IsObjectOrValueTypeBase(INamedTypeSymbol typeSymbol)
-    {
-        var baseType = typeSymbol.BaseType;
-        return baseType == null
-            || baseType.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
     }
 
     private static bool HasAbstractBaseToString(INamedTypeSymbol typeSymbol)
