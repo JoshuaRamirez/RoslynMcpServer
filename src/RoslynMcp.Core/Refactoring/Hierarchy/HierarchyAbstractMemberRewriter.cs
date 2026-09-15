@@ -139,7 +139,7 @@ internal static class HierarchyAbstractMemberRewriter
         !indexer.Modifiers.Any(SyntaxKind.StaticKeyword) &&
         indexer.ExplicitInterfaceSpecifier == null &&
         (indexer.AccessorList == null
-            || indexer.AccessorList.Accessors.All(accessor => !IsPrivateOnlyAccessor(accessor)));
+            || indexer.AccessorList.Accessors.All(accessor => !AccessibilityModifiers.IsPrivateOnlyAccessor(accessor)));
 
     private static bool CanMakeEventAbstract(EventDeclarationSyntax eventDecl) =>
         !eventDecl.Modifiers.Any(SyntaxKind.StaticKeyword) &&
@@ -148,10 +148,6 @@ internal static class HierarchyAbstractMemberRewriter
     private static bool CanMakeEventAbstract(EventFieldDeclarationSyntax eventField) =>
         !eventField.Modifiers.Any(SyntaxKind.StaticKeyword);
 
-    private static bool IsPrivateOnlyAccessor(AccessorDeclarationSyntax accessor) =>
-        accessor.Modifiers.Any(SyntaxKind.PrivateKeyword)
-        && !accessor.Modifiers.Any(SyntaxKind.ProtectedKeyword)
-        && !accessor.Modifiers.Any(SyntaxKind.InternalKeyword);
 
     private static EventDeclarationSyntax ToAbstractEvent(EventDeclarationSyntax eventDecl)
     {

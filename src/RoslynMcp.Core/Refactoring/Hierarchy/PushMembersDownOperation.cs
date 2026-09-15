@@ -1323,12 +1323,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         !indexer.Modifiers.Any(SyntaxKind.StaticKeyword) &&
         indexer.ExplicitInterfaceSpecifier == null &&
         (indexer.AccessorList == null
-            || indexer.AccessorList.Accessors.All(accessor => !IsPrivateOnlyAccessor(accessor)));
+            || indexer.AccessorList.Accessors.All(accessor => !AccessibilityModifiers.IsPrivateOnlyAccessor(accessor)));
 
-    private static bool IsPrivateOnlyAccessor(AccessorDeclarationSyntax accessor) =>
-        accessor.Modifiers.Any(SyntaxKind.PrivateKeyword)
-        && !accessor.Modifiers.Any(SyntaxKind.ProtectedKeyword)
-        && !accessor.Modifiers.Any(SyntaxKind.InternalKeyword);
 
     private static bool CanMakeEventAbstract(EventDeclarationSyntax eventDecl) =>
         !eventDecl.Modifiers.Any(SyntaxKind.StaticKeyword) &&
