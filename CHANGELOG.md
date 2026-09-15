@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `SyntaxLineHelpers.StartsOnLine` and replaced 2 identical copies (`convert_to_interpolated_string` / `convert_to_pattern_matching`) (#1158)
 - Extracted shared `AccessibilityModifiers.IsPrivateOnlyAccessor` and replaced 2 identical copies (`HierarchyAbstractMemberRewriter` / `push_members_down`) (#1154)
 - Extracted shared `AccessibilityModifiers.HasNonPublicAccessibility` and replaced 2 identical copies (`pull_members_up` / `push_members_down`) (#1151)
 - Extracted shared `MemberHidingHelpers.IsHiddenFrom` and replaced 2 identical copies (`EqualityMemberCollector` / `generate_constructor`) (#1148)
