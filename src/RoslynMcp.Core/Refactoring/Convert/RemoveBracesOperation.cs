@@ -168,7 +168,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
                     "Removing these braces would change how a following else binds (dangling else).");
             }
 
-            if (WouldHideExternallyReferencedLabel(block.Statements[0]))
+            if (GotoLabelHelpers.WouldHideExternallyReferencedLabel(block.Statements[0]))
             {
                 throw new RefactoringException(
                     ErrorCodes.CompilationError,
@@ -490,45 +490,6 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
         return EmbeddedStatementWouldCaptureFollowingElse(inner);
     }
 
-    /// <summary>
-    /// True when wrapping <paramref name="body"/> in a new block would hide a
-    /// label that a <c>goto</c> outside that body currently resolves. Used in
-    /// reverse: do not unwrap a block if the inner statement is that labeled
-    /// body. Labels already nested in an inner block stay hidden either way.
-    /// </summary>
-    internal static bool WouldHideExternallyReferencedLabel(StatementSyntax body)
-    {
-        var container = GetLabelContainer(body);
-        if (container == null)
-            return false;
-
-        foreach (var label in body.DescendantNodesAndSelf().OfType<LabeledStatementSyntax>())
-        {
-            if (GotoLabelHelpers.IsLabelAlreadyNestedInInnerBlock(label, body))
-                continue;
-
-            var name = label.Identifier.ValueText;
-            foreach (var gotoStatement in container.DescendantNodes().OfType<GotoStatementSyntax>())
-            {
-                if (!gotoStatement.IsKind(SyntaxKind.GotoStatement))
-                    continue;
-
-                if (!string.Equals(GotoLabelHelpers.GetGotoLabelName(gotoStatement), name, StringComparison.Ordinal))
-                    continue;
-
-                if (GetLabelContainer(gotoStatement) != container)
-                    continue;
-
-                if (body.Contains(gotoStatement))
-                    continue;
-
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     private static bool EmbeddedStatementWouldCaptureFollowingElse(StatementSyntax statement)
     {
         while (true)
@@ -567,16 +528,6 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
         }
     }
 
-    private static SyntaxNode? GetLabelContainer(SyntaxNode node) =>
-        node.AncestorsAndSelf().FirstOrDefault(ancestor => ancestor is
-            MethodDeclarationSyntax or
-            LocalFunctionStatementSyntax or
-            AnonymousFunctionExpressionSyntax or
-            AccessorDeclarationSyntax or
-            ConstructorDeclarationSyntax or
-            DestructorDeclarationSyntax or
-            OperatorDeclarationSyntax or
-            ConversionOperatorDeclarationSyntax);
 
     internal static ControlTarget? FindControlTarget(SyntaxNode root, int line, int? column)
     {
@@ -825,7 +776,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
             if (WouldCreateDanglingElse(owner, inner))
                 return false;
 
-            if (WouldHideExternallyReferencedLabel(inner))
+            if (GotoLabelHelpers.WouldHideExternallyReferencedLabel(inner))
                 return false;
 
             if (_onlyThese != null)

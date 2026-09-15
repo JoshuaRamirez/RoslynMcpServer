@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `GotoLabelHelpers.WouldHideExternallyReferencedLabel` + `GetLabelContainer` and replaced 2 identical copies (`add_braces` / `remove_braces`) (#1101)
 - Extracted shared `GotoLabelHelpers.IsLabelAlreadyNestedInInnerBlock` + `GetGotoLabelName` and replaced 2 identical copies (`add_braces` / `remove_braces`) (#1097)
 - Extracted shared `AccessibilityRankHelpers.MinAccessibility` + `AccessibilityRank` and replaced 2 identical copies (`convert_anonymous_to_class` / `convert_tuple_to_struct`) (#1094)
 - Extracted shared `NamespaceEqualityHelpers.NamespacesEqual` + `ToNamespaceName` + `TypeNameBindsToDifferentType` and replaced 2 identical copies (`convert_anonymous_to_class` / `convert_tuple_to_struct`) (#1090)

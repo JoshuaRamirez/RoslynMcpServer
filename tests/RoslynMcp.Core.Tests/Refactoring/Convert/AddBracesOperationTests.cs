@@ -239,7 +239,7 @@ public class AddBracesOperationTests
             .OfType<IfStatementSyntax>()
             .Single();
 
-        Assert.True(AddBracesOperation.WouldHideExternallyReferencedLabel(method.Statement));
+        Assert.True(GotoLabelHelpers.WouldHideExternallyReferencedLabel(method.Statement));
     }
 
     #endregion

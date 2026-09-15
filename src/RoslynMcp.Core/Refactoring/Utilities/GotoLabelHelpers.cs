@@ -1,3 +1,5 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace RoslynMcp.Core.Refactoring.Utilities;
@@ -5,7 +7,7 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// <summary>
 /// Shared goto/label helpers used by add_braces / remove_braces when deciding
 /// whether wrapping or unwrapping a body would hide an externally referenced
-/// label. Same bodies as the two private copies.
+/// label. Same bodies as the prior private/internal copies.
 /// </summary>
 internal static class GotoLabelHelpers
 {
@@ -45,4 +47,57 @@ internal static class GotoLabelHelpers
             { } expression => expression.ToString(),
             _ => null
         };
+
+    /// <summary>
+    /// Nearest enclosing method / local function / anonymous function /
+    /// accessor / constructor / destructor / operator / conversion operator
+    /// for label scoping, or null when none.
+    /// </summary>
+    internal static SyntaxNode? GetLabelContainer(SyntaxNode node) =>
+        node.AncestorsAndSelf().FirstOrDefault(ancestor => ancestor is
+            MethodDeclarationSyntax or
+            LocalFunctionStatementSyntax or
+            AnonymousFunctionExpressionSyntax or
+            AccessorDeclarationSyntax or
+            ConstructorDeclarationSyntax or
+            DestructorDeclarationSyntax or
+            OperatorDeclarationSyntax or
+            ConversionOperatorDeclarationSyntax);
+
+    /// <summary>
+    /// True when wrapping or unwrapping <paramref name="body"/> would hide a
+    /// label that an external <c>goto</c> in the same container still targets.
+    /// </summary>
+    internal static bool WouldHideExternallyReferencedLabel(StatementSyntax body)
+    {
+        var container = GetLabelContainer(body);
+        if (container == null)
+            return false;
+
+        foreach (var label in body.DescendantNodesAndSelf().OfType<LabeledStatementSyntax>())
+        {
+            if (IsLabelAlreadyNestedInInnerBlock(label, body))
+                continue;
+
+            var name = label.Identifier.ValueText;
+            foreach (var gotoStatement in container.DescendantNodes().OfType<GotoStatementSyntax>())
+            {
+                if (!gotoStatement.IsKind(SyntaxKind.GotoStatement))
+                    continue;
+
+                if (!string.Equals(GetGotoLabelName(gotoStatement), name, StringComparison.Ordinal))
+                    continue;
+
+                if (GetLabelContainer(gotoStatement) != container)
+                    continue;
+
+                if (body.Contains(gotoStatement))
+                    continue;
+
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
