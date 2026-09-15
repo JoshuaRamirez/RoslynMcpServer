@@ -822,7 +822,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 // Same public-accessor gate as extract_interface
                 // CreateInterfaceIndexer: a private/protected/internal
                 // setter must not become a public interface set;.
-                if (HasNonPublicAccessibility(accessor))
+                if (AccessibilityModifiers.HasNonPublicAccessibility(accessor))
                     continue;
 
                 accessors.Add(accessor
@@ -854,11 +854,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             .NormalizeWhitespace();
     }
 
-    private static bool HasNonPublicAccessibility(AccessorDeclarationSyntax accessor) =>
-        accessor.Modifiers.Any(token =>
-            token.IsKind(SyntaxKind.PrivateKeyword)
-            || token.IsKind(SyntaxKind.ProtectedKeyword)
-            || token.IsKind(SyntaxKind.InternalKeyword));
 
     private static MemberDeclarationSyntax ConvertToVirtualOnBase(MemberDeclarationSyntax member)
     {

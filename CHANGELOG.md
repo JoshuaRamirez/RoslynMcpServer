@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `AccessibilityModifiers.HasNonPublicAccessibility` and replaced 2 identical copies (`pull_members_up` / `push_members_down`) (#1151)
 - Extracted shared `MemberHidingHelpers.IsHiddenFrom` and replaced 2 identical copies (`EqualityMemberCollector` / `generate_constructor`) (#1148)
 - Extracted shared `NamedTypeHelpers.IsObjectOrValueType` and replaced 2 identical copies (`EqualityMemberCollector` / `generate_constructor`) (#1145)
 - Extracted shared `NamedTypeHelpers.IsObjectOrValueTypeBase` and replaced 2 identical Generate copies (`generate_equals_hashcode` / `generate_tostring`) (#1142)

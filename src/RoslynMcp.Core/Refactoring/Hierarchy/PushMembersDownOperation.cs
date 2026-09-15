@@ -1266,7 +1266,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 // CreateInterfaceIndexer / pull_members_up: a private /
                 // protected / internal setter must not become a public
                 // interface set;.
-                if (HasNonPublicAccessibility(accessor))
+                if (AccessibilityModifiers.HasNonPublicAccessibility(accessor))
                     continue;
 
                 accessors.Add(accessor
@@ -1298,11 +1298,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             .NormalizeWhitespace();
     }
 
-    private static bool HasNonPublicAccessibility(AccessorDeclarationSyntax accessor) =>
-        accessor.Modifiers.Any(token =>
-            token.IsKind(SyntaxKind.PrivateKeyword)
-            || token.IsKind(SyntaxKind.ProtectedKeyword)
-            || token.IsKind(SyntaxKind.InternalKeyword));
 
     private static MemberDeclarationSyntax ConvertToAbstract(MemberDeclarationSyntax member)
     {
