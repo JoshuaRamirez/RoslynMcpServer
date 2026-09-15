@@ -122,11 +122,16 @@ public class TypeDeclarationHelpersTests
 
         var leading = updated.Members[1].GetLeadingTrivia().ToList();
         Assert.Equal(2, leading.Count);
-        Assert.All(leading, t => Assert.True(t.IsKind(SyntaxKind.EndOfLineTrivia)));
+        Assert.All(leading, t =>
+        {
+            Assert.True(t.IsKind(SyntaxKind.EndOfLineTrivia));
+            Assert.Equal("\r\n", t.ToFullString());
+        });
 
         var trailing = updated.Members[1].GetTrailingTrivia().ToList();
         Assert.Single(trailing);
         Assert.True(trailing[0].IsKind(SyntaxKind.EndOfLineTrivia));
+        Assert.Equal("\r\n", trailing[0].ToFullString());
     }
 
     [Fact]
