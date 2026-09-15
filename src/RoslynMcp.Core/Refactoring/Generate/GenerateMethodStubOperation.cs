@@ -853,7 +853,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             modifiers.Add(SyntaxFactory.Token(SyntaxKind.AsyncKeyword).WithTrailingTrivia(SyntaxFactory.Space));
 
         var body = RequiresThrowBody(returnType, throwNotImplemented)
-            ? CreateThrowNotImplementedBody()
+            ? ThrowNotImplementedBodyHelpers.CreateThrowNotImplementedBody()
             : CreateNonThrowingBody(returnType, isAsync, resolvedReturnType, typeParameters, compilation);
 
         var method = SyntaxFactory.MethodDeclaration(
@@ -1069,15 +1069,6 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
 
         return syntax.WithModifiers(SyntaxFactory.TokenList(
             SyntaxFactory.Token(refKeyword).WithTrailingTrivia(SyntaxFactory.Space)));
-    }
-
-    internal static BlockSyntax CreateThrowNotImplementedBody()
-    {
-        return SyntaxFactory.Block(
-            SyntaxFactory.ThrowStatement(
-                SyntaxFactory.ObjectCreationExpression(
-                    SyntaxFactory.ParseTypeName("global::System.NotImplementedException"))
-                .WithArgumentList(SyntaxFactory.ArgumentList())));
     }
 
     private static TypeDeclarationSyntax InsertMethod(
