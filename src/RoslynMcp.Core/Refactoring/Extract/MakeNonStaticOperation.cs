@@ -118,7 +118,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         var sourceText = await document.GetTextAsync(cancellationToken);
         var span = GetSelectionSpan(sourceText, @params);
         var symbol = ResolveSelectedSymbol(root, semanticModel, span, @params, cancellationToken);
-        var method = NormalizeMethodSymbol(symbol);
+        var method = MethodSymbolHelpers.NormalizeMethodSymbol(symbol);
         ValidateMethodCanBeMadeNonStatic(method);
 
         var declarationDocuments = await GetDeclarationDocumentsAsync(method, cancellationToken);
@@ -388,7 +388,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         if (method.IsExtensionMethod)
             return false;
 
-        if (method.IsAbstract || method.IsOverride || HasVirtualModifier(method))
+        if (method.IsAbstract || method.IsOverride || MethodSymbolHelpers.HasVirtualModifier(method))
             return false;
 
         if (method.IsExtern)
@@ -525,27 +525,6 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
             "No symbol found at the specified selection.");
     }
 
-    private static IMethodSymbol NormalizeMethodSymbol(ISymbol symbol)
-    {
-        symbol = symbol.OriginalDefinition;
-
-        if (symbol is IMethodSymbol { AssociatedSymbol: { } associated } &&
-            associated.Kind is Microsoft.CodeAnalysis.SymbolKind.Property or Microsoft.CodeAnalysis.SymbolKind.Event)
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidSymbolKind,
-                $"Symbol '{associated.Name}' is not a method.");
-        }
-
-        if (symbol is not IMethodSymbol method)
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidSymbolKind,
-                $"Symbol '{symbol.Name}' is not a method.");
-        }
-
-        return method;
-    }
 
     private static void ValidateMethodCanBeMadeNonStatic(IMethodSymbol method)
     {
@@ -570,7 +549,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
                 $"Method '{method.Name}' is an extension method and cannot be made an instance method.");
         }
 
-        if (method.IsAbstract || method.IsOverride || HasVirtualModifier(method))
+        if (method.IsAbstract || method.IsOverride || MethodSymbolHelpers.HasVirtualModifier(method))
         {
             throw new RefactoringException(
                 ErrorCodes.InvalidSymbolKind,
@@ -618,20 +597,6 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
                 ErrorCodes.DocumentNotEditable,
                 $"Method '{method.Name}' is not in an editable document.");
         }
-    }
-
-    private static bool HasVirtualModifier(IMethodSymbol method)
-    {
-        foreach (var reference in method.DeclaringSyntaxReferences)
-        {
-            if (reference.GetSyntax() is MethodDeclarationSyntax declaration &&
-                declaration.Modifiers.Any(SyntaxKind.VirtualKeyword))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
 
@@ -734,7 +699,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
                 if (nameNode == null)
                     continue;
 
-                if (IsInNameof(nameNode))
+                if (MethodSymbolHelpers.IsInNameof(nameNode))
                     continue;
 
                 if (IsConditionalAccessCallSite(nameNode) && NeedsConditionalAccessRewrite(nameNode, model))
@@ -768,19 +733,6 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
                 .FirstOrDefault(name => name.Span.Contains(span) || span.Contains(name.Span));
     }
 
-    private static bool IsInNameof(SyntaxNode node)
-    {
-        foreach (var ancestor in node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>())
-        {
-            if (ancestor.Expression is IdentifierNameSyntax identifier &&
-                identifier.Identifier.Text == "nameof")
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
 
     private static bool IsConditionalAccessCallSite(SimpleNameSyntax name) =>
         name.Parent is MemberBindingExpressionSyntax ||
