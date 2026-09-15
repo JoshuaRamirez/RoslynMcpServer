@@ -6,7 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-15
+
 ### Changed
+- Extracted shared `EventFieldDeclarator.TryGet` and replaced 3 identical Generate copies (`generate_overrides` / `implement_interface` / `implement_abstract`) (#1018)
 - Extracted shared `ControlTargetHelpers.FindControlTarget` (+ `ControlTarget`) and replaced 2 identical copies (`add_braces` / `remove_braces`) (#1107)
 - Extracted shared `MoreRestrictiveAccessibilityHelpers.MoreRestrictive` + `AccessibilityRank` + `SameAssembly` and replaced 2 identical copies (`EqualityMemberCollector` / `generate_constructor`) (#1104)
 - Extracted shared `GotoLabelHelpers.WouldHideExternallyReferencedLabel` + `GetLabelContainer` and replaced 2 identical copies (`add_braces` / `remove_braces`) (#1101)
@@ -44,7 +47,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `analyze_control_flow` sibling filter no longer allows cross-block First/Last that tripped RoslynError (#936)
 
 ### Changed
-- Extracted shared `EventFieldDeclarator.TryGet` and replaced 3 identical Generate copies (`generate_overrides` / `implement_interface` / `implement_abstract`) (#1018)
 - Extracted shared `SyntaxIdentifierValidation.IsValidIdentifier` and replaced 6 identical SyntaxFacts Inline/Generate/Signature/Convert copies (`inline_constant` / `generate_method_stub` / `generate_property` / `add_parameter` / `convert_anonymous_to_class` / `convert_tuple_to_struct`) (#1015)
 - Extracted shared `IdentifierValidation.IsValidIdentifier` and replaced 5 identical char-based Encapsulate/Extract copies (`encapsulate_field` / `extract_constant` / `extract_interface` / `extract_variable` / `extract_base_class`) (#1012)
 - Extracted shared `DeclarationIdentifiers` and replaced MakeStatic + MakeNonStatic GetDeclarationIdentifier / IdentifierOverlaps copies (`make_static` / `make_non_static`) (#1009)
@@ -372,7 +374,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
-[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.1...v0.5.2
