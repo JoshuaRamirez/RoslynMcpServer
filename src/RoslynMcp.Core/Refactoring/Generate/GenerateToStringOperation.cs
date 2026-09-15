@@ -261,7 +261,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
                     break;
 
                 Solution? updated = null;
-                foreach (var typeDeclaration in CollectTypeDeclarations(root))
+                foreach (var typeDeclaration in TypeDeclarationHelpers.CollectTypeDeclarations(root))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -375,7 +375,6 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
             null, 0, 0);
     }
 
-
     /// <summary>
     /// Preview description for a file that generated ToString on
     /// <paramref name="generatedCount"/> types.
@@ -384,20 +383,6 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         generatedCount == 1
             ? "Generate ToString"
             : $"Generate ToString on {generatedCount} types";
-
-    /// <summary>
-    /// Collects every <see cref="TypeDeclarationSyntax"/> in
-    /// <paramref name="root"/> (class / struct / interface / record /
-    /// record struct, including nested — same node kind as today's
-    /// <see cref="FindTypeDeclaration"/>). Deterministic
-    /// <c>SpanStart</c> then span-length order.
-    /// </summary>
-    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTypeDeclarations(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .OrderBy(type => type.SpanStart)
-            .ThenBy(type => type.Span.Length)
-            .ToList();
 
     private async Task<Solution?> TryGenerateOneAsync(
         Document document,
@@ -520,7 +505,6 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         var newRoot = root.ReplaceNode(typeDecl, newTypeDecl);
         return document.WithSyntaxRoot(newRoot).Project.Solution;
     }
-
 
     internal static void ValidateFormat(string? format)
     {
@@ -661,7 +645,6 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
 
     private static IEnumerable<IMethodSymbol> CollectToStringOverridesToReplace(INamedTypeSymbol typeSymbol) =>
         typeSymbol.GetMembers("ToString").OfType<IMethodSymbol>().Where(IsParameterlessToString);
-
 
     /// <summary>
     /// Finds a type by <paramref name="typeName"/>. Omitted

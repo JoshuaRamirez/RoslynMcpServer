@@ -282,7 +282,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                     break;
 
                 Solution? updated = null;
-                foreach (var typeDeclaration in CollectTypeDeclarations(root))
+                foreach (var typeDeclaration in TypeDeclarationHelpers.CollectTypeDeclarations(root))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -396,7 +396,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             null, 0, 0);
     }
 
-
     /// <summary>
     /// Preview description for a file that implemented abstract members
     /// on <paramref name="implementedCount"/> types.
@@ -405,21 +404,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         implementedCount == 1
             ? "Implement abstract members"
             : $"Implement abstract members on {implementedCount} types";
-
-    /// <summary>
-    /// Collects every <see cref="TypeDeclarationSyntax"/> in
-    /// <paramref name="root"/> (class / struct / interface / record /
-    /// record struct, including nested — same node kind as today's
-    /// <see cref="TypeDeclarationSyntax"/> host after
-    /// <c>FindTypeDeclaration</c>). Deterministic
-    /// <c>SpanStart</c> then span-length order.
-    /// </summary>
-    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTypeDeclarations(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .OrderBy(type => type.SpanStart)
-            .ThenBy(type => type.Span.Length)
-            .ToList();
 
     private async Task<Solution?> TryImplementOneAsync(
         Document document,
@@ -541,7 +525,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         var newRoot = root.ReplaceNode(hostTypeDecl, newTypeDeclaration);
         return document.WithSyntaxRoot(newRoot).Project.Solution;
     }
-
 
     internal static void ValidateTypeCanHostAbstractImplementations(INamedTypeSymbol typeSymbol)
     {
@@ -935,7 +918,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             || requested.Contains(typesOnly)
             || requested.Contains(typesOnlySpaced);
     }
-
 
     private static List<MemberDeclarationSyntax> GenerateImplementations(
         List<ISymbol> members,
@@ -1405,7 +1387,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
 
         return solution;
     }
-
 
     private static void AddKeyed<T>(
         Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,

@@ -4446,7 +4446,7 @@ public class ImplementAbstractOperationTests
     public void CollectTypeDeclarations_IncludesNestedAndInterface()
     {
         var root = CSharpSyntaxTree.ParseText(NormalizeNewlines(MixedEligibleAndSkipped)).GetRoot();
-        var types = ImplementAbstractOperation.CollectTypeDeclarations(root);
+        var types = TypeDeclarationHelpers.CollectTypeDeclarations(root);
         var names = types.Select(t => t.Identifier.Text).ToList();
         Assert.Contains("Eligible", names);
         Assert.Contains("StaticSkip", names);

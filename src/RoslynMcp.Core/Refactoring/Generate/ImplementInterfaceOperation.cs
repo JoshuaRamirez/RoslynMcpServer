@@ -283,7 +283,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                     break;
 
                 Solution? updated = null;
-                foreach (var typeDeclaration in CollectTypeDeclarations(root))
+                foreach (var typeDeclaration in TypeDeclarationHelpers.CollectTypeDeclarations(root))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -396,7 +396,6 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             null, 0, 0);
     }
 
-
     /// <summary>
     /// Preview description for a file that implemented interface members
     /// on <paramref name="implementedCount"/> types.
@@ -405,20 +404,6 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         implementedCount == 1
             ? "Implement interface members"
             : $"Implement interface members on {implementedCount} types";
-
-    /// <summary>
-    /// Collects every <see cref="TypeDeclarationSyntax"/> in
-    /// <paramref name="root"/> (class / struct / interface / record /
-    /// record struct, including nested — same node kind as today's
-    /// <see cref="FindTypeDeclaration"/>). Deterministic
-    /// <c>SpanStart</c> then span-length order.
-    /// </summary>
-    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTypeDeclarations(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .OrderBy(type => type.SpanStart)
-            .ThenBy(type => type.Span.Length)
-            .ToList();
 
     private async Task<Solution?> TryImplementOneAsync(
         Document document,
@@ -572,7 +557,6 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         var newRoot = root.ReplaceNode(typeDeclaration, newTypeDeclaration);
         return document.WithSyntaxRoot(newRoot).Project.Solution;
     }
-
 
     private async Task<INamedTypeSymbol?> FindInterfaceAsync(
         INamedTypeSymbol typeSymbol,
@@ -1030,7 +1014,6 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             || requested.Contains(typesOnlySpaced);
     }
 
-
     /// <summary>
     /// Removes matched implementation declarations from every partial that
     /// holds them. Match by span/kind, not SyntaxNode reference — same seam
@@ -1178,7 +1161,6 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
 
         return solution;
     }
-
 
     private static void AddKeyed<T>(
         Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,

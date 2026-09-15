@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Generate;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -3976,7 +3977,7 @@ public class GenerateOverridesOperationTests
     public void CollectTypeDeclarations_IncludesNestedAndInterface()
     {
         var root = CSharpSyntaxTree.ParseText(NormalizeNewlines(MixedEligibleAndSkipped)).GetRoot();
-        var types = GenerateOverridesOperation.CollectTypeDeclarations(root);
+        var types = TypeDeclarationHelpers.CollectTypeDeclarations(root);
         var names = types.Select(t => t.Identifier.Text).ToList();
         Assert.Contains("Eligible", names);
         Assert.Contains("StaticSkip", names);

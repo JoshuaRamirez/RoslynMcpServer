@@ -457,7 +457,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
                     break;
 
                 Solution? updated = null;
-                foreach (var typeDeclaration in CollectTypeDeclarations(root))
+                foreach (var typeDeclaration in TypeDeclarationHelpers.CollectTypeDeclarations(root))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -594,20 +594,6 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         generatedCount == 1
             ? "Generate constructor"
             : $"Generate {generatedCount} constructors";
-
-    /// <summary>
-    /// Collects every <see cref="TypeDeclarationSyntax"/> in
-    /// <paramref name="root"/> (class / struct / interface / record /
-    /// record struct, including nested — same node kind as
-    /// <see cref="FindTypeDeclaration"/>). Deterministic
-    /// <c>SpanStart</c> then span-length order.
-    /// </summary>
-    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTypeDeclarations(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .OrderBy(type => type.SpanStart)
-            .ThenBy(type => type.Span.Length)
-            .ToList();
 
     private async Task<Solution?> TryGenerateOneAsync(
         Document document,
@@ -790,7 +776,6 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         var newRoot = root.ReplaceNode(typeDeclaration, newTypeDeclaration);
         return document.WithSyntaxRoot(newRoot).Project.Solution;
     }
-
 
     private static List<ISymbol> GetMembersToInitialize(
         INamedTypeSymbol typeSymbol,
@@ -1143,7 +1128,6 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         return solution;
     }
-
 
     /// <summary>
     /// Finds a type by <paramref name="typeName"/>. Omitted
