@@ -64,6 +64,8 @@ public class MethodInterfaceHelpersTests
     [Fact]
     public void ImplementsInterface_SameNameAsInterfaceMemberButDoesNotImplement_ReturnsFalse()
     {
+        // C implements IFoo via explicit M(); the overload M(int) shares the name
+        // but is not an interface implementation.
         var compilation = CreateCompilation("""
             public interface IFoo
             {
@@ -71,12 +73,13 @@ public class MethodInterfaceHelpersTests
             }
             public class C : IFoo
             {
-                public void M() { }
-                public void Other() { }
+                void IFoo.M() { }
+                public void M(int value) { }
             }
             """);
         var type = compilation.GetTypeByMetadataName("C")!;
-        var method = type.GetMembers("Other").OfType<IMethodSymbol>().Single();
+        var method = type.GetMembers("M").OfType<IMethodSymbol>()
+            .Single(m => m.Parameters.Length == 1);
 
         Assert.False(MethodInterfaceHelpers.ImplementsInterface(method));
     }
