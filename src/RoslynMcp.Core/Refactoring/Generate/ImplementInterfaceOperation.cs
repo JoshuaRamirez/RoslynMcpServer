@@ -1036,7 +1036,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                     continue;
                 }
 
-                var memberSyntax = AsRemovableMember(syntax);
+                var memberSyntax = RemovableMemberHelpers.AsRemovableMember(syntax);
                 if (memberSyntax == null)
                     continue;
                 if (memberSyntax.Parent is not TypeDeclarationSyntax part)
@@ -1167,20 +1167,6 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         keys.Add(key);
     }
 
-    private static MemberDeclarationSyntax? AsRemovableMember(SyntaxNode syntax)
-    {
-        if (syntax is MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
-            or EventDeclarationSyntax or EventFieldDeclarationSyntax)
-        {
-            return (MemberDeclarationSyntax)syntax;
-        }
-
-        var ancestor = syntax.FirstAncestorOrSelf<MemberDeclarationSyntax>();
-        return ancestor is MethodDeclarationSyntax or PropertyDeclarationSyntax or IndexerDeclarationSyntax
-            or EventDeclarationSyntax or EventFieldDeclarationSyntax
-            ? ancestor
-            : null;
-    }
 
     /// <summary>
     /// Creates a preview result describing generate vs replace.
@@ -1229,7 +1215,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
                 foreach (var reference in existing.DeclaringSyntaxReferences)
                 {
                     var syntax = await reference.GetSyntaxAsync(cancellationToken);
-                    var memberSyntax = AsRemovableMember(syntax);
+                    var memberSyntax = RemovableMemberHelpers.AsRemovableMember(syntax);
                     if (memberSyntax == null)
                         continue;
 
