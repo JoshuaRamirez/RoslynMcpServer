@@ -8,7 +8,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 
 /// <summary>
 /// Unit tests for <see cref="TypeDeclarationHelpers"/> —
-/// CollectTypeDeclarations ordering/inclusion and AddMembers trivia shape.
+/// CollectTypeDeclarations ordering/inclusion, AddMembers trivia shape,
+/// and FindTypeDeclaration line/column selection.
 /// </summary>
 public class TypeDeclarationHelpersTests
 {
@@ -152,4 +153,179 @@ public class TypeDeclarationHelpersTests
         Assert.Equal("Existing", ((MethodDeclarationSyntax)only).Identifier.Text);
     }
 
+    private const string NestedSameNamePersonSource = """
+        namespace TestApp;
+
+        public class Person // outer-person
+        {
+            public string Name { get; set; }
+
+            public class Person // nested-person
+            {
+                public int Age { get; set; }
+            }
+        }
+        """;
+
+    private const string SameLineNestedPersonSource = """
+        namespace TestApp;
+
+        public class Person { public string Name { get; set; } public class Person { public int Age { get; set; } } }
+        """;
+
+    [Fact]
+    public void FindTypeDeclaration_OmittedLine_FirstOrDefaultPicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Person", line: null);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
+            root, "Person", FindLine(NestedSameNamePersonSource, "nested-person"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Person");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
+            root, "Person", FindLine(NestedSameNamePersonSource, "outer-person"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineMiss_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Person", line: 1);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnNestedIdentifier_PicksNested()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedPersonSource).GetRoot();
+        var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
+            root, "Person", line, ColumnOf(SameLineNestedPersonSource, "Person { public int Age"));
+
+        Assert.NotNull(found);
+        Assert.True(found.Parent is TypeDeclarationSyntax outer && outer.Identifier.Text == "Person");
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnOnOuterIdentifier_PicksOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedPersonSource).GetRoot();
+        var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
+            root, "Person", line, ColumnOf(SameLineNestedPersonSource, "Person { public string Name"));
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnWithoutLine_KeepsFirstMatch()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineNestedPersonSource).GetRoot();
+        var nestedColumn = ColumnOf(SameLineNestedPersonSource, "Person { public int Age");
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
+            root, "Person", line: null, nestedColumn);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_ColumnAndLineMiss_DoesNotFallBackToFirst()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Person", line: 1, column: 1);
+
+        Assert.Null(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_UnknownName_ReturnsNull()
+    {
+        var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
+        Assert.Null(TypeDeclarationHelpers.FindTypeDeclaration(root, "Missing", line: null));
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_LineOnContinuationIdentifier_PicksType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class
+                Person // split-person
+            {
+                public string Name { get; set; }
+
+                public class Person // nested-person
+                {
+                    public int Age { get; set; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var startLine = FindLine(source, "public class");
+        var identifierLine = FindLine(source, "split-person");
+        Assert.NotEqual(startLine, identifierLine);
+
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Person", identifierLine);
+
+        Assert.NotNull(found);
+        Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    private static int FindLine(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var line = 1;
+        for (var i = 0; i < index; i++)
+        {
+            if (source[i] == '\n')
+                line++;
+        }
+
+        return line;
+    }
+
+    private static int ColumnOf(string source, string snippet)
+    {
+        source = NormalizeNewlines(source);
+        snippet = NormalizeNewlines(snippet);
+        var index = source.IndexOf(snippet, StringComparison.Ordinal);
+        if (index < 0)
+            throw new InvalidOperationException($"Snippet not found: {snippet}");
+
+        var lineStart = source.LastIndexOf('\n', index) + 1;
+        return index - lineStart + 1;
+    }
+
+    private static string NormalizeNewlines(string text) =>
+        text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
 }

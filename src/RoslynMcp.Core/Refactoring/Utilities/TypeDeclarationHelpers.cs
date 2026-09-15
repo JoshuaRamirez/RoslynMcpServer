@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using RoslynMcp.Core.Resolution;
 
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
@@ -42,5 +43,73 @@ internal static class TypeDeclarationHelpers
         }
 
         return typeDeclaration.WithMembers(SyntaxFactory.List(members));
+    }
+
+    /// <summary>
+    /// Finds a type by <paramref name="typeName"/>. Omitted
+    /// <paramref name="column"/> keeps today's typeName + optional
+    /// <paramref name="line"/> pick, including omitted-line
+    /// <c>FirstOrDefault</c> and line-only exclusive-end coverage via
+    /// <see cref="TypeCoverage"/>. Column without line keeps today's
+    /// first-match after the typeName filter. When column is set with
+    /// line, prefers identifier coverage then the smallest containing
+    /// type; returns null when nothing covers that position. Same body
+    /// as the four Generate copies (GenerateOverrides /
+    /// GenerateEqualsHashCode / GenerateConstructor / ImplementInterface).
+    /// </summary>
+    internal static TypeDeclarationSyntax? FindTypeDeclaration(
+        SyntaxNode root,
+        string typeName,
+        int? line,
+        int? column = null)
+    {
+        var candidates = root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Identifier.Text == typeName)
+            .ToList();
+
+        if (candidates.Count == 0)
+            return null;
+
+        // Column without line is not a source position: substituting each
+        // candidate's own start line would match every equally-aligned
+        // same-name type and could silently pick the shortest. Keep
+        // today's FirstOrDefault after the typeName filter.
+        if (column.HasValue && !line.HasValue)
+            return candidates.FirstOrDefault();
+
+        if (column.HasValue)
+        {
+            // Do not require the declaration to start on `line` — a split
+            // type's identifier may live on a continuation line whose
+            // declaration span still covers that column. Prefer the
+            // identifier hit, then the smallest containing type (nested
+            // over outer). Do not silently pick the first when a covering
+            // node exists elsewhere — scan every candidate. If nothing
+            // covers this position, keep today's not-found (null) rather
+            // than inventing a first-match.
+            return candidates
+                .Where(t => TypeCoverage.TypeCoversColumn(t, line!.Value, column.Value))
+                .OrderBy(t => TypeCoverage.IdentifierCoversColumn(t, line!.Value, column.Value) ? 0 : 1)
+                .ThenBy(t => t.Span.Length)
+                .FirstOrDefault();
+        }
+
+        if (!line.HasValue)
+            return candidates.FirstOrDefault();
+
+        // Do not require the declaration to start on `line` — a split
+        // type's identifier may live on a continuation line whose
+        // declaration span still covers that line. Prefer the identifier
+        // hit, then the smallest containing type (nested over outer).
+        // Do not silently pick the first when a covering node exists
+        // elsewhere — scan every candidate. If nothing covers this line,
+        // keep today's first-match rather than inventing a not-found.
+        return candidates
+            .Where(t => TypeCoverage.TypeCoversLine(t, line.Value))
+            .OrderBy(t => TypeCoverage.IdentifierCoversLine(t, line.Value) ? 0 : 1)
+            .ThenBy(t => t.Span.Length)
+            .FirstOrDefault()
+            ?? candidates.FirstOrDefault();
     }
 }

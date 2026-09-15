@@ -199,7 +199,7 @@ public class GenerateEqualsHashCodeOperationTests
     public void FindTypeDeclaration_OmittedLine_FirstOrDefaultPicksOuter()
     {
         var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
-        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(root, "Person", line: null);
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Person", line: null);
 
         Assert.NotNull(found);
         Assert.False(found.Parent is TypeDeclarationSyntax);
@@ -209,7 +209,7 @@ public class GenerateEqualsHashCodeOperationTests
     public void FindTypeDeclaration_LineOnNestedIdentifier_PicksNested()
     {
         var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
-        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
             root, "Person", FindLine(NestedSameNamePersonSource, "nested-person"));
 
         Assert.NotNull(found);
@@ -220,7 +220,7 @@ public class GenerateEqualsHashCodeOperationTests
     public void FindTypeDeclaration_LineOnOuterIdentifier_PicksOuter()
     {
         var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
-        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
             root, "Person", FindLine(NestedSameNamePersonSource, "outer-person"));
 
         Assert.NotNull(found);
@@ -250,7 +250,7 @@ public class GenerateEqualsHashCodeOperationTests
         var identifierLine = FindLine(source, "split-person");
         Assert.NotEqual(startLine, identifierLine);
 
-        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(root, "Person", identifierLine);
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Person", identifierLine);
 
         Assert.NotNull(found);
         Assert.False(found.Parent is TypeDeclarationSyntax);
@@ -260,7 +260,7 @@ public class GenerateEqualsHashCodeOperationTests
     public void FindTypeDeclaration_LineMiss_KeepsFirstMatch()
     {
         var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
-        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(root, "Person", line: 1);
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Person", line: 1);
 
         Assert.NotNull(found);
         Assert.False(found.Parent is TypeDeclarationSyntax);
@@ -556,7 +556,7 @@ public class GenerateEqualsHashCodeOperationTests
     public void FindTypeDeclaration_OmittedColumn_FirstOrDefaultPicksOuter()
     {
         var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
-        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(root, "Person", line: null, column: null);
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Person", line: null, column: null);
 
         Assert.NotNull(found);
         Assert.False(found.Parent is TypeDeclarationSyntax);
@@ -567,7 +567,7 @@ public class GenerateEqualsHashCodeOperationTests
     {
         var root = CSharpSyntaxTree.ParseText(SameLineNestedPersonSource).GetRoot();
         var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
-        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
             root, "Person", line, ColumnOf(SameLineNestedPersonSource, "Person { public int Age"));
 
         Assert.NotNull(found);
@@ -579,7 +579,7 @@ public class GenerateEqualsHashCodeOperationTests
     {
         var root = CSharpSyntaxTree.ParseText(SameLineNestedPersonSource).GetRoot();
         var line = FindLine(SameLineNestedPersonSource, "public class Person { public string Name");
-        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
             root, "Person", line, ColumnOf(SameLineNestedPersonSource, "Person { public string Name"));
 
         Assert.NotNull(found);
@@ -591,7 +591,7 @@ public class GenerateEqualsHashCodeOperationTests
     {
         var root = CSharpSyntaxTree.ParseText(SameLineNestedPersonSource).GetRoot();
         var nestedColumn = ColumnOf(SameLineNestedPersonSource, "Person { public int Age");
-        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
             root, "Person", line: null, nestedColumn);
 
         Assert.NotNull(found);
@@ -621,7 +621,7 @@ public class GenerateEqualsHashCodeOperationTests
         var identifierLine = FindLine(source, "split-person");
         Assert.NotEqual(startLine, identifierLine);
 
-        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
             root, "Person", identifierLine, ColumnOf(source, "Person // split-person"));
 
         Assert.NotNull(found);
@@ -666,7 +666,7 @@ public class GenerateEqualsHashCodeOperationTests
     public void FindTypeDeclaration_ColumnAndLineMiss_DoesNotFallBackToFirst()
     {
         var root = CSharpSyntaxTree.ParseText(NestedSameNamePersonSource).GetRoot();
-        var found = GenerateEqualsHashCodeOperation.FindTypeDeclaration(root, "Person", line: 1, column: 1);
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Person", line: 1, column: 1);
 
         Assert.Null(found);
     }
