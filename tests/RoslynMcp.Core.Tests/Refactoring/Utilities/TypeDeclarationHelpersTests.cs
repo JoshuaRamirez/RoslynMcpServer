@@ -9,7 +9,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 /// <summary>
 /// Unit tests for <see cref="TypeDeclarationHelpers"/> —
 /// CollectTypeDeclarations ordering/inclusion, AddMembers trivia shape,
-/// and FindTypeDeclaration line/column selection.
+/// FindTypeDeclaration line/column selection, and GetSelfTypeName
+/// identifier / generic formatting.
 /// </summary>
 public class TypeDeclarationHelpersTests
 {
@@ -294,6 +295,33 @@ public class TypeDeclarationHelpersTests
 
         Assert.NotNull(found);
         Assert.False(found.Parent is TypeDeclarationSyntax);
+    }
+
+    [Fact]
+    public void GetSelfTypeName_NonGenericClass_ReturnsIdentifier()
+    {
+        var typeDecl = SyntaxFactory.ParseCompilationUnit("class Person { }")
+            .DescendantNodes().OfType<TypeDeclarationSyntax>().Single();
+
+        Assert.Equal("Person", TypeDeclarationHelpers.GetSelfTypeName(typeDecl));
+    }
+
+    [Fact]
+    public void GetSelfTypeName_GenericClass_FormatsOpenTypeArguments()
+    {
+        var typeDecl = SyntaxFactory.ParseCompilationUnit("class Box<T, U> { }")
+            .DescendantNodes().OfType<TypeDeclarationSyntax>().Single();
+
+        Assert.Equal("Box<T, U>", TypeDeclarationHelpers.GetSelfTypeName(typeDecl));
+    }
+
+    [Fact]
+    public void GetSelfTypeName_SingleTypeParameter_FormatsAngleBrackets()
+    {
+        var typeDecl = SyntaxFactory.ParseCompilationUnit("struct Pair<T> { }")
+            .DescendantNodes().OfType<TypeDeclarationSyntax>().Single();
+
+        Assert.Equal("Pair<T>", TypeDeclarationHelpers.GetSelfTypeName(typeDecl));
     }
 
     private static int FindLine(string source, string snippet)

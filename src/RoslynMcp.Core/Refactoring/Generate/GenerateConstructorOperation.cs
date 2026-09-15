@@ -1245,7 +1245,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         string visibility,
         bool addClassBaseCopy)
     {
-        var selfTypeName = GetSelfTypeName(typeDeclaration);
+        var selfTypeName = TypeDeclarationHelpers.GetSelfTypeName(typeDeclaration);
         var parameter = SyntaxFactory.Parameter(SyntaxFactory.Identifier(parameterName))
             .WithType(SyntaxFactory.ParseTypeName(selfTypeName).WithTrailingTrivia(SyntaxFactory.Space));
 
@@ -1599,16 +1599,6 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     /// Same constructed self-type spelling as generate_equals_hashcode
     /// (<c>Widget</c>, <c>Box&lt;T&gt;</c>).
     /// </summary>
-    private static string GetSelfTypeName(TypeDeclarationSyntax typeDecl)
-    {
-        var identifier = typeDecl.Identifier.Text;
-        if (typeDecl.TypeParameterList == null || typeDecl.TypeParameterList.Parameters.Count == 0)
-            return identifier;
-
-        var arguments = string.Join(", ", typeDecl.TypeParameterList.Parameters.Select(p => p.Identifier.Text));
-        return $"{identifier}<{arguments}>";
-    }
-
     private static IfStatementSyntax CreateArgumentNullCheck(string paramName)
     {
         return SyntaxFactory.IfStatement(
