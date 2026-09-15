@@ -799,11 +799,11 @@ public class AddParameterOperationTests
         var tree = CSharpSyntaxTree.ParseText(SameLineOverloadsSource);
         var root = tree.GetRoot();
         var line = FindLine(SameLineOverloadsSource, "public void Process(int x) { }");
-        var first = AddParameterOperation.FindMethod(
+        var first = FindMethodHelpers.FindMethod(
             root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x) { }"));
-        var second = AddParameterOperation.FindMethod(
+        var second = FindMethodHelpers.FindMethod(
             root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, int y)"));
-        var omitted = AddParameterOperation.FindMethod(root, "Process", line, column: null);
+        var omitted = FindMethodHelpers.FindMethod(root, "Process", line, column: null);
 
         Assert.NotNull(first);
         Assert.NotNull(second);
@@ -834,8 +834,8 @@ public class AddParameterOperationTests
         // Omitted column keeps today's start-line filter — the split
         // signature does not start on the identifier line. Column still
         // selects it.
-        var byStartLineOnly = AddParameterOperation.FindMethod(root, "Process", identifierLine, column: null);
-        var byColumn = AddParameterOperation.FindMethod(
+        var byStartLineOnly = FindMethodHelpers.FindMethod(root, "Process", identifierLine, column: null);
+        var byColumn = FindMethodHelpers.FindMethod(
             root, "Process", identifierLine, ColumnOf(source, "Process(int x) { }"));
 
         Assert.Null(byStartLineOnly);
@@ -859,10 +859,10 @@ public class AddParameterOperationTests
         var secondStart = ColumnOf(source, "public void Process");
         var secondId = ColumnOf(source, "Process(int x)");
 
-        var atSecondStart = AddParameterOperation.FindMethod(root, "Process", line, secondStart);
-        var atSecondId = AddParameterOperation.FindMethod(root, "Process", line, secondId);
-        var atFirstId = AddParameterOperation.FindMethod(root, "Other", line, ColumnOf(source, "Other(int x)"));
-        var firstAtSecondStart = AddParameterOperation.FindMethod(root, "Other", line, secondStart);
+        var atSecondStart = FindMethodHelpers.FindMethod(root, "Process", line, secondStart);
+        var atSecondId = FindMethodHelpers.FindMethod(root, "Process", line, secondId);
+        var atFirstId = FindMethodHelpers.FindMethod(root, "Other", line, ColumnOf(source, "Other(int x)"));
+        var firstAtSecondStart = FindMethodHelpers.FindMethod(root, "Other", line, secondStart);
 
         Assert.NotNull(atSecondStart);
         Assert.NotNull(atSecondId);

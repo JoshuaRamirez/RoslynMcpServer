@@ -916,11 +916,11 @@ public class ChangeReturnTypeOperationTests
         var tree = CSharpSyntaxTree.ParseText(SameLineOverloadsSource);
         var root = tree.GetRoot();
         var line = FindLine(SameLineOverloadsSource, "public int Process(int x) { return x; }");
-        var first = ChangeReturnTypeOperation.FindMethod(
+        var first = FindMethodHelpers.FindMethod(
             root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x) { return x; }"));
-        var second = ChangeReturnTypeOperation.FindMethod(
+        var second = FindMethodHelpers.FindMethod(
             root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, int y) { return x + y; }"));
-        var omitted = ChangeReturnTypeOperation.FindMethod(root, "Process", line, column: null);
+        var omitted = FindMethodHelpers.FindMethod(root, "Process", line, column: null);
 
         Assert.NotNull(first);
         Assert.NotNull(second);
@@ -951,8 +951,8 @@ public class ChangeReturnTypeOperationTests
         // Omitted column keeps today's start-line filter — the split
         // signature does not start on the identifier line. Column still
         // selects it.
-        var byStartLineOnly = ChangeReturnTypeOperation.FindMethod(root, "Process", identifierLine, column: null);
-        var byColumn = ChangeReturnTypeOperation.FindMethod(
+        var byStartLineOnly = FindMethodHelpers.FindMethod(root, "Process", identifierLine, column: null);
+        var byColumn = FindMethodHelpers.FindMethod(
             root, "Process", identifierLine, ColumnOf(source, "Process(int x) { return x; }"));
 
         Assert.Null(byStartLineOnly);
@@ -976,10 +976,10 @@ public class ChangeReturnTypeOperationTests
         var secondStart = ColumnOf(source, "public int Process");
         var secondId = ColumnOf(source, "Process(int x){return x;}");
 
-        var atSecondStart = ChangeReturnTypeOperation.FindMethod(root, "Process", line, secondStart);
-        var atSecondId = ChangeReturnTypeOperation.FindMethod(root, "Process", line, secondId);
-        var atFirstId = ChangeReturnTypeOperation.FindMethod(root, "Other", line, ColumnOf(source, "Other(int x)"));
-        var firstAtSecondStart = ChangeReturnTypeOperation.FindMethod(root, "Other", line, secondStart);
+        var atSecondStart = FindMethodHelpers.FindMethod(root, "Process", line, secondStart);
+        var atSecondId = FindMethodHelpers.FindMethod(root, "Process", line, secondId);
+        var atFirstId = FindMethodHelpers.FindMethod(root, "Other", line, ColumnOf(source, "Other(int x)"));
+        var firstAtSecondStart = FindMethodHelpers.FindMethod(root, "Other", line, secondStart);
 
         Assert.NotNull(atSecondStart);
         Assert.NotNull(atSecondId);
