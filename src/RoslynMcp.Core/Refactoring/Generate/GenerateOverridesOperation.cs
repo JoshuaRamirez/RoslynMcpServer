@@ -500,7 +500,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
 
         // Add overrides to type. Strip the per-execution annotation
         // so it does not linger in the workspace after commit.
-        var newTypeDeclaration = AddMembers(typeDeclaration, overrides);
+        var newTypeDeclaration = TypeDeclarationHelpers.AddMembers(typeDeclaration, overrides);
         if (targetTypeAnnotation != null)
             newTypeDeclaration = (TypeDeclarationSyntax)newTypeDeclaration.WithoutAnnotations(targetTypeAnnotation);
         var newRoot = root.ReplaceNode(typeDeclaration, newTypeDeclaration);
@@ -885,22 +885,6 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         }
 
         return overrides;
-    }
-
-    private static TypeDeclarationSyntax AddMembers(
-        TypeDeclarationSyntax typeDeclaration,
-        List<MemberDeclarationSyntax> newMembers)
-    {
-        var members = typeDeclaration.Members.ToList();
-
-        foreach (var member in newMembers)
-        {
-            members.Add(member
-                .WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed)
-                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed));
-        }
-
-        return typeDeclaration.WithMembers(SyntaxFactory.List(members));
     }
 
     /// <summary>

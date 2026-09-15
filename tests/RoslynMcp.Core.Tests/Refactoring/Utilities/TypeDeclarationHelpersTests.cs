@@ -1,12 +1,14 @@
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Core.Refactoring.Utilities;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 
 /// <summary>
-/// Unit tests for <see cref="TypeDeclarationHelpers.CollectTypeDeclarations"/> —
-/// ordering and inclusion previously covered on six Generate private copies.
+/// Unit tests for <see cref="TypeDeclarationHelpers"/> —
+/// CollectTypeDeclarations ordering/inclusion and AddMembers trivia shape.
 /// </summary>
 public class TypeDeclarationHelpersTests
 {
@@ -99,4 +101,55 @@ public class TypeDeclarationHelpersTests
         Assert.Equal(new[] { "A", "B" }, types.Select(t => t.Identifier.Text));
         Assert.True(types[0].SpanStart < types[1].SpanStart);
     }
+
+    [Fact]
+    public void AddMembers_AppendsWithBlankLineLeadingAndTrailingCrlf()
+    {
+        var type = (TypeDeclarationSyntax)SyntaxFactory.ParseCompilationUnit(
+            """
+            class C
+            {
+                void Existing() { }
+            }
+            """).Members[0];
+
+        var newMember = SyntaxFactory.ParseMemberDeclaration("void Added() { }")!;
+        var updated = TypeDeclarationHelpers.AddMembers(type, [newMember]);
+
+        Assert.Equal(2, updated.Members.Count);
+        Assert.Equal("Existing", ((MethodDeclarationSyntax)updated.Members[0]).Identifier.Text);
+        Assert.Equal("Added", ((MethodDeclarationSyntax)updated.Members[1]).Identifier.Text);
+
+        var expectedNewline = SyntaxFactory.CarriageReturnLineFeed.ToFullString();
+        var leading = updated.Members[1].GetLeadingTrivia().ToList();
+        Assert.Equal(2, leading.Count);
+        Assert.All(leading, t =>
+        {
+            Assert.True(t.IsKind(SyntaxKind.EndOfLineTrivia));
+            Assert.Equal(expectedNewline, t.ToFullString());
+        });
+
+        var trailing = updated.Members[1].GetTrailingTrivia().ToList();
+        Assert.Single(trailing);
+        Assert.True(trailing[0].IsKind(SyntaxKind.EndOfLineTrivia));
+        Assert.Equal(expectedNewline, trailing[0].ToFullString());
+    }
+
+    [Fact]
+    public void AddMembers_EmptyList_PreservesMemberCount()
+    {
+        var type = (TypeDeclarationSyntax)SyntaxFactory.ParseCompilationUnit(
+            """
+            class C
+            {
+                void Existing() { }
+            }
+            """).Members[0];
+
+        var updated = TypeDeclarationHelpers.AddMembers(type, []);
+
+        var only = Assert.Single(updated.Members);
+        Assert.Equal("Existing", ((MethodDeclarationSyntax)only).Identifier.Text);
+    }
+
 }
