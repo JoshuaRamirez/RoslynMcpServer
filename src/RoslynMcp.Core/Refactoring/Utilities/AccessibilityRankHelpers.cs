@@ -6,8 +6,9 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// Shared accessibility ranking used by convert_anonymous_to_class /
 /// convert_tuple_to_struct when computing effective accessibility through
 /// containing types. Same bodies as the two private copies. Distinct from
-/// <see cref="EqualityMemberCollector"/> / generate_constructor (different
-/// AccessibilityRank ordering).
+/// <see cref="MoreRestrictiveAccessibilityHelpers"/> (Internal before
+/// Protected; unknown defaults to 0) used by EqualityMemberCollector /
+/// generate_constructor.
 /// </summary>
 internal static class AccessibilityRankHelpers
 {

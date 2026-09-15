@@ -970,35 +970,18 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     {
         var accessibility = member.DeclaredAccessibility;
         if (member is IPropertySymbol { SetMethod: { } setter })
-            accessibility = MoreRestrictive(accessibility, setter.DeclaredAccessibility);
+            accessibility = MoreRestrictiveAccessibilityHelpers.MoreRestrictive(accessibility, setter.DeclaredAccessibility);
 
         return accessibility switch
         {
             Accessibility.Public => true,
             Accessibility.Protected => true,
             Accessibility.ProtectedOrInternal => true,
-            Accessibility.Internal => SameAssembly(member, fromType),
-            Accessibility.ProtectedAndInternal => SameAssembly(member, fromType),
+            Accessibility.Internal => MoreRestrictiveAccessibilityHelpers.SameAssembly(member, fromType),
+            Accessibility.ProtectedAndInternal => MoreRestrictiveAccessibilityHelpers.SameAssembly(member, fromType),
             _ => false
         };
     }
-
-    private static Accessibility MoreRestrictive(Accessibility left, Accessibility right) =>
-        AccessibilityRank(left) <= AccessibilityRank(right) ? left : right;
-
-    private static int AccessibilityRank(Accessibility accessibility) => accessibility switch
-    {
-        Accessibility.Private => 0,
-        Accessibility.ProtectedAndInternal => 1,
-        Accessibility.Internal => 2,
-        Accessibility.Protected => 3,
-        Accessibility.ProtectedOrInternal => 4,
-        Accessibility.Public => 5,
-        _ => 0
-    };
-
-    private static bool SameAssembly(ISymbol member, INamedTypeSymbol fromType) =>
-        SymbolEqualityComparer.Default.Equals(member.ContainingAssembly, fromType.ContainingAssembly);
 
     /// <summary>
     /// Copy mode emits <c>other.Member</c>, so the member must be readable.
@@ -1025,8 +1008,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             Accessibility.Public => true,
             Accessibility.Protected => true,
             Accessibility.ProtectedOrInternal => true,
-            Accessibility.Internal => SameAssembly(accessor, fromType),
-            Accessibility.ProtectedAndInternal => SameAssembly(accessor, fromType),
+            Accessibility.Internal => MoreRestrictiveAccessibilityHelpers.SameAssembly(accessor, fromType),
+            Accessibility.ProtectedAndInternal => MoreRestrictiveAccessibilityHelpers.SameAssembly(accessor, fromType),
             _ => false
         };
 
@@ -1496,8 +1479,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             Accessibility.Public => true,
             Accessibility.Protected => true,
             Accessibility.ProtectedOrInternal => true,
-            Accessibility.Internal => SameAssembly(constructor, fromType),
-            Accessibility.ProtectedAndInternal => SameAssembly(constructor, fromType),
+            Accessibility.Internal => MoreRestrictiveAccessibilityHelpers.SameAssembly(constructor, fromType),
+            Accessibility.ProtectedAndInternal => MoreRestrictiveAccessibilityHelpers.SameAssembly(constructor, fromType),
             _ => false
         };
 

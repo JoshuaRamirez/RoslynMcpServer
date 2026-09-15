@@ -157,35 +157,17 @@ public static class EqualityMemberCollector
     {
         var accessibility = member.DeclaredAccessibility;
         if (member is IPropertySymbol { GetMethod: { } getter })
-            accessibility = MoreRestrictive(accessibility, getter.DeclaredAccessibility);
+            accessibility = MoreRestrictiveAccessibilityHelpers.MoreRestrictive(accessibility, getter.DeclaredAccessibility);
 
         return accessibility switch
         {
             Accessibility.Public => true,
             Accessibility.Protected => true,
             Accessibility.ProtectedOrInternal => true,
-            Accessibility.Internal => SameAssembly(member, fromType),
-            Accessibility.ProtectedAndInternal => SameAssembly(member, fromType),
+            Accessibility.Internal => MoreRestrictiveAccessibilityHelpers.SameAssembly(member, fromType),
+            Accessibility.ProtectedAndInternal => MoreRestrictiveAccessibilityHelpers.SameAssembly(member, fromType),
             _ => false
         };
     }
 
-    private static Accessibility MoreRestrictive(Accessibility left, Accessibility right)
-    {
-        return AccessibilityRank(left) <= AccessibilityRank(right) ? left : right;
-    }
-
-    private static int AccessibilityRank(Accessibility accessibility) => accessibility switch
-    {
-        Accessibility.Private => 0,
-        Accessibility.ProtectedAndInternal => 1,
-        Accessibility.Internal => 2,
-        Accessibility.Protected => 3,
-        Accessibility.ProtectedOrInternal => 4,
-        Accessibility.Public => 5,
-        _ => 0
-    };
-
-    private static bool SameAssembly(ISymbol member, INamedTypeSymbol fromType) =>
-        SymbolEqualityComparer.Default.Equals(member.ContainingAssembly, fromType.ContainingAssembly);
 }
