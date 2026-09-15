@@ -120,18 +120,19 @@ public class TypeDeclarationHelpersTests
         Assert.Equal("Existing", ((MethodDeclarationSyntax)updated.Members[0]).Identifier.Text);
         Assert.Equal("Added", ((MethodDeclarationSyntax)updated.Members[1]).Identifier.Text);
 
+        var expectedNewline = SyntaxFactory.CarriageReturnLineFeed.ToFullString();
         var leading = updated.Members[1].GetLeadingTrivia().ToList();
         Assert.Equal(2, leading.Count);
         Assert.All(leading, t =>
         {
             Assert.True(t.IsKind(SyntaxKind.EndOfLineTrivia));
-            Assert.Equal("\r\n", t.ToFullString());
+            Assert.Equal(expectedNewline, t.ToFullString());
         });
 
         var trailing = updated.Members[1].GetTrailingTrivia().ToList();
         Assert.Single(trailing);
         Assert.True(trailing[0].IsKind(SyntaxKind.EndOfLineTrivia));
-        Assert.Equal("\r\n", trailing[0].ToFullString());
+        Assert.Equal(expectedNewline, trailing[0].ToFullString());
     }
 
     [Fact]
