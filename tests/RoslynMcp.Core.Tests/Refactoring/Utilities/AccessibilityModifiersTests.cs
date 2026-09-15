@@ -92,4 +92,57 @@ public class AccessibilityModifiersTests
             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
         Assert.True(AccessibilityModifiers.HasNonPublicAccessibility(accessor));
     }
+
+    [Fact]
+    public void IsPrivateOnlyAccessor_False_WhenNoModifiers()
+    {
+        var accessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+        Assert.False(AccessibilityModifiers.IsPrivateOnlyAccessor(accessor));
+    }
+
+    [Fact]
+    public void IsPrivateOnlyAccessor_True_WhenPrivateOnly()
+    {
+        var accessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+            .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PrivateKeyword)))
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+        Assert.True(AccessibilityModifiers.IsPrivateOnlyAccessor(accessor));
+    }
+
+    [Theory]
+    [InlineData(SyntaxKind.ProtectedKeyword)]
+    [InlineData(SyntaxKind.InternalKeyword)]
+    [InlineData(SyntaxKind.PublicKeyword)]
+    public void IsPrivateOnlyAccessor_False_WhenNonPrivateAccessibilityAlone(SyntaxKind kind)
+    {
+        var accessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+            .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(kind)))
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+        Assert.False(AccessibilityModifiers.IsPrivateOnlyAccessor(accessor));
+    }
+
+    [Theory]
+    [InlineData(SyntaxKind.ProtectedKeyword)]
+    [InlineData(SyntaxKind.InternalKeyword)]
+    public void IsPrivateOnlyAccessor_False_WhenPrivateCombinedWithProtectedOrInternal(SyntaxKind other)
+    {
+        var accessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+            .WithModifiers(SyntaxFactory.TokenList(
+                SyntaxFactory.Token(SyntaxKind.PrivateKeyword),
+                SyntaxFactory.Token(other)))
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+        Assert.False(AccessibilityModifiers.IsPrivateOnlyAccessor(accessor));
+    }
+
+    [Fact]
+    public void IsPrivateOnlyAccessor_True_WhenPrivateMixedWithNonAccessibility()
+    {
+        var accessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+            .WithModifiers(SyntaxFactory.TokenList(
+                SyntaxFactory.Token(SyntaxKind.PrivateKeyword),
+                SyntaxFactory.Token(SyntaxKind.AsyncKeyword)))
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+        Assert.True(AccessibilityModifiers.IsPrivateOnlyAccessor(accessor));
+    }
 }

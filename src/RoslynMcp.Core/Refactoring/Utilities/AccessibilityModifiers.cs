@@ -32,4 +32,14 @@ internal static class AccessibilityModifiers
             token.IsKind(SyntaxKind.PrivateKeyword)
             || token.IsKind(SyntaxKind.ProtectedKeyword)
             || token.IsKind(SyntaxKind.InternalKeyword));
+
+    /// <summary>
+    /// True when <paramref name="accessor"/> has <c>private</c> and does not
+    /// also have <c>protected</c> or <c>internal</c>. Used when deciding
+    /// whether an indexer can be left as an abstract member.
+    /// </summary>
+    internal static bool IsPrivateOnlyAccessor(AccessorDeclarationSyntax accessor) =>
+        accessor.Modifiers.Any(SyntaxKind.PrivateKeyword)
+        && !accessor.Modifiers.Any(SyntaxKind.ProtectedKeyword)
+        && !accessor.Modifiers.Any(SyntaxKind.InternalKeyword);
 }
