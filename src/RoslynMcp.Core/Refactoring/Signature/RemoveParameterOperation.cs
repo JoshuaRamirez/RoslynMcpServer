@@ -192,7 +192,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         if (methods.Count > 1 && !@params.Line.HasValue)
         {
             var lines = methods
-                .Select(StartLine)
+                .Select(FindMethodHelpers.StartLine)
                 .ToList();
             throw new RefactoringException(
                 ErrorCodes.SymbolAmbiguous,
@@ -201,7 +201,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
 
         if (@params.Column.HasValue)
         {
-            var covering = FindMethod(root, @params.MethodName, @params.Line, @params.Column);
+            var covering = FindMethodHelpers.FindMethod(root, @params.MethodName, @params.Line, @params.Column);
             if (covering == null)
             {
                 throw new RefactoringException(
@@ -225,7 +225,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         IEnumerable<MethodDeclarationSyntax> filtered = methods;
         if (@params.Line.HasValue)
         {
-            filtered = filtered.Where(m => StartLine(m) == @params.Line.Value);
+            filtered = filtered.Where(m => FindMethodHelpers.StartLine(m) == @params.Line.Value);
         }
 
         var matches = filtered.ToList();
@@ -242,63 +242,13 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         }
 
         var optionLines = matches
-            .Select(StartLine)
+            .Select(FindMethodHelpers.StartLine)
             .ToList();
         throw new RefactoringException(
             ErrorCodes.SymbolAmbiguous,
             $"Multiple methods named '{@params.MethodName}' found. Provide line number. Options: {string.Join(", ", optionLines)}");
     }
 
-    /// <summary>
-    /// Finds a method. Omitted <paramref name="column"/> keeps today's
-    /// MethodName + optional Line start-line pick (a single name match
-    /// with no line is used as-is; line uses start-line equality; several
-    /// start-line hits stay ambiguous at the caller). When set, picks the
-    /// smallest method whose identifier or declaration span covers that
-    /// 1-based column. Do not require the declaration to start on
-    /// <paramref name="line"/> when column is set — a split signature may
-    /// put the identifier on a continuation line.
-    /// </summary>
-    internal static MethodDeclarationSyntax? FindMethod(
-        SyntaxNode root,
-        string methodName,
-        int? line,
-        int? column)
-    {
-        var methods = root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .Where(m => m.Identifier.Text == methodName)
-            .ToList();
-
-        if (column.HasValue)
-        {
-            // When column is set, do not require the declaration to start
-            // on `line` — a split signature's identifier may live on a
-            // continuation line whose declaration span still covers that
-            // column. Prefer the identifier hit, then the smallest
-            // containing declaration. Do not silently pick the first when
-            // a covering node exists elsewhere — scan every candidate,
-            // including those that do not start on `line`. If nothing
-            // covers this position, keep today's not-found (null).
-            return methods
-                .Where(m => MethodCoverage.MethodCoversColumn(m, line ?? StartLine(m), column.Value))
-                .OrderBy(m => MethodCoverage.IdentifierCoversColumn(m, line ?? StartLine(m), column.Value) ? 0 : 1)
-                .ThenBy(m => m.Span.Length)
-                .FirstOrDefault();
-        }
-
-        if (methods.Count == 1 && !line.HasValue)
-            return methods[0];
-
-        if (!line.HasValue)
-            return methods.Count == 1 ? methods[0] : null;
-
-        var startLineMatches = methods.Where(m => StartLine(m) == line.Value).ToList();
-        return startLineMatches.Count == 1 ? startLineMatches[0] : null;
-    }
-
-    private static int StartLine(MethodDeclarationSyntax method) =>
-        method.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
 
     internal static IParameterSymbol FindParameter(IMethodSymbol method, string name)
     {

@@ -647,11 +647,11 @@ public class RemoveParameterOperationTests
         var tree = CSharpSyntaxTree.ParseText(SameLineOverloadsSource);
         var root = tree.GetRoot();
         var line = FindLine(SameLineOverloadsSource, "public void Process(int x, bool flag) { }");
-        var first = RemoveParameterOperation.FindMethod(
+        var first = FindMethodHelpers.FindMethod(
             root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, bool flag)"));
-        var second = RemoveParameterOperation.FindMethod(
+        var second = FindMethodHelpers.FindMethod(
             root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, int y, bool extra)"));
-        var omitted = RemoveParameterOperation.FindMethod(root, "Process", line, column: null);
+        var omitted = FindMethodHelpers.FindMethod(root, "Process", line, column: null);
 
         Assert.NotNull(first);
         Assert.NotNull(second);
@@ -682,8 +682,8 @@ public class RemoveParameterOperationTests
         // Omitted column keeps today's start-line filter — the split
         // signature does not start on the identifier line. Column still
         // selects it.
-        var byStartLineOnly = RemoveParameterOperation.FindMethod(root, "Process", identifierLine, column: null);
-        var byColumn = RemoveParameterOperation.FindMethod(
+        var byStartLineOnly = FindMethodHelpers.FindMethod(root, "Process", identifierLine, column: null);
+        var byColumn = FindMethodHelpers.FindMethod(
             root, "Process", identifierLine, ColumnOf(source, "Process(int x, bool unused) { }"));
 
         Assert.Null(byStartLineOnly);
@@ -707,10 +707,10 @@ public class RemoveParameterOperationTests
         var secondStart = ColumnOf(source, "public void Process");
         var secondId = ColumnOf(source, "Process(int x, bool unused){}");
 
-        var atSecondStart = RemoveParameterOperation.FindMethod(root, "Process", line, secondStart);
-        var atSecondId = RemoveParameterOperation.FindMethod(root, "Process", line, secondId);
-        var atFirstId = RemoveParameterOperation.FindMethod(root, "Other", line, ColumnOf(source, "Other(int x, bool unused)"));
-        var firstAtSecondStart = RemoveParameterOperation.FindMethod(root, "Other", line, secondStart);
+        var atSecondStart = FindMethodHelpers.FindMethod(root, "Process", line, secondStart);
+        var atSecondId = FindMethodHelpers.FindMethod(root, "Process", line, secondId);
+        var atFirstId = FindMethodHelpers.FindMethod(root, "Other", line, ColumnOf(source, "Other(int x, bool unused)"));
+        var firstAtSecondStart = FindMethodHelpers.FindMethod(root, "Other", line, secondStart);
 
         Assert.NotNull(atSecondStart);
         Assert.NotNull(atSecondId);

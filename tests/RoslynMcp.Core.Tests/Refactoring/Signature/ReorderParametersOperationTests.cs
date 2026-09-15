@@ -825,11 +825,11 @@ public class ReorderParametersOperationTests
         var tree = CSharpSyntaxTree.ParseText(SameLineOverloadsSource);
         var root = tree.GetRoot();
         var line = FindLine(SameLineOverloadsSource, "public void Process(int x, bool flag) { }");
-        var first = ReorderParametersOperation.FindMethod(
+        var first = FindMethodHelpers.FindMethod(
             root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, bool flag)"));
-        var second = ReorderParametersOperation.FindMethod(
+        var second = FindMethodHelpers.FindMethod(
             root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, int y, bool extra)"));
-        var omitted = ReorderParametersOperation.FindMethod(root, "Process", line, column: null);
+        var omitted = FindMethodHelpers.FindMethod(root, "Process", line, column: null);
 
         Assert.NotNull(first);
         Assert.NotNull(second);
@@ -860,8 +860,8 @@ public class ReorderParametersOperationTests
         // Omitted column keeps today's start-line filter — the split
         // signature does not start on the identifier line. Column still
         // selects it.
-        var byStartLineOnly = ReorderParametersOperation.FindMethod(root, "Process", identifierLine, column: null);
-        var byColumn = ReorderParametersOperation.FindMethod(
+        var byStartLineOnly = FindMethodHelpers.FindMethod(root, "Process", identifierLine, column: null);
+        var byColumn = FindMethodHelpers.FindMethod(
             root, "Process", identifierLine, ColumnOf(source, "Process(int x, bool unused) { }"));
 
         Assert.Null(byStartLineOnly);
@@ -885,10 +885,10 @@ public class ReorderParametersOperationTests
         var secondStart = ColumnOf(source, "public void Process");
         var secondId = ColumnOf(source, "Process(int x, bool unused){}");
 
-        var atSecondStart = ReorderParametersOperation.FindMethod(root, "Process", line, secondStart);
-        var atSecondId = ReorderParametersOperation.FindMethod(root, "Process", line, secondId);
-        var atFirstId = ReorderParametersOperation.FindMethod(root, "Other", line, ColumnOf(source, "Other(int x, bool unused)"));
-        var firstAtSecondStart = ReorderParametersOperation.FindMethod(root, "Other", line, secondStart);
+        var atSecondStart = FindMethodHelpers.FindMethod(root, "Process", line, secondStart);
+        var atSecondId = FindMethodHelpers.FindMethod(root, "Process", line, secondId);
+        var atFirstId = FindMethodHelpers.FindMethod(root, "Other", line, ColumnOf(source, "Other(int x, bool unused)"));
+        var firstAtSecondStart = FindMethodHelpers.FindMethod(root, "Other", line, secondStart);
 
         Assert.NotNull(atSecondStart);
         Assert.NotNull(atSecondId);
