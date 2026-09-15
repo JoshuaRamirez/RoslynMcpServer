@@ -182,7 +182,7 @@ public class GotoLabelHelpersTests
     [Fact]
     public void WouldHideExternallyReferencedLabel_ExternalGoto_ReturnsTrue()
     {
-        var method = CSharpSyntaxTree.ParseText("""
+        var ifStatement = CSharpSyntaxTree.ParseText("""
             class Loop
             {
                 void Run(bool condition)
@@ -198,7 +198,7 @@ public class GotoLabelHelpersTests
             .OfType<IfStatementSyntax>()
             .Single();
 
-        Assert.True(GotoLabelHelpers.WouldHideExternallyReferencedLabel(method.Statement));
+        Assert.True(GotoLabelHelpers.WouldHideExternallyReferencedLabel(ifStatement.Statement));
     }
 
     [Fact]
