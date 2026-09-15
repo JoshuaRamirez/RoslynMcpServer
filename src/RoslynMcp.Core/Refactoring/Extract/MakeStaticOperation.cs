@@ -396,7 +396,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         if (method.ContainingType.TypeKind == TypeKind.Interface)
             return false;
 
-        if (ImplementsInterface(method))
+        if (MethodInterfaceHelpers.ImplementsInterface(method))
             return false;
 
         return method.Locations.Any(location => location.IsInSource);
@@ -584,7 +584,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
                 $"Method '{method.Name}' is an interface member and cannot be made static.");
         }
 
-        if (ImplementsInterface(method))
+        if (MethodInterfaceHelpers.ImplementsInterface(method))
         {
             throw new RefactoringException(
                 ErrorCodes.InvalidSymbolKind,
@@ -613,32 +613,6 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         return false;
     }
 
-    private static bool ImplementsInterface(IMethodSymbol method)
-    {
-        if (method.ExplicitInterfaceImplementations.Length > 0)
-            return true;
-
-        if (method.ContainingType == null)
-            return false;
-
-        foreach (var iface in method.ContainingType.AllInterfaces)
-        {
-            foreach (var member in iface.GetMembers(method.Name))
-            {
-                var implementation = method.ContainingType.FindImplementationForInterfaceMember(member);
-                if (implementation == null)
-                    continue;
-
-                if (SymbolEqualityComparer.Default.Equals(implementation, method) ||
-                    SymbolEqualityComparer.Default.Equals(implementation.OriginalDefinition, method.OriginalDefinition))
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
 
     private async Task<IReadOnlyList<Document>> GetDeclarationDocumentsAsync(
         IMethodSymbol method,
