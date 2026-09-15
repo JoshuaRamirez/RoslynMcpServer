@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using RoslynMcp.Core.Refactoring.Utilities;
 using Xunit;
 
@@ -38,5 +39,36 @@ public class MoreRestrictiveAccessibilityHelpersTests
     public void AccessibilityRank_KnownValues(Accessibility accessibility, int expected)
     {
         Assert.Equal(expected, MoreRestrictiveAccessibilityHelpers.AccessibilityRank(accessibility));
+    }
+
+    [Fact]
+    public void SameAssembly_SameCompilation_ReturnsTrue()
+    {
+        var compilation = CreateCompilation("AsmA", "public class C { public int F; }");
+        var type = compilation.GetTypeByMetadataName("C")!;
+        var field = type.GetMembers("F").Single();
+
+        Assert.True(MoreRestrictiveAccessibilityHelpers.SameAssembly(field, type));
+    }
+
+    [Fact]
+    public void SameAssembly_DifferentCompilations_ReturnsFalse()
+    {
+        var compilationA = CreateCompilation("AsmA", "public class A { public int F; }");
+        var compilationB = CreateCompilation("AsmB", "public class B { }");
+        var field = compilationA.GetTypeByMetadataName("A")!.GetMembers("F").Single();
+        var typeB = compilationB.GetTypeByMetadataName("B")!;
+
+        Assert.False(MoreRestrictiveAccessibilityHelpers.SameAssembly(field, typeB));
+    }
+
+    private static CSharpCompilation CreateCompilation(string assemblyName, string source)
+    {
+        var tree = CSharpSyntaxTree.ParseText(source);
+        return CSharpCompilation.Create(
+            assemblyName,
+            [tree],
+            [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
     }
 }
