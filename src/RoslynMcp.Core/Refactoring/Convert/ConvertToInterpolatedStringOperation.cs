@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -276,11 +277,11 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
 
         if (!column.HasValue)
         {
-            ExpressionSyntax? firstFormat = formats.FirstOrDefault(invocation => StartsOnLine(invocation, line));
+            ExpressionSyntax? firstFormat = formats.FirstOrDefault(invocation => SyntaxLineHelpers.StartsOnLine(invocation, line));
             if (firstFormat != null)
                 return firstFormat;
 
-            var firstConcat = concats.FirstOrDefault(binary => StartsOnLine(binary, line));
+            var firstConcat = concats.FirstOrDefault(binary => SyntaxLineHelpers.StartsOnLine(binary, line));
             return firstConcat == null ? null : OuterConcatenation(firstConcat);
         }
 
@@ -364,10 +365,6 @@ public sealed class ConvertToInterpolatedStringOperation : RefactoringOperationB
 
         return outer;
     }
-
-    private static bool StartsOnLine(SyntaxNode node, int line) =>
-        node.GetLocation().GetLineSpan().StartLinePosition.Line + 1 == line;
-
 
     private static bool IsStringFormatCall(InvocationExpressionSyntax invocation, SemanticModel model)
     {

@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -268,11 +269,11 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
 
         if (!column.HasValue)
         {
-            StatementSyntax? firstSwitch = switches.FirstOrDefault(statement => StartsOnLine(statement, line));
+            StatementSyntax? firstSwitch = switches.FirstOrDefault(statement => SyntaxLineHelpers.StartsOnLine(statement, line));
             if (firstSwitch != null)
                 return firstSwitch;
 
-            return ifs.FirstOrDefault(statement => StartsOnLine(statement, line));
+            return ifs.FirstOrDefault(statement => SyntaxLineHelpers.StartsOnLine(statement, line));
         }
 
         return switches.Cast<StatementSyntax>()
@@ -281,10 +282,6 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
             .OrderBy(statement => statement.Span.Length)
             .FirstOrDefault();
     }
-
-    private static bool StartsOnLine(SyntaxNode node, int line) =>
-        node.GetLocation().GetLineSpan().StartLinePosition.Line + 1 == line;
-
 
     private async Task<RefactoringResult> ConvertSwitchToExpression(
         Guid operationId, Document document, SyntaxNode root,
