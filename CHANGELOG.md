@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `MethodSymbolHelpers.IsInNameof` + `HasVirtualModifier` + `NormalizeMethodSymbol` and replaced 2 identical copies (`make_static` / `make_non_static`) (#1164)
 - Extracted shared `MethodInterfaceHelpers.ImplementsInterface` and replaced 2 identical copies (`make_static` / `make_non_static`) (#1161)
 - Extracted shared `SyntaxLineHelpers.StartsOnLine` and replaced 2 identical copies (`convert_to_interpolated_string` / `convert_to_pattern_matching`) (#1158)
 - Extracted shared `AccessibilityModifiers.IsPrivateOnlyAccessor` and replaced 2 identical copies (`HierarchyAbstractMemberRewriter` / `push_members_down`) (#1154)
