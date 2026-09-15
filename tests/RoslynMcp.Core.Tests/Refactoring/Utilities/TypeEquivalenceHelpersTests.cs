@@ -59,36 +59,46 @@ public class TypeEquivalenceHelpersTests
     [Fact]
     public void TypesEquivalent_ArrayElementRecursion_ReturnsTrue()
     {
+        // Use corresponding method type-params so SymbolEqualityComparer fails
+        // at the array level and the helper must recurse into ElementType.
         var compilation = CreateCompilation("""
             public class C
             {
-                public int[] A;
-                public int[] B;
+                public void A<T>(T[] values) { }
+                public void B<T>(T[] values) { }
             }
             """);
         var type = compilation.GetTypeByMetadataName("C")!;
-        var a = type.GetMembers("A").OfType<IFieldSymbol>().Single();
-        var b = type.GetMembers("B").OfType<IFieldSymbol>().Single();
+        var a = type.GetMembers("A").OfType<IMethodSymbol>().Single();
+        var b = type.GetMembers("B").OfType<IMethodSymbol>().Single();
+        var left = a.Parameters[0].Type;
+        var right = b.Parameters[0].Type;
 
-        Assert.True(TypeEquivalenceHelpers.TypesEquivalent(a.Type, b.Type));
+        Assert.False(SymbolEqualityComparer.Default.Equals(left, right));
+        Assert.True(TypeEquivalenceHelpers.TypesEquivalent(left, right));
     }
 
     [Fact]
     public void TypesEquivalent_ConstructedGenericsMatchingArgs_ReturnsTrue()
     {
-        var compilation2 = CreateCompilationWithSystemCollections("""
+        // Use List<T> over corresponding method type-params so OriginalDefinition
+        // matches while type arguments must be compared recursively.
+        var compilation = CreateCompilationWithSystemCollections("""
             using System.Collections.Generic;
             public class C
             {
-                public List<int> A;
-                public List<int> B;
+                public void A<T>(List<T> values) { }
+                public void B<T>(List<T> values) { }
             }
             """);
-        var type = compilation2.GetTypeByMetadataName("C")!;
-        var a = type.GetMembers("A").OfType<IFieldSymbol>().Single();
-        var b = type.GetMembers("B").OfType<IFieldSymbol>().Single();
+        var type = compilation.GetTypeByMetadataName("C")!;
+        var a = type.GetMembers("A").OfType<IMethodSymbol>().Single();
+        var b = type.GetMembers("B").OfType<IMethodSymbol>().Single();
+        var left = a.Parameters[0].Type;
+        var right = b.Parameters[0].Type;
 
-        Assert.True(TypeEquivalenceHelpers.TypesEquivalent(a.Type, b.Type));
+        Assert.False(SymbolEqualityComparer.Default.Equals(left, right));
+        Assert.True(TypeEquivalenceHelpers.TypesEquivalent(left, right));
     }
 
     private static CSharpCompilation CreateCompilation(string source)
