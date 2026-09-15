@@ -1,12 +1,15 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Core.Resolution;
 
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
 /// Shared method-declaration lookup used by Signature-family ops
-/// (add/remove/reorder parameter + change return type).
+/// (add/remove/reorder parameter + change return type). Includes
+/// nullable <see cref="FindMethod"/> / <see cref="StartLine"/> and the
+/// throwing <see cref="FindMethodDeclaration"/> gate.
 /// </summary>
 internal static class FindMethodHelpers
 {
@@ -56,6 +59,102 @@ internal static class FindMethodHelpers
 
         var startLineMatches = methods.Where(m => StartLine(m) == line.Value).ToList();
         return startLineMatches.Count == 1 ? startLineMatches[0] : null;
+    }
+
+    /// <summary>
+    /// Finds a method declaration or throws. Requires <paramref name="line"/>
+    /// when more than one method matches the name (even if column is set).
+    /// When column is set, picks by identifier/declaration span coverage via
+    /// <see cref="FindMethod"/> (continuation-line identifiers allowed).
+    /// Omitted column keeps MethodName + optional Line start-line pick.
+    /// </summary>
+    /// <exception cref="RefactoringException">
+    /// <see cref="ErrorCodes.MethodNotFound"/> or
+    /// <see cref="ErrorCodes.SymbolAmbiguous"/>.
+    /// </exception>
+    internal static MethodDeclarationSyntax FindMethodDeclaration(
+        SyntaxNode root,
+        string methodName,
+        int? line,
+        int? column)
+    {
+        var methods = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == methodName)
+            .ToList();
+
+        if (methods.Count == 0)
+        {
+            throw new RefactoringException(
+                ErrorCodes.MethodNotFound,
+                $"Method '{methodName}' not found.");
+        }
+
+        // Line is required when more than one method matches, even if
+        // column is set. Column without Line is not a source position:
+        // FindMethod would substitute each candidate's own start line and
+        // could silently pick the shortest equally-aligned overload.
+        // When both are set, pick by identifier/declaration span and do
+        // not require the declaration to start on `line` (continuation-
+        // line identifier).
+        if (methods.Count > 1 && !line.HasValue)
+        {
+            var lines = methods
+                .Select(StartLine)
+                .ToList();
+            throw new RefactoringException(
+                ErrorCodes.SymbolAmbiguous,
+                $"Multiple methods named '{methodName}' found. Provide line number. Options: {string.Join(", ", lines)}");
+        }
+
+        if (column.HasValue)
+        {
+            var covering = FindMethod(root, methodName, line, column);
+            if (covering == null)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MethodNotFound,
+                    line.HasValue
+                        ? $"Method '{methodName}' not found at line {line}."
+                        : $"Method '{methodName}' not found.");
+            }
+
+            return covering;
+        }
+
+        // Omitted column keeps today's MethodName + optional Line start-line
+        // pick exactly. Do not force column 1. Do not rewrite line-only to
+        // covering-span. A single name match with no line is used as-is;
+        // line filters declaration start-line; several start-line hits stay
+        // SymbolAmbiguous (do not FirstOrDefault the first same-line overload).
+        if (methods.Count == 1 && !line.HasValue)
+            return methods[0];
+
+        IEnumerable<MethodDeclarationSyntax> filtered = methods;
+        if (line.HasValue)
+        {
+            filtered = filtered.Where(m => StartLine(m) == line.Value);
+        }
+
+        var matches = filtered.ToList();
+        if (matches.Count == 1)
+            return matches[0];
+
+        if (matches.Count == 0)
+        {
+            throw new RefactoringException(
+                ErrorCodes.MethodNotFound,
+                line.HasValue
+                    ? $"Method '{methodName}' not found at line {line}."
+                    : $"Method '{methodName}' not found.");
+        }
+
+        var optionLines = matches
+            .Select(StartLine)
+            .ToList();
+        throw new RefactoringException(
+            ErrorCodes.SymbolAmbiguous,
+            $"Multiple methods named '{methodName}' found. Provide line number. Options: {string.Join(", ", optionLines)}");
     }
 
     /// <summary>

@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `FindMethodHelpers.FindMethodDeclaration` and replaced 4 identical Signature copies (`add_parameter` / `remove_parameter` / `reorder_parameters` / `change_return_type`) (#1114)
 - Extracted shared `FindMethodHelpers.FindMethod` (+ `StartLine`) and replaced 4 identical Signature copies (`add_parameter` / `remove_parameter` / `reorder_parameters` / `change_return_type`) (#1111)
 
 ## [0.6.2] - 2026-09-15
