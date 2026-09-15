@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `ControlTargetHelpers.FindControlTarget` (+ `ControlTarget`) and replaced 2 identical copies (`add_braces` / `remove_braces`) (#1107)
 - Extracted shared `MoreRestrictiveAccessibilityHelpers.MoreRestrictive` + `AccessibilityRank` + `SameAssembly` and replaced 2 identical copies (`EqualityMemberCollector` / `generate_constructor`) (#1104)
 - Extracted shared `GotoLabelHelpers.WouldHideExternallyReferencedLabel` + `GetLabelContainer` and replaced 2 identical copies (`add_braces` / `remove_braces`) (#1101)
 - Extracted shared `GotoLabelHelpers.IsLabelAlreadyNestedInInnerBlock` + `GetGotoLabelName` and replaced 2 identical copies (`add_braces` / `remove_braces`) (#1097)
