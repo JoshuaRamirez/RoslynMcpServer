@@ -1882,7 +1882,7 @@ public class RemoveBracesOperationTests
         var root = CSharpSyntaxTree.ParseText(SameLineIfsSource).GetRoot();
         var line = FindLine(SameLineIfsSource, "if (a) { WorkA(); } if (b)");
 
-        var found = RemoveBracesOperation.FindControlTarget(root, line, column: null);
+        var found = ControlTargetHelpers.FindControlTarget(RemoveBracesOperation.CollectTargets(root), line, column: null);
 
         Assert.NotNull(found);
         Assert.Equal("if", found.Value.Keyword.ValueText);
@@ -1899,7 +1899,7 @@ public class RemoveBracesOperationTests
         var startCol = ifStmt.IfKeyword.GetLocation().GetLineSpan().StartLinePosition.Character + 1;
         Assert.True(startCol > 1);
 
-        var found = RemoveBracesOperation.FindControlTarget(root, line, column: null);
+        var found = ControlTargetHelpers.FindControlTarget(RemoveBracesOperation.CollectTargets(root), line, column: null);
 
         Assert.NotNull(found);
         var ownerIf = Assert.IsType<IfStatementSyntax>(found.Value.Owner);
@@ -1912,8 +1912,8 @@ public class RemoveBracesOperationTests
         var root = CSharpSyntaxTree.ParseText(SameLineIfsSource).GetRoot();
         var line = FindLine(SameLineIfsSource, "if (a) { WorkA(); } if (b)");
 
-        var outer = RemoveBracesOperation.FindControlTarget(root, line, ColumnOf(SameLineIfsSource, "if (a)"));
-        var inner = RemoveBracesOperation.FindControlTarget(root, line, ColumnOf(SameLineIfsSource, "if (b)"));
+        var outer = ControlTargetHelpers.FindControlTarget(RemoveBracesOperation.CollectTargets(root), line, ColumnOf(SameLineIfsSource, "if (a)"));
+        var inner = ControlTargetHelpers.FindControlTarget(RemoveBracesOperation.CollectTargets(root), line, ColumnOf(SameLineIfsSource, "if (b)"));
 
         Assert.NotNull(outer);
         var outerIf = Assert.IsType<IfStatementSyntax>(outer.Value.Owner);
@@ -1933,8 +1933,8 @@ public class RemoveBracesOperationTests
         var firstKeywordEndCol = first.IfKeyword.GetLocation().GetLineSpan().EndLinePosition.Character + 1;
         var secondKeyword = ColumnOf(SameLineIfsSource, "if (b)");
 
-        var atExclusiveEnd = RemoveBracesOperation.FindControlTarget(root, line, firstKeywordEndCol);
-        var atSecond = RemoveBracesOperation.FindControlTarget(root, line, secondKeyword);
+        var atExclusiveEnd = ControlTargetHelpers.FindControlTarget(RemoveBracesOperation.CollectTargets(root), line, firstKeywordEndCol);
+        var atSecond = ControlTargetHelpers.FindControlTarget(RemoveBracesOperation.CollectTargets(root), line, secondKeyword);
 
         Assert.False(SpanCoverage.SpanCoversColumn(
             first.IfKeyword.GetLocation().GetLineSpan(), line, firstKeywordEndCol));

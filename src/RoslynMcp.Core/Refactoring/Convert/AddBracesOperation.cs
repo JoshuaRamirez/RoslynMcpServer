@@ -9,7 +9,6 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Refactoring.Utilities;
-using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Convert;
@@ -128,7 +127,7 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
 
         if (scope == ScopeStatement)
         {
-            var target = FindControlTarget(root, @params.Line!.Value, @params.Column);
+            var target = ControlTargetHelpers.FindControlTarget(CollectTargets(root), @params.Line!.Value, @params.Column);
             if (target == null)
             {
                 throw new RefactoringException(
@@ -441,26 +440,6 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
         return string.Join(".", parts);
     }
 
-    internal static ControlTarget? FindControlTarget(SyntaxNode root, int line, int? column)
-    {
-        var onLine = CollectTargets(root)
-            .Where(target => KeywordCoverage.KeywordIsOnLine(target.Keyword, line))
-            .ToList();
-
-        if (onLine.Count == 0)
-            return null;
-
-        if (column.HasValue)
-        {
-            var atColumn = onLine
-                .Where(target => KeywordCoverage.KeywordCoversColumn(target.Keyword, line, column.Value))
-                .OrderBy(target => target.Keyword.Span.Length)
-                .ToList();
-            return atColumn.Count == 0 ? null : atColumn[0];
-        }
-
-        return onLine.OrderBy(target => target.Keyword.SpanStart).First();
-    }
 
     internal static IEnumerable<ControlTarget> CollectTargets(SyntaxNode root)
     {
@@ -519,13 +498,6 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
         };
     }
 
-    /// <summary>
-    /// A control statement (or else clause) that can receive braces.
-    /// </summary>
-    /// <param name="Owner">The if/for/foreach/while/using statement that owns the body.</param>
-    /// <param name="Body">The embedded statement that may lack braces.</param>
-    /// <param name="Keyword">The keyword the user points at (if, else, for, foreach, while, using).</param>
-    internal readonly record struct ControlTarget(SyntaxNode Owner, StatementSyntax Body, SyntaxToken Keyword);
 
     private sealed class BraceRewriter : CSharpSyntaxRewriter
     {
