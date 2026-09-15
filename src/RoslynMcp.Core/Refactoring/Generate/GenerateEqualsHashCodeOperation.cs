@@ -151,7 +151,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         if (members.Count == 0 && !@params.CallSuper)
             throw new RefactoringException(ErrorCodes.NoMembersToGenerate, "No fields or properties available for equality generation.");
 
-        var selfTypeName = GetSelfTypeName(typeDecl);
+        var selfTypeName = TypeDeclarationHelpers.GetSelfTypeName(typeDecl);
         var isValueType = typeSymbol.IsValueType;
         MethodDeclarationSyntax? typedEquals = null;
         MethodDeclarationSyntax objectEquals;
@@ -466,7 +466,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         if (members.Count == 0 && !@params.CallSuper)
             return null;
 
-        var selfTypeName = GetSelfTypeName(typeDecl);
+        var selfTypeName = TypeDeclarationHelpers.GetSelfTypeName(typeDecl);
         var isValueType = typeSymbol.IsValueType;
         MethodDeclarationSyntax? typedEquals = null;
         MethodDeclarationSyntax objectEquals;
@@ -843,20 +843,6 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         }
 
         return type;
-    }
-
-    /// <summary>
-    /// Identifier plus type parameters from the declaration (e.g. <c>Person</c>, <c>Box&lt;T&gt;</c>, <c>Pair&lt;T, U&gt;</c>).
-    /// Lookup uses the bare identifier; generated IEquatable/Equals must keep the type arguments.
-    /// </summary>
-    private static string GetSelfTypeName(TypeDeclarationSyntax typeDecl)
-    {
-        var identifier = typeDecl.Identifier.Text;
-        if (typeDecl.TypeParameterList == null || typeDecl.TypeParameterList.Parameters.Count == 0)
-            return identifier;
-
-        var arguments = string.Join(", ", typeDecl.TypeParameterList.Parameters.Select(p => p.Identifier.Text));
-        return $"{identifier}<{arguments}>";
     }
 
     private static TypeSyntax SelfTypeSyntax(string selfTypeName) =>

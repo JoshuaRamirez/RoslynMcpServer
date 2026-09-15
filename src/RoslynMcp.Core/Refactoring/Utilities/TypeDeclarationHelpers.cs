@@ -112,4 +112,23 @@ internal static class TypeDeclarationHelpers
             .FirstOrDefault()
             ?? candidates.FirstOrDefault();
     }
+
+    /// <summary>
+    /// Formats <paramref name="typeDecl"/>'s identifier for self-type
+    /// references (Equals/GetHashCode / constructor snippets), including
+    /// open type-parameter names when a type-parameter list is present
+    /// (e.g. <c>Person</c>, <c>Box&lt;T&gt;</c>, <c>Pair&lt;T, U&gt;</c>).
+    /// Lookup uses the bare identifier; generated IEquatable/Equals must
+    /// keep the type arguments. Current consumers:
+    /// GenerateEqualsHashCodeOperation and GenerateConstructorOperation.
+    /// </summary>
+    internal static string GetSelfTypeName(TypeDeclarationSyntax typeDecl)
+    {
+        var identifier = typeDecl.Identifier.Text;
+        if (typeDecl.TypeParameterList == null || typeDecl.TypeParameterList.Parameters.Count == 0)
+            return identifier;
+
+        var arguments = string.Join(", ", typeDecl.TypeParameterList.Parameters.Select(p => p.Identifier.Text));
+        return $"{identifier}<{arguments}>";
+    }
 }
