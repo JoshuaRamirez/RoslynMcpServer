@@ -261,7 +261,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
                     break;
 
                 Solution? updated = null;
-                foreach (var typeDeclaration in CollectTypeDeclarations(root))
+                foreach (var typeDeclaration in TypeDeclarationHelpers.CollectTypeDeclarations(root))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -374,7 +374,6 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
             null, 0, 0);
     }
 
-
     /// <summary>
     /// Preview description for a file that generated overrides on
     /// <paramref name="generatedCount"/> types.
@@ -383,20 +382,6 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         generatedCount == 1
             ? "Generate overrides"
             : $"Generate overrides on {generatedCount} types";
-
-    /// <summary>
-    /// Collects every <see cref="TypeDeclarationSyntax"/> in
-    /// <paramref name="root"/> (class / struct / interface / record /
-    /// record struct, including nested — same node kind as today's
-    /// <see cref="FindTypeDeclaration"/>). Deterministic
-    /// <c>SpanStart</c> then span-length order.
-    /// </summary>
-    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTypeDeclarations(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .OrderBy(type => type.SpanStart)
-            .ThenBy(type => type.Span.Length)
-            .ToList();
 
     private async Task<Solution?> TryGenerateOneAsync(
         Document document,
@@ -521,7 +506,6 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         var newRoot = root.ReplaceNode(typeDeclaration, newTypeDeclaration);
         return document.WithSyntaxRoot(newRoot).Project.Solution;
     }
-
 
     /// <summary>
     /// Missing overridable members (today's <see cref="MemberAnalyzer.GetOverridableMembers"/>
@@ -1045,7 +1029,6 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
 
         return solution;
     }
-
 
     private static void AddKeyed<T>(
         Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,

@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `TypeDeclarationHelpers.CollectTypeDeclarations` and replaced 6 identical Generate copies (`implement_abstract` / `implement_interface` / `generate_equals_hashcode` / `generate_overrides` / `generate_tostring` / `generate_constructor`) (#1117)
 - Extracted shared `FindMethodHelpers.FindMethodDeclaration` and replaced 4 identical Signature copies (`add_parameter` / `remove_parameter` / `reorder_parameters` / `change_return_type`) (#1114)
 - Extracted shared `FindMethodHelpers.FindMethod` (+ `StartLine`) and replaced 4 identical Signature copies (`add_parameter` / `remove_parameter` / `reorder_parameters` / `change_return_type`) (#1111)
 

@@ -295,7 +295,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                     break;
 
                 Solution? updated = null;
-                foreach (var typeDeclaration in CollectTypeDeclarations(root))
+                foreach (var typeDeclaration in TypeDeclarationHelpers.CollectTypeDeclarations(root))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -410,7 +410,6 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             null, 0, 0);
     }
 
-
     /// <summary>
     /// Preview description for a file that generated Equals/GetHashCode
     /// on <paramref name="generatedCount"/> types.
@@ -419,20 +418,6 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         generatedCount == 1
             ? "Generate Equals/GetHashCode"
             : $"Generate Equals/GetHashCode on {generatedCount} types";
-
-    /// <summary>
-    /// Collects every <see cref="TypeDeclarationSyntax"/> in
-    /// <paramref name="root"/> (class / struct / interface / record /
-    /// record struct, including nested — same node kind as today's
-    /// <see cref="FindTypeDeclaration"/>). Deterministic
-    /// <c>SpanStart</c> then span-length order.
-    /// </summary>
-    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTypeDeclarations(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .OrderBy(type => type.SpanStart)
-            .ThenBy(type => type.Span.Length)
-            .ToList();
 
     private async Task<Solution?> TryGenerateOneAsync(
         Document document,
@@ -622,7 +607,6 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         return document.WithSyntaxRoot(newRoot).Project.Solution;
     }
 
-
     private static bool ImplementsIEquatable(INamedTypeSymbol typeSymbol)
     {
         return typeSymbol.AllInterfaces.Any(i =>
@@ -801,7 +785,6 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             yield return method;
         }
     }
-
 
     /// <summary>
     /// Finds a type by <paramref name="typeName"/>. Omitted
