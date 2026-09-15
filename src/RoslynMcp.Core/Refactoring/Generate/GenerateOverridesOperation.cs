@@ -106,7 +106,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         }
 
         // Find the type declaration (optional line/column disambiguates same-named types)
-        var typeDeclaration = FindTypeDeclaration(root, @params.TypeName!, @params.Line, @params.Column);
+        var typeDeclaration = TypeDeclarationHelpers.FindTypeDeclaration(root, @params.TypeName!, @params.Line, @params.Column);
 
         if (typeDeclaration == null)
         {
@@ -215,7 +215,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
     /// generates missing overrides on every eligible
     /// <see cref="TypeDeclarationSyntax"/> (class / struct / record /
     /// record struct / interface, including nested — same node kind as
-    /// today's <see cref="FindTypeDeclaration"/>). Optional
+    /// today's <see cref="TypeDeclarationHelpers.FindTypeDeclaration"/>). Optional
     /// <c>sourceFile</c> limits the walk to that one file. Empty collect
     /// / <c>NoOverridableMembers</c>, <c>OverrideExists</c>, uneditable
     /// documents, parse/symbol failures, and otherwise ineligible types
@@ -1033,83 +1033,6 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         }
 
         keys.Add(key);
-    }
-
-    /// <summary>
-    /// Finds a type by <paramref name="typeName"/>. Omitted
-    /// <paramref name="column"/> keeps today's typeName + optional
-    /// <paramref name="line"/> pick, including omitted-line
-    /// <c>FirstOrDefault</c> and line-only exclusive-end coverage
-    /// (<see cref="SpanCoverage.SpanCoversLine(FileLinePositionSpan, int)"/>). Do not force column 1 when omitted.
-    /// Column without line keeps today's first-match after the typeName
-    /// filter rather than substituting each candidate's own start line.
-    /// When column is set with line, picks the type whose identifier or
-    /// declaration span covers that 1-based column (same exclusive-end
-    /// coverage as <see cref="SpanCoverage.SpanCoversColumn"/>). Prefer
-    /// the identifier hit, then the smallest containing type. Nested types
-    /// participate (<c>DescendantNodes</c>). Do not require the declaration
-    /// to start on <paramref name="line"/> when column is set — a split
-    /// declaration may put the identifier on a continuation line. If column
-    /// is set with line and nothing covers that position, return null
-    /// (TypeNotFound) rather than falling back to first-match. After
-    /// <see cref="RemoveExistingOverridesAcrossPartialsAsync"/>, recover the
-    /// selected type from a per-execution annotation — do not reuse a
-    /// pre-rewrite SpanStart or line.
-    /// </summary>
-    internal static TypeDeclarationSyntax? FindTypeDeclaration(
-        SyntaxNode root,
-        string typeName,
-        int? line,
-        int? column = null)
-    {
-        var candidates = root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .Where(t => t.Identifier.Text == typeName)
-            .ToList();
-
-        if (candidates.Count == 0)
-            return null;
-
-        // Column without line is not a source position: substituting each
-        // candidate's own start line would match every equally-aligned
-        // same-name type and could silently pick the shortest. Keep
-        // today's FirstOrDefault after the typeName filter.
-        if (column.HasValue && !line.HasValue)
-            return candidates.FirstOrDefault();
-
-        if (column.HasValue)
-        {
-            // Do not require the declaration to start on `line` — a split
-            // type's identifier may live on a continuation line whose
-            // declaration span still covers that column. Prefer the
-            // identifier hit, then the smallest containing type (nested
-            // over outer). Do not silently pick the first when a covering
-            // node exists elsewhere — scan every candidate. If nothing
-            // covers this position, keep today's not-found (null) rather
-            // than inventing a first-match.
-            return candidates
-                .Where(t => TypeCoverage.TypeCoversColumn(t, line!.Value, column.Value))
-                .OrderBy(t => TypeCoverage.IdentifierCoversColumn(t, line!.Value, column.Value) ? 0 : 1)
-                .ThenBy(t => t.Span.Length)
-                .FirstOrDefault();
-        }
-
-        if (!line.HasValue)
-            return candidates.FirstOrDefault();
-
-        // Do not require the declaration to start on `line` — a split
-        // type's identifier may live on a continuation line whose
-        // declaration span still covers that line. Prefer the identifier
-        // hit, then the smallest containing type (nested over outer).
-        // Do not silently pick the first when a covering node exists
-        // elsewhere — scan every candidate. If nothing covers this line,
-        // keep today's first-match rather than inventing a not-found.
-        return candidates
-            .Where(t => TypeCoverage.TypeCoversLine(t, line.Value))
-            .OrderBy(t => TypeCoverage.IdentifierCoversLine(t, line.Value) ? 0 : 1)
-            .ThenBy(t => t.Span.Length)
-            .FirstOrDefault()
-            ?? candidates.FirstOrDefault();
     }
 
     private static RefactoringResult CreatePreviewResult(

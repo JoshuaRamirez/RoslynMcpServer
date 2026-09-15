@@ -286,7 +286,7 @@ public class ImplementInterfaceOperationTests
     public void FindTypeDeclaration_OmittedLine_FirstOrDefaultPicksOuter()
     {
         var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
-        var found = ImplementInterfaceOperation.FindTypeDeclaration(root, "Widget", line: null);
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Widget", line: null);
 
         Assert.NotNull(found);
         Assert.False(found.Parent is TypeDeclarationSyntax);
@@ -296,7 +296,7 @@ public class ImplementInterfaceOperationTests
     public void FindTypeDeclaration_LineOnNestedIdentifier_PicksNested()
     {
         var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
-        var found = ImplementInterfaceOperation.FindTypeDeclaration(
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
             root, "Widget", FindLine(NestedSameNameWidgetSource, "nested-widget"));
 
         Assert.NotNull(found);
@@ -307,7 +307,7 @@ public class ImplementInterfaceOperationTests
     public void FindTypeDeclaration_LineOnOuterIdentifier_PicksOuter()
     {
         var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
-        var found = ImplementInterfaceOperation.FindTypeDeclaration(
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
             root, "Widget", FindLine(NestedSameNameWidgetSource, "outer-widget"));
 
         Assert.NotNull(found);
@@ -339,7 +339,7 @@ public class ImplementInterfaceOperationTests
         var identifierLine = FindLine(source, "split-widget");
         Assert.NotEqual(startLine, identifierLine);
 
-        var found = ImplementInterfaceOperation.FindTypeDeclaration(root, "Widget", identifierLine);
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Widget", identifierLine);
 
         Assert.NotNull(found);
         Assert.False(found.Parent is TypeDeclarationSyntax);
@@ -349,7 +349,7 @@ public class ImplementInterfaceOperationTests
     public void FindTypeDeclaration_LineMiss_KeepsFirstMatch()
     {
         var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
-        var found = ImplementInterfaceOperation.FindTypeDeclaration(root, "Widget", line: 1);
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Widget", line: 1);
 
         Assert.NotNull(found);
         Assert.False(found.Parent is TypeDeclarationSyntax);
@@ -590,7 +590,7 @@ public class ImplementInterfaceOperationTests
     public void FindTypeDeclaration_OmittedColumn_FirstOrDefaultPicksOuter()
     {
         var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
-        var found = ImplementInterfaceOperation.FindTypeDeclaration(root, "Widget", line: null, column: null);
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Widget", line: null, column: null);
 
         Assert.NotNull(found);
         Assert.False(found.Parent is TypeDeclarationSyntax);
@@ -601,7 +601,7 @@ public class ImplementInterfaceOperationTests
     {
         var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
         var line = FindLine(SameLineNestedWidgetSource, "public class Widget : IWidget { public class");
-        var found = ImplementInterfaceOperation.FindTypeDeclaration(
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
             root, "Widget", line, ColumnOf(SameLineNestedWidgetSource, "Widget : IWidget { }"));
 
         Assert.NotNull(found);
@@ -613,7 +613,7 @@ public class ImplementInterfaceOperationTests
     {
         var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
         var line = FindLine(SameLineNestedWidgetSource, "public class Widget : IWidget { public class");
-        var found = ImplementInterfaceOperation.FindTypeDeclaration(
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
             root, "Widget", line, ColumnOf(SameLineNestedWidgetSource, "Widget : IWidget { public class"));
 
         Assert.NotNull(found);
@@ -625,7 +625,7 @@ public class ImplementInterfaceOperationTests
     {
         var root = CSharpSyntaxTree.ParseText(SameLineNestedWidgetSource).GetRoot();
         var nestedColumn = ColumnOf(SameLineNestedWidgetSource, "Widget : IWidget { }");
-        var found = ImplementInterfaceOperation.FindTypeDeclaration(
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
             root, "Widget", line: null, nestedColumn);
 
         Assert.NotNull(found);
@@ -657,7 +657,7 @@ public class ImplementInterfaceOperationTests
         var identifierLine = FindLine(source, "split-widget");
         Assert.NotEqual(startLine, identifierLine);
 
-        var found = ImplementInterfaceOperation.FindTypeDeclaration(
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(
             root, "Widget", identifierLine, ColumnOf(source, "Widget : IWidget // split-widget"));
 
         Assert.NotNull(found);
@@ -706,7 +706,7 @@ public class ImplementInterfaceOperationTests
     public void FindTypeDeclaration_ColumnAndLineMiss_DoesNotFallBackToFirst()
     {
         var root = CSharpSyntaxTree.ParseText(NestedSameNameWidgetSource).GetRoot();
-        var found = ImplementInterfaceOperation.FindTypeDeclaration(root, "Widget", line: 1, column: 1);
+        var found = TypeDeclarationHelpers.FindTypeDeclaration(root, "Widget", line: 1, column: 1);
 
         Assert.Null(found);
     }
