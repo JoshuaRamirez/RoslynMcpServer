@@ -1,13 +1,16 @@
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using RoslynMcp.Contracts.Errors;
+using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 
 /// <summary>
-/// Unit tests for <see cref="FindMethodHelpers.FindMethod"/> —
-/// selection behavior previously covered on Signature private copies.
+/// Unit tests for <see cref="FindMethodHelpers.FindMethod"/> and
+/// <see cref="FindMethodHelpers.FindMethodDeclaration"/> —
+/// selection / throwing behavior previously covered on Signature private copies.
 /// </summary>
 public class FindMethodHelpersTests
 {
@@ -137,6 +140,57 @@ public class FindMethodHelpersTests
         var method = root.DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
         Assert.Equal(FindLine(source, "public void"), FindMethodHelpers.StartLine(method));
         Assert.NotEqual(FindLine(source, "Process(int x)"), FindMethodHelpers.StartLine(method));
+    }
+
+
+    [Fact]
+    public void FindMethodDeclaration_NoMatch_ThrowsMethodNotFound()
+    {
+        const string source = """
+            class C
+            {
+                public void Only(int x) { }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var ex = Assert.Throws<RefactoringException>(() =>
+            FindMethodHelpers.FindMethodDeclaration(root, "Missing", line: null, column: null));
+        Assert.Equal(ErrorCodes.MethodNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindMethodDeclaration_MultipleWithoutLine_ThrowsSymbolAmbiguous()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineOverloadsSource).GetRoot();
+        var ex = Assert.Throws<RefactoringException>(() =>
+            FindMethodHelpers.FindMethodDeclaration(root, "Process", line: null, column: null));
+        Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindMethodDeclaration_ColumnPath_PicksCoveringMethod()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineOverloadsSource).GetRoot();
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x) { }");
+        var found = FindMethodHelpers.FindMethodDeclaration(
+            root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, int y)"));
+        Assert.Equal(2, found.ParameterList.Parameters.Count);
+    }
+
+    [Fact]
+    public void FindMethodDeclaration_SingleMatch_ReturnsMethod()
+    {
+        const string source = """
+            class C
+            {
+                public void Only(int x) { }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var found = FindMethodHelpers.FindMethodDeclaration(root, "Only", line: null, column: null);
+        Assert.Equal("Only", found.Identifier.Text);
     }
 
     private static int FindLine(string source, string fragment)

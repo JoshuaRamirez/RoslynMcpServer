@@ -90,7 +90,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var methodDecl = FindMethodDeclaration(root, @params);
+        var methodDecl = FindMethodHelpers.FindMethodDeclaration(root, @params.MethodName, @params.Line, @params.Column);
         var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve method symbol.");
 
@@ -175,86 +175,6 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
             0);
     }
 
-    internal static MethodDeclarationSyntax FindMethodDeclaration(SyntaxNode root, AddParameterParams @params)
-    {
-        var methods = root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .Where(m => m.Identifier.Text == @params.MethodName)
-            .ToList();
-
-        if (methods.Count == 0)
-        {
-            throw new RefactoringException(
-                ErrorCodes.MethodNotFound,
-                $"Method '{@params.MethodName}' not found.");
-        }
-
-        // Line is required when more than one method matches, even if
-        // column is set. Column without Line is not a source position:
-        // FindMethod would substitute each candidate's own start line and
-        // could silently pick the shortest equally-aligned overload.
-        // When both are set, pick by identifier/declaration span and do
-        // not require the declaration to start on `line` (continuation-
-        // line identifier).
-        if (methods.Count > 1 && !@params.Line.HasValue)
-        {
-            var lines = methods
-                .Select(FindMethodHelpers.StartLine)
-                .ToList();
-            throw new RefactoringException(
-                ErrorCodes.SymbolAmbiguous,
-                $"Multiple methods named '{@params.MethodName}' found. Provide line number. Options: {string.Join(", ", lines)}");
-        }
-
-        if (@params.Column.HasValue)
-        {
-            var covering = FindMethodHelpers.FindMethod(root, @params.MethodName, @params.Line, @params.Column);
-            if (covering == null)
-            {
-                throw new RefactoringException(
-                    ErrorCodes.MethodNotFound,
-                    @params.Line.HasValue
-                        ? $"Method '{@params.MethodName}' not found at line {@params.Line}."
-                        : $"Method '{@params.MethodName}' not found.");
-            }
-
-            return covering;
-        }
-
-        // Omitted column keeps today's MethodName + optional Line start-line
-        // pick exactly. Do not force column 1. Do not rewrite line-only to
-        // covering-span. A single name match with no line is used as-is;
-        // line filters declaration start-line; several start-line hits stay
-        // SymbolAmbiguous (do not FirstOrDefault the first same-line overload).
-        if (methods.Count == 1 && !@params.Line.HasValue)
-            return methods[0];
-
-        IEnumerable<MethodDeclarationSyntax> filtered = methods;
-        if (@params.Line.HasValue)
-        {
-            filtered = filtered.Where(m => FindMethodHelpers.StartLine(m) == @params.Line.Value);
-        }
-
-        var matches = filtered.ToList();
-        if (matches.Count == 1)
-            return matches[0];
-
-        if (matches.Count == 0)
-        {
-            throw new RefactoringException(
-                ErrorCodes.MethodNotFound,
-                @params.Line.HasValue
-                    ? $"Method '{@params.MethodName}' not found at line {@params.Line}."
-                    : $"Method '{@params.MethodName}' not found.");
-        }
-
-        var optionLines = matches
-            .Select(FindMethodHelpers.StartLine)
-            .ToList();
-        throw new RefactoringException(
-            ErrorCodes.SymbolAmbiguous,
-            $"Multiple methods named '{@params.MethodName}' found. Provide line number. Options: {string.Join(", ", optionLines)}");
-    }
 
 
     internal static int ComputeInsertionIndex(ParameterListSyntax list, int position)
