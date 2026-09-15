@@ -52,4 +52,44 @@ public class AccessibilityModifiersTests
         };
         Assert.False(AccessibilityModifiers.HasAccessibility(modifiers));
     }
+
+    [Fact]
+    public void HasNonPublicAccessibility_False_WhenNoAccessibilityModifiers()
+    {
+        var accessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+        Assert.False(AccessibilityModifiers.HasNonPublicAccessibility(accessor));
+    }
+
+    [Theory]
+    [InlineData(SyntaxKind.PrivateKeyword)]
+    [InlineData(SyntaxKind.ProtectedKeyword)]
+    [InlineData(SyntaxKind.InternalKeyword)]
+    public void HasNonPublicAccessibility_True_ForNonPublicKeyword(SyntaxKind kind)
+    {
+        var accessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+            .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(kind)))
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+        Assert.True(AccessibilityModifiers.HasNonPublicAccessibility(accessor));
+    }
+
+    [Fact]
+    public void HasNonPublicAccessibility_False_WhenPublicOnly()
+    {
+        var accessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+            .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+        Assert.False(AccessibilityModifiers.HasNonPublicAccessibility(accessor));
+    }
+
+    [Fact]
+    public void HasNonPublicAccessibility_True_WhenPrivateMixedWithNonAccessibility()
+    {
+        var accessor = SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+            .WithModifiers(SyntaxFactory.TokenList(
+                SyntaxFactory.Token(SyntaxKind.PrivateKeyword),
+                SyntaxFactory.Token(SyntaxKind.AsyncKeyword)))
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+        Assert.True(AccessibilityModifiers.HasNonPublicAccessibility(accessor));
+    }
 }
