@@ -60,7 +60,7 @@ public static class EqualityMemberCollector
         {
             for (var baseType = typeSymbol.BaseType; baseType != null; baseType = baseType.BaseType)
             {
-                if (IsObjectOrValueType(baseType))
+                if (NamedTypeHelpers.IsObjectOrValueType(baseType))
                     break;
 
                 CollectDeclaredMembers(baseType, typeSymbol, members, includeProperties, hasRequestedFields, requireAccessible: true);
@@ -119,9 +119,6 @@ public static class EqualityMemberCollector
             }
         }
     }
-
-    private static bool IsObjectOrValueType(INamedTypeSymbol type) =>
-        type.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
 
     /// <summary>
     /// True when a closer type hides or overrides <paramref name="member"/> so

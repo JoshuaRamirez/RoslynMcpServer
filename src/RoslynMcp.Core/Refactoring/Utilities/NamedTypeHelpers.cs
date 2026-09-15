@@ -19,4 +19,14 @@ internal static class NamedTypeHelpers
         return baseType == null
             || baseType.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
     }
+
+    /// <summary>
+    /// Returns true when <paramref name="type"/> is
+    /// <see cref="SpecialType.System_Object"/> or
+    /// <see cref="SpecialType.System_ValueType"/>. Same body as the two
+    /// EqualityMemberCollector / GenerateConstructor private copies.
+    /// Distinct from <see cref="IsObjectOrValueTypeBase"/>, which inspects BaseType.
+    /// </summary>
+    internal static bool IsObjectOrValueType(INamedTypeSymbol type) =>
+        type.SpecialType is SpecialType.System_Object or SpecialType.System_ValueType;
 }

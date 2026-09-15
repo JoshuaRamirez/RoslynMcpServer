@@ -36,6 +36,33 @@ public class NamedTypeHelpersTests
         Assert.False(NamedTypeHelpers.IsObjectOrValueTypeBase(type));
     }
 
+
+    [Fact]
+    public void IsObjectOrValueType_SystemObject_ReturnsTrue()
+    {
+        var compilation = CreateCompilation("public class C { }");
+        var type = compilation.GetSpecialType(SpecialType.System_Object);
+
+        Assert.True(NamedTypeHelpers.IsObjectOrValueType(type));
+    }
+
+    [Fact]
+    public void IsObjectOrValueType_SystemValueType_ReturnsTrue()
+    {
+        var compilation = CreateCompilation("public class C { }");
+        var type = compilation.GetSpecialType(SpecialType.System_ValueType);
+
+        Assert.True(NamedTypeHelpers.IsObjectOrValueType(type));
+    }
+
+    [Fact]
+    public void IsObjectOrValueType_OrdinaryClass_ReturnsFalse()
+    {
+        var type = GetType("public class C { }", "C");
+
+        Assert.False(NamedTypeHelpers.IsObjectOrValueType(type));
+    }
+
     private static INamedTypeSymbol GetType(string source, string metadataName)
     {
         var compilation = CreateCompilation(source);
