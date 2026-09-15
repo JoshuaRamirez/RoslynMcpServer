@@ -115,10 +115,12 @@ internal static class TypeDeclarationHelpers
 
     /// <summary>
     /// Formats <paramref name="typeDecl"/>'s identifier for self-type
-    /// references (Equals/GetHashCode constructor snippets), including
-    /// open type-parameter names as <c>Name&lt;T1, T2&gt;</c> when a
-    /// type-parameter list is present. Same body as the two Generate
-    /// copies (GenerateEqualsHashCode / GenerateConstructor).
+    /// references (Equals/GetHashCode / constructor snippets), including
+    /// open type-parameter names when a type-parameter list is present
+    /// (e.g. <c>Person</c>, <c>Box&lt;T&gt;</c>, <c>Pair&lt;T, U&gt;</c>).
+    /// Lookup uses the bare identifier; generated IEquatable/Equals must
+    /// keep the type arguments. Same body as the two Generate copies
+    /// (GenerateEqualsHashCode / GenerateConstructor).
     /// </summary>
     internal static string GetSelfTypeName(TypeDeclarationSyntax typeDecl)
     {

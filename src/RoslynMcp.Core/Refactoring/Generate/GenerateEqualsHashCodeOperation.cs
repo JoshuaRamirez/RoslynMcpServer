@@ -845,10 +845,6 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         return type;
     }
 
-    /// <summary>
-    /// Identifier plus type parameters from the declaration (e.g. <c>Person</c>, <c>Box&lt;T&gt;</c>, <c>Pair&lt;T, U&gt;</c>).
-    /// Lookup uses the bare identifier; generated IEquatable/Equals must keep the type arguments.
-    /// </summary>
     private static TypeSyntax SelfTypeSyntax(string selfTypeName) =>
         SyntaxFactory.ParseTypeName(selfTypeName);
 

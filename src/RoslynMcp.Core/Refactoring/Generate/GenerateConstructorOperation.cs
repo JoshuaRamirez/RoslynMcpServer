@@ -1595,10 +1595,6 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         return $"other{suffix}";
     }
 
-    /// <summary>
-    /// Same constructed self-type spelling as generate_equals_hashcode
-    /// (<c>Widget</c>, <c>Box&lt;T&gt;</c>).
-    /// </summary>
     private static IfStatementSyntax CreateArgumentNullCheck(string paramName)
     {
         return SyntaxFactory.IfStatement(
