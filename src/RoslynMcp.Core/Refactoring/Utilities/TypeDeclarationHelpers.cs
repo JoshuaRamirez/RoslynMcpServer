@@ -119,8 +119,8 @@ internal static class TypeDeclarationHelpers
     /// open type-parameter names when a type-parameter list is present
     /// (e.g. <c>Person</c>, <c>Box&lt;T&gt;</c>, <c>Pair&lt;T, U&gt;</c>).
     /// Lookup uses the bare identifier; generated IEquatable/Equals must
-    /// keep the type arguments. Same body as the two Generate copies
-    /// (GenerateEqualsHashCode / GenerateConstructor).
+    /// keep the type arguments. Current consumers:
+    /// GenerateEqualsHashCodeOperation and GenerateConstructorOperation.
     /// </summary>
     internal static string GetSelfTypeName(TypeDeclarationSyntax typeDecl)
     {
