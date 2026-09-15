@@ -959,7 +959,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     {
         var parameters = method.Parameters.Select(CreateParameter);
         var body = RequiresThrowBody(method, throwNotImplemented)
-            ? CreateThrowNotImplementedBody()
+            ? ThrowNotImplementedBodyHelpers.CreateThrowNotImplementedBody()
             : SyntaxGenerationHelper.CreateDefaultReturnBody(method.ReturnType);
         var methodDecl = SyntaxFactory.MethodDeclaration(
                 CreateMemberType(method.ReturnType, method.ReturnsByRef, method.ReturnsByRefReadonly),
@@ -1085,7 +1085,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             ? RequiresThrowBody(accessor, throwNotImplemented)
             : throwNotImplemented)
         {
-            body = CreateThrowNotImplementedBody();
+            body = ThrowNotImplementedBodyHelpers.CreateThrowNotImplementedBody();
         }
         else if (kind == SyntaxKind.GetAccessorDeclaration)
         {
@@ -1145,15 +1145,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         }
 
         return inner.WithTrailingTrivia(SyntaxFactory.Space);
-    }
-
-    internal static BlockSyntax CreateThrowNotImplementedBody()
-    {
-        return SyntaxFactory.Block(
-            SyntaxFactory.ThrowStatement(
-                SyntaxFactory.ObjectCreationExpression(
-                    SyntaxFactory.ParseTypeName("global::System.NotImplementedException"))
-                .WithArgumentList(SyntaxFactory.ArgumentList())));
     }
 
     private static ParameterSyntax CreateParameter(IParameterSymbol parameter)
