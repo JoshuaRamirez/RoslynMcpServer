@@ -504,7 +504,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
 
         foreach (var label in body.DescendantNodesAndSelf().OfType<LabeledStatementSyntax>())
         {
-            if (IsLabelAlreadyNestedInInnerBlock(label, body))
+            if (GotoLabelHelpers.IsLabelAlreadyNestedInInnerBlock(label, body))
                 continue;
 
             var name = label.Identifier.ValueText;
@@ -513,7 +513,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
                 if (!gotoStatement.IsKind(SyntaxKind.GotoStatement))
                     continue;
 
-                if (!string.Equals(GetGotoLabelName(gotoStatement), name, StringComparison.Ordinal))
+                if (!string.Equals(GotoLabelHelpers.GetGotoLabelName(gotoStatement), name, StringComparison.Ordinal))
                     continue;
 
                 if (GetLabelContainer(gotoStatement) != container)
@@ -566,31 +566,6 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
             }
         }
     }
-
-    private static bool IsLabelAlreadyNestedInInnerBlock(LabeledStatementSyntax label, StatementSyntax body)
-    {
-        if (label == body)
-            return false;
-
-        foreach (var ancestor in label.Ancestors())
-        {
-            if (ancestor == body)
-                return false;
-
-            if (ancestor is BlockSyntax or SwitchSectionSyntax)
-                return true;
-        }
-
-        return false;
-    }
-
-    private static string? GetGotoLabelName(GotoStatementSyntax gotoStatement) =>
-        gotoStatement.Expression switch
-        {
-            IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
-            { } expression => expression.ToString(),
-            _ => null
-        };
 
     private static SyntaxNode? GetLabelContainer(SyntaxNode node) =>
         node.AncestorsAndSelf().FirstOrDefault(ancestor => ancestor is
