@@ -83,12 +83,23 @@ public class PathResolverTests
             var query = Path.Combine(Path.GetDirectoryName(path)!, FlipAsciiCase(Path.GetFileName(path)));
             var expectedEqual = File.Exists(query);
 
+            var createdKey = PathResolver.GetPathComparisonKey(path);
+            var queryKey = PathResolver.GetPathComparisonKey(query);
+
             Assert.Equal(
                 expectedEqual,
-                string.Equals(
-                    PathResolver.GetPathComparisonKey(path),
-                    PathResolver.GetPathComparisonKey(query),
-                    StringComparison.Ordinal));
+                string.Equals(createdKey, queryKey, StringComparison.Ordinal));
+
+            // On case-insensitive volumes the key must be the directory entry's
+            // actual casing, not the wrong-cased alias spelling (Codex P1).
+            if (expectedEqual)
+            {
+                Assert.Equal(createdKey, queryKey);
+                Assert.Equal(
+                    Path.GetFileName(path),
+                    Path.GetFileName(queryKey),
+                    StringComparer.Ordinal);
+            }
         }
         finally
         {

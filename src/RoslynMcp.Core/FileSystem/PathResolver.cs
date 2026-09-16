@@ -153,20 +153,29 @@ public static class PathResolver
             return true;
         }
 
+        // Always resolve each segment via directory enumeration. File.Exists /
+        // Directory.Exists succeed for wrong-cased aliases on case-insensitive
+        // volumes, so taking that fast path would preserve caller spelling and
+        // split GetPathComparisonKey for the same physical file (Codex P1).
         foreach (var segment in remainder.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
         {
-            var exactPath = Path.Combine(current, segment);
-            if (File.Exists(exactPath) || Directory.Exists(exactPath))
+            string? candidate = null;
+            foreach (var entry in Directory.EnumerateFileSystemEntries(current))
             {
-                current = exactPath;
-                continue;
+                var name = Path.GetFileName(entry);
+                if (string.Equals(name, segment, StringComparison.Ordinal))
+                {
+                    candidate = entry;
+                    break;
+                }
+
+                if (candidate == null &&
+                    string.Equals(name, segment, StringComparison.OrdinalIgnoreCase))
+                {
+                    candidate = entry;
+                }
             }
 
-            var candidate = Directory.EnumerateFileSystemEntries(current)
-                .FirstOrDefault(entry => string.Equals(
-                    Path.GetFileName(entry),
-                    segment,
-                    StringComparison.OrdinalIgnoreCase));
             if (candidate == null)
             {
                 resolvedPath = normalizedPath;

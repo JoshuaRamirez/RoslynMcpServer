@@ -994,11 +994,12 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         trivia.Any(item => item.IsDirective || item.IsKind(SyntaxKind.DisabledTextTrivia));
 
     /// <summary>
-    /// Async expression-bodied members whose semantic return type is a
-    /// non-generic, non-void type that is not BCL <c>Task</c>/<c>ValueTask</c>
-    /// cannot be classified as expression-statement vs <c>return await</c>
-    /// without AsyncMethodBuilder inspection. Skip rather than emit an unsafe
-    /// <c>return await</c> for custom task-like returns (Codex P2).
+    /// Async expression-bodied members whose semantic return type is not a
+    /// known BCL <c>Task</c>/<c>ValueTask</c> (generic or non-generic) cannot
+    /// be classified as expression-statement vs <c>return await</c> without
+    /// AsyncMethodBuilder <c>SetResult</c> inspection. Skip rather than emit an
+    /// unsafe <c>return await</c> for custom task-like returns, including
+    /// generic builders with parameterless <c>SetResult()</c> (Codex P2).
     /// </summary>
     private static void EnsureAsyncReturnTypeSafeToConvert(
         SyntaxTokenList modifiers,
@@ -1010,14 +1011,21 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             return;
         if (symbol.ReturnsVoid)
             return;
-        if (symbol.ReturnType is INamedTypeSymbol { IsGenericType: true })
-            return;
-        if (IsNonGenericTaskLikeSymbol(symbol.ReturnType))
+        if (IsBclTaskLikeSymbol(symbol.ReturnType))
             return;
 
         throw new RefactoringException(
             ErrorCodes.CannotConvert,
-            "Async member with a custom non-generic return type cannot be safely converted to a block body.");
+            "Async member with a custom task-like return type cannot be safely converted to a block body.");
+    }
+
+    private static bool IsBclTaskLikeSymbol(ITypeSymbol type)
+    {
+        if (type is not INamedTypeSymbol { Name: "Task" or "ValueTask" } named)
+            return false;
+        if (named.ContainingNamespace?.ToDisplayString() != "System.Threading.Tasks")
+            return false;
+        return !named.IsGenericType || named.TypeArguments.Length == 1;
     }
 
     private static bool IsNonReturning(
