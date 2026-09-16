@@ -181,9 +181,11 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         // One physical path may appear as multiple Documents when linked into
         // several projects. Rewrite once per normalized path and apply the same
         // text to every sibling DocumentId so CommitChanges cannot last-write-wins
-        // conflicting preprocessor variants (Codex P2).
+        // conflicting preprocessor variants (Codex P2). Group with Ordinal so
+        // case-distinct files (Foo.cs vs foo.cs) stay separate on case-sensitive
+        // file systems (Codex P1).
         var documentGroups = allDocuments
-            .GroupBy(d => PathResolver.NormalizePath(d.FilePath!), StringComparer.OrdinalIgnoreCase)
+            .GroupBy(d => PathResolver.NormalizePath(d.FilePath!), StringComparer.Ordinal)
             .Select(group => group
                 .OrderBy(d => d.FilePath, StringComparer.Ordinal)
                 .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
@@ -288,7 +290,13 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             return exactMatches;
 
         var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
-        return matchedDocuments.Count switch
+        // Ambiguity is distinct case-sensitive paths, not linked Document count
+        // (one physical file linked into multiple projects is not ambiguous).
+        var distinctPaths = matchedDocuments
+            .Select(d => PathResolver.NormalizePath(d.FilePath!))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return distinctPaths.Count switch
         {
             0 => throw new RefactoringException(
                 ErrorCodes.SourceNotInWorkspace,
