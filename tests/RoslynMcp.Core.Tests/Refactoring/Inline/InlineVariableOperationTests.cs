@@ -1286,7 +1286,101 @@ public class InlineVariableOperationTests
         Assert.DoesNotContain("Func<int> f", updated, StringComparison.Ordinal);
     }
 
-        [SkippableFact]
+    [SkippableFact]
+    public async Task InlineVariable_SingleSite_AddressOf_ThrowsUsedInRefContext()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public unsafe class C
+            {
+                public int* Run()
+                {
+                    int x = 1;
+                    return &x;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                VariableName = "x"
+            }));
+
+        Assert.Equal(ErrorCodes.UsedInRefContext, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InlineVariable_SingleSite_ReturnRefLocal_ThrowsUsedInRefContext()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class C
+            {
+                public ref int Run(ref int storage)
+                {
+                    ref int alias = ref storage;
+                    return ref alias;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                VariableName = "alias"
+            }));
+
+        Assert.Equal(ErrorCodes.UsedInRefContext, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InlineVariable_SingleSite_InferredAnonymousMember_ThrowsInvalidSelection()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class C
+            {
+                public object Run()
+                {
+                    int x = 1;
+                    return new { x };
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                VariableName = "x"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelection, ex.ErrorCode);
+        Assert.Contains("anonymous", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
     public async Task InlineVariable_AllFilesTrue_LinkedDocument_CoalescesToOnePhysicalWrite()
     {
         const string sharedSource = """
@@ -1448,6 +1542,7 @@ public class InlineVariableOperationTests
                     <Nullable>enable</Nullable>
                     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
                     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
                   </PropertyGroup>
                 </Project>
                 """);
