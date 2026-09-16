@@ -50,6 +50,8 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 throw new RefactoringException(ErrorCodes.MissingRequiredParam, "New parameters require a type.");
         }
 
+        EnsureProjectedParameterNamesAreUnique(@params.Parameters);
+
         if (@params.AllFiles)
         {
             if (!string.IsNullOrWhiteSpace(@params.MethodName) ||
@@ -947,10 +949,30 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     private static int StartLine(MethodDeclarationSyntax method) =>
         method.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
 
+    private static void EnsureProjectedParameterNamesAreUnique(IReadOnlyList<ParameterChange> changes)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var change in changes)
+        {
+            if (change.Remove)
+                continue;
+
+            var normalizedName = SyntaxIdentifierValidation.NormalizeIdentifier(change.Name);
+            if (!seen.Add(normalizedName))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.ParameterAlreadyExists,
+                    $"Parameter '{change.Name}' already exists in the resulting signature.");
+            }
+        }
+    }
+
     private static List<NewParameter> BuildNewParameterList(
         List<IParameterSymbol> originalParams,
         IReadOnlyList<ParameterChange> changes)
     {
+        EnsureProjectedParameterNamesAreUnique(changes);
+
         var result = new List<NewParameter>();
         var originalMap = originalParams.ToDictionary(p => p.Name);
 

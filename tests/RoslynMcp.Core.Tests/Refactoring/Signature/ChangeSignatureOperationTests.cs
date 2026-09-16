@@ -721,6 +721,51 @@ public class ChangeSignatureOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    [SkippableFact]
+    public async Task ChangeSignature_DuplicateProjectedParameterName_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleMethodSource);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeSignatureParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                Parameters =
+                [
+                    new() { OriginalName = "x", Name = "x" },
+                    new() { Name = "x", Type = "bool" }
+                ]
+            }));
+
+        Assert.Equal(ErrorCodes.ParameterAlreadyExists, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_RemoveThenReaddSameName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(SingleMethodSource);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            Parameters =
+            [
+                new() { OriginalName = "x", Name = "x", Remove = true },
+                new() { Name = "x", Type = "string" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.True(HasParameters(updated, "Process", ("string", "x")));
+    }
+
     #endregion
 
     #region allFiles
@@ -826,6 +871,32 @@ public class ChangeSignatureOperationTests
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
         Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_DuplicateProjectedParameterName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeSignatureParams
+            {
+                AllFiles = true,
+                Parameters =
+                [
+                    new() { OriginalName = "x", Name = "x" },
+                    new() { Name = "@x", Type = "bool" }
+                ]
+            }));
+
+        Assert.Equal(ErrorCodes.ParameterAlreadyExists, ex.ErrorCode);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
     }
 
     [SkippableFact]
