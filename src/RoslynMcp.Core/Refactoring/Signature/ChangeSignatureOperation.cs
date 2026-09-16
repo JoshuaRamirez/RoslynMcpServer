@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -14,6 +15,9 @@ namespace RoslynMcp.Core.Refactoring.Signature;
 
 /// <summary>
 /// Changes a method's signature by adding, removing, or reordering parameters.
+/// Optional <c>allFiles</c> walks every C# document (or the optional single
+/// <c>sourceFile</c>) and applies the same <c>parameters</c> list to every
+/// eligible method, skipping ineligible methods rather than throwing.
 /// </summary>
 public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSignatureParams>
 {
@@ -33,31 +37,9 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// </summary>
     internal static void Validate(ChangeSignatureParams @params)
     {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-
-        if (string.IsNullOrWhiteSpace(@params.MethodName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
-
         if (@params.Parameters == null || @params.Parameters.Count == 0)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "parameters is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-
-        if (@params.Line.HasValue && @params.Line.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
-
-        if (@params.Column.HasValue && @params.Column.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
-
-        // Validate parameter changes
         foreach (var change in @params.Parameters)
         {
             if (string.IsNullOrWhiteSpace(change.Name))
@@ -66,6 +48,43 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             if (change.OriginalName == null && !change.Remove && string.IsNullOrWhiteSpace(change.Type))
                 throw new RefactoringException(ErrorCodes.MissingRequiredParam, "New parameters require a type.");
         }
+
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.MethodName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with methodName, line, or column.");
+            }
+
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+
+        if (string.IsNullOrWhiteSpace(@params.MethodName))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
+
+        var sourceFile = @params.SourceFile!;
+
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+
+        if (@params.Line.HasValue && @params.Line.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
+
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
+
+        if (!File.Exists(sourceFile))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {sourceFile}");
     }
 
     /// <inheritdoc />
@@ -74,7 +93,13 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         ChangeSignatureParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var sourceFile = @params.SourceFile!;
+        var methodName = @params.MethodName!;
+
+        var document = GetDocumentOrThrow(sourceFile);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -86,14 +111,14 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         // Find method declaration
         var methodDeclarations = root.DescendantNodes()
             .OfType<MethodDeclarationSyntax>()
-            .Where(m => m.Identifier.Text == @params.MethodName)
+            .Where(m => m.Identifier.Text == methodName)
             .ToList();
 
         if (methodDeclarations.Count == 0)
         {
             throw new RefactoringException(
                 ErrorCodes.MethodNotFound,
-                $"Method '{@params.MethodName}' not found.");
+                $"Method '{methodName}' not found.");
         }
 
         // Line is required when more than one method matches, even if
@@ -110,17 +135,17 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 .ToList();
             throw new RefactoringException(
                 ErrorCodes.SymbolAmbiguous,
-                $"Multiple methods named '{@params.MethodName}' found. Provide line number. Options: {string.Join(", ", lines)}");
+                $"Multiple methods named '{methodName}' found. Provide line number. Options: {string.Join(", ", lines)}");
         }
 
-        var methodDecl = FindMethod(root, @params.MethodName, @params.Line, @params.Column);
+        var methodDecl = FindMethod(root, methodName, @params.Line, @params.Column);
         if (methodDecl == null)
         {
             var location = @params.Column.HasValue
                 ? @params.Line.HasValue
-                    ? $"'{@params.MethodName}' at line {@params.Line}, column {@params.Column.Value}"
-                    : $"'{@params.MethodName}' at column {@params.Column.Value}"
-                : $"'{@params.MethodName}' at line {@params.Line}";
+                    ? $"'{methodName}' at line {@params.Line}, column {@params.Column.Value}"
+                    : $"'{methodName}' at column {@params.Column.Value}"
+                : $"'{methodName}' at line {@params.Line}";
             throw new RefactoringException(
                 ErrorCodes.MethodNotFound,
                 $"Method {location} not found.");
@@ -149,18 +174,447 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         // If preview mode, return without applying
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params, methodSymbol.Parameters.ToList(), newParameters, callSites.Count);
+            return CreatePreviewResult(operationId, sourceFile, methodName, methodSymbol.Parameters.ToList(), newParameters, callSites.Count);
         }
 
-        // Update method declaration
-        var newParamSyntax = newParameters.Select(p => CreateParameterSyntax(p));
+        var newSolution = await ApplySignatureChangeAsync(
+            document,
+            root,
+            methodDecl,
+            methodSymbol,
+            newParameters,
+            @params.Parameters,
+            cancellationToken);
+
+        // Commit changes
+        var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
+
+        return RefactoringResult.Succeeded(
+            operationId,
+            new FileChanges
+            {
+                FilesModified = commitResult.FilesModified,
+                FilesCreated = commitResult.FilesCreated,
+                FilesDeleted = commitResult.FilesDeleted
+            },
+            new Contracts.Models.SymbolInfo
+            {
+                Name = methodName,
+                FullyQualifiedName = methodSymbol.ToDisplayString(),
+                Kind = Contracts.Enums.SymbolKind.Method
+            },
+            callSites.Count,
+            0);
+    }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>IntroduceParameterOperation.ExecuteAllFilesAsync</c>)
+    /// and applies <paramref name="params"/>.Parameters to every eligible
+    /// <see cref="MethodDeclarationSyntax"/>. Optional <c>sourceFile</c> limits
+    /// via <see cref="DocumentSourceFileFilter"/>. Linked documents that share a
+    /// physical path are rewritten once and the same text is applied to every
+    /// sibling <see cref="DocumentId"/> via <see cref="Solution.GetChanges(Solution)"/>
+    /// coalesce (prefer a changed DocumentId as source). Methods missing any
+    /// <c>originalName</c>, uneditable / source-generated docs, and otherwise
+    /// inapplicable methods are skipped rather than failing the walk.
+    /// Deterministic <c>SpanStart</c> order within a file. When every file is
+    /// a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ChangeSignatureParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = allDocuments
+            .GroupBy(d => PathResolver.GetPathComparisonKey(d.FilePath!), StringComparer.Ordinal)
+            .Select(group => group
+                .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+                .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
+                .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
+                .ToList())
+            .OrderBy(group => group[0].FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var changedCountByDoc = new Dictionary<DocumentId, int>();
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var primary = linkedDocuments.FirstOrDefault(d =>
+                d is not SourceGeneratedDocument &&
+                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+            if (primary == null)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(primary.Id);
+                if (currentDocument == null ||
+                    currentDocument is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                {
+                    break;
+                }
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var methodDecl in CollectMethods(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        updated = await TryChangeOneAsync(
+                            currentDocument,
+                            root,
+                            semanticModel,
+                            methodDecl,
+                            @params.Parameters,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        // Skip ineligible methods rather than failing the walk.
+                        updated = null;
+                    }
+
+                    if (updated != null)
+                        break;
+                }
+
+                if (updated == null)
+                    break;
+
+                var beforeSolution = currentSolution;
+                currentSolution = updated;
+                var changedDocIds = new HashSet<DocumentId>();
+                var changedPathKeys = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var projectChanges in updated.GetChanges(beforeSolution).GetProjectChanges())
+                {
+                    foreach (var docId in projectChanges.GetChangedDocuments())
+                    {
+                        changedDocIds.Add(docId);
+                        var changedDoc = updated.GetDocument(docId);
+                        if (changedDoc?.FilePath != null)
+                            changedPathKeys.Add(PathResolver.GetPathComparisonKey(changedDoc.FilePath));
+                    }
+                }
+
+                if (changedPathKeys.Count > 0)
+                {
+                    var allCurrent = currentSolution.Projects
+                        .SelectMany(p => p.Documents)
+                        .Where(d => d.FilePath != null)
+                        .ToList();
+
+                    foreach (var pathKey in changedPathKeys)
+                    {
+                        var siblings = allCurrent
+                            .Where(d => PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+                            .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
+                            .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
+                            .ToList();
+                        if (siblings.Count <= 1)
+                            continue;
+
+                        var sourceDoc = siblings.FirstOrDefault(d =>
+                                changedDocIds.Contains(d.Id) &&
+                                d is not SourceGeneratedDocument &&
+                                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace))
+                            ?? siblings.FirstOrDefault(d =>
+                                d is not SourceGeneratedDocument &&
+                                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+                        if (sourceDoc == null)
+                            continue;
+
+                        var live = currentSolution.GetDocument(sourceDoc.Id);
+                        if (live == null)
+                            continue;
+                        var sharedText = await live.GetTextAsync(cancellationToken);
+
+                        foreach (var sibling in siblings)
+                        {
+                            if (sibling.Id == sourceDoc.Id)
+                                continue;
+                            var siblingLive = currentSolution.GetDocument(sibling.Id);
+                            if (siblingLive == null || siblingLive is SourceGeneratedDocument)
+                                continue;
+                            if (!DocumentEditableHelpers.IsDocumentEditable(siblingLive, Context.Workspace))
+                                continue;
+                            currentSolution = currentSolution.WithDocumentText(sibling.Id, sharedText);
+                        }
+                    }
+                }
+
+                changedCountByDoc[primary.Id] =
+                    changedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var changedCount = changedCountByDoc.GetValueOrDefault(document.Id);
+                if (changedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        changedCount = Math.Max(changedCount, changedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = changedCount > 0
+                        ? BuildAllFilesDescription(changedCount)
+                        : "Update call sites of changed signatures",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that changed
+    /// <paramref name="changedCount"/> method signatures.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int changedCount) =>
+        changedCount == 1
+            ? "Change signature"
+            : $"Change {changedCount} signatures";
+
+    /// <summary>
+    /// Collects every <see cref="MethodDeclarationSyntax"/> in
+    /// <paramref name="root"/> in deterministic <c>SpanStart</c> then
+    /// span-length order.
+    /// </summary>
+    internal static IReadOnlyList<MethodDeclarationSyntax> CollectMethods(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .OrderBy(m => m.SpanStart)
+            .ThenBy(m => m.Span.Length)
+            .ToList();
+
+    /// <summary>
+    /// True when every <c>originalName</c> in <paramref name="changes"/>
+    /// exists on <paramref name="method"/>.
+    /// </summary>
+    internal static bool IsEligible(IMethodSymbol method, IReadOnlyList<ParameterChange> changes)
+    {
+        var names = method.Parameters.Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+        foreach (var change in changes)
+        {
+            if (change.OriginalName != null && !names.Contains(change.OriginalName))
+                return false;
+        }
+
+        return true;
+    }
+
+    private async Task<Solution?> TryChangeOneAsync(
+        Document document,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl,
+        IReadOnlyList<ParameterChange> changes,
+        CancellationToken cancellationToken)
+    {
+        var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken);
+        if (methodSymbol == null)
+            return null;
+
+        if (!IsEligible(methodSymbol, changes))
+            return null;
+
+        if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        var newParameters = BuildNewParameterList(methodSymbol.Parameters.ToList(), changes);
+        // Already at the target signature — skip so the while-loop cannot
+        // re-apply the same parameters list forever (unlike introduce_parameter,
+        // the method stays present and still matches originalName eligibility).
+        if (SignatureAlreadyMatches(methodSymbol, newParameters))
+            return null;
+
+        var beforeText = await document.GetTextAsync(cancellationToken);
+        var newSolution = await ApplySignatureChangeAsync(
+            document,
+            root,
+            methodDecl,
+            methodSymbol,
+            newParameters,
+            changes,
+            cancellationToken);
+
+        var afterDocument = newSolution.GetDocument(document.Id);
+        if (afterDocument == null)
+            return null;
+
+        var afterText = await afterDocument.GetTextAsync(cancellationToken);
+        if (beforeText.ContentEquals(afterText))
+        {
+            // Declaring file unchanged but call sites may have changed — keep
+            // the solution if any document differs from the input.
+            var anyDiff = false;
+            foreach (var project in newSolution.Projects)
+            {
+                foreach (var doc in project.Documents)
+                {
+                    var originalDoc = document.Project.Solution.GetDocument(doc.Id);
+                    if (originalDoc == null)
+                        continue;
+                    var before = await originalDoc.GetTextAsync(cancellationToken);
+                    var after = await doc.GetTextAsync(cancellationToken);
+                    if (!before.ContentEquals(after))
+                    {
+                        anyDiff = true;
+                        break;
+                    }
+                }
+
+                if (anyDiff)
+                    break;
+            }
+
+            if (!anyDiff)
+                return null;
+        }
+
+        return newSolution;
+    }
+
+    /// <summary>
+    /// True when <paramref name="method"/> already has the same parameter
+    /// names and types (in order) as <paramref name="newParameters"/>.
+    /// </summary>
+    private static bool SignatureAlreadyMatches(
+        IMethodSymbol method,
+        IReadOnlyList<NewParameter> newParameters)
+    {
+        if (method.Parameters.Length != newParameters.Count)
+            return false;
+
+        for (var i = 0; i < newParameters.Count; i++)
+        {
+            var existing = method.Parameters[i];
+            var expected = newParameters[i];
+            if (!string.Equals(existing.Name, expected.Name, StringComparison.Ordinal))
+                return false;
+            if (!string.Equals(existing.Type.ToDisplayString(), expected.Type, StringComparison.Ordinal))
+                return false;
+        }
+
+        return true;
+    }
+
+    private async Task<Solution> ApplySignatureChangeAsync(
+        Document document,
+        SyntaxNode root,
+        MethodDeclarationSyntax methodDecl,
+        IMethodSymbol methodSymbol,
+        List<NewParameter> newParameters,
+        IReadOnlyList<ParameterChange> changes,
+        CancellationToken cancellationToken)
+    {
+        var references = await SymbolFinder.FindReferencesAsync(
+            methodSymbol,
+            document.Project.Solution,
+            cancellationToken);
+
+        var callSites = references
+            .SelectMany(r => r.Locations)
+            .Where(loc => loc.Document.Id != document.Id || !loc.Location.SourceSpan.IntersectsWith(methodDecl.Span))
+            .ToList();
+
+        var newParamSyntax = newParameters.Select(CreateParameterSyntax);
         var newParamList = SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(newParamSyntax));
         var newMethodDecl = methodDecl.WithParameterList(newParamList);
 
         var newRoot = root.ReplaceNode(methodDecl, newMethodDecl);
         var newSolution = document.WithSyntaxRoot(newRoot).Project.Solution;
 
-        // Update call sites
         foreach (var callSite in callSites)
         {
             var callDoc = newSolution.GetDocument(callSite.Document.Id);
@@ -178,32 +632,14 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                     invocation,
                     methodSymbol.Parameters.ToList(),
                     newParameters,
-                    @params.Parameters);
+                    changes);
 
                 var newCallRoot = callRoot.ReplaceNode(invocation, newInvocation);
                 newSolution = callDoc.WithSyntaxRoot(newCallRoot).Project.Solution;
             }
         }
 
-        // Commit changes
-        var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
-
-        return RefactoringResult.Succeeded(
-            operationId,
-            new FileChanges
-            {
-                FilesModified = commitResult.FilesModified,
-                FilesCreated = commitResult.FilesCreated,
-                FilesDeleted = commitResult.FilesDeleted
-            },
-            new Contracts.Models.SymbolInfo
-            {
-                Name = @params.MethodName,
-                FullyQualifiedName = methodSymbol.ToDisplayString(),
-                Kind = Contracts.Enums.SymbolKind.Method
-            },
-            callSites.Count,
-            0);
+        return newSolution;
     }
 
     /// <summary>
@@ -260,7 +696,6 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     {
         var result = new List<NewParameter>();
         var originalMap = originalParams.ToDictionary(p => p.Name);
-        var usedPositions = new HashSet<int>();
 
         // First pass: handle existing parameters and removals
         foreach (var change in changes.Where(c => c.OriginalName != null))
@@ -373,7 +808,8 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
 
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,
-        ChangeSignatureParams @params,
+        string sourceFile,
+        string methodName,
         List<IParameterSymbol> originalParams,
         List<NewParameter> newParams,
         int callSiteCount)
@@ -388,11 +824,11 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         {
             new()
             {
-                File = @params.SourceFile,
+                File = sourceFile,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Change signature of '{@params.MethodName}' ({callSiteCount} call sites to update)",
-                BeforeSnippet = $"{@params.MethodName}({oldSig})",
-                AfterSnippet = $"{@params.MethodName}({newSig})"
+                Description = $"Change signature of '{methodName}' ({callSiteCount} call sites to update)",
+                BeforeSnippet = $"{methodName}({oldSig})",
+                AfterSnippet = $"{methodName}({newSig})"
             }
         };
 

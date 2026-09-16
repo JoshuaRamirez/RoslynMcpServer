@@ -7,33 +7,48 @@ public sealed class ChangeSignatureParams
 {
     /// <summary>
     /// Absolute path to the source file containing the method.
+    /// Required when <see cref="AllFiles"/> is false.
+    /// When <see cref="AllFiles"/> is true, optional and limits the walk
+    /// to that one file when set.
     /// </summary>
-    public required string SourceFile { get; init; }
+    public string? SourceFile { get; init; }
 
     /// <summary>
-    /// Name of the method to modify.
+    /// When true, process every eligible method in every C# document
+    /// (or the optional single <see cref="SourceFile"/>) whose signature
+    /// matches the requested <see cref="Parameters"/> list.
+    /// When true, cannot be combined with <see cref="MethodName"/>,
+    /// <see cref="Line"/>, or <see cref="Column"/>.
     /// </summary>
-    public required string MethodName { get; init; }
+    public bool AllFiles { get; init; }
+
+    /// <summary>
+    /// Name of the method to modify. Single-site only.
+    /// Required when <see cref="AllFiles"/> is false.
+    /// </summary>
+    public string? MethodName { get; init; }
 
     /// <summary>
     /// Line number for disambiguation if multiple methods have the same name (1-based).
+    /// Single-site only.
     /// </summary>
     public int? Line { get; init; }
 
     /// <summary>
     /// 1-based column for disambiguation. When set, selects the smallest method
     /// whose identifier or declaration span covers that column. Omitted keeps
-    /// today's MethodName and/or Line start-line pick.
+    /// today's MethodName and/or Line start-line pick. Single-site only.
     /// </summary>
     public int? Column { get; init; }
 
     /// <summary>
-    /// Parameter changes to apply.
+    /// Parameter changes to apply. Required for both single-site and allFiles.
     /// </summary>
     public required IReadOnlyList<ParameterChange> Parameters { get; init; }
 
     /// <summary>
     /// Return computed changes without applying. Default: false.
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool Preview { get; init; }
 }
