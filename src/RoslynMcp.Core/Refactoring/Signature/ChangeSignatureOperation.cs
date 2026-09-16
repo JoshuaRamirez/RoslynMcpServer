@@ -181,12 +181,18 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
 
         // Collect call sites against the pre-rewrite solution, including linked
         // sibling compilations (IntroduceParameter / Copilot).
-        var callSites = await CollectCallSitesAsync(
+        var (callSites, hasUnsupportedReferences) = await CollectCallSitesAsync(
             document,
             methodDecl,
             methodSymbol,
             Context.Solution,
             cancellationToken);
+        if (hasUnsupportedReferences)
+        {
+            throw new RefactoringException(
+                ErrorCodes.UnsupportedCallSite,
+                $"Method '{methodName}' is used as a method group or other unsupported reference and cannot be updated automatically.");
+        }
 
         // If preview mode, return without applying
         if (@params.Preview)
@@ -627,11 +633,15 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 continue;
             if (sibling.Parameters.Length != newParameters.Count)
                 continue;
+            // Method type parameters are distinct symbols per overload; compare
+            // by arity + ordinal via TypeEquivalenceHelpers (Codex).
+            if (sibling.TypeParameters.Length != method.TypeParameters.Length)
+                continue;
 
             var collision = true;
             for (var i = 0; i < newParameters.Count; i++)
             {
-                if (!SymbolEqualityComparer.Default.Equals(sibling.Parameters[i].Type, boundTypes[i]))
+                if (!TypeEquivalenceHelpers.TypesEquivalent(sibling.Parameters[i].Type, boundTypes[i]!))
                 {
                     collision = false;
                     break;
@@ -709,6 +719,11 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (!IsConstantShapedOptionalDefault(expression))
             return false;
 
+        // nameof(MissingSymbol) still types as string; ensure the nameof
+        // argument binds (Codex).
+        if (!NameOfArgumentBinds(semanticModel, position, expression))
+            return false;
+
         var exprInfo = semanticModel.GetSpeculativeTypeInfo(
             position,
             expression,
@@ -739,6 +754,39 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             } => true,
             _ => false
         };
+
+    /// <summary>
+    /// Non-<c>nameof</c> defaults are fine; for <c>nameof(...)</c>, the argument
+    /// must bind as an expression or type (otherwise CS0103).
+    /// </summary>
+    private static bool NameOfArgumentBinds(
+        SemanticModel semanticModel,
+        int position,
+        ExpressionSyntax expression)
+    {
+        if (expression is not InvocationExpressionSyntax
+            {
+                Expression: IdentifierNameSyntax { Identifier.Text: "nameof" },
+                ArgumentList.Arguments: { Count: 1 } arguments
+            })
+        {
+            return true;
+        }
+
+        var arg = arguments[0].Expression;
+        var symbolInfo = semanticModel.GetSpeculativeSymbolInfo(
+            position,
+            arg,
+            SpeculativeBindingOption.BindAsExpression);
+        if (symbolInfo.Symbol != null || !symbolInfo.CandidateSymbols.IsDefaultOrEmpty)
+            return true;
+
+        var typeInfo = semanticModel.GetSpeculativeTypeInfo(
+            position,
+            arg,
+            SpeculativeBindingOption.BindAsTypeOrNamespace);
+        return typeInfo.Type != null && typeInfo.Type is not IErrorTypeSymbol;
+    }
 
     private async Task<Solution?> TryChangeOneAsync(
         Document document,
@@ -787,6 +835,17 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (WouldCollideWithSibling(methodSymbol, newParameters, semanticModel, methodDecl))
             return null;
 
+        // Method-group / other non-invocation refs: skip rather than leave
+        // incompatible assignments (Codex / AddParameter).
+        var (callSites, hasUnsupportedReferences) = await CollectCallSitesAsync(
+            document,
+            methodDecl,
+            methodSymbol,
+            document.Project.Solution,
+            cancellationToken);
+        if (hasUnsupportedReferences)
+            return null;
+
         var beforeText = await document.GetTextAsync(cancellationToken);
         var newSolution = await ApplySignatureChangeAsync(
             document,
@@ -795,7 +854,8 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             methodSymbol,
             newParameters,
             changes,
-            cancellationToken);
+            cancellationToken,
+            callSites);
 
         var afterDocument = newSolution.GetDocument(document.Id);
         if (afterDocument == null)
@@ -886,12 +946,28 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         // spans stay valid, including linked sibling compilations (Codex).
         // Reuse a precollected list from the single-site path to avoid a second
         // solution-wide FindReferences (Copilot).
-        var callSites = precollectedCallSites ?? await CollectCallSitesAsync(
-            document,
-            methodDecl,
-            methodSymbol,
-            document.Project.Solution,
-            cancellationToken);
+        IReadOnlyList<CallSite> callSites;
+        if (precollectedCallSites != null)
+        {
+            callSites = precollectedCallSites;
+        }
+        else
+        {
+            var collected = await CollectCallSitesAsync(
+                document,
+                methodDecl,
+                methodSymbol,
+                document.Project.Solution,
+                cancellationToken);
+            if (collected.HasUnsupportedReferences)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.UnsupportedCallSite,
+                    $"Method '{methodSymbol.Name}' is used as a method group or other unsupported reference and cannot be updated automatically.");
+            }
+
+            callSites = collected.CallSites;
+        }
 
         var originalParams = methodSymbol.Parameters.ToList();
         var newParamSyntax = newParameters.Select(CreateParameterSyntax);
@@ -980,7 +1056,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         return newSolution;
     }
 
-    private static async Task<IReadOnlyList<CallSite>> CollectCallSitesAsync(
+    private static async Task<(IReadOnlyList<CallSite> CallSites, bool HasUnsupportedReferences)> CollectCallSitesAsync(
         Document declaringDocument,
         MethodDeclarationSyntax methodSyntax,
         IMethodSymbol methodSymbol,
@@ -989,11 +1065,12 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     {
         var callSites = new List<CallSite>();
         var seen = new HashSet<(DocumentId Id, int SpanStart, int SpanEnd)>();
+        var hasUnsupported = false;
         var declaringPathKey = declaringDocument.FilePath != null
             ? PathResolver.GetPathComparisonKey(declaringDocument.FilePath)
             : null;
 
-        await CollectCallSitesForSymbolAsync(
+        if (await CollectCallSitesForSymbolAsync(
             methodSymbol,
             declaringDocument,
             declaringDocument,
@@ -1001,7 +1078,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             solution,
             callSites,
             seen,
-            cancellationToken);
+            cancellationToken))
+        {
+            hasUnsupported = true;
+        }
 
         // Linked sibling DocumentIds bind a distinct IMethodSymbol for the same
         // physical declaration. SymbolFinder on the primary symbol misses callers
@@ -1030,7 +1110,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                     if (siblingSymbol == null)
                         continue;
 
-                    await CollectCallSitesForSymbolAsync(
+                    if (await CollectCallSitesForSymbolAsync(
                         siblingSymbol,
                         siblingDoc,
                         declaringDocument,
@@ -1038,15 +1118,23 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                         solution,
                         callSites,
                         seen,
-                        cancellationToken);
+                        cancellationToken))
+                    {
+                        hasUnsupported = true;
+                    }
                 }
             }
         }
 
-        return callSites;
+        return (callSites, hasUnsupported);
     }
 
-    private static async Task CollectCallSitesForSymbolAsync(
+    /// <summary>
+    /// Collects invocation call sites. Returns <c>true</c> when a non-invocation
+    /// semantic reference (method group / other) was found — callers must skip
+    /// or throw rather than rewrite the declaration alone (Codex / AddParameter).
+    /// </summary>
+    private static async Task<bool> CollectCallSitesForSymbolAsync(
         IMethodSymbol methodSymbol,
         Document symbolDeclaringDocument,
         Document primaryDeclaringDocument,
@@ -1088,25 +1176,30 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                     continue;
 
                 var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
+                if (SignatureReferenceHelpers.IsDeclarationName(node, location.Location.SourceSpan))
+                    continue;
                 if (SignatureReferenceHelpers.IsNameOfArgument(node))
                     continue;
 
                 var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-                // Method-group / nested refs under an unrelated invocation are not
-                // call sites of this method (AddParameter / Copilot).
-                if (invocation == null ||
-                    !SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
+                if (invocation != null &&
+                    SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
                 {
+                    var key = (document.Id, invocation.Span.Start, invocation.Span.End);
+                    if (!seen.Add(key))
+                        continue;
+
+                    callSites.Add(new CallSite(document.Id, invocation.Span));
                     continue;
                 }
 
-                var key = (document.Id, invocation.Span.Start, invocation.Span.End);
-                if (!seen.Add(key))
-                    continue;
-
-                callSites.Add(new CallSite(document.Id, invocation.Span));
+                // Method-group / other non-invocation refs cannot be rewritten
+                // with the declaration (AddParameter / Codex).
+                return true;
             }
         }
+
+        return false;
     }
 
     private static MethodDeclarationSyntax? RematchMethod(SyntaxNode root, MethodDeclarationSyntax original)

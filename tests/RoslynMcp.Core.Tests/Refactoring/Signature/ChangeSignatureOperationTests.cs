@@ -1545,6 +1545,102 @@ public class ChangeSignatureOperationTests
         Assert.Empty(result.Changes!.FilesModified);
     }
 
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsGenericOverloadCollisionByOrdinal()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Sample
+            {
+                public void Process<T>(T x) { }
+                public void Process<T>(string x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x", Type = "T" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var normalized = updated.Replace(" ", "", StringComparison.Ordinal);
+        // string overload must remain; do not collapse into a second Process<T>(T).
+        Assert.Contains("Process<T>(stringx)", normalized, StringComparison.Ordinal);
+        Assert.Equal(1, normalized.Split("Process<T>(Tx)", StringSplitOptions.None).Length - 1);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsMethodGroupReferences()
+    {
+        const string source = """
+            namespace TestApp;
+            using System;
+
+            public class Sample
+            {
+                public void Process(int x) { }
+                public void Wire()
+                {
+                    Action<int> callback = Process;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters = KeepXAddFlag()
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsUnresolvedNameOfDefault()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Sample
+            {
+                public void Process(string x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x", DefaultValue = "nameof(MissingSymbol)" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+
     #endregion
 
     #region Helpers
