@@ -184,8 +184,8 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         // text to every sibling DocumentId so CommitChanges cannot last-write-wins
         // conflicting preprocessor variants (Codex P2). Group with
         // PhysicalFilePathComparer (OrdinalIgnoreCase on Windows; Ordinal on
-        // Windows/macOS) so case-distinct files stay separate on Linux while
-        // casing variants of the same physical path coalesce elsewhere.
+        // Linux/macOS, including case-sensitive APFS) so case-distinct files
+        // stay separate off Windows while Windows casing variants coalesce.
         var documentGroups = allDocuments
             .GroupBy(d => PathResolver.NormalizePath(d.FilePath!), PhysicalFilePathComparer)
             .Select(group => group
@@ -307,14 +307,12 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     }
 
     /// <summary>
-    /// Path comparer for physical files: case-insensitive on Windows/macOS
-    /// (same path may differ only by casing across linked projects), Ordinal
-    /// on Linux so <c>Foo.cs</c> and <c>foo.cs</c> stay distinct.
+    /// Path comparer for physical files: OrdinalIgnoreCase on Windows
+    /// (same path may differ only by casing across linked projects);
+    /// Ordinal on Linux/macOS so <c>Foo.cs</c> and <c>foo.cs</c> stay
+    /// distinct on case-sensitive volumes. Linked docs on case-insensitive
+    /// macOS typically share an identical FilePath string from MSBuild.
     /// </summary>
-    // Windows is always case-insensitive. Linux and macOS (including
-    // case-sensitive APFS volumes) use Ordinal so Foo.cs / foo.cs stay
-    // distinct. Linked docs on case-insensitive macOS typically share an
-    // identical FilePath string from MSBuild.
     private static StringComparer PhysicalFilePathComparer { get; } =
         OperatingSystem.IsWindows()
             ? StringComparer.OrdinalIgnoreCase
