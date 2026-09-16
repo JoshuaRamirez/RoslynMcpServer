@@ -508,17 +508,23 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// True when every <c>originalName</c> in <paramref name="changes"/>
     /// exists on <paramref name="method"/>, the method is not an extension
     /// method (<c>this</c> receiver not preserved by <c>CreateParameterSyntax</c>),
-    /// the method is not an interface declaration / override / interface-implementing
-    /// (bulk cannot rewrite the full hierarchy / metadata contracts), and no kept
-    /// parameter uses <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c> (bulk rewrite
-    /// cannot preserve those modifiers yet — <c>CreateParameterSyntax</c> only emits
-    /// type/name/default).
+    /// not a partial definition/implementation pair, not an interface declaration /
+    /// override / interface-implementing (bulk cannot rewrite the full hierarchy /
+    /// metadata contracts), and no kept parameter uses <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c>
+    /// (bulk rewrite cannot preserve those modifiers yet — <c>CreateParameterSyntax</c>
+    /// only emits type/name/default).
     /// </summary>
     internal static bool IsEligible(IMethodSymbol method, IReadOnlyList<ParameterChange> changes)
     {
         // Extension receivers lose the this modifier under CreateParameterSyntax
         // and would break extension-style callers (Codex).
         if (method.IsExtensionMethod)
+            return false;
+
+        // Partial definition/implementation pairs: rewriting one part alone can
+        // leave mismatched signatures when WouldCollideWithSibling skips the
+        // other (Codex). Skip until both can be updated atomically.
+        if (method.PartialDefinitionPart != null || method.PartialImplementationPart != null)
             return false;
 
         // Overrides / interface implementations: changing the signature while
@@ -707,7 +713,9 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// <summary>
     /// Optional-parameter defaults must bind and implicitly convert to
     /// <paramref name="parameterType"/>, and must be a compile-time constant
-    /// shape (literal / default / nameof) — not e.g. <c>DateTime.Now</c>.
+    /// (or <c>default</c> / <c>nameof</c>) — not e.g. <c>DateTime.Now</c>.
+    /// Accepts legal constant expressions beyond literal/default/nameof
+    /// (enum members, unary minus, const identifiers, constant binary forms) (Codex).
     /// </summary>
     private static bool IsValidOptionalDefault(
         SemanticModel semanticModel,
@@ -716,12 +724,13 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         ITypeSymbol parameterType)
     {
         var expression = SyntaxFactory.ParseExpression(defaultValue);
-        if (!IsConstantShapedOptionalDefault(expression))
-            return false;
 
         // nameof(MissingSymbol) still types as string; ensure the nameof
         // argument binds (Codex).
         if (!NameOfArgumentBinds(semanticModel, position, expression))
+            return false;
+
+        if (!IsCompileTimeConstantOptionalDefault(semanticModel, position, expression))
             return false;
 
         var exprInfo = semanticModel.GetSpeculativeTypeInfo(
@@ -736,6 +745,9 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             return parameterType.IsReferenceType ||
                    parameterType.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
 
+        if (IsDefaultValueExpression(expression))
+            return true;
+
         if (exprInfo.Type == null)
             return false;
 
@@ -743,17 +755,64 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         return conversion.Exists && conversion.IsImplicit;
     }
 
-    private static bool IsConstantShapedOptionalDefault(ExpressionSyntax expression) =>
-        expression switch
+    private static bool IsDefaultValueExpression(ExpressionSyntax expression) =>
+        expression.IsKind(SyntaxKind.DefaultLiteralExpression) ||
+        expression is DefaultExpressionSyntax;
+
+    /// <summary>
+    /// True for compile-time constant optional-parameter expressions, including
+    /// enum members / const fields / unary minus / constant binaries — not
+    /// runtime values like <c>DateTime.Now</c> (Codex).
+    /// </summary>
+    private static bool IsCompileTimeConstantOptionalDefault(
+        SemanticModel semanticModel,
+        int position,
+        ExpressionSyntax expression)
+    {
+        while (expression is ParenthesizedExpressionSyntax parenthesized)
+            expression = parenthesized.Expression;
+
+        if (expression.IsKind(SyntaxKind.NullKeyword) ||
+            IsDefaultValueExpression(expression) ||
+            expression is LiteralExpressionSyntax)
         {
-            LiteralExpressionSyntax => true,
-            DefaultExpressionSyntax => true,
-            InvocationExpressionSyntax
+            return true;
+        }
+
+        if (expression is InvocationExpressionSyntax
             {
                 Expression: IdentifierNameSyntax { Identifier.Text: "nameof" }
-            } => true,
-            _ => false
-        };
+            })
+        {
+            return true;
+        }
+
+        if (expression is PrefixUnaryExpressionSyntax unary &&
+            (unary.IsKind(SyntaxKind.UnaryMinusExpression) ||
+             unary.IsKind(SyntaxKind.UnaryPlusExpression)))
+        {
+            return IsCompileTimeConstantOptionalDefault(semanticModel, position, unary.Operand);
+        }
+
+        if (expression is BinaryExpressionSyntax binary)
+        {
+            return IsCompileTimeConstantOptionalDefault(semanticModel, position, binary.Left) &&
+                   IsCompileTimeConstantOptionalDefault(semanticModel, position, binary.Right);
+        }
+
+        if (expression is CastExpressionSyntax cast)
+            return IsCompileTimeConstantOptionalDefault(semanticModel, position, cast.Expression);
+
+        // Enum members / const fields / const locals bind as constant fields.
+        var symbolInfo = semanticModel.GetSpeculativeSymbolInfo(
+            position,
+            expression,
+            SpeculativeBindingOption.BindAsExpression);
+        if (symbolInfo.Symbol is IFieldSymbol { HasConstantValue: true })
+            return true;
+
+        return false;
+    }
 
     /// <summary>
     /// Non-<c>nameof</c> defaults are fine; for <c>nameof(...)</c>, the argument
@@ -1056,7 +1115,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         return newSolution;
     }
 
-    private static async Task<(IReadOnlyList<CallSite> CallSites, bool HasUnsupportedReferences)> CollectCallSitesAsync(
+    private async Task<(IReadOnlyList<CallSite> CallSites, bool HasUnsupportedReferences)> CollectCallSitesAsync(
         Document declaringDocument,
         MethodDeclarationSyntax methodSyntax,
         IMethodSymbol methodSymbol,
@@ -1076,6 +1135,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             declaringDocument,
             declaringPathKey,
             solution,
+            Context.Workspace,
             callSites,
             seen,
             cancellationToken))
@@ -1116,6 +1176,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                         declaringDocument,
                         declaringPathKey,
                         solution,
+                        Context.Workspace,
                         callSites,
                         seen,
                         cancellationToken))
@@ -1131,8 +1192,9 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
 
     /// <summary>
     /// Collects invocation call sites. Returns <c>true</c> when a non-invocation
-    /// semantic reference (method group / other) was found — callers must skip
-    /// or throw rather than rewrite the declaration alone (Codex / AddParameter).
+    /// semantic reference (method group / other) or an uneditable / source-generated
+    /// invocation was found — callers must skip or throw rather than rewrite the
+    /// declaration alone (Codex / AddParameter).
     /// </summary>
     private static async Task<bool> CollectCallSitesForSymbolAsync(
         IMethodSymbol methodSymbol,
@@ -1140,6 +1202,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         Document primaryDeclaringDocument,
         string? declaringPathKey,
         Solution solution,
+        Microsoft.CodeAnalysis.Workspace workspace,
         List<CallSite> callSites,
         HashSet<(DocumentId Id, int SpanStart, int SpanEnd)> seen,
         CancellationToken cancellationToken)
@@ -1173,13 +1236,26 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
 
                 var root = await document.GetSyntaxRootAsync(cancellationToken);
                 if (root == null)
-                    continue;
+                {
+                    // Unreadable reference document: refuse rather than rewrite
+                    // the declaration alone (deleted / generated / unloaded).
+                    return true;
+                }
 
                 var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
                 if (SignatureReferenceHelpers.IsDeclarationName(node, location.Location.SourceSpan))
                     continue;
                 if (SignatureReferenceHelpers.IsNameOfArgument(node))
                     continue;
+
+                // Source-generated / otherwise uneditable call sites cannot be
+                // rewritten; skipping them while changing the declaration leaves
+                // the project uncompilable (Codex).
+                if (document is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(document, workspace))
+                {
+                    return true;
+                }
 
                 var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
                 if (invocation != null &&
