@@ -565,15 +565,30 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// <summary>
     /// True when applying <paramref name="newParameters"/> to
     /// <paramref name="method"/> would collide with another method of the
-    /// same name in the containing type (same arity + type display strings).
+    /// same name in the containing type (same arity + bound type symbols).
     /// </summary>
     private static bool WouldCollideWithSibling(
         IMethodSymbol method,
-        IReadOnlyList<NewParameter> newParameters)
+        IReadOnlyList<NewParameter> newParameters,
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl)
     {
         var containingType = method.ContainingType;
         if (containingType == null)
             return false;
+
+        var position = methodDecl.SpanStart;
+        var boundTypes = new ITypeSymbol?[newParameters.Count];
+        for (var i = 0; i < newParameters.Count; i++)
+        {
+            var typeInfo = semanticModel.GetSpeculativeTypeInfo(
+                position,
+                SyntaxFactory.ParseTypeName(newParameters[i].Type),
+                SpeculativeBindingOption.BindAsTypeOrNamespace);
+            if (typeInfo.Type == null || typeInfo.Type is IErrorTypeSymbol)
+                return false;
+            boundTypes[i] = typeInfo.Type;
+        }
 
         foreach (var sibling in containingType.GetMembers(method.Name).OfType<IMethodSymbol>())
         {
@@ -585,10 +600,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             var collision = true;
             for (var i = 0; i < newParameters.Count; i++)
             {
-                if (!string.Equals(
-                        sibling.Parameters[i].Type.ToDisplayString(),
-                        newParameters[i].Type,
-                        StringComparison.Ordinal))
+                if (!SymbolEqualityComparer.Default.Equals(sibling.Parameters[i].Type, boundTypes[i]))
                 {
                     collision = false;
                     break;
@@ -605,19 +617,23 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// <summary>
     /// True when every non-empty <c>Type</c> / <c>DefaultValue</c> on
     /// <paramref name="changes"/> binds in <paramref name="semanticModel"/>
-    /// at <paramref name="methodDecl"/> (skip unbound types under allFiles).
+    /// at <paramref name="methodDecl"/>, and each default is an implicit
+    /// constant-compatible value for the resulting parameter type (allFiles).
     /// </summary>
     internal static bool RequestedTypesAndDefaultsBind(
         SemanticModel semanticModel,
         MethodDeclarationSyntax methodDecl,
+        IMethodSymbol methodSymbol,
         IReadOnlyList<ParameterChange> changes)
     {
         var position = methodDecl.SpanStart;
+        var byOriginal = methodSymbol.Parameters.ToDictionary(p => p.Name, StringComparer.Ordinal);
         foreach (var change in changes)
         {
             if (change.Remove)
                 continue;
 
+            ITypeSymbol? resultingType = null;
             if (!string.IsNullOrWhiteSpace(change.Type))
             {
                 var typeSyntax = SyntaxFactory.ParseTypeName(change.Type);
@@ -627,22 +643,71 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                     SpeculativeBindingOption.BindAsTypeOrNamespace);
                 if (typeInfo.Type == null || typeInfo.Type is IErrorTypeSymbol)
                     return false;
+                resultingType = typeInfo.Type;
+            }
+            else if (change.OriginalName != null &&
+                     byOriginal.TryGetValue(change.OriginalName, out var existing))
+            {
+                resultingType = existing.Type;
             }
 
             if (!string.IsNullOrWhiteSpace(change.DefaultValue))
             {
-                var expression = SyntaxFactory.ParseExpression(change.DefaultValue);
-                var exprInfo = semanticModel.GetSpeculativeTypeInfo(
-                    position,
-                    expression,
-                    SpeculativeBindingOption.BindAsExpression);
-                if (exprInfo.Type is IErrorTypeSymbol)
+                if (resultingType == null)
+                    return false;
+                if (!IsValidOptionalDefault(semanticModel, position, change.DefaultValue, resultingType))
                     return false;
             }
         }
 
         return true;
     }
+
+    /// <summary>
+    /// Optional-parameter defaults must bind and implicitly convert to
+    /// <paramref name="parameterType"/>, and must be a compile-time constant
+    /// shape (literal / default / nameof) — not e.g. <c>DateTime.Now</c>.
+    /// </summary>
+    private static bool IsValidOptionalDefault(
+        SemanticModel semanticModel,
+        int position,
+        string defaultValue,
+        ITypeSymbol parameterType)
+    {
+        var expression = SyntaxFactory.ParseExpression(defaultValue);
+        if (!IsConstantShapedOptionalDefault(expression))
+            return false;
+
+        var exprInfo = semanticModel.GetSpeculativeTypeInfo(
+            position,
+            expression,
+            SpeculativeBindingOption.BindAsExpression);
+        if (exprInfo.Type is IErrorTypeSymbol)
+            return false;
+
+        // null literal: Type may be null; still valid for reference/nullable types.
+        if (expression.IsKind(SyntaxKind.NullKeyword))
+            return parameterType.IsReferenceType ||
+                   parameterType.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
+
+        if (exprInfo.Type == null)
+            return false;
+
+        var conversion = semanticModel.Compilation.ClassifyConversion(exprInfo.Type, parameterType);
+        return conversion.Exists && conversion.IsImplicit;
+    }
+
+    private static bool IsConstantShapedOptionalDefault(ExpressionSyntax expression) =>
+        expression switch
+        {
+            LiteralExpressionSyntax => true,
+            DefaultExpressionSyntax => true,
+            InvocationExpressionSyntax
+            {
+                Expression: IdentifierNameSyntax { Identifier.Text: "nameof" }
+            } => true,
+            _ => false
+        };
 
     private async Task<Solution?> TryChangeOneAsync(
         Document document,
@@ -662,7 +727,17 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
             return null;
 
-        if (!RequestedTypesAndDefaultsBind(semanticModel, methodDecl, changes))
+        // Base virtual/abstract still eligible under IsOverride==false, but
+        // rewriting it while derived overrides keep the old signature breaks
+        // the hierarchy (Codex).
+        var overrides = await SymbolFinder.FindOverridesAsync(
+            methodSymbol,
+            document.Project.Solution,
+            cancellationToken: cancellationToken);
+        if (overrides.Any())
+            return null;
+
+        if (!RequestedTypesAndDefaultsBind(semanticModel, methodDecl, methodSymbol, changes))
             return null;
 
         var newParameters = BuildNewParameterList(methodSymbol.Parameters.ToList(), changes);
@@ -674,7 +749,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             return null;
 
         // Avoid collapsing overloads into identical signatures (Codex).
-        if (WouldCollideWithSibling(methodSymbol, newParameters))
+        if (WouldCollideWithSibling(methodSymbol, newParameters, semanticModel, methodDecl))
             return null;
 
         var beforeText = await document.GetTextAsync(cancellationToken);

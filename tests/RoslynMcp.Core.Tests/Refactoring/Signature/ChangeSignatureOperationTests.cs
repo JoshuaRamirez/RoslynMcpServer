@@ -1420,6 +1420,68 @@ public class ChangeSignatureOperationTests
         Assert.DoesNotContain(result.Changes!.FilesModified, p => PathsEqual(p, workspace.SourcePaths["FileA.cs"]));
     }
 
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsVirtualBaseWithOverrides()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Base
+            {
+                public virtual void Process(int x) { }
+            }
+
+            public class Derived : Base
+            {
+                public override void Process(int x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters = KeepXAddFlag()
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsInvalidDefaultForResultingType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Sample
+            {
+                public void Process(string x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x", DefaultValue = "1" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
     #endregion
 
     #region Helpers
