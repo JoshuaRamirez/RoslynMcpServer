@@ -5,6 +5,7 @@ using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Convert;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
@@ -1131,6 +1132,12 @@ public class ConvertToBlockBodyOperationTests
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
             [("FileA.cs", MixedExpressionFileA), ("filea.cs", MixedExpressionFileB)],
             explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["FileA.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["filea.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
         var operation = new ConvertToBlockBodyOperation(workspace.Context);
         var beforeLower = await File.ReadAllTextAsync(workspace.SourcePaths["filea.cs"]);
 
@@ -1155,6 +1162,12 @@ public class ConvertToBlockBodyOperationTests
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
             [("FileA.cs", MixedExpressionFileA), ("filea.cs", MixedExpressionFileB)],
             explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["FileA.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["filea.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
         var operation = new ConvertToBlockBodyOperation(workspace.Context);
         var ambiguous = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
 
@@ -1177,6 +1190,12 @@ public class ConvertToBlockBodyOperationTests
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
             [("FileA.cs", MixedExpressionFileA), ("filea.cs", MixedExpressionFileB)],
             explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["FileA.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["filea.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
         var operation = new ConvertToBlockBodyOperation(workspace.Context);
 
         var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
