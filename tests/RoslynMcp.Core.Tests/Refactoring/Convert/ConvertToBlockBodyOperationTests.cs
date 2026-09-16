@@ -1668,11 +1668,12 @@ public class ConvertToBlockBodyOperationTests
             .First(m => m.Identifier.Text == "Run");
         Assert.NotNull(run.ExpressionBody);
         Assert.Null(run.Body);
-        Assert.DoesNotContain("return await", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("return await", run.ToFullString(), StringComparison.Ordinal);
         var nested = root.DescendantNodes().OfType<LocalFunctionStatementSyntax>()
             .First(m => m.Identifier.Text == "Nested");
         Assert.NotNull(nested.ExpressionBody);
         Assert.Null(nested.Body);
+        Assert.DoesNotContain("return await", nested.ToFullString(), StringComparison.Ordinal);
         var safe = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
             .First(m => m.Identifier.Text == "Safe");
         Assert.Null(safe.ExpressionBody);
