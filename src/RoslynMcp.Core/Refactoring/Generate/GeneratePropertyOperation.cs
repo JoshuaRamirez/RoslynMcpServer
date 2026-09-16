@@ -22,6 +22,11 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// enum/delegate still reaches <c>InvalidSymbolKind</c>.
 /// Honors <c>replaceExisting</c> to remove an existing property of the same
 /// name (including across partials) before inserting a freshly generated one.
+/// Honors optional <c>allFiles</c> to walk every C# document (or the
+/// optional single <c>sourceFile</c>) and generate the named property on
+/// every eligible type (same document filter as sibling Generate allFiles
+/// ops). When <c>allFiles</c> is true, cannot be combined with
+/// <c>typeName</c>, <c>line</c>, or <c>column</c>.
 /// </summary>
 public sealed class GeneratePropertyOperation : RefactoringOperationBase<GeneratePropertyParams>
 {
@@ -47,18 +52,53 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
     /// </summary>
     internal static void Validate(GeneratePropertyParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.TypeName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with typeName, line, or column.");
+            }
+
+            ValidatePropertyShape(@params);
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (string.IsNullOrWhiteSpace(@params.TypeName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "typeName is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
+        var sourceFile = @params.SourceFile!;
+
+        if (!PathResolver.IsAbsolutePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
 
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
+        ValidatePropertyShape(@params);
+
+        if (@params.Line.HasValue && @params.Line.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
+
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
+
+        if (!File.Exists(sourceFile))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {sourceFile}");
+    }
+
+    /// <summary>
+    /// Property name / type / field / visibility rules stay valid with
+    /// <c>allFiles</c> and keep today's reject-before-write rules.
+    /// </summary>
+    private static void ValidatePropertyShape(GeneratePropertyParams @params)
+    {
         var hasField = !string.IsNullOrWhiteSpace(@params.FieldName);
         if (string.IsNullOrWhiteSpace(@params.PropertyName) && !hasField)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "propertyName is required unless fieldName is provided.");
@@ -71,15 +111,6 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
 
         if (!string.IsNullOrWhiteSpace(@params.Visibility) && !ValidVisibilities.Contains(@params.Visibility.Trim()))
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
-
-        if (@params.Line.HasValue && @params.Line.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
-
-        if (@params.Column.HasValue && @params.Column.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
 
     /// <inheritdoc />
@@ -88,7 +119,10 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         GeneratePropertyParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -102,7 +136,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         // unsupported candidates so a covering enum still reaches
         // InvalidSymbolKind instead of retargeting a later class.
         var typeDecl = FindTypeDeclaration(
-            root, @params.TypeName, @params.Line, @params.Column, out var hadCandidates);
+            root, @params.TypeName!, @params.Line, @params.Column, out var hadCandidates);
 
         if (typeDecl == null)
         {
@@ -172,50 +206,17 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
                 cancellationToken);
         }
 
-        var solution = document.Project.Solution;
-        // Fresh instance per execution. A static annotation is shared
-        // across operations; after CommitChanges the in-memory solution
-        // can still carry it, so a later replaceExisting on another type
-        // would recover the stale node via FirstOrDefault.
-        SyntaxAnnotation? targetTypeAnnotation = null;
-        if (replacing)
-        {
-            // Annotate before the rewrite. Removing a property from an
-            // earlier same-file partial shifts both SpanStart and the
-            // physical line of a later selected partial — do not re-find
-            // with those stale values. Today's FindTypeDeclaration(root,
-            // typeName, preferredSpanStart) is not enough.
-            targetTypeAnnotation = new SyntaxAnnotation("generate-property-target-type");
-            root = root.ReplaceNode(
-                hostTypeDecl,
-                hostTypeDecl.WithAdditionalAnnotations(targetTypeAnnotation));
-            document = document.WithSyntaxRoot(root);
-            solution = document.Project.Solution;
+        var solution = await ApplyPropertyToSolutionAsync(
+            document.Project.Solution,
+            document,
+            hostTypeDecl,
+            typeSymbol,
+            property,
+            existingProperty,
+            @params.TypeName!,
+            cancellationToken);
 
-            solution = await RemoveExistingPropertiesAcrossPartialsAsync(
-                solution, typeSymbol, existingProperty!, cancellationToken);
-            document = solution.GetDocument(document.Id)
-                ?? throw new RefactoringException(
-                    ErrorCodes.DocumentNotEditable,
-                    $"Could not locate the document for type '{@params.TypeName}'.");
-            root = await document.GetSyntaxRootAsync(cancellationToken)
-                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
-            hostTypeDecl = root.GetAnnotatedNodes(targetTypeAnnotation)
-                .OfType<TypeDeclarationSyntax>()
-                .FirstOrDefault()
-                ?? throw new RefactoringException(
-                    ErrorCodes.SymbolNotFound,
-                    $"No type named '{@params.TypeName}' found in the source file.");
-        }
-
-        var newTypeDecl = InsertProperty(hostTypeDecl, property);
-        // Strip the per-execution annotation so it does not linger in the
-        // workspace after commit.
-        if (targetTypeAnnotation != null)
-            newTypeDecl = (TypeDeclarationSyntax)newTypeDecl.WithoutAnnotations(targetTypeAnnotation);
-        var newRoot = root.ReplaceNode(hostTypeDecl, newTypeDecl);
-        var newDocument = document.WithSyntaxRoot(newRoot);
-        var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
+        var commitResult = await CommitChangesAsync(solution, cancellationToken);
 
         return RefactoringResult.Succeeded(
             operationId,
@@ -233,6 +234,306 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
             },
             0,
             0);
+    }
+
+    /// <summary>
+    /// Walks every C# document in the solution (same <c>.cs</c>
+    /// document filter as <c>GenerateConstructorOperation.ExecuteAllFilesAsync</c>
+    /// / <c>GenerateToStringOperation.ExecuteAllFilesAsync</c>
+    /// / <c>GenerateOverridesOperation.ExecuteAllFilesAsync</c>) and generates
+    /// the named property on every eligible type. Optional
+    /// <see cref="GeneratePropertyParams.SourceFile"/> limits via
+    /// <see cref="DocumentSourceFileFilter"/>. Already-has-name /
+    /// unsupported / missing-field / uneditable types are skipped rather
+    /// than failing the walk. When every type is a no-op, succeeds with
+    /// empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        GeneratePropertyParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var generatedCountByDoc = new Dictionary<DocumentId, int>();
+        var processedTypes = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(document.Id);
+                if (currentDocument == null || !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                    break;
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var typeDeclaration in TypeDeclarationHelpers.CollectTypeDeclarations(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var typeSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
+                    if (typeSymbol == null)
+                        continue;
+
+                    var typeKey = TypeWalkKeyHelpers.TypeWalkKey(currentDocument.Project.Id, typeSymbol);
+                    if (!processedTypes.Add(typeKey))
+                        continue;
+
+                    try
+                    {
+                        updated = await TryGenerateOneAsync(
+                            currentDocument,
+                            typeDeclaration,
+                            typeSymbol,
+                            @params,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        // Skip interface / enum / NameCollision /
+                        // missing-field / readonly-struct / uneditable /
+                        // parse/symbol failures rather than failing the walk.
+                        updated = null;
+                    }
+
+                    if (updated != null)
+                        break;
+                }
+
+                if (updated == null)
+                    break;
+
+                currentSolution = updated;
+                generatedCountByDoc[document.Id] =
+                    generatedCountByDoc.GetValueOrDefault(document.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var generatedCount = generatedCountByDoc.GetValueOrDefault(document.Id);
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = generatedCount > 0
+                        ? BuildAllFilesDescription(generatedCount)
+                        : "Update properties generated in other files",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that generated
+    /// <paramref name="generatedCount"/> properties.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int generatedCount) =>
+        generatedCount == 1
+            ? "Generate property"
+            : $"Generate {generatedCount} properties";
+
+    private async Task<Solution?> TryGenerateOneAsync(
+        Document document,
+        TypeDeclarationSyntax typeDeclaration,
+        INamedTypeSymbol typeSymbol,
+        GeneratePropertyParams @params,
+        CancellationToken cancellationToken)
+    {
+        if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        if (typeSymbol.TypeKind is TypeKind.Enum or TypeKind.Delegate or TypeKind.Interface ||
+            typeDeclaration is InterfaceDeclarationSyntax)
+        {
+            return null;
+        }
+
+        IFieldSymbol? backingField = null;
+        if (!string.IsNullOrWhiteSpace(@params.FieldName))
+        {
+            try
+            {
+                backingField = ResolveBackingField(typeSymbol, @params.FieldName);
+                ValidateFieldCanBeWrapped(backingField, @params.InitOnly);
+            }
+            catch (RefactoringException)
+            {
+                return null;
+            }
+        }
+
+        string propertyName;
+        string propertyType;
+        IPropertySymbol? existingProperty;
+        try
+        {
+            propertyName = ResolvePropertyName(@params, backingField);
+            propertyType = ResolvePropertyType(@params, backingField);
+            existingProperty = ResolvePropertyToReplace(typeSymbol, propertyName, @params.ReplaceExisting);
+            ValidateAutoPropertyAccessors(typeSymbol, @params.InitOnly, hasBackingField: backingField != null);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+
+        var visibility = string.IsNullOrWhiteSpace(@params.Visibility) ? "public" : @params.Visibility.Trim();
+        var property = backingField != null
+            ? CreatePropertyWithBackingField(propertyName, propertyType, backingField, visibility, @params.InitOnly)
+            : CreateAutoProperty(propertyName, propertyType, visibility, @params.InitOnly);
+
+        if (ShouldBeStatic(typeSymbol, backingField))
+            property = AddStaticModifier(property);
+
+        try
+        {
+            return await ApplyPropertyToSolutionAsync(
+                document.Project.Solution,
+                document,
+                typeDeclaration,
+                typeSymbol,
+                property,
+                existingProperty,
+                typeSymbol.Name,
+                cancellationToken);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<Solution> ApplyPropertyToSolutionAsync(
+        Solution solution,
+        Document document,
+        TypeDeclarationSyntax hostTypeDecl,
+        INamedTypeSymbol typeSymbol,
+        PropertyDeclarationSyntax property,
+        IPropertySymbol? existingProperty,
+        string typeName,
+        CancellationToken cancellationToken)
+    {
+        var root = await document.GetSyntaxRootAsync(cancellationToken)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+
+        // Fresh instance per execution. A static annotation is shared
+        // across operations; after CommitChanges the in-memory solution
+        // can still carry it, so a later replaceExisting on another type
+        // would recover the stale node via FirstOrDefault.
+        SyntaxAnnotation? targetTypeAnnotation = null;
+        if (existingProperty != null)
+        {
+            // Annotate before the rewrite. Removing a property from an
+            // earlier same-file partial shifts both SpanStart and the
+            // physical line of a later selected partial — do not re-find
+            // with those stale values. Today's FindTypeDeclaration(root,
+            // typeName, preferredSpanStart) is not enough.
+            targetTypeAnnotation = new SyntaxAnnotation("generate-property-target-type");
+            root = root.ReplaceNode(
+                hostTypeDecl,
+                hostTypeDecl.WithAdditionalAnnotations(targetTypeAnnotation));
+            document = document.WithSyntaxRoot(root);
+            solution = document.Project.Solution;
+
+            solution = await RemoveExistingPropertiesAcrossPartialsAsync(
+                solution, typeSymbol, existingProperty, cancellationToken);
+            document = solution.GetDocument(document.Id)
+                ?? throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Could not locate the document for type '{typeName}'.");
+            root = await document.GetSyntaxRootAsync(cancellationToken)
+                ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+            hostTypeDecl = root.GetAnnotatedNodes(targetTypeAnnotation)
+                .OfType<TypeDeclarationSyntax>()
+                .FirstOrDefault()
+                ?? throw new RefactoringException(
+                    ErrorCodes.SymbolNotFound,
+                    $"No type named '{typeName}' found in the source file.");
+        }
+
+        var newTypeDecl = InsertProperty(hostTypeDecl, property);
+        // Strip the per-execution annotation so it does not linger in the
+        // workspace after commit.
+        if (targetTypeAnnotation != null)
+            newTypeDecl = (TypeDeclarationSyntax)newTypeDecl.WithoutAnnotations(targetTypeAnnotation);
+        var newRoot = root.ReplaceNode(hostTypeDecl, newTypeDecl);
+        return document.WithSyntaxRoot(newRoot).Project.Solution;
     }
 
     internal static void ValidateTypeCanHostProperty(INamedTypeSymbol typeSymbol)
@@ -779,19 +1080,19 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         {
             new()
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
-                Description = $"{verb} property '{propertyName}' on {@params.TypeName}",
+                Description = $"{verb} property '{propertyName}' on {@params.TypeName!}",
                 BeforeSnippet = replacing
-                    ? $"// Type '{@params.TypeName}' (replacing existing property '{propertyName}')"
-                    : $"// Type '{@params.TypeName}' (no property '{propertyName}')",
+                    ? $"// Type '{@params.TypeName!}' (replacing existing property '{propertyName}')"
+                    : $"// Type '{@params.TypeName!}' (no property '{propertyName}')",
                 AfterSnippet = afterSnippet
             }
         };
 
         if (existingProperty != null)
         {
-            var sourcePath = PathResolver.NormalizePath(@params.SourceFile);
+            var sourcePath = PathResolver.NormalizePath(@params.SourceFile!);
             var seenFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var reference in existingProperty.DeclaringSyntaxReferences)
             {
@@ -814,7 +1115,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
                 {
                     File = filePath,
                     ChangeType = ChangeKind.Modify,
-                    Description = $"Remove existing property '{propertyName}' from {@params.TypeName}",
+                    Description = $"Remove existing property '{propertyName}' from {@params.TypeName!}",
                     BeforeSnippet = existingProp.NormalizeWhitespace().ToFullString(),
                     AfterSnippet = "// property removed"
                 });

@@ -33,13 +33,13 @@ public sealed class GeneratePropertyTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Generate a property on a C# type. Creates an auto-property { get; set; }, an init-only property { get; init; }, or a backing-field property { get => field; set => field = value; } when a field is the target. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. replaceExisting (default false) replaces an existing property of the same name instead of failing.";
+        "Generate a property on a C# type. Creates an auto-property { get; set; }, an init-only property { get; init; }, or a backing-field property { get => field; set => field = value; } when a field is the target. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. replaceExisting (default false) replaces an existing property of the same name instead of failing. allFiles: true walks every C# file and generates the named property on every eligible type (sourceFile optional when true; cannot be combined with typeName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "typeName" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,39 +50,45 @@ public sealed class GeneratePropertyTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the type"
+                description = "Absolute path to the source file containing the type. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with typeName, line, or column.",
+                @default = false
             },
             typeName = new
             {
                 type = "string",
-                description = "Name of the type to add the property to"
+                description = "Name of the type to add the property to. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter.",
+                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             propertyName = new
             {
                 type = "string",
-                description = "Name of the property to generate. Derived from fieldName when omitted."
+                description = "Name of the property to generate. Derived from fieldName when omitted. Required for auto-properties unless fieldName is set. Valid with allFiles."
             },
             propertyType = new
             {
                 type = "string",
-                description = "C# type of the property. Required for auto-properties; inferred from the field when fieldName is set."
+                description = "C# type of the property. Required for auto-properties; inferred from the field when fieldName is set. Valid with allFiles."
             },
             fieldName = new
             {
                 type = "string",
-                description = "Optional field to wrap with a backing-field property"
+                description = "Optional field to wrap with a backing-field property. Valid with allFiles (types without that field are skipped)."
             },
             visibility = new
             {
@@ -99,7 +105,7 @@ public sealed class GeneratePropertyTool : IToolHandler
             replaceExisting = new
             {
                 type = "boolean",
-                description = "Replace an existing property of the same name instead of failing. Fields and methods of the same name are left alone. Default false.",
+                description = "Replace an existing property of the same name instead of failing. Fields and methods of the same name are left alone. Default false. Valid with allFiles.",
                 @default = false
             },
             preview = new
@@ -136,6 +142,7 @@ public sealed class GeneratePropertyTool : IToolHandler
             var @params = new GeneratePropertyParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 TypeName = args.TypeName,
                 Line = args.Line,
                 Column = args.Column,
@@ -173,8 +180,9 @@ public sealed class GeneratePropertyTool : IToolHandler
     private sealed class GeneratePropertyArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string TypeName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? TypeName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
         public string? PropertyName { get; init; }
