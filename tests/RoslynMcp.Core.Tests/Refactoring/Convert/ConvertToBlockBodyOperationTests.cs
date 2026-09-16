@@ -1064,20 +1064,35 @@ public class ConvertToBlockBodyOperationTests
         var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
         var flipped = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
 
-        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        if (OperatingSystem.IsWindows())
         {
-            AllFiles = true,
-            SourceFile = flipped
-        });
+            var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+            {
+                AllFiles = true,
+                SourceFile = flipped
+            });
 
-        Assert.True(result.Success);
-        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
-        AssertMethodIsBlockBodied(updatedA, "One");
-        AssertMethodIsBlockBodied(updatedA, "Two");
+            Assert.True(result.Success);
+            var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+            AssertMethodIsBlockBodied(updatedA, "One");
+            AssertMethodIsBlockBodied(updatedA, "Two");
+            Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+            Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+            Assert.Single(result.Changes!.FilesModified);
+            Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+            return;
+        }
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToBlockBodyParams
+            {
+                AllFiles = true,
+                SourceFile = flipped
+            }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
         Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
         Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
-        Assert.Single(result.Changes!.FilesModified);
-        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
     }
 
     [SkippableFact]
@@ -1151,7 +1166,10 @@ public class ConvertToBlockBodyOperationTests
             }));
 
         Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
-        Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
+        if (OperatingSystem.IsWindows())
+            Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
+        else
+            Assert.Contains("File not found in workspace", ex.Message, StringComparison.Ordinal);
     }
 
     [SkippableFact]
@@ -1631,6 +1649,32 @@ public class ConvertToBlockBodyOperationTests
     }
 
     [SkippableFact]
+    public async Task Convert_SingleFile_LinkedDocumentViewsThatRewriteDifferently_Throws()
+    {
+        const string sharedSource = """
+            namespace TestApp;
+
+            public partial class Shared
+            {
+                public async Work Run() => await Delay();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(sharedSource);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToBlockBodyParams
+            {
+                SourceFile = workspace.SourcePaths["Shared.cs"],
+                MemberName = "Run"
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("Linked workspace documents", ex.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task Convert_AllFilesTrue_LinkedDocumentViewsThatRewriteIdentically_ReportSingleModifiedFile()
     {
         const string sharedSource = """
@@ -1668,6 +1712,48 @@ public class ConvertToBlockBodyOperationTests
         var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
         {
             AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Shared.cs"]));
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]));
+        AssertMethodIsBlockBodied(updated, "Run");
+    }
+
+    [SkippableFact]
+    public async Task Convert_SingleFile_LinkedDocumentViewsThatRewriteIdentically_ReportSingleModifiedFile()
+    {
+        const string sharedSource = """
+            namespace TestApp;
+
+            public partial class Shared
+            {
+                public async Work Run() => await Delay();
+            }
+            """;
+        const string anchorSource = """
+            using System.Threading.Tasks;
+            global using Work = System.Threading.Tasks.Task;
+
+            namespace TestApp;
+
+            public partial class Shared
+            {
+                private static Work Delay()
+                {
+                    return Task.CompletedTask;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(sharedSource, anchorSource, anchorSource);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePaths["Shared.cs"],
+            MemberName = "Run"
         });
 
         Assert.True(result.Success);

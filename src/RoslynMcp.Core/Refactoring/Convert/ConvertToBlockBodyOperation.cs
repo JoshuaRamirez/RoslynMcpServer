@@ -86,6 +86,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         if (@params.AllFiles)
             return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
 
+        var currentSolution = Context.Solution;
         var document = GetDocumentOrThrow(@params.SourceFile!);
         DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
@@ -113,6 +114,34 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
 
         var model = await document.GetSemanticModelAsync(cancellationToken);
         var (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member, model);
+        var newRoot = root.ReplaceNode(member, newMember);
+        var newDocument = document.WithSyntaxRoot(newRoot);
+        var changedText = await newDocument.GetTextAsync(cancellationToken);
+
+        var linkedDocuments = GetLinkedDocumentsByPhysicalPath(currentSolution, document);
+        foreach (var linked in linkedDocuments)
+        {
+            if (linked.Id == document.Id)
+                continue;
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var linkedRoot = await linked.GetSyntaxRootAsync(cancellationToken);
+            if (linkedRoot == null)
+                throw new RefactoringException(ErrorCodes.CannotConvert, BuildLinkedDocumentDivergenceMessage(linked.FilePath));
+
+            var linkedMember = FindMember(linkedRoot, @params.MemberName, @params.Line, @params.Column);
+            if (linkedMember == null || !IsConvertibleKind(linkedMember))
+                throw new RefactoringException(ErrorCodes.CannotConvert, BuildLinkedDocumentDivergenceMessage(linked.FilePath));
+
+            var linkedModel = await linked.GetSemanticModelAsync(cancellationToken);
+            var (newLinkedMember, _, _) = ConvertToBlockBody(linkedMember, linkedModel);
+            var linkedText = await linked.WithSyntaxRoot(linkedRoot.ReplaceNode(linkedMember, newLinkedMember))
+                .GetTextAsync(cancellationToken);
+            if (!changedText.ContentEquals(linkedText))
+                throw new RefactoringException(ErrorCodes.CannotConvert, BuildLinkedDocumentDivergenceMessage(linked.FilePath));
+
+            currentSolution = currentSolution.WithDocumentText(linked.Id, changedText);
+        }
 
         if (@params.Preview)
         {
@@ -130,9 +159,8 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             return RefactoringResult.PreviewResult(operationId, pendingChanges);
         }
 
-        var newRoot = root.ReplaceNode(member, newMember);
-        var newDocument = document.WithSyntaxRoot(newRoot);
-        var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
+        currentSolution = currentSolution.WithDocumentText(document.Id, changedText);
+        var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
 
         return RefactoringResult.Succeeded(
             operationId,
@@ -327,6 +355,13 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         if (exactMatches.Count > 0)
             return exactMatches;
 
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"File not found in workspace: {sourceFile}");
+        }
+
         var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
         // Ambiguity is distinct case-sensitive paths, not linked Document count
         // (one physical file linked into multiple projects is not ambiguous).
@@ -344,6 +379,24 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
                 $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
             _ => matchedDocuments
         };
+    }
+
+    private static string BuildLinkedDocumentDivergenceMessage(string? filePath) =>
+        $"Linked workspace documents for '{filePath}' produce different rewrites under current project contexts.";
+
+    private List<Document> GetLinkedDocumentsByPhysicalPath(Solution solution, Document document)
+    {
+        var normalizedPath = PathResolver.NormalizePath(document.FilePath!);
+        return solution.Projects
+            .SelectMany(project => project.Documents)
+            .Where(candidate => candidate.FilePath != null
+                && PhysicalFilePathComparer.Equals(
+                    PathResolver.NormalizePath(candidate.FilePath),
+                    normalizedPath))
+            .OrderBy(candidate => candidate.FilePath, StringComparer.Ordinal)
+            .ThenBy(candidate => candidate.Project.Name, StringComparer.Ordinal)
+            .ThenBy(candidate => candidate.Id.Id.ToString(), StringComparer.Ordinal)
+            .ToList();
     }
 
     internal static string BuildAllFilesDescription(int convertedCount) =>
