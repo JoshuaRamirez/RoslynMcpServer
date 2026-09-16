@@ -452,26 +452,13 @@ public sealed class MoveTypeToNamespaceOperation
     /// Full namespace of a top-level type, including nested namespace
     /// declarations. Prefers the semantic containing namespace when a
     /// model is available.
+    /// Thin forwarder to <see cref="Utilities.NamespaceNameHelpers.GetTypeNamespaceName"/>.
     /// </summary>
     internal static string GetNamespaceName(
         TypeDeclarationSyntax typeDecl,
         SemanticModel? semanticModel = null,
-        CancellationToken cancellationToken = default)
-    {
-        if (semanticModel?.GetDeclaredSymbol(typeDecl, cancellationToken) is INamedTypeSymbol symbol
-            && symbol.ContainingNamespace != null
-            && !symbol.ContainingNamespace.IsGlobalNamespace)
-        {
-            return symbol.ContainingNamespace.ToDisplayString();
-        }
-
-        var parts = typeDecl.Ancestors()
-            .OfType<BaseNamespaceDeclarationSyntax>()
-            .Reverse()
-            .Select(n => n.Name.ToString())
-            .ToList();
-        return parts.Count == 0 ? "" : string.Join(".", parts);
-    }
+        CancellationToken cancellationToken = default) =>
+        NamespaceNameHelpers.GetTypeNamespaceName(typeDecl, semanticModel, cancellationToken);
 
     /// <summary>
     /// Preview description for moving <paramref name="typeName"/> into
@@ -1383,19 +1370,8 @@ public sealed class MoveTypeToNamespaceOperation
         };
     }
 
-    private static Contracts.Enums.SymbolKind MapSymbolKind(INamedTypeSymbol symbol)
-    {
-        return symbol.TypeKind switch
-        {
-            TypeKind.Class => Contracts.Enums.SymbolKind.Class,
-            TypeKind.Struct => Contracts.Enums.SymbolKind.Struct,
-            TypeKind.Interface => Contracts.Enums.SymbolKind.Interface,
-            TypeKind.Enum => Contracts.Enums.SymbolKind.Enum,
-            TypeKind.Delegate => Contracts.Enums.SymbolKind.Delegate,
-            _ when symbol.IsRecord => Contracts.Enums.SymbolKind.Record,
-            _ => Contracts.Enums.SymbolKind.Class
-        };
-    }
+    private static Contracts.Enums.SymbolKind MapSymbolKind(INamedTypeSymbol symbol) =>
+        NamedTypeSymbolKindHelpers.Map(symbol);
 
     private RefactoringResult CreatePreviewResult(
         Guid operationId,

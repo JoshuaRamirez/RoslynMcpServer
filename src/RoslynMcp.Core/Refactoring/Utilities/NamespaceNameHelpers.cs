@@ -6,8 +6,10 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// <summary>
 /// Shared containing-namespace / full-namespace name helpers used by
 /// convert_anonymous_to_class / convert_tuple_to_struct (and by
-/// <see cref="TypeInsertionHelpers.FindNamespace"/>). Same bodies as the
-/// two identical Convert copies and the former private TypeInsertionHelpers twin.
+/// <see cref="TypeInsertionHelpers.FindNamespace"/>), plus the MoveType
+/// type-declaration namespace name used by move_type_to_file /
+/// move_type_to_namespace. Same bodies as the identical Convert copies,
+/// the former private TypeInsertionHelpers twin, and the two MoveType copies.
 /// Named NamespaceNameHelpers (not NamespaceHelpers) to avoid clashing with
 /// RenameNamespace FindNamespace / AddMissingUsings FindNamespacesForType.
 /// </summary>
@@ -57,5 +59,32 @@ internal static class NamespaceNameHelpers
 
         var joined = string.Join(".", parts);
         return string.IsNullOrEmpty(joined) ? null : joined;
+    }
+
+    /// <summary>
+    /// Full namespace of a top-level type, including nested namespace
+    /// declarations (<c>namespace A { namespace B { class C } }</c> is
+    /// <c>A.B</c>, not just the nearest <c>B</c>). Prefers the semantic
+    /// containing namespace when a model is available. Same body as the
+    /// two MoveType copies. Returns <c>""</c> when none (not null).
+    /// </summary>
+    internal static string GetTypeNamespaceName(
+        TypeDeclarationSyntax typeDecl,
+        SemanticModel? semanticModel = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (semanticModel?.GetDeclaredSymbol(typeDecl, cancellationToken) is INamedTypeSymbol symbol
+            && symbol.ContainingNamespace != null
+            && !symbol.ContainingNamespace.IsGlobalNamespace)
+        {
+            return symbol.ContainingNamespace.ToDisplayString();
+        }
+
+        var parts = typeDecl.Ancestors()
+            .OfType<BaseNamespaceDeclarationSyntax>()
+            .Reverse()
+            .Select(n => n.Name.ToString())
+            .ToList();
+        return parts.Count == 0 ? "" : string.Join(".", parts);
     }
 }
