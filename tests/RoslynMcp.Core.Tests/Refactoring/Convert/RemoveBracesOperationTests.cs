@@ -201,7 +201,7 @@ public class RemoveBracesOperationTests
             """).GetRoot();
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            RemoveBracesOperation.FindTypeDeclaration(root, "C"));
+            BraceTypeNameHelpers.FindTypeDeclaration(root, "C"));
 
         Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
     }
@@ -214,10 +214,10 @@ public class RemoveBracesOperationTests
             namespace B { class C {} }
             """).GetRoot();
 
-        var type = RemoveBracesOperation.FindTypeDeclaration(root, "A.C");
+        var type = BraceTypeNameHelpers.FindTypeDeclaration(root, "A.C");
 
         Assert.Equal("C", type.Identifier.Text);
-        Assert.Equal("A.C", RemoveBracesOperation.GetQualifiedTypeName(type));
+        Assert.Equal("A.C", BraceTypeNameHelpers.GetQualifiedTypeName(type));
     }
 
     [Fact]
