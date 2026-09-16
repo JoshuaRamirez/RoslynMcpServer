@@ -341,7 +341,17 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
             .ToList();
         if (exactMatches.Count > 0)
-            return exactMatches;
+        {
+            // Exact spelling disambiguates case-distinct files; still return every
+            // linked Document that shares the same physical comparison key so
+            // linked-view divergence checks are not skipped (Codex P2).
+            var exactKeys = exactMatches
+                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+                .ToHashSet(StringComparer.Ordinal);
+            return documents
+                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
+                .ToList();
+        }
 
         var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
         // Ambiguity is distinct case-sensitive paths, not linked Document count
