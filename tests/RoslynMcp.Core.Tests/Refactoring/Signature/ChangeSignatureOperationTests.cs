@@ -2300,6 +2300,37 @@ public class ChangeSignatureOperationTests
     }
 
     [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_AppliesBesideRefSiblingWithoutFalseCollision()
+    {
+        const string source = """
+            namespace TestApp;
+            public class Sample
+            {
+                public void Process(ref int x) { }
+                public void Process(string x) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x", Type = "int" }
+            ]
+        });
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("Process(ref int x)", updated, StringComparison.Ordinal);
+        Assert.Contains("Process(int x)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("Process(string x)", updated, StringComparison.Ordinal);
+        Assert.NotEqual(before, updated);
+        Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, workspace.SourcePath));
+    }
+
+    [SkippableFact]
     public async Task ChangeSignature_AllFilesTrue_SkipsProtectedMethodWithInternalParameterType()
     {
         const string source = """
