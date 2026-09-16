@@ -1499,6 +1499,88 @@ public class ConvertToBlockBodyOperationTests
     }
 
     [SkippableFact]
+    public async Task Convert_AllFilesTrue_SkipsCustomNonGenericAsyncTaskLike()
+    {
+        const string source = """
+            using System;
+            using System.Runtime.CompilerServices;
+            using System.Threading.Tasks;
+
+            namespace TestApp;
+
+            [AsyncMethodBuilder(typeof(CustomTaskMethodBuilder))]
+            public struct CustomTask
+            {
+                public CustomTaskAwaiter GetAwaiter() => default;
+            }
+
+            public struct CustomTaskAwaiter : INotifyCompletion
+            {
+                public bool IsCompleted => true;
+                public void OnCompleted(Action continuation) { }
+                public void GetResult() { }
+            }
+
+            public struct CustomTaskMethodBuilder
+            {
+                public static CustomTaskMethodBuilder Create() => default;
+                public void Start<TStateMachine>(ref TStateMachine stateMachine)
+                    where TStateMachine : IAsyncStateMachine => stateMachine.MoveNext();
+                public void SetStateMachine(IAsyncStateMachine stateMachine) { }
+                public void SetResult() { }
+                public void SetException(Exception exception) { }
+                public CustomTask Task => default;
+                public void AwaitOnCompleted<TAwaiter, TStateMachine>(
+                    ref TAwaiter awaiter, ref TStateMachine stateMachine)
+                    where TAwaiter : INotifyCompletion
+                    where TStateMachine : IAsyncStateMachine { }
+                public void AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(
+                    ref TAwaiter awaiter, ref TStateMachine stateMachine)
+                    where TAwaiter : ICriticalNotifyCompletion
+                    where TStateMachine : IAsyncStateMachine { }
+            }
+
+            public class CustomAsync
+            {
+                public async CustomTask Run() => await Delay();
+                public async Task Safe() => await Task.CompletedTask;
+                public void Host()
+                {
+                    async CustomTask Nested() => await Delay();
+                    _ = Nested();
+                }
+                private static CustomTask Delay() => default;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "CustomAsync.cs");
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["CustomAsync.cs"]));
+        var root = CSharpSyntaxTree.ParseText(updated).GetRoot();
+        var run = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "Run");
+        Assert.NotNull(run.ExpressionBody);
+        Assert.Null(run.Body);
+        Assert.DoesNotContain("return await", updated, StringComparison.Ordinal);
+        var nested = root.DescendantNodes().OfType<LocalFunctionStatementSyntax>()
+            .First(m => m.Identifier.Text == "Nested");
+        Assert.NotNull(nested.ExpressionBody);
+        Assert.Null(nested.Body);
+        var safe = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "Safe");
+        Assert.Null(safe.ExpressionBody);
+        Assert.NotNull(safe.Body);
+        Assert.IsType<ExpressionStatementSyntax>(Assert.Single(safe.Body!.Statements));
+    }
+
+    [SkippableFact]
     public async Task Convert_AllFilesTrue_LinkedDocumentViewsThatRewriteDifferently_Throws()
     {
         const string sharedSource = """

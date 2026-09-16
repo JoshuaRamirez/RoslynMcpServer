@@ -182,9 +182,10 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         // One physical path may appear as multiple Documents when linked into
         // several projects. Rewrite once per normalized path and apply the same
         // text to every sibling DocumentId so CommitChanges cannot last-write-wins
-        // conflicting preprocessor variants (Codex P2). Group with Ordinal so
-        // case-distinct files (Foo.cs vs foo.cs) stay separate on Linux;
-        // Windows/macOS coalesce casing variants of the same physical path.
+        // conflicting preprocessor variants (Codex P2). Group with
+        // PhysicalFilePathComparer (Ordinal on Linux; OrdinalIgnoreCase on
+        // Windows/macOS) so case-distinct files stay separate on Linux while
+        // casing variants of the same physical path coalesce elsewhere.
         var documentGroups = allDocuments
             .GroupBy(d => PathResolver.NormalizePath(d.FilePath!), PhysicalFilePathComparer)
             .Select(group => group
@@ -513,6 +514,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         EnsureExpressionBody(method.ExpressionBody, method.Body, "Method");
         var expressionBody = method.ExpressionBody!;
         var symbol = precomputedSymbol ?? model?.GetDeclaredSymbol(method) as IMethodSymbol;
+        EnsureAsyncReturnTypeSafeToConvert(method.Modifiers, symbol);
         var stmt = CreateStatement(
             expressionBody,
             useReturn: !IsNonReturning(method.ReturnType, method.Modifiers, symbol));
@@ -533,6 +535,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         EnsureExpressionBody(localFunction.ExpressionBody, localFunction.Body, "Local function");
         var expressionBody = localFunction.ExpressionBody!;
         var symbol = precomputedSymbol ?? model?.GetDeclaredSymbol(localFunction) as IMethodSymbol;
+        EnsureAsyncReturnTypeSafeToConvert(localFunction.Modifiers, symbol);
         var stmt = CreateStatement(
             expressionBody,
             useReturn: !IsNonReturning(localFunction.ReturnType, localFunction.Modifiers, symbol));
@@ -948,6 +951,33 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
 
     private static bool HasDirectiveOrDisabledText(SyntaxTriviaList trivia) =>
         trivia.Any(item => item.IsDirective || item.IsKind(SyntaxKind.DisabledTextTrivia));
+
+    /// <summary>
+    /// Async expression-bodied members whose semantic return type is a
+    /// non-generic, non-void type that is not BCL <c>Task</c>/<c>ValueTask</c>
+    /// cannot be classified as expression-statement vs <c>return await</c>
+    /// without AsyncMethodBuilder inspection. Skip rather than emit an unsafe
+    /// <c>return await</c> for custom task-like returns (Codex P2).
+    /// </summary>
+    private static void EnsureAsyncReturnTypeSafeToConvert(
+        SyntaxTokenList modifiers,
+        IMethodSymbol? symbol)
+    {
+        if (!modifiers.Any(SyntaxKind.AsyncKeyword))
+            return;
+        if (symbol is not { ReturnType.TypeKind: not TypeKind.Error })
+            return;
+        if (symbol.ReturnsVoid)
+            return;
+        if (symbol.ReturnType is INamedTypeSymbol { IsGenericType: true })
+            return;
+        if (IsNonGenericTaskLikeSymbol(symbol.ReturnType))
+            return;
+
+        throw new RefactoringException(
+            ErrorCodes.CannotConvert,
+            "Async member with a custom non-generic return type cannot be safely converted to a block body.");
+    }
 
     private static bool IsNonReturning(
         TypeSyntax returnType,
