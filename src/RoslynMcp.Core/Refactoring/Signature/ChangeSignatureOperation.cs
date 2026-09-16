@@ -930,10 +930,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             return true;
 
         return returnType is INamedTypeSymbol
-            {
-                Name: "Task" or "ValueTask",
-                ContainingNamespace.Name: "Tasks"
-            };
+        {
+            Name: "Task" or "ValueTask",
+            ContainingNamespace.Name: "Tasks"
+        };
     }
 
     /// <summary>
