@@ -1123,6 +1123,70 @@ public class ConvertToBlockBodyOperationTests
         Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
     }
 
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_ConvertsNestedLocalFunctionInsideExpressionBody()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Nested
+            {
+                public System.Func<int> Prop => () =>
+                {
+                    int Local() => 1;
+                    return Local();
+                };
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Nested.cs");
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Nested.cs"]));
+        AssertPropertyIsBlockBodied(updated, "Prop");
+        var local = CSharpSyntaxTree.ParseText(updated).GetRoot()
+            .DescendantNodes().OfType<LocalFunctionStatementSyntax>()
+            .First(lf => lf.Identifier.Text == "Local");
+        Assert.Null(local.ExpressionBody);
+        Assert.NotNull(local.Body);
+        Assert.Contains("return 1;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_PreservesTrailingSemicolonComments()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Comments
+            {
+                public int Value() => 1; // explanation
+                public int Prop => 2; // property note
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "Comments.cs");
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Comments.cs"]));
+        AssertMethodIsBlockBodied(updated, "Value");
+        AssertPropertyIsBlockBodied(updated, "Prop");
+        Assert.Contains("// explanation", updated, StringComparison.Ordinal);
+        Assert.Contains("// property note", updated, StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region Helpers

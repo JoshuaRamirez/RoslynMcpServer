@@ -402,7 +402,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         var newMethod = method
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(stmt))
+            .WithBody(CreateBlock(stmt, method.SemicolonToken))
             .NormalizeWhitespace();
         return (newMethod, before, newMethod.Body!.ToString().Trim());
     }
@@ -417,7 +417,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         var converted = localFunction
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(stmt))
+            .WithBody(CreateBlock(stmt, localFunction.SemicolonToken))
             .NormalizeWhitespace();
         return (converted, before, converted.Body!.ToString().Trim());
     }
@@ -431,7 +431,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         var converted = op
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(stmt))
+            .WithBody(CreateBlock(stmt, op.SemicolonToken))
             .NormalizeWhitespace();
         return (converted, before, converted.Body!.ToString().Trim());
     }
@@ -446,7 +446,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         var converted = conversion
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(stmt))
+            .WithBody(CreateBlock(stmt, conversion.SemicolonToken))
             .NormalizeWhitespace();
         return (converted, before, converted.Body!.ToString().Trim());
     }
@@ -461,7 +461,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         var converted = constructor
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(stmt))
+            .WithBody(CreateBlock(stmt, constructor.SemicolonToken))
             .NormalizeWhitespace();
         return (converted, before, converted.Body!.ToString().Trim());
     }
@@ -476,7 +476,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         var converted = destructor
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(stmt))
+            .WithBody(CreateBlock(stmt, destructor.SemicolonToken))
             .NormalizeWhitespace();
         return (converted, before, converted.Body!.ToString().Trim());
     }
@@ -488,10 +488,13 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             var expr = property.ExpressionBody.Expression;
             var accessor = CreateBlockAccessor(SyntaxKind.GetAccessorDeclaration, expr, useReturn: true);
             var before = FormatExpressionBody(expr);
+            var accessorList = AttachSemicolonTrailingTrivia(
+                SyntaxFactory.AccessorList(SyntaxFactory.SingletonList(accessor)),
+                property.SemicolonToken);
             var newProp = property
                 .WithExpressionBody(null)
                 .WithSemicolonToken(default)
-                .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.SingletonList(accessor)))
+                .WithAccessorList(accessorList)
                 .NormalizeWhitespace();
             return (newProp, before, newProp.AccessorList!.ToString().Trim());
         }
@@ -511,10 +514,13 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             var expr = indexer.ExpressionBody.Expression;
             var accessor = CreateBlockAccessor(SyntaxKind.GetAccessorDeclaration, expr, useReturn: true);
             var before = FormatExpressionBody(expr);
+            var accessorList = AttachSemicolonTrailingTrivia(
+                SyntaxFactory.AccessorList(SyntaxFactory.SingletonList(accessor)),
+                indexer.SemicolonToken);
             var converted = indexer
                 .WithExpressionBody(null)
                 .WithSemicolonToken(default)
-                .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.SingletonList(accessor)))
+                .WithAccessorList(accessorList)
                 .NormalizeWhitespace();
             return (converted, before, converted.AccessorList!.ToString().Trim());
         }
@@ -585,7 +591,43 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         return accessor
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(CreateStatement(accessor.ExpressionBody!.Expression, useReturn)));
+            .WithBody(CreateBlock(
+                CreateStatement(accessor.ExpressionBody!.Expression, useReturn),
+                accessor.SemicolonToken));
+    }
+
+    /// <summary>
+    /// Builds a block body and moves trailing trivia from the removed
+    /// expression-body semicolon onto the closing brace so EOL comments
+    /// like <c>=> 1; // explanation</c> survive conversion (including allFiles).
+    /// </summary>
+    private static BlockSyntax CreateBlock(StatementSyntax statement, SyntaxToken semicolonToken)
+    {
+        var block = SyntaxFactory.Block(statement);
+        var trailing = semicolonToken.TrailingTrivia;
+        if (trailing.Count == 0)
+            return block;
+
+        return block.WithCloseBraceToken(
+            block.CloseBraceToken.WithTrailingTrivia(
+                block.CloseBraceToken.TrailingTrivia.AddRange(trailing)));
+    }
+
+    /// <summary>
+    /// Same semicolon-trivia transfer for expression-bodied properties/indexers
+    /// that become an accessor list instead of a method body.
+    /// </summary>
+    private static AccessorListSyntax AttachSemicolonTrailingTrivia(
+        AccessorListSyntax accessorList,
+        SyntaxToken semicolonToken)
+    {
+        var trailing = semicolonToken.TrailingTrivia;
+        if (trailing.Count == 0)
+            return accessorList;
+
+        return accessorList.WithCloseBraceToken(
+            accessorList.CloseBraceToken.WithTrailingTrivia(
+                accessorList.CloseBraceToken.TrailingTrivia.AddRange(trailing)));
     }
 
     private static AccessorDeclarationSyntax CreateBlockAccessor(
