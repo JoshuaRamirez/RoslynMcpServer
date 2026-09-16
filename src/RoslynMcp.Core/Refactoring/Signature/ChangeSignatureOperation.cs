@@ -994,22 +994,34 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     }
 
 
+    /// <summary>
+    /// True when <paramref name="method"/> has
+    /// <c>System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute</c>
+    /// (bound attribute or unbound syntax fallback) (Codex).
+    /// </summary>
     private static bool HasUnmanagedCallersOnlyAttribute(IMethodSymbol method)
     {
         if (method.GetAttributes().Any(attr =>
-                (attr.AttributeClass?.Name ?? attr.AttributeClass?.ToDisplayString() ?? string.Empty)
-                    .Contains("UnmanagedCallersOnly", StringComparison.Ordinal)))
+        {
+            var type = attr.AttributeClass;
+            if (type == null)
+                return false;
+            if (type.Name is not ("UnmanagedCallersOnlyAttribute" or "UnmanagedCallersOnly"))
+                return false;
+            return type.ContainingNamespace?.ToDisplayString() == "System.Runtime.InteropServices";
+        }))
         {
             return true;
         }
 
-        // Attribute may not bind in incomplete references; fall back to syntax.
+        // Attribute may not bind without a complete reference; fall back to syntax.
         foreach (var syntaxRef in method.DeclaringSyntaxReferences)
         {
-            if (syntaxRef.GetSyntax() is MethodDeclarationSyntax methodDecl &&
-                methodDecl.AttributeLists
-                    .SelectMany(list => list.Attributes)
-                    .Any(attr => attr.Name.ToString().Contains("UnmanagedCallersOnly", StringComparison.Ordinal)))
+            if (syntaxRef.GetSyntax() is not MethodDeclarationSyntax methodDecl)
+                continue;
+            if (methodDecl.AttributeLists
+                .SelectMany(list => list.Attributes)
+                .Any(attr => attr.Name.ToString().Contains("UnmanagedCallersOnly", StringComparison.Ordinal)))
             {
                 return true;
             }
@@ -1018,43 +1030,44 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         return false;
     }
 
-    private static bool IsParameterTypeAccessibleFrom(ITypeSymbol type, IMethodSymbol method) =>
-        IsTypeAtLeastAsAccessible(type, GetEffectiveAccessibility(method));
-
-    private static bool IsTypeAtLeastAsAccessible(ITypeSymbol type, Accessibility required) =>
-        type switch
-        {
-            IArrayTypeSymbol array => IsTypeAtLeastAsAccessible(array.ElementType, required),
-            IPointerTypeSymbol pointer => IsTypeAtLeastAsAccessible(pointer.PointedAtType, required),
-            INamedTypeSymbol named =>
-                (!named.IsGenericType ||
-                 named.TypeArguments.OfType<ITypeSymbol>().All(t => IsTypeAtLeastAsAccessible(t, required))) &&
-                (named.DeclaredAccessibility == Accessibility.NotApplicable ||
-                 AccessibilityRank(GetEffectiveAccessibility(named)) >= AccessibilityRank(required)),
-            _ => true
-        };
-
-    private static Accessibility GetEffectiveAccessibility(ISymbol symbol)
+    /// <summary>
+    /// True when every type in <paramref name="type"/> (arrays, pointers, type
+    /// arguments) is at least as accessible as <paramref name="method"/> —
+    /// CS0051; reuses <see cref="ContextValidTypeHelpers.GetEffectiveAccessibility"/>
+    /// and <see cref="AccessibilityRankHelpers"/> (Codex).
+    /// </summary>
+    private static bool IsParameterTypeAccessibleFrom(ITypeSymbol type, IMethodSymbol method)
     {
-        var accessibility = symbol.DeclaredAccessibility;
-        for (var container = symbol.ContainingType; container != null; container = container.ContainingType)
-        {
-            if (AccessibilityRank(container.DeclaredAccessibility) < AccessibilityRank(accessibility))
-                accessibility = container.DeclaredAccessibility;
-        }
-
-        return accessibility;
+        var methodRank = AccessibilityRankHelpers.AccessibilityRank(
+            ContextValidTypeHelpers.GetEffectiveAccessibility(method));
+        return IsTypeAtLeastAsAccessibleAs(type, methodRank);
     }
 
-    private static int AccessibilityRank(Accessibility accessibility) => accessibility switch
+    private static bool IsTypeAtLeastAsAccessibleAs(ITypeSymbol type, int methodRank)
     {
-        Accessibility.Public => 5,
-        Accessibility.ProtectedOrInternal => 4,
-        Accessibility.Internal or Accessibility.Protected => 3,
-        Accessibility.ProtectedAndInternal => 2,
-        Accessibility.Private => 1,
-        _ => 5
-    };
+        switch (type)
+        {
+            case IArrayTypeSymbol array:
+                return IsTypeAtLeastAsAccessibleAs(array.ElementType, methodRank);
+            case IPointerTypeSymbol pointer:
+                return IsTypeAtLeastAsAccessibleAs(pointer.PointedAtType, methodRank);
+            case INamedTypeSymbol named:
+                var typeRank = AccessibilityRankHelpers.AccessibilityRank(
+                    ContextValidTypeHelpers.GetEffectiveAccessibility(named));
+                if (typeRank < methodRank)
+                    return false;
+                foreach (var argument in named.TypeArguments)
+                {
+                    if (!IsTypeAtLeastAsAccessibleAs(argument, methodRank))
+                        return false;
+                }
+
+                return true;
+            default:
+                return true;
+        }
+    }
+
 
     /// <summary>
     /// True when <paramref name="type"/> is legal as a C# method parameter type

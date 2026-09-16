@@ -2224,6 +2224,50 @@ public class ChangeSignatureOperationTests
         Assert.Contains("Process(2)", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("Process(1, SomeConst)", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("Process(2, SomeConst)", updated, StringComparison.Ordinal);
+        var compact = updated.Replace(" ", "", StringComparison.Ordinal);
+        Assert.Contains("inty=SomeConst", compact, StringComparison.Ordinal);
+        Assert.DoesNotContain("Process(1,SomeConst)", compact, StringComparison.Ordinal);
+        Assert.DoesNotContain("Process(2,SomeConst)", compact, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validate_HyphenatedParameterName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ChangeSignatureOperation.Validate(new ChangeSignatureParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                MethodName = "Process",
+                Parameters = [new ParameterChange { Name = "x-y", Type = "int" }]
+            }));
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_SingleSite_LessAccessibleParameterType_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+            public class Sample
+            {
+                private class Hidden { }
+                public void Process(int x) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeSignatureParams
+            {
+                SourceFile = workspace.SourcePath,
+                MethodName = "Process",
+                Parameters =
+                [
+                    new ParameterChange { OriginalName = "x", Name = "x" },
+                    new ParameterChange { Name = "h", Type = "Hidden" }
+                ]
+            }));
+        Assert.Equal(ErrorCodes.BreaksAccessibility, ex.ErrorCode);
     }
 
 
