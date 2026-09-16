@@ -39,7 +39,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
     /// </summary>
     internal static void Validate(RemoveBracesParams @params)
     {
-        var scope = NormalizeScope(@params.Scope);
+        var scope = BraceTypeNameHelpers.NormalizeScope(@params.Scope);
 
         // Mirror AddBracesOperation: AllFiles cannot be combined with a
         // location/name scope. statement and type stay single-file only.
@@ -120,7 +120,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
         if (root == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var scope = NormalizeScope(@params.Scope);
+        var scope = BraceTypeNameHelpers.NormalizeScope(@params.Scope);
         HashSet<StatementSyntax>? onlyThese = null;
         TypeDeclarationSyntax? typeScope = null;
         SyntaxNode? previewOwner = null;
@@ -179,7 +179,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
         }
         else if (scope == ScopeType)
         {
-            typeScope = FindTypeDeclaration(root, @params.TypeName!);
+            typeScope = BraceTypeNameHelpers.FindTypeDeclaration(root, @params.TypeName!);
         }
 
         var rewriter = new BraceRewriter(onlyThese, typeScope, unwrapElseIf: onlyThese != null, previewOwner);
@@ -395,75 +395,6 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
         };
     }
 
-    internal static string NormalizeScope(string? scope)
-    {
-        if (string.IsNullOrWhiteSpace(scope))
-            return ScopeStatement;
-
-        var normalized = scope.Trim().ToLowerInvariant();
-        if (normalized is ScopeStatement or ScopeFile or ScopeType)
-            return normalized;
-
-        throw new RefactoringException(
-            ErrorCodes.MissingRequiredParam,
-            "scope must be statement, file, or type.");
-    }
-
-    internal static TypeDeclarationSyntax FindTypeDeclaration(SyntaxNode root, string typeName)
-    {
-        var matches = root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .Where(type => TypeNameMatches(type, typeName))
-            .ToList();
-
-        if (matches.Count == 0)
-        {
-            throw new RefactoringException(
-                ErrorCodes.TypeNotFound,
-                $"Type '{typeName}' not found.");
-        }
-
-        if (matches.Count > 1)
-        {
-            throw new RefactoringException(
-                ErrorCodes.SymbolAmbiguous,
-                $"Multiple types named '{typeName}' found. Provide a namespace-qualified typeName to disambiguate.");
-        }
-
-        return matches[0];
-    }
-
-    internal static bool TypeNameMatches(TypeDeclarationSyntax type, string typeName)
-    {
-        var qualified = GetQualifiedTypeName(type);
-        if (qualified.Equals(typeName, StringComparison.Ordinal))
-            return true;
-
-        if (type.Identifier.Text.Equals(typeName, StringComparison.Ordinal))
-            return true;
-
-        return qualified.EndsWith("." + typeName, StringComparison.Ordinal);
-    }
-
-    internal static string GetQualifiedTypeName(TypeDeclarationSyntax type)
-    {
-        var parts = new List<string>();
-        for (var current = (SyntaxNode)type; current != null; current = current.Parent)
-        {
-            switch (current)
-            {
-                case TypeDeclarationSyntax declared:
-                    parts.Insert(0, declared.Identifier.Text);
-                    break;
-                case BaseNamespaceDeclarationSyntax ns:
-                    parts.InsertRange(0, ns.Name.ToString().Split('.'));
-                    break;
-            }
-        }
-
-        return string.Join(".", parts);
-    }
-
     /// <summary>
     /// True when <paramref name="statement"/> cannot legally replace a
     /// single-statement block as an embedded statement (CS1023): local
@@ -527,8 +458,6 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
         }
     }
 
-
-
     internal static IEnumerable<ControlTarget> CollectTargets(SyntaxNode root)
     {
         foreach (var node in root.DescendantNodes())
@@ -586,7 +515,6 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
         trivia.Where(item => !item.IsKind(SyntaxKind.WhitespaceTrivia)
             && !item.IsKind(SyntaxKind.EndOfLineTrivia));
 
-
     private static string BuildDescription(string scope, int count, string? typeName)
     {
         var noun = count == 1 ? "control statement" : "control statements";
@@ -597,7 +525,6 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
             _ => $"Remove braces from {count} {noun}"
         };
     }
-
 
     private sealed class BraceRewriter : CSharpSyntaxRewriter
     {
