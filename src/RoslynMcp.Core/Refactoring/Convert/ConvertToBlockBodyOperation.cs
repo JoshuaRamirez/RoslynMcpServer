@@ -183,7 +183,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         // several projects. Rewrite once per normalized path and apply the same
         // text to every sibling DocumentId so CommitChanges cannot last-write-wins
         // conflicting preprocessor variants (Codex P2). Group with
-        // PhysicalFilePathComparer (Ordinal on Linux; OrdinalIgnoreCase on
+        // PhysicalFilePathComparer (OrdinalIgnoreCase on Windows; Ordinal on
         // Windows/macOS) so case-distinct files stay separate on Linux while
         // casing variants of the same physical path coalesce elsewhere.
         var documentGroups = allDocuments
@@ -311,10 +311,14 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     /// (same path may differ only by casing across linked projects), Ordinal
     /// on Linux so <c>Foo.cs</c> and <c>foo.cs</c> stay distinct.
     /// </summary>
+    // Windows is always case-insensitive. Linux and macOS (including
+    // case-sensitive APFS volumes) use Ordinal so Foo.cs / foo.cs stay
+    // distinct. Linked docs on case-insensitive macOS typically share an
+    // identical FilePath string from MSBuild.
     private static StringComparer PhysicalFilePathComparer { get; } =
-        OperatingSystem.IsLinux()
-            ? StringComparer.Ordinal
-            : StringComparer.OrdinalIgnoreCase;
+        OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
 
     private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
     {
