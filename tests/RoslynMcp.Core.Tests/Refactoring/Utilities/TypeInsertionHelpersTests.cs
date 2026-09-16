@@ -59,12 +59,22 @@ public class TypeInsertionHelpersTests
     [Fact]
     public void FindNamespace_Match_ReturnsLastMatchingNamespace()
     {
+        // Two Outer.Inner declarations so FirstOrDefault would pick the earlier one;
+        // FindNamespace must use LastOrDefault and return the namespace that contains Later.
         var root = Parse("""
             namespace Outer
             {
                 namespace Inner
                 {
-                    class C { }
+                    class Earlier { }
+                }
+            }
+
+            namespace Outer
+            {
+                namespace Inner
+                {
+                    class Later { }
                 }
             }
             """);
@@ -72,6 +82,12 @@ public class TypeInsertionHelpersTests
         var found = TypeInsertionHelpers.FindNamespace(root, "Outer.Inner");
         Assert.NotNull(found);
         Assert.Equal("Inner", found!.Name.ToString());
+        Assert.Contains(
+            found.Members.OfType<TypeDeclarationSyntax>(),
+            t => t.Identifier.Text == "Later");
+        Assert.DoesNotContain(
+            found.Members.OfType<TypeDeclarationSyntax>(),
+            t => t.Identifier.Text == "Earlier");
     }
 
     [Fact]
