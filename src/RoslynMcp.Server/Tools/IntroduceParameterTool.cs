@@ -32,13 +32,14 @@ public sealed class IntroduceParameterTool : IToolHandler
     public string Name => "introduce_parameter";
 
     /// <inheritdoc />
-    public string Description => "Promote a local variable to a method parameter and update all call sites. column (optional) picks the matching local whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering declarator); omitted keeps today's start-line equality on the local declaration statement, then variableName FirstOrDefault; a continuation-line identifier is eligible when column is set — do not require the declaration statement to start on line.";
+    public string Description =>
+        "Promote a local variable to a method parameter and update all call sites. column (optional) picks the matching local whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering declarator); omitted keeps today's start-line equality on the local declaration statement, then variableName FirstOrDefault; a continuation-line identifier is eligible when column is set — do not require the declaration statement to start on line. allFiles: true walks every C# file and promotes every eligible local (sourceFile optional when true; cannot be combined with variableName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "variableName", "line" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -49,23 +50,29 @@ public sealed class IntroduceParameterTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with variableName, line, or column.",
+                @default = false
             },
             variableName = new
             {
                 type = "string",
-                description = "Name of the local variable to promote to a parameter"
+                description = "Name of the local variable to promote to a parameter. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number where the variable is declared",
+                description = "1-based line number where the variable is declared. Required when allFiles is false. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set with line, selects the matching local whose identifier or declaration span covers that column (identifier preferred, then smallest covering declarator). A continuation-line identifier is eligible — do not require the declaration statement to start on line. Omitted keeps today's start-line equality on the local declaration statement, then variableName FirstOrDefault.",
+                description = "1-based column for disambiguation. When set with line, selects the matching local whose identifier or declaration span covers that column (identifier preferred, then smallest covering declarator). A continuation-line identifier is eligible — do not require the declaration statement to start on line. Omitted keeps today's start-line equality on the local declaration statement, then variableName FirstOrDefault. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             preview = new
@@ -102,6 +109,7 @@ public sealed class IntroduceParameterTool : IToolHandler
             var @params = new IntroduceParameterParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 VariableName = args.VariableName,
                 Line = args.Line,
                 Column = args.Column,
@@ -133,9 +141,10 @@ public sealed class IntroduceParameterTool : IToolHandler
     private sealed class IntroduceParameterArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string VariableName { get; init; } = "";
-        public int Line { get; init; }
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? VariableName { get; init; }
+        public int? Line { get; init; }
         public int? Column { get; init; }
         public bool? Preview { get; init; }
     }
