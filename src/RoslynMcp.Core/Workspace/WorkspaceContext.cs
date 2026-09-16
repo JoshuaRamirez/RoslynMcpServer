@@ -126,9 +126,14 @@ public sealed class WorkspaceContext : IDisposable
             // Collect all file operations first, then execute sequentially
             // This prevents interleaved writes to the same file from different documents
             var fileOperations = new List<(string FilePath, Func<Task> Operation, string Category)>();
-            var queuedCreatedPaths = new HashSet<string>(StringComparer.Ordinal);
-            var queuedModifiedPaths = new HashSet<string>(StringComparer.Ordinal);
-            var queuedDeletedPaths = new HashSet<string>(StringComparer.Ordinal);
+            // Windows paths are case-insensitive; linked docs may differ only by
+            // casing and must not enqueue duplicate disk writes / FilesModified.
+            var pathComparer = OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal;
+            var queuedCreatedPaths = new HashSet<string>(pathComparer);
+            var queuedModifiedPaths = new HashSet<string>(pathComparer);
+            var queuedDeletedPaths = new HashSet<string>(pathComparer);
 
             foreach (var projectChanges in changes.GetProjectChanges())
             {
