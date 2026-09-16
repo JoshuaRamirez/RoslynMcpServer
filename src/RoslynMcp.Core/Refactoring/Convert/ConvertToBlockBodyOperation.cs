@@ -185,17 +185,15 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             if (root == null)
                 continue;
 
-            var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
-            foreach (var member in CollectConvertibleMembers(root))
-            {
-                if (TryConvert(member, out var newMember, out _, out _))
-                    replacements[member] = newMember;
-            }
-
-            if (replacements.Count == 0)
+            // Bottom-up rewriter so a nested convertible member (e.g. local
+            // function) is rewritten before its enclosing member; returning a
+            // precomputed ancestor from ReplaceNodes would discard the nested
+            // conversion (Codex P2 on allFiles).
+            var rewriter = new ConvertToBlockBodyAllFilesRewriter();
+            var newRoot = rewriter.Visit(root)!;
+            if (rewriter.ConvertedCount == 0)
                 continue;
 
-            var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
             var newDocument = currentDocument.WithSyntaxRoot(newRoot);
             var beforeText = await currentDocument.GetTextAsync(cancellationToken);
             var afterText = await newDocument.GetTextAsync(cancellationToken);
@@ -209,7 +207,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
                 {
                     File = currentDocument.FilePath!,
                     ChangeType = ChangeKind.Modify,
-                    Description = BuildAllFilesDescription(replacements.Count),
+                    Description = BuildAllFilesDescription(rewriter.ConvertedCount),
                     BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
                     AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
                     StartLine = span.StartLinePosition.Line + 1,
@@ -248,16 +246,6 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             ? "Convert member to block body"
             : $"Convert {convertedCount} members to block body";
 
-    /// <summary>
-    /// Members the allFiles walk will attempt to convert, in deterministic
-    /// <see cref="SyntaxNode.SpanStart"/> order. Same kind set as
-    /// <see cref="IsConvertibleKind"/>.
-    /// </summary>
-    private static IEnumerable<SyntaxNode> CollectConvertibleMembers(SyntaxNode root) =>
-        root.DescendantNodes()
-            .Where(node => node is MemberDeclarationSyntax or LocalFunctionStatementSyntax)
-            .Where(IsConvertibleKind)
-            .OrderBy(node => node.SpanStart);
 
     /// <summary>
     /// Attempts a conversion without throwing. Used by allFiles so already-
@@ -657,4 +645,27 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
 
     private static string FormatExpressionBody(ExpressionSyntax expression) =>
         $"=> {expression.NormalizeWhitespace()};";
+
+    /// <summary>
+    /// Bottom-up allFiles rewriter: converts each eligible member after its
+    /// descendants, so nested conversions are not discarded by an ancestor
+    /// replacement.
+    /// </summary>
+    private sealed class ConvertToBlockBodyAllFilesRewriter : CSharpSyntaxRewriter
+    {
+        public int ConvertedCount { get; private set; }
+
+        public override SyntaxNode? Visit(SyntaxNode? node)
+        {
+            var visited = base.Visit(node);
+            if (visited == null || !IsConvertibleKind(visited))
+                return visited;
+
+            if (!TryConvert(visited, out var converted, out _, out _))
+                return visited;
+
+            ConvertedCount++;
+            return converted;
+        }
+    }
 }
