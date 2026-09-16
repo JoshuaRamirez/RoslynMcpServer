@@ -62,9 +62,10 @@ public class GenerateMethodStubToolTests
         }
 
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("line", requiredFields);
-        Assert.Contains("column", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+        Assert.DoesNotContain("line", requiredFields);
+        Assert.DoesNotContain("column", requiredFields);
+        Assert.DoesNotContain("allFiles", requiredFields);
     }
 
     [Fact]
@@ -77,6 +78,7 @@ public class GenerateMethodStubToolTests
 
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("methodName", out _));
@@ -86,6 +88,28 @@ public class GenerateMethodStubToolTests
         Assert.True(properties.TryGetProperty("throwNotImplemented", out _));
         Assert.True(properties.TryGetProperty("replaceExisting", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_AllFilesProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var allFiles = doc.RootElement.GetProperty("properties").GetProperty("allFiles");
+
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("line", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("column", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("methodName", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsAllFiles()
+    {
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -151,6 +175,24 @@ public class GenerateMethodStubToolTests
         var result = await _tool.ExecuteAsync(args);
 
         Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "/tmp/missing.sln",
+                "allFiles": true,
+                "returnType": "void"
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        // ThrowingWorkspaceProvider rejects workspace creation; args including allFiles parsed.
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Arguments required", GetResultText(result));
     }
 
     #endregion

@@ -33,13 +33,13 @@ public sealed class GenerateMethodStubTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Generate a method from an undefined call site, inferring the signature from usage. Placeholder body is throw new NotImplementedException() when throwNotImplemented is true (the default); otherwise default-return / empty void bodies. replaceExisting (default false) replaces a compatible ordinary method instead of failing.";
+        "Generate a method from an undefined call site, inferring the signature from usage. Placeholder body is throw new NotImplementedException() when throwNotImplemented is true (the default); otherwise default-return / empty void bodies. replaceExisting (default false) replaces a compatible ordinary method instead of failing. allFiles: true walks every C# file and generates stubs for distinct eligible undefined call sites (sourceFile optional when true; cannot be combined with line, column, or methodName).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "line", "column" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,29 +50,35 @@ public sealed class GenerateMethodStubTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the file containing the call site"
+                description = "Absolute path to the file containing the call site. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with line, column, or methodName.",
+                @default = false
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number of the call site",
+                description = "1-based line number of the call site. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column number within the method name",
+                description = "1-based column number within the method name. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             methodName = new
             {
                 type = "string",
-                description = "Method name override when not inferable from the location"
+                description = "Method name override when not inferable from the location. Single-site only; cannot be combined with allFiles."
             },
             returnType = new
             {
                 type = "string",
-                description = "Explicit return type override"
+                description = "Explicit return type override. Valid with allFiles."
             },
             visibility = new
             {
@@ -83,19 +89,19 @@ public sealed class GenerateMethodStubTool : IToolHandler
             generateAsync = new
             {
                 type = "boolean",
-                description = "Force async method generation",
+                description = "Force async method generation. Valid with allFiles.",
                 @default = false
             },
             throwNotImplemented = new
             {
                 type = "boolean",
-                description = "Throw NotImplementedException in the generated stub body",
+                description = "Throw NotImplementedException in the generated stub body. Valid with allFiles.",
                 @default = true
             },
             replaceExisting = new
             {
                 type = "boolean",
-                description = "Replace a compatible existing ordinary method instead of failing. Constructors, operators, local functions, explicit interface implementations, and accessors are left alone. Default false.",
+                description = "Replace a compatible existing ordinary method instead of failing. Constructors, operators, local functions, explicit interface implementations, and accessors are left alone. Default false. Valid with allFiles.",
                 @default = false
             },
             preview = new
@@ -132,6 +138,7 @@ public sealed class GenerateMethodStubTool : IToolHandler
             var @params = new GenerateMethodStubParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 Line = args.Line,
                 Column = args.Column,
                 MethodName = args.MethodName,
@@ -168,9 +175,10 @@ public sealed class GenerateMethodStubTool : IToolHandler
     private sealed class GenerateMethodStubArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public int Line { get; init; }
-        public int Column { get; init; }
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public int? Line { get; init; }
+        public int? Column { get; init; }
         public string? MethodName { get; init; }
         public string? ReturnType { get; init; }
         public string? Visibility { get; init; }

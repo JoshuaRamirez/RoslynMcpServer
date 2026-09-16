@@ -26,6 +26,11 @@ namespace RoslynMcp.Core.Refactoring.Generate;
 /// stubs unwrap the task type so the body stays compilable.
 /// Honors <c>replaceExisting</c> to remove a compatible ordinary method
 /// (including across partials) before inserting a freshly generated stub.
+/// Honors optional <c>allFiles</c> to walk every C# document (or the
+/// optional single <c>sourceFile</c>) and generate stubs for distinct
+/// eligible undefined call sites (same document filter as sibling Generate
+/// allFiles ops). When <c>allFiles</c> is true, cannot be combined with
+/// <c>line</c>, <c>column</c>, or <c>methodName</c>.
 /// </summary>
 public sealed class GenerateMethodStubOperation : RefactoringOperationBase<GenerateMethodStubParams>
 {
@@ -51,21 +56,56 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
     /// </summary>
     internal static void Validate(GenerateMethodStubParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (@params.Line.HasValue ||
+                @params.Column.HasValue ||
+                !string.IsNullOrWhiteSpace(@params.MethodName))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with line, column, or methodName.");
+            }
+
+            ValidateSharedShape(@params);
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
+        if (!@params.Line.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "line is required.");
+
+        if (!@params.Column.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "column is required.");
+
+        var sourceFile = @params.SourceFile!;
+
+        if (!PathResolver.IsAbsolutePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
 
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
-        if (@params.Line < 1)
+        if (@params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
 
-        if (@params.Column < 1)
+        if (@params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
+        ValidateSharedShape(@params);
+
+        if (!File.Exists(sourceFile))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {sourceFile}");
+    }
+
+    /// <summary>
+    /// Shared shape / visibility / return-type rules stay valid with
+    /// <c>allFiles</c> and keep today's reject-before-write rules.
+    /// </summary>
+    private static void ValidateSharedShape(GenerateMethodStubParams @params)
+    {
         if (@params.MethodName != null && !SyntaxIdentifierValidation.IsValidIdentifier(@params.MethodName))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid method name: {@params.MethodName}");
 
@@ -74,9 +114,6 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
 
         if (!string.IsNullOrWhiteSpace(@params.Visibility) && !ValidVisibilities.Contains(@params.Visibility.Trim()))
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
 
     /// <inheritdoc />
@@ -85,7 +122,10 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         GenerateMethodStubParams @params,
         CancellationToken cancellationToken)
     {
-        var callSiteDocument = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var callSiteDocument = GetDocumentOrThrow(@params.SourceFile!);
         DocumentEditableHelpers.ValidateDocumentIsEditable(callSiteDocument, Context.Workspace);
 
         var root = await callSiteDocument.GetSyntaxRootAsync(cancellationToken);
@@ -93,15 +133,373 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var position = SymbolResolver.GetPosition(root, @params.Line, @params.Column);
+        var line = @params.Line!.Value;
+        var column = @params.Column!.Value;
+        var position = SymbolResolver.GetPosition(root, line, column);
         var invocation = FindInvocationAtPosition(root, position);
         if (invocation == null)
         {
             throw new RefactoringException(
                 ErrorCodes.MethodNotFound,
-                $"No method invocation found at line {@params.Line}, column {@params.Column}.");
+                $"No method invocation found at line {line}, column {column}.");
         }
 
+        var plan = await BuildStubPlanAsync(
+            callSiteDocument,
+            root,
+            semanticModel,
+            invocation,
+            @params,
+            cancellationToken);
+
+        if (@params.Preview)
+        {
+            return await CreatePreviewResultAsync(
+                operationId,
+                callSiteDocument,
+                plan.TargetDocument,
+                plan.Target.Type.Name,
+                plan.MethodName,
+                plan.Method,
+                plan.RewriteCallSite,
+                plan.InvokedName,
+                @params.ThrowNotImplemented,
+                plan.ExistingMethod,
+                cancellationToken);
+        }
+
+        var newSolution = await ApplyChangesAsync(
+            callSiteDocument,
+            root,
+            plan.TargetDocument,
+            plan.TargetDeclaration,
+            plan.Method,
+            plan.RewriteCallSite ? plan.InvokedName : null,
+            plan.MethodName,
+            plan.ExistingMethod,
+            plan.Target.Type,
+            cancellationToken);
+
+        var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
+
+        return RefactoringResult.Succeeded(
+            operationId,
+            new FileChanges
+            {
+                FilesModified = commitResult.FilesModified,
+                FilesCreated = commitResult.FilesCreated,
+                FilesDeleted = commitResult.FilesDeleted
+            },
+            new Contracts.Models.SymbolInfo
+            {
+                Name = plan.MethodName,
+                FullyQualifiedName = $"{plan.Target.Type.ToDisplayString()}.{plan.MethodName}",
+                Kind = Contracts.Enums.SymbolKind.Method
+            },
+            0,
+            0);
+    }
+
+    /// <summary>
+    /// Walks every C# document in the solution (same <c>.cs</c>
+    /// document filter as <c>GeneratePropertyOperation.ExecuteAllFilesAsync</c>
+    /// / <c>GenerateConstructorOperation.ExecuteAllFilesAsync</c>) and
+    /// generates stubs for distinct eligible undefined call sites. Optional
+    /// <see cref="GenerateMethodStubParams.SourceFile"/> limits via
+    /// <see cref="DocumentSourceFileFilter"/>. Ineligible / already-resolved /
+    /// uneditable / uninferable sites are skipped rather than failing the
+    /// walk. Dedupes by target type + signature so the same stub is not
+    /// double-generated. When every site is a no-op, succeeds with empty
+    /// changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        GenerateMethodStubParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var generatedCountByDoc = new Dictionary<DocumentId, int>();
+        var processedSignatures = new HashSet<string>(StringComparer.Ordinal);
+        var skippedSpans = new HashSet<(DocumentId DocumentId, int SpanStart)>();
+
+        var progress = true;
+        while (progress)
+        {
+            progress = false;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Scan every remaining eligible site, then generate the best one.
+            // Prefer call sites that constrain a non-void return type so a
+            // later statement-form call to the same signature does not lock
+            // in void and leave typed usages uncompilable (Codex P1).
+            Document? bestCallSiteDocument = null;
+            SyntaxNode? bestRoot = null;
+            InvocationExpressionSyntax? bestInvocation = null;
+            StubPlan? bestPlan = null;
+            string? bestSignatureKey = null;
+            var bestPriority = int.MaxValue;
+            DocumentId? bestGeneratedDocId = null;
+
+            foreach (var document in allDocuments)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var currentDocument = currentSolution.GetDocument(document.Id);
+                if (currentDocument == null || !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                    continue;
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    continue;
+
+                foreach (var invocation in root.DescendantNodes()
+                    .OfType<InvocationExpressionSyntax>()
+                    .OrderBy(i => i.SpanStart))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var spanKey = (currentDocument.Id, invocation.SpanStart);
+                    if (skippedSpans.Contains(spanKey))
+                        continue;
+
+                    if (GetInvokedName(invocation) == null)
+                    {
+                        skippedSpans.Add(spanKey);
+                        continue;
+                    }
+
+                    // Already-resolved calls are not eligible for bulk stubbing.
+                    // replaceExisting still applies when an unresolved site's
+                    // inferred signature collides with an existing ordinary
+                    // method (ResolveMethodToReplace). Walking resolved calls
+                    // would rewrite every invoked method.
+                    if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol != null)
+                        continue;
+
+                    StubPlan? plan = null;
+                    string? signatureKey = null;
+                    try
+                    {
+                        plan = await BuildStubPlanAsync(
+                            currentDocument,
+                            root,
+                            semanticModel,
+                            invocation,
+                            @params,
+                            cancellationToken);
+                        signatureKey = BuildStubSignatureKey(
+                            currentDocument.Project.Id,
+                            plan.Target.Type,
+                            plan.MethodName,
+                            plan.TypeParameters.Count,
+                            plan.Parameters);
+
+                        if (processedSignatures.Contains(signatureKey))
+                        {
+                            skippedSpans.Add(spanKey);
+                            continue;
+                        }
+                    }
+                    catch (RefactoringException)
+                    {
+                        skippedSpans.Add(spanKey);
+                        continue;
+                    }
+
+                    var priority = GetAllFilesStubPriority(plan!);
+                    if (priority > bestPriority)
+                        continue;
+                    if (priority == bestPriority
+                        && bestInvocation != null
+                        && (currentDocument.Id != bestCallSiteDocument!.Id
+                            || invocation.SpanStart >= bestInvocation.SpanStart))
+                    {
+                        continue;
+                    }
+
+                    bestPriority = priority;
+                    bestCallSiteDocument = currentDocument;
+                    bestRoot = root;
+                    bestInvocation = invocation;
+                    bestPlan = plan;
+                    bestSignatureKey = signatureKey;
+                    bestGeneratedDocId = document.Id;
+                }
+            }
+
+            if (bestPlan == null
+                || bestCallSiteDocument == null
+                || bestRoot == null
+                || bestInvocation == null
+                || bestSignatureKey == null
+                || bestGeneratedDocId == null)
+            {
+                break;
+            }
+
+            var spanToSkip = (bestCallSiteDocument.Id, bestInvocation.SpanStart);
+            try
+            {
+                if (!processedSignatures.Add(bestSignatureKey))
+                {
+                    skippedSpans.Add(spanToSkip);
+                    continue;
+                }
+
+                var updated = await ApplyChangesAsync(
+                    bestCallSiteDocument,
+                    bestRoot,
+                    bestPlan.TargetDocument,
+                    bestPlan.TargetDeclaration,
+                    bestPlan.Method,
+                    bestPlan.RewriteCallSite ? bestPlan.InvokedName : null,
+                    bestPlan.MethodName,
+                    bestPlan.ExistingMethod,
+                    bestPlan.Target.Type,
+                    cancellationToken);
+
+                currentSolution = updated;
+                generatedCountByDoc[bestGeneratedDocId] =
+                    generatedCountByDoc.GetValueOrDefault(bestGeneratedDocId) + 1;
+                progress = true;
+            }
+            catch (RefactoringException)
+            {
+                skippedSpans.Add(spanToSkip);
+                processedSignatures.Add(bestSignatureKey);
+            }
+        }
+
+        var documentsToCompare = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var generatedCount = generatedCountByDoc.GetValueOrDefault(document.Id);
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = generatedCount > 0
+                        ? BuildAllFilesDescription(generatedCount)
+                        : "Update method stubs generated in other files",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that generated
+    /// <paramref name="generatedCount"/> method stubs.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int generatedCount) =>
+        generatedCount == 1
+            ? "Generate method stub"
+            : $"Generate {generatedCount} method stubs";
+
+    /// <summary>
+    /// Lower is better. Prefer stubs whose inferred return type is not
+    /// <c>void</c> so statement-form siblings of the same signature do not
+    /// win the walk and leave typed call sites broken.
+    /// </summary>
+    private static int GetAllFilesStubPriority(StubPlan plan)
+    {
+        var returnType = plan.Method.ReturnType.ToString().Trim();
+        if (returnType.Equals("void", StringComparison.Ordinal))
+            return 1;
+        return 0;
+    }
+
+    /// <summary>
+    /// De-dupes stubs by target type + name + type-parameter arity +
+    /// ordered parameter types / ref kinds within one project.
+    /// </summary>
+    internal static string BuildStubSignatureKey(
+        ProjectId projectId,
+        INamedTypeSymbol targetType,
+        string methodName,
+        int typeParameterCount,
+        IReadOnlyList<InferredParameter> parameters)
+    {
+        var typeKey = TypeWalkKeyHelpers.TypeWalkKey(projectId, targetType);
+        var paramPart = string.Join(
+            ",",
+            parameters.Select(p => $"{(int)p.RefKind}:{p.TypeName}"));
+        return $"{typeKey}\0{methodName}\0{typeParameterCount}\0{paramPart}";
+    }
+
+    private async Task<StubPlan> BuildStubPlanAsync(
+        Document callSiteDocument,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        InvocationExpressionSyntax invocation,
+        GenerateMethodStubParams @params,
+        CancellationToken cancellationToken)
+    {
         var invokedName = GetInvokedName(invocation);
         var methodName = ResolveMethodName(@params, invokedName);
         var typeParameters = InferTypeParameters(invokedName);
@@ -111,7 +509,8 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         ValidateTypeCanHostMethod(target.Type);
 
         var targetDeclaration = await GetEditableTypeDeclarationAsync(target.Type, cancellationToken);
-        var targetDocument = Context.Solution.GetDocument(targetDeclaration.SyntaxTree)
+        var targetDocument = callSiteDocument.Project.Solution.GetDocument(targetDeclaration.SyntaxTree)
+            ?? GetDocumentForTree(callSiteDocument.Project.Solution, targetDeclaration.SyntaxTree)
             ?? throw new RefactoringException(
                 ErrorCodes.DocumentNotEditable,
                 $"Target type '{target.Type.Name}' is not part of the workspace.");
@@ -133,6 +532,8 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
 
         var isStatic = ShouldBeStatic(target, invocation, semanticModel, cancellationToken);
         var visibility = ResolveVisibility(@params, target.SameTypeAsCaller);
+        var position = invokedName?.Span.Start
+            ?? invocation.Span.Start;
         var resolvedReturnType = TryResolveReturnType(semanticModel, returnType, position);
         var method = CreateMethodStub(
             methodName,
@@ -146,53 +547,30 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             resolvedReturnType,
             semanticModel.Compilation);
 
-        if (@params.Preview)
-        {
-            return await CreatePreviewResultAsync(
-                operationId,
-                callSiteDocument,
-                targetDocument,
-                target.Type.Name,
-                methodName,
-                method,
-                rewriteCallSite,
-                invokedName,
-                @params.ThrowNotImplemented,
-                existingMethod,
-                cancellationToken);
-        }
-
-        var newSolution = await ApplyChangesAsync(
-            callSiteDocument,
-            root,
-            targetDocument,
-            targetDeclaration,
-            method,
-            rewriteCallSite ? invokedName : null,
+        return new StubPlan(
             methodName,
+            typeParameters,
+            parameters,
+            rewriteCallSite,
+            invokedName,
+            target,
+            targetDeclaration,
+            targetDocument,
             existingMethod,
-            target.Type,
-            cancellationToken);
-
-        var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
-
-        return RefactoringResult.Succeeded(
-            operationId,
-            new FileChanges
-            {
-                FilesModified = commitResult.FilesModified,
-                FilesCreated = commitResult.FilesCreated,
-                FilesDeleted = commitResult.FilesDeleted
-            },
-            new Contracts.Models.SymbolInfo
-            {
-                Name = methodName,
-                FullyQualifiedName = $"{target.Type.ToDisplayString()}.{methodName}",
-                Kind = Contracts.Enums.SymbolKind.Method
-            },
-            0,
-            0);
+            method);
     }
+
+    private sealed record StubPlan(
+        string MethodName,
+        IReadOnlyList<string> TypeParameters,
+        IReadOnlyList<InferredParameter> Parameters,
+        bool RewriteCallSite,
+        SimpleNameSyntax? InvokedName,
+        TargetResolution Target,
+        TypeDeclarationSyntax TargetDeclaration,
+        Document TargetDocument,
+        IMethodSymbol? ExistingMethod,
+        MethodDeclarationSyntax Method);
 
     internal static InvocationExpressionSyntax? FindInvocationAtPosition(SyntaxNode root, int position)
     {
