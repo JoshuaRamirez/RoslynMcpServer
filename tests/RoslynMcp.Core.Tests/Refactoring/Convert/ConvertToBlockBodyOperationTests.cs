@@ -1312,6 +1312,40 @@ public class ConvertToBlockBodyOperationTests
         Assert.Contains("/* property note */", updated, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_PreservesArrowTokenComments()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class ArrowComments
+            {
+                public int Value() => /* rationale */ 1;
+                public int Prop => /* property note */ 2;
+                public int Acc
+                {
+                    get => /* getter note */ 3;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "ArrowComments.cs");
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["ArrowComments.cs"]));
+        AssertMethodIsBlockBodied(updated, "Value");
+        AssertPropertyIsBlockBodied(updated, "Prop");
+        Assert.Contains("/* rationale */", updated, StringComparison.Ordinal);
+        Assert.Contains("/* property note */", updated, StringComparison.Ordinal);
+        Assert.Contains("/* getter note */", updated, StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region Helpers

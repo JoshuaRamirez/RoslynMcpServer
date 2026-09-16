@@ -412,9 +412,9 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     private static (SyntaxNode newNode, string before, string after) ConvertMethod(MethodDeclarationSyntax method)
     {
         EnsureExpressionBody(method.ExpressionBody, method.Body, "Method");
-        var expr = method.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: !IsNonReturning(method.ReturnType, method.Modifiers));
-        var before = FormatExpressionBody(expr);
+        var expressionBody = method.ExpressionBody!;
+        var stmt = CreateStatement(expressionBody, useReturn: !IsNonReturning(method.ReturnType, method.Modifiers));
+        var before = FormatExpressionBody(expressionBody.Expression);
         var newMethod = method
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
@@ -427,9 +427,9 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         LocalFunctionStatementSyntax localFunction)
     {
         EnsureExpressionBody(localFunction.ExpressionBody, localFunction.Body, "Local function");
-        var expr = localFunction.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: !IsNonReturning(localFunction.ReturnType, localFunction.Modifiers));
-        var before = FormatExpressionBody(expr);
+        var expressionBody = localFunction.ExpressionBody!;
+        var stmt = CreateStatement(expressionBody, useReturn: !IsNonReturning(localFunction.ReturnType, localFunction.Modifiers));
+        var before = FormatExpressionBody(expressionBody.Expression);
         var converted = localFunction
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
@@ -441,9 +441,9 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     private static (SyntaxNode newNode, string before, string after) ConvertOperator(OperatorDeclarationSyntax op)
     {
         EnsureExpressionBody(op.ExpressionBody, op.Body, "Operator");
-        var expr = op.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: true);
-        var before = FormatExpressionBody(expr);
+        var expressionBody = op.ExpressionBody!;
+        var stmt = CreateStatement(expressionBody, useReturn: true);
+        var before = FormatExpressionBody(expressionBody.Expression);
         var converted = op
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
@@ -456,9 +456,9 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         ConversionOperatorDeclarationSyntax conversion)
     {
         EnsureExpressionBody(conversion.ExpressionBody, conversion.Body, "Conversion operator");
-        var expr = conversion.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: true);
-        var before = FormatExpressionBody(expr);
+        var expressionBody = conversion.ExpressionBody!;
+        var stmt = CreateStatement(expressionBody, useReturn: true);
+        var before = FormatExpressionBody(expressionBody.Expression);
         var converted = conversion
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
@@ -471,9 +471,9 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         ConstructorDeclarationSyntax constructor)
     {
         EnsureExpressionBody(constructor.ExpressionBody, constructor.Body, "Constructor");
-        var expr = constructor.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: false);
-        var before = FormatExpressionBody(expr);
+        var expressionBody = constructor.ExpressionBody!;
+        var stmt = CreateStatement(expressionBody, useReturn: false);
+        var before = FormatExpressionBody(expressionBody.Expression);
         var converted = constructor
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
@@ -486,9 +486,9 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         DestructorDeclarationSyntax destructor)
     {
         EnsureExpressionBody(destructor.ExpressionBody, destructor.Body, "Destructor");
-        var expr = destructor.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: false);
-        var before = FormatExpressionBody(expr);
+        var expressionBody = destructor.ExpressionBody!;
+        var stmt = CreateStatement(expressionBody, useReturn: false);
+        var before = FormatExpressionBody(expressionBody.Expression);
         var converted = destructor
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
@@ -501,9 +501,9 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     {
         if (property.ExpressionBody != null)
         {
-            var expr = property.ExpressionBody.Expression;
-            var accessor = CreateBlockAccessor(SyntaxKind.GetAccessorDeclaration, expr, useReturn: true);
-            var before = FormatExpressionBody(expr);
+            var expressionBody = property.ExpressionBody;
+            var accessor = CreateBlockAccessor(SyntaxKind.GetAccessorDeclaration, expressionBody, useReturn: true);
+            var before = FormatExpressionBody(expressionBody.Expression);
             var accessorList = AttachSemicolonTrailingTrivia(
                 SyntaxFactory.AccessorList(SyntaxFactory.SingletonList(accessor)),
                 property.SemicolonToken);
@@ -527,9 +527,9 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     {
         if (indexer.ExpressionBody != null)
         {
-            var expr = indexer.ExpressionBody.Expression;
-            var accessor = CreateBlockAccessor(SyntaxKind.GetAccessorDeclaration, expr, useReturn: true);
-            var before = FormatExpressionBody(expr);
+            var expressionBody = indexer.ExpressionBody;
+            var accessor = CreateBlockAccessor(SyntaxKind.GetAccessorDeclaration, expressionBody, useReturn: true);
+            var before = FormatExpressionBody(expressionBody.Expression);
             var accessorList = AttachSemicolonTrailingTrivia(
                 SyntaxFactory.AccessorList(SyntaxFactory.SingletonList(accessor)),
                 indexer.SemicolonToken);
@@ -608,7 +608,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
             .WithBody(CreateBlock(
-                CreateStatement(accessor.ExpressionBody!.Expression, useReturn),
+                CreateStatement(accessor.ExpressionBody!, useReturn),
                 accessor.SemicolonToken));
     }
 
@@ -653,11 +653,11 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
 
     private static AccessorDeclarationSyntax CreateBlockAccessor(
         SyntaxKind kind,
-        ExpressionSyntax expression,
+        ArrowExpressionClauseSyntax expressionBody,
         bool useReturn)
     {
         return SyntaxFactory.AccessorDeclaration(kind)
-            .WithBody(SyntaxFactory.Block(CreateStatement(expression, useReturn)));
+            .WithBody(SyntaxFactory.Block(CreateStatement(expressionBody, useReturn)));
     }
 
     private static void EnsureExpressionBody(ArrowExpressionClauseSyntax? expressionBody, BlockSyntax? body, string memberKind)
@@ -677,6 +677,17 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             $"{memberKind} does not have an expression body.");
     }
 
+    /// <summary>
+    /// Builds the block statement and keeps non-whitespace trivia from the
+    /// removed <c>=&gt;</c> token (e.g. <c>=&gt; /* rationale */ 1</c>) on the
+    /// statement so comments survive conversion (including allFiles).
+    /// </summary>
+    private static StatementSyntax CreateStatement(ArrowExpressionClauseSyntax expressionBody, bool useReturn)
+    {
+        var statement = CreateStatement(expressionBody.Expression, useReturn);
+        return AttachArrowTrivia(statement, expressionBody.ArrowToken);
+    }
+
     private static StatementSyntax CreateStatement(ExpressionSyntax expression, bool useReturn)
     {
         if (expression is ThrowExpressionSyntax throwExpression)
@@ -687,6 +698,22 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
 
         return SyntaxFactory.ExpressionStatement(expression);
     }
+
+    private static StatementSyntax AttachArrowTrivia(StatementSyntax statement, SyntaxToken arrowToken)
+    {
+        var arrowTrivia = NonWhitespaceTrivia(arrowToken.LeadingTrivia)
+            .Concat(NonWhitespaceTrivia(arrowToken.TrailingTrivia))
+            .ToArray();
+        if (arrowTrivia.Length == 0)
+            return statement;
+
+        return statement.WithLeadingTrivia(
+            SyntaxFactory.TriviaList(arrowTrivia).AddRange(statement.GetLeadingTrivia()));
+    }
+
+    private static IEnumerable<SyntaxTrivia> NonWhitespaceTrivia(SyntaxTriviaList trivia) =>
+        trivia.Where(item => !item.IsKind(SyntaxKind.WhitespaceTrivia)
+            && !item.IsKind(SyntaxKind.EndOfLineTrivia));
 
     private static bool IsNonReturning(TypeSyntax returnType, SyntaxTokenList modifiers) =>
         IsVoidReturn(returnType) ||
