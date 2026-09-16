@@ -212,8 +212,8 @@ public static class PathResolver
             return root;
         }
 
-        // UNC root: "\\server\\share\\" — server and share are case-insensitive.
-        if (root.StartsWith(@"\", StringComparison.Ordinal) ||
+        // UNC root: \\server\share\ — server and share are case-insensitive.
+        if (root.StartsWith(@"\\", StringComparison.Ordinal) ||
             root.StartsWith("//", StringComparison.Ordinal))
         {
             return root.ToUpperInvariant();
