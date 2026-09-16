@@ -691,12 +691,35 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     private static StatementSyntax CreateStatement(ExpressionSyntax expression, bool useReturn)
     {
         if (expression is ThrowExpressionSyntax throwExpression)
-            return SyntaxFactory.ThrowStatement(throwExpression.Expression);
+            return CreateThrowStatement(throwExpression);
 
         if (useReturn)
             return SyntaxFactory.ReturnStatement(expression);
 
         return SyntaxFactory.ExpressionStatement(expression);
+    }
+
+    /// <summary>
+    /// Builds a throw statement and keeps trivia from the removed throw
+    /// expression keyword (e.g. <c>throw /* reason */ new Exception()</c>)
+    /// so comments survive conversion (including allFiles).
+    /// </summary>
+    private static ThrowStatementSyntax CreateThrowStatement(ThrowExpressionSyntax throwExpression)
+    {
+        var statement = SyntaxFactory.ThrowStatement(throwExpression.Expression);
+        var leading = NonWhitespaceTrivia(throwExpression.ThrowKeyword.LeadingTrivia).ToArray();
+        var trailing = NonWhitespaceTrivia(throwExpression.ThrowKeyword.TrailingTrivia).ToArray();
+        if (leading.Length == 0 && trailing.Length == 0)
+            return statement;
+
+        var keyword = statement.ThrowKeyword;
+        if (leading.Length > 0)
+            keyword = keyword.WithLeadingTrivia(
+                SyntaxFactory.TriviaList(leading).AddRange(keyword.LeadingTrivia));
+        if (trailing.Length > 0)
+            keyword = keyword.WithTrailingTrivia(
+                SyntaxFactory.TriviaList(trailing).AddRange(keyword.TrailingTrivia));
+        return statement.WithThrowKeyword(keyword);
     }
 
     private static StatementSyntax AttachArrowTrivia(StatementSyntax statement, SyntaxToken arrowToken)

@@ -1346,6 +1346,35 @@ public class ConvertToBlockBodyOperationTests
         Assert.Contains("/* getter note */", updated, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_PreservesThrowKeywordComments()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class ThrowComments
+            {
+                public int Value() => throw /* reason */ new System.Exception();
+                public int Prop => throw /* property reason */ new System.Exception();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "ThrowComments.cs");
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["ThrowComments.cs"]));
+        AssertMethodIsBlockBodied(updated, "Value");
+        AssertPropertyIsBlockBodied(updated, "Prop");
+        Assert.Contains("/* reason */", updated, StringComparison.Ordinal);
+        Assert.Contains("/* property reason */", updated, StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region Helpers
