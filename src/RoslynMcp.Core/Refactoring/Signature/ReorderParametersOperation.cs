@@ -187,8 +187,8 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         for (var i = 0; i < reordered.Count; i++)
         {
             var parameter = reordered[i];
-            var isParams = IsParams(parameter);
-            var isOptional = IsOptional(parameter);
+            var isParams = ParameterSyntaxHelpers.IsParams(parameter);
+            var isOptional = ParameterSyntaxHelpers.IsOptional(parameter);
 
             if (isParams && i != reordered.Count - 1)
             {
@@ -646,12 +646,6 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
-
-    private static bool IsParams(ParameterSyntax parameter) =>
-        parameter.Modifiers.Any(m => m.IsKind(SyntaxKind.ParamsKeyword));
-
-    private static bool IsOptional(ParameterSyntax parameter) =>
-        parameter.Default != null;
 
     private static bool IsPermutation(int[] order, int count)
     {

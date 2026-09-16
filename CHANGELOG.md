@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `ParameterSyntaxHelpers.IsParams` + `IsOptional` and replaced 2 identical Signature copies (`add_parameter` / `reorder_parameters`) (#1174)
 - Extracted shared `TypeEquivalenceHelpers.TypesEquivalent` and replaced 2 identical Signature copies (`change_return_type` / `reorder_parameters`) (#1167)
 - Extracted shared `MethodSymbolHelpers.IsInNameof` + `HasVirtualModifier` + `NormalizeMethodSymbol` and replaced 2 identical copies (`make_static` / `make_non_static`) (#1164)
 - Extracted shared `MethodInterfaceHelpers.ImplementsInterface` and replaced 2 identical copies (`make_static` / `make_non_static`) (#1161)
