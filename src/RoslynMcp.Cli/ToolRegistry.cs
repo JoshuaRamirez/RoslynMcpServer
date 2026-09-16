@@ -183,7 +183,7 @@ public sealed class ToolRegistry
 
         // ── Refactoring: Inline (3) ───────────────────────────────────
         r.RegisterRefactoring<InlineVariableOperation, InlineVariableParams>(
-            "inline-variable", "Inline a variable, replacing all references with its value; column (optional) picks the declaration whose identifier or declaration span covers that column; omitted keeps today's variableName + optional line start-line pick");
+            "inline-variable", "Inline a variable, replacing all references with its value; column (optional) picks the declaration whose identifier or declaration span covers that column; omitted keeps today's variableName + optional line start-line pick; sourceFile and variableName are required when allFiles is omitted or false; allFiles (default false) inlines every eligible local in every C# file (sourceFile optional when true; cannot be combined with variableName, line, or column); preview remains valid with allFiles");
         r.RegisterRefactoring<InlineMethodOperation, InlineMethodParams>(
             "inline-method", "Inline a method by replacing call sites with the method body; column (optional) picks the smallest method whose identifier or declaration span covers that column; omitted keeps today's methodName and/or line identifier start-line pick");
         r.RegisterRefactoring<InlineConstantOperation, InlineConstantParams>(

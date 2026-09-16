@@ -34,18 +34,17 @@ public class InlineVariableToolTests
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
         Assert.Contains("column", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public void GetDefinition_ReturnsCorrectSchema()
     {
-        // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        // Assert
         Assert.Equal("object", root.GetProperty("type").GetString());
         Assert.True(root.TryGetProperty("properties", out _));
         Assert.True(root.TryGetProperty("required", out _));
@@ -54,7 +53,6 @@ public class InlineVariableToolTests
     [Fact]
     public void GetDefinition_HasRequiredFields()
     {
-        // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
@@ -66,32 +64,50 @@ public class InlineVariableToolTests
             requiredFields.Add(item.GetString()!);
         }
 
-        // Assert
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("variableName", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+        Assert.DoesNotContain("variableName", requiredFields);
+        Assert.DoesNotContain("allFiles", requiredFields);
     }
 
     [Fact]
     public void GetDefinition_HasProperties_ForAllParameters()
     {
-        // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
         var properties = doc.RootElement.GetProperty("properties");
 
-        // Assert - Required properties
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
         Assert.True(properties.TryGetProperty("variableName", out _));
-
-        // Assert - Optional properties
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
         Assert.False(RequiredFieldsContains(doc, "column"));
         Assert.False(RequiredFieldsContains(doc, "line"));
+        Assert.False(RequiredFieldsContains(doc, "allFiles"));
+    }
+
+    [Fact]
+    public void GetDefinition_AllFilesProperty_DefaultsToFalse()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var allFiles = doc.RootElement.GetProperty("properties").GetProperty("allFiles");
+
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("variableName", description!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsAllFiles()
+    {
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool RequiredFieldsContains(JsonDocument doc, string name)
@@ -131,7 +147,7 @@ public class InlineVariableToolTests
     [Fact]
     public async Task ExecuteAsync_MissingRequiredField_ReturnsError()
     {
-        // Arrange - Missing variableName
+        // Arrange - Missing variableName (single-site)
         var args = JsonDocument.Parse(@"{
             ""solutionPath"": ""C:/test/test.sln"",
             ""sourceFile"": ""C:/test/Test.cs""
@@ -140,6 +156,23 @@ public class InlineVariableToolTests
         var result = await _tool.ExecuteAsync(args);
 
         Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        // ThrowingWorkspaceProvider rejects workspace creation; args including allFiles parsed.
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Arguments required", GetResultText(result));
     }
 
     #endregion

@@ -1,11 +1,13 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -13,6 +15,9 @@ namespace RoslynMcp.Core.Refactoring.Inline;
 
 /// <summary>
 /// Inlines a local variable by replacing all usages with its initializer value.
+/// Optional <c>allFiles</c> walks every C# document (or the optional single
+/// <c>sourceFile</c>) and inlines every eligible local, skipping ineligible
+/// locals rather than throwing.
 /// </summary>
 public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVariableParams>
 {
@@ -32,23 +37,39 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
     /// </summary>
     internal static void Validate(InlineVariableParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.VariableName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with variableName, line, or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (string.IsNullOrWhiteSpace(@params.VariableName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "variableName is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
+        var sourceFile = @params.SourceFile!;
+
+        if (!PathResolver.IsAbsolutePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
 
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+        if (!File.Exists(sourceFile))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {sourceFile}");
 
         if (@params.Line.HasValue && @params.Line < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
@@ -60,7 +81,14 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         InlineVariableParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var sourceFile = @params.SourceFile!;
+        var variableName = @params.VariableName!;
+
+        var document = GetDocumentOrThrow(sourceFile);
+        DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -72,14 +100,14 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         // Find variable declaration
         var variableDeclarators = root.DescendantNodes()
             .OfType<VariableDeclaratorSyntax>()
-            .Where(v => v.Identifier.Text == @params.VariableName)
+            .Where(v => v.Identifier.Text == variableName)
             .ToList();
 
         if (variableDeclarators.Count == 0)
         {
             throw new RefactoringException(
                 ErrorCodes.VariableNotFound,
-                $"Variable '{@params.VariableName}' not found.");
+                $"Variable '{variableName}' not found.");
         }
 
         // Line is required when more than one variable matches, even if
@@ -96,17 +124,17 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
                 .ToList();
             throw new RefactoringException(
                 ErrorCodes.SymbolAmbiguous,
-                $"Multiple variables named '{@params.VariableName}' found. Provide line number. Options: {string.Join(", ", lines)}");
+                $"Multiple variables named '{variableName}' found. Provide line number. Options: {string.Join(", ", lines)}");
         }
 
-        var declarator = FindDeclarator(root, @params.VariableName, @params.Line, @params.Column);
+        var declarator = FindDeclarator(root, variableName, @params.Line, @params.Column);
         if (declarator == null)
         {
             var location = @params.Column.HasValue
                 ? @params.Line.HasValue
-                    ? $"'{@params.VariableName}' at line {@params.Line}, column {@params.Column.Value}"
-                    : $"'{@params.VariableName}' at column {@params.Column.Value}"
-                : $"'{@params.VariableName}' at line {@params.Line}";
+                    ? $"'{variableName}' at line {@params.Line}, column {@params.Column.Value}"
+                    : $"'{variableName}' at column {@params.Column.Value}"
+                : $"'{variableName}' at line {@params.Line}";
             throw new RefactoringException(
                 ErrorCodes.VariableNotFound,
                 $"Variable {location} not found.");
@@ -152,7 +180,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             .OfType<IdentifierNameSyntax>()
             .Where(id =>
             {
-                if (id.Identifier.Text != @params.VariableName) return false;
+                if (id.Identifier.Text != variableName) return false;
 
                 // Check it's the same symbol
                 var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
@@ -182,7 +210,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             .Where(a =>
             {
                 if (a.Left is not IdentifierNameSyntax id) return false;
-                if (id.Identifier.Text != @params.VariableName) return false;
+                if (id.Identifier.Text != variableName) return false;
 
                 var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
                 return SymbolEqualityComparer.Default.Equals(symbol, variableSymbol);
@@ -199,18 +227,18 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         // If preview mode, return without applying
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params, initializerExpression, usages.Count);
+            return CreatePreviewResult(operationId, sourceFile, variableName, initializerExpression, usages.Count);
         }
 
         // Apply changes: replace all usages with initializer, remove declaration
-        var rewriter = new InlineRewriter(@params.VariableName, variableSymbol, initializerExpression, semanticModel);
+        var rewriter = new InlineRewriter(variableName, variableSymbol, initializerExpression, semanticModel);
         var newRoot = rewriter.Visit(root);
 
         // Remove the chosen declaration (not another same-name local).
         var newDeclarator = newRoot!.DescendantNodes()
             .OfType<VariableDeclaratorSyntax>()
             .FirstOrDefault(v =>
-                v.Identifier.Text == @params.VariableName && v.SpanStart == targetSpanStart);
+                v.Identifier.Text == variableName && v.SpanStart == targetSpanStart);
 
         if (newDeclarator != null)
         {
@@ -247,17 +275,353 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.VariableName,
-                FullyQualifiedName = @params.VariableName,
+                Name = variableName,
+                FullyQualifiedName = variableName,
                 Kind = Contracts.Enums.SymbolKind.Local
             },
             usages.Count,
             0);
     }
 
-    private static RefactoringResult CreatePreviewResult(
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>InlineConstantOperation.ExecuteAllFilesAsync</c>
+    /// / <c>GenerateMethodStubOperation.ExecuteAllFilesAsync</c>) and inlines
+    /// every eligible local <see cref="VariableDeclaratorSyntax"/> in a
+    /// <see cref="LocalDeclarationStatementSyntax"/> inside a method.
+    /// Optional <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
+    /// Linked documents that share a physical path are rewritten once and the
+    /// same text is applied to every sibling <see cref="DocumentId"/>
+    /// (<see cref="PathResolver.GetPathComparisonKey"/>). Ineligible locals
+    /// (no initializer, side effects, reassignment, ref/out, not in a method,
+    /// uneditable / source-generated docs) are skipped rather than failing the
+    /// walk. Deterministic <c>SpanStart</c> order within a file. When every
+    /// file is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
         Guid operationId,
         InlineVariableParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        // One physical path may appear as multiple Documents when linked into
+        // several projects. Rewrite once per normalized path and apply the same
+        // text to every sibling DocumentId (ConvertToBlockBody allFiles / Codex).
+        var documentGroups = allDocuments
+            .GroupBy(d => PathResolver.GetPathComparisonKey(d.FilePath!), StringComparer.Ordinal)
+            .Select(group => group
+                .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+                .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
+                .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
+                .ToList())
+            .OrderBy(group => group[0].FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var inlinedCountByDoc = new Dictionary<DocumentId, int>();
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var primary = linkedDocuments.FirstOrDefault(d =>
+                d is not SourceGeneratedDocument &&
+                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+            if (primary == null)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(primary.Id);
+                if (currentDocument == null ||
+                    currentDocument is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                {
+                    break;
+                }
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var declarator in CollectLocalDeclarators(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        updated = await TryInlineOneAsync(
+                            currentDocument,
+                            root,
+                            semanticModel,
+                            declarator,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        // Skip ineligible locals rather than failing the walk.
+                        updated = null;
+                    }
+
+                    if (updated != null)
+                        break;
+                }
+
+                if (updated == null)
+                    break;
+
+                var updatedPrimary = updated.GetDocument(primary.Id)
+                    ?? throw new RefactoringException(ErrorCodes.RoslynError, "Document disappeared from solution.");
+                var afterText = await updatedPrimary.GetTextAsync(cancellationToken);
+
+                currentSolution = updated;
+                foreach (var linked in linkedDocuments)
+                {
+                    if (linked.Id == primary.Id)
+                        continue;
+
+                    var sibling = currentSolution.GetDocument(linked.Id);
+                    if (sibling == null || sibling is SourceGeneratedDocument)
+                        continue;
+                    if (!DocumentEditableHelpers.IsDocumentEditable(sibling, Context.Workspace))
+                        continue;
+
+                    currentSolution = currentSolution.WithDocumentText(sibling.Id, afterText);
+                }
+
+                inlinedCountByDoc[primary.Id] =
+                    inlinedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var inlinedCount = inlinedCountByDoc.GetValueOrDefault(document.Id);
+                // Count may live on a sibling DocumentId in the same path group.
+                if (inlinedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        inlinedCount = Math.Max(inlinedCount, inlinedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = inlinedCount > 0
+                        ? BuildAllFilesDescription(inlinedCount)
+                        : "Update references of inlined variables",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that inlined
+    /// <paramref name="inlinedCount"/> variables.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int inlinedCount) =>
+        inlinedCount == 1
+            ? "Inline variable"
+            : $"Inline {inlinedCount} variables";
+
+    /// <summary>
+    /// Collects every local <see cref="VariableDeclaratorSyntax"/> in
+    /// <paramref name="root"/> whose parent is a
+    /// <see cref="LocalDeclarationStatementSyntax"/> (fields and for-loop
+    /// declarators stay excluded). Deterministic <c>SpanStart</c> then
+    /// span-length order.
+    /// </summary>
+    internal static IReadOnlyList<VariableDeclaratorSyntax> CollectLocalDeclarators(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<VariableDeclaratorSyntax>()
+            .Where(IsLocalDeclarator)
+            .OrderBy(declarator => declarator.SpanStart)
+            .ThenBy(declarator => declarator.Span.Length)
+            .ToList();
+
+    private static bool IsLocalDeclarator(VariableDeclaratorSyntax declarator) =>
+        declarator.Parent is VariableDeclarationSyntax { Parent: LocalDeclarationStatementSyntax };
+
+    private async Task<Solution?> TryInlineOneAsync(
+        Document document,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        VariableDeclaratorSyntax declarator,
+        CancellationToken cancellationToken)
+    {
+        if (declarator.Initializer == null)
+            return null;
+
+        var initializerExpression = declarator.Initializer.Value;
+        if (!MemberAnalyzer.IsSafeToInline(initializerExpression, semanticModel))
+            return null;
+
+        var variableSymbol = semanticModel.GetDeclaredSymbol(declarator, cancellationToken) as ILocalSymbol;
+        if (variableSymbol == null)
+            return null;
+
+        var containingMethod = declarator.Ancestors().OfType<BaseMethodDeclarationSyntax>().FirstOrDefault();
+        if (containingMethod == null)
+            return null;
+
+        var variableName = declarator.Identifier.Text;
+        var targetSpanStart = declarator.SpanStart;
+
+        var usages = containingMethod.DescendantNodes()
+            .OfType<IdentifierNameSyntax>()
+            .Where(id =>
+            {
+                if (id.Identifier.Text != variableName) return false;
+                var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
+                return SymbolEqualityComparer.Default.Equals(symbol, variableSymbol);
+            })
+            .ToList();
+
+        foreach (var usage in usages)
+        {
+            if (usage.Parent is ArgumentSyntax arg &&
+                (arg.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) ||
+                 arg.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword)))
+            {
+                return null;
+            }
+        }
+
+        var assignments = containingMethod.DescendantNodes()
+            .OfType<AssignmentExpressionSyntax>()
+            .Where(a =>
+            {
+                if (a.Left is not IdentifierNameSyntax id) return false;
+                if (id.Identifier.Text != variableName) return false;
+                var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
+                return SymbolEqualityComparer.Default.Equals(symbol, variableSymbol);
+            })
+            .ToList();
+
+        if (assignments.Count > 0)
+            return null;
+
+        if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        var rewriter = new InlineRewriter(variableName, variableSymbol, initializerExpression, semanticModel);
+        var newRoot = rewriter.Visit(root);
+        if (newRoot == null)
+            return null;
+
+        var newDeclarator = newRoot.DescendantNodes()
+            .OfType<VariableDeclaratorSyntax>()
+            .FirstOrDefault(v =>
+                v.Identifier.Text == variableName && v.SpanStart == targetSpanStart);
+
+        if (newDeclarator != null)
+        {
+            var newDeclaration = newDeclarator.Parent as VariableDeclarationSyntax;
+            if (newDeclaration != null && newDeclaration.Variables.Count == 1)
+            {
+                var statementToRemove = newDeclarator.Ancestors()
+                    .OfType<LocalDeclarationStatementSyntax>()
+                    .FirstOrDefault();
+                if (statementToRemove != null)
+                    newRoot = newRoot.RemoveNode(statementToRemove, SyntaxRemoveOptions.KeepLeadingTrivia) ?? newRoot;
+            }
+            else
+            {
+                newRoot = newRoot.RemoveNode(newDeclarator, SyntaxRemoveOptions.KeepNoTrivia) ?? newRoot;
+            }
+        }
+
+        var beforeText = await document.GetTextAsync(cancellationToken);
+        var newDocument = document.WithSyntaxRoot(newRoot);
+        var afterText = await newDocument.GetTextAsync(cancellationToken);
+        if (beforeText.ContentEquals(afterText))
+            return null;
+
+        return newDocument.Project.Solution;
+    }
+
+    private static RefactoringResult CreatePreviewResult(
+        Guid operationId,
+        string sourceFile,
+        string variableName,
         ExpressionSyntax initializer,
         int usageCount)
     {
@@ -265,10 +629,10 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         {
             new()
             {
-                File = @params.SourceFile,
+                File = sourceFile,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Inline variable '{@params.VariableName}' ({usageCount} usages replaced)",
-                BeforeSnippet = $"var {@params.VariableName} = {initializer.ToFullString().Trim()};\n// ... {@params.VariableName} ...",
+                Description = $"Inline variable '{variableName}' ({usageCount} usages replaced)",
+                BeforeSnippet = $"var {variableName} = {initializer.ToFullString().Trim()};\n// ... {variableName} ...",
                 AfterSnippet = $"// (declaration removed)\n// ... {initializer.ToFullString().Trim()} ..."
             }
         };
