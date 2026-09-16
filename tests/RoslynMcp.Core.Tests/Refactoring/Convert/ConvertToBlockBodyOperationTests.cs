@@ -1631,6 +1631,53 @@ public class ConvertToBlockBodyOperationTests
     }
 
     [SkippableFact]
+    public async Task Convert_AllFilesTrue_LinkedDocumentViewsThatRewriteIdentically_ReportSingleModifiedFile()
+    {
+        const string sharedSource = """
+            namespace TestApp;
+
+            public partial class Shared
+            {
+                public async Work Run() => await Delay();
+            }
+            """;
+        const string anchorSource = """
+            using System.Threading.Tasks;
+            global using Work = System.Threading.Tasks.Task;
+
+            namespace TestApp;
+
+            public partial class Shared
+            {
+                private static Work Delay()
+                {
+                    return Task.CompletedTask;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(sharedSource, anchorSource, anchorSource);
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathEquals(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Shared.cs"]));
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]));
+        AssertMethodIsBlockBodied(updated, "Run");
+    }
+
+    [SkippableFact]
     public async Task Convert_AllFilesTrue_SkipsPreprocessorConditionalExpressionBodies()
     {
         const string source = """
@@ -1833,7 +1880,36 @@ public class ConvertToBlockBodyOperationTests
             }
         }
 
-        public static async Task<TempWorkspace> CreateWithLinkedProjectsAsync(string sharedSource)
+        public static Task<TempWorkspace> CreateWithLinkedProjectsAsync(string sharedSource) =>
+            CreateWithLinkedProjectsAsync(
+                sharedSource,
+                """
+                using System.Threading.Tasks;
+                global using Work = System.Threading.Tasks.Task;
+
+                namespace TestApp;
+
+                public partial class Shared
+                {
+                    private static Work Delay() => Task.CompletedTask;
+                }
+                """,
+                """
+                using System.Threading.Tasks;
+                global using Work = System.Threading.Tasks.Task<int>;
+
+                namespace TestApp;
+
+                public partial class Shared
+                {
+                    private static Work Delay() => Task.FromResult(1);
+                }
+                """);
+
+        public static async Task<TempWorkspace> CreateWithLinkedProjectsAsync(
+            string sharedSource,
+            string anchorASource,
+            string anchorBSource)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1851,28 +1927,8 @@ public class ConvertToBlockBodyOperationTests
             var projectBGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
 
             await File.WriteAllTextAsync(sharedPath, sharedSource);
-            await File.WriteAllTextAsync(anchorAPath, """
-                using System.Threading.Tasks;
-                global using Work = System.Threading.Tasks.Task;
-
-                namespace TestApp;
-
-                public partial class Shared
-                {
-                    private static Work Delay() => Task.CompletedTask;
-                }
-                """);
-            await File.WriteAllTextAsync(anchorBPath, """
-                using System.Threading.Tasks;
-                global using Work = System.Threading.Tasks.Task<int>;
-
-                namespace TestApp;
-
-                public partial class Shared
-                {
-                    private static Work Delay() => Task.FromResult(1);
-                }
-                """);
+            await File.WriteAllTextAsync(anchorAPath, anchorASource);
+            await File.WriteAllTextAsync(anchorBPath, anchorBSource);
             await File.WriteAllTextAsync(solutionPath, $$"""
                 Microsoft Visual Studio Solution File, Format Version 12.00
                 # Visual Studio Version 17

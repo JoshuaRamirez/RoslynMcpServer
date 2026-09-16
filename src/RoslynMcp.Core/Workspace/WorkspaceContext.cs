@@ -126,6 +126,9 @@ public sealed class WorkspaceContext : IDisposable
             // Collect all file operations first, then execute sequentially
             // This prevents interleaved writes to the same file from different documents
             var fileOperations = new List<(string FilePath, Func<Task> Operation, string Category)>();
+            var queuedCreatedPaths = new HashSet<string>(StringComparer.Ordinal);
+            var queuedModifiedPaths = new HashSet<string>(StringComparer.Ordinal);
+            var queuedDeletedPaths = new HashSet<string>(StringComparer.Ordinal);
 
             foreach (var projectChanges in changes.GetProjectChanges())
             {
@@ -136,6 +139,9 @@ public sealed class WorkspaceContext : IDisposable
                     if (doc?.FilePath == null) continue;
 
                     var filePath = doc.FilePath;
+                    if (!queuedCreatedPaths.Add(PathResolver.NormalizePath(filePath)))
+                        continue;
+
                     fileOperations.Add((filePath, async () =>
                     {
                         var text = await doc.GetTextAsync(cancellationToken);
@@ -151,6 +157,9 @@ public sealed class WorkspaceContext : IDisposable
                     if (doc?.FilePath == null) continue;
 
                     var filePath = doc.FilePath;
+                    if (!queuedModifiedPaths.Add(PathResolver.NormalizePath(filePath)))
+                        continue;
+
                     fileOperations.Add((filePath, async () =>
                     {
                         var text = await doc.GetTextAsync(cancellationToken);
@@ -166,6 +175,9 @@ public sealed class WorkspaceContext : IDisposable
                     if (doc?.FilePath == null) continue;
 
                     var filePath = doc.FilePath;
+                    if (!queuedDeletedPaths.Add(PathResolver.NormalizePath(filePath)))
+                        continue;
+
                     fileOperations.Add((filePath, () =>
                     {
                         _fileWriter.Delete(filePath);
