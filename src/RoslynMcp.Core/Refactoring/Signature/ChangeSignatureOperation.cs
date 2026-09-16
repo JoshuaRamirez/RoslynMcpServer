@@ -493,15 +493,29 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// True when every <c>originalName</c> in <paramref name="changes"/>
     /// exists on <paramref name="method"/>, the method is not an extension
     /// method (<c>this</c> receiver not preserved by <c>CreateParameterSyntax</c>),
-    /// and no kept parameter uses <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c>
-    /// (bulk rewrite cannot preserve those modifiers yet —
-    /// <c>CreateParameterSyntax</c> only emits type/name/default).
+    /// the method is not override / interface-implementing (bulk cannot rewrite
+    /// the full hierarchy / metadata contracts), and no kept parameter uses
+    /// <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c> (bulk rewrite cannot
+    /// preserve those modifiers yet — <c>CreateParameterSyntax</c> only emits
+    /// type/name/default).
     /// </summary>
     internal static bool IsEligible(IMethodSymbol method, IReadOnlyList<ParameterChange> changes)
     {
         // Extension receivers lose the this modifier under CreateParameterSyntax
         // and would break extension-style callers (Codex).
         if (method.IsExtensionMethod)
+            return false;
+
+        // Overrides / interface implementations: changing the signature while
+        // keeping override/impl modifiers breaks the contract when the related
+        // declaration is outside the editable walk (metadata / other files)
+        // (Codex).
+        if (method.IsOverride)
+            return false;
+        if (!method.ExplicitInterfaceImplementations.IsDefaultOrEmpty &&
+            method.ExplicitInterfaceImplementations.Length > 0)
+            return false;
+        if (ImplementsAnyInterfaceMember(method))
             return false;
 
         var byName = method.Parameters.ToDictionary(p => p.Name, StringComparer.Ordinal);
@@ -516,6 +530,111 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 continue;
             if (existing.RefKind != RefKind.None || existing.IsParams)
                 return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// True when <paramref name="method"/> is the implementation of any
+    /// interface member on its containing type.
+    /// </summary>
+    internal static bool ImplementsAnyInterfaceMember(IMethodSymbol method)
+    {
+        var containingType = method.ContainingType;
+        if (containingType == null)
+            return false;
+
+        foreach (var iface in containingType.AllInterfaces)
+        {
+            foreach (var member in iface.GetMembers().OfType<IMethodSymbol>())
+            {
+                var impl = containingType.FindImplementationForInterfaceMember(member) as IMethodSymbol;
+                if (impl != null && SymbolEqualityComparer.Default.Equals(impl, method))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when applying <paramref name="newParameters"/> to
+    /// <paramref name="method"/> would collide with another method of the
+    /// same name in the containing type (same arity + type display strings).
+    /// </summary>
+    private static bool WouldCollideWithSibling(
+        IMethodSymbol method,
+        IReadOnlyList<NewParameter> newParameters)
+    {
+        var containingType = method.ContainingType;
+        if (containingType == null)
+            return false;
+
+        foreach (var sibling in containingType.GetMembers(method.Name).OfType<IMethodSymbol>())
+        {
+            if (SymbolEqualityComparer.Default.Equals(sibling, method))
+                continue;
+            if (sibling.Parameters.Length != newParameters.Count)
+                continue;
+
+            var collision = true;
+            for (var i = 0; i < newParameters.Count; i++)
+            {
+                if (!string.Equals(
+                        sibling.Parameters[i].Type.ToDisplayString(),
+                        newParameters[i].Type,
+                        StringComparison.Ordinal))
+                {
+                    collision = false;
+                    break;
+                }
+            }
+
+            if (collision)
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when every non-empty <c>Type</c> / <c>DefaultValue</c> on
+    /// <paramref name="changes"/> binds in <paramref name="semanticModel"/>
+    /// at <paramref name="methodDecl"/> (skip unbound types under allFiles).
+    /// </summary>
+    internal static bool RequestedTypesAndDefaultsBind(
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl,
+        IReadOnlyList<ParameterChange> changes)
+    {
+        var position = methodDecl.SpanStart;
+        foreach (var change in changes)
+        {
+            if (change.Remove)
+                continue;
+
+            if (!string.IsNullOrWhiteSpace(change.Type))
+            {
+                var typeSyntax = SyntaxFactory.ParseTypeName(change.Type);
+                var typeInfo = semanticModel.GetSpeculativeTypeInfo(
+                    position,
+                    typeSyntax,
+                    SpeculativeBindingOption.BindAsTypeOrNamespace);
+                if (typeInfo.Type == null || typeInfo.Type is IErrorTypeSymbol)
+                    return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(change.DefaultValue))
+            {
+                var expression = SyntaxFactory.ParseExpression(change.DefaultValue);
+                var exprInfo = semanticModel.GetSpeculativeTypeInfo(
+                    position,
+                    expression,
+                    SpeculativeBindingOption.BindAsExpression);
+                if (exprInfo.Type is IErrorTypeSymbol)
+                    return false;
+            }
         }
 
         return true;
@@ -539,12 +658,19 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
             return null;
 
+        if (!RequestedTypesAndDefaultsBind(semanticModel, methodDecl, changes))
+            return null;
+
         var newParameters = BuildNewParameterList(methodSymbol.Parameters.ToList(), changes);
         // Already at the target signature — skip so the while-loop cannot
         // re-apply the same parameters list forever (unlike introduce_parameter,
         // the method stays present and still matches originalName eligibility).
         // Include defaults so default-only ParameterChange entries still apply (Codex).
         if (SignatureAlreadyMatches(methodDecl, methodSymbol, newParameters))
+            return null;
+
+        // Avoid collapsing overloads into identical signatures (Codex).
+        if (WouldCollideWithSibling(methodSymbol, newParameters))
             return null;
 
         var beforeText = await document.GetTextAsync(cancellationToken);

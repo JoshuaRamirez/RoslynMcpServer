@@ -953,6 +953,111 @@ public class ChangeSignatureOperationTests
     }
 
     [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsWhenTargetWouldCollapseOverloads()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class FileA
+            {
+                public void Process(int x) { }
+                public void Process(int x, bool flag) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "FileA.cs");
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters = KeepXAddFlag()
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsOverrideEqualsRatherThanBreakingContract()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class FileA
+            {
+                public override bool Equals(object? obj) => false;
+                public void Process(int x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "FileA.cs");
+        var operation = new ChangeSignatureOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "obj", Name = "obj" },
+                new ParameterChange { Name = "flag", Type = "bool" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var normalized = updated.Replace(" ", "", StringComparison.Ordinal);
+        Assert.Contains("Equals(object?obj)", normalized, StringComparison.Ordinal);
+        Assert.DoesNotContain("Equals(object?obj,boolflag)", normalized, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsWhenAddedTypeDoesNotBind()
+    {
+        const string withUsing = """
+            namespace TestApp;
+            using System.Threading;
+
+            public class FileA
+            {
+                public void Process(int x) { }
+            }
+            """;
+        const string withoutUsing = """
+            namespace TestApp;
+
+            public class FileB
+            {
+                public void Process(int x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", withUsing),
+            ("FileB.cs", withoutUsing));
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x" },
+                new ParameterChange { Name = "token", Type = "CancellationToken" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        Assert.Contains("CancellationToken", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes!.FilesModified, p => PathsEqual(p, workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
     public async Task ChangeSignature_AllFilesTrue_SkipsRefParamsRatherThanStrippingModifiers()
     {
         const string withRef = """
