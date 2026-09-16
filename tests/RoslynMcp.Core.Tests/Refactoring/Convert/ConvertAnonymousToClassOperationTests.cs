@@ -811,25 +811,6 @@ public class ConvertAnonymousToClassOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
-    [Fact]
-    public void GetFullNamespaceName_NestedDeclarations_JoinsEnclosingNames()
-    {
-        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText("""
-            namespace Outer
-            {
-                namespace Inner
-                {
-                    class Worker { }
-                }
-            }
-            """);
-        var inner = tree.GetRoot().DescendantNodes()
-            .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.NamespaceDeclarationSyntax>()
-            .Last();
-
-        Assert.Equal("Inner", inner.Name.ToString());
-        Assert.Equal("Outer.Inner", ConvertAnonymousToClassOperation.GetFullNamespaceName(inner));
-    }
 
     #endregion
 

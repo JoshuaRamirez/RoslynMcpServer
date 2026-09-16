@@ -83,7 +83,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         var creation = FindAnonymousCreation(root, @params);
         var anonymousType = GetAnonymousType(semanticModel, creation);
         var members = GetAnonymousMembers(anonymousType);
-        var targetNamespace = GetContainingNamespaceName(semanticModel, creation);
+        var targetNamespace = NamespaceNameHelpers.GetContainingNamespaceName(semanticModel, creation);
 
         await ValidateNoNameConflictAsync(document, @params.NewTypeName, targetNamespace, cancellationToken);
 
@@ -454,23 +454,6 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         return SyntaxFactory.Identifier(bare);
     }
 
-    internal static string? GetContainingNamespaceName(SemanticModel semanticModel, SyntaxNode node)
-    {
-        var enclosing = semanticModel.GetEnclosingSymbol(node.SpanStart);
-        var fromSymbol = NamespaceEqualityHelpers.ToNamespaceName(enclosing?.ContainingNamespace);
-        if (!string.IsNullOrEmpty(fromSymbol))
-            return fromSymbol;
-
-        return GetContainingNamespaceName(node);
-    }
-
-    internal static string? GetContainingNamespaceName(SyntaxNode node)
-    {
-        var name = GetFullNamespaceName(
-            node.Ancestors().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault());
-        return string.IsNullOrEmpty(name) ? null : name;
-    }
-
     internal readonly record struct AnonymousMember(string Name, ITypeSymbol Type);
 
     private async Task ValidateNoNameConflictAsync(
@@ -634,7 +617,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
 
     private static string TypeNameForCreation(SyntaxNode creation, string newTypeName, string? targetNamespace)
     {
-        var creationNamespace = GetContainingNamespaceName(creation);
+        var creationNamespace = NamespaceNameHelpers.GetContainingNamespaceName(creation);
         if (NamespaceEqualityHelpers.NamespacesEqual(creationNamespace, targetNamespace))
             return newTypeName;
 
@@ -645,21 +628,6 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         return string.IsNullOrEmpty(targetNamespace)
             ? newTypeName
             : $"{targetNamespace}.{newTypeName}";
-    }
-
-    internal static string? GetFullNamespaceName(BaseNamespaceDeclarationSyntax? ns)
-    {
-        if (ns == null)
-            return null;
-
-        var parts = ns.AncestorsAndSelf()
-            .OfType<BaseNamespaceDeclarationSyntax>()
-            .Reverse()
-            .Select(n => n.Name.ToString())
-            .Where(part => !string.IsNullOrEmpty(part));
-
-        var joined = string.Join(".", parts);
-        return string.IsNullOrEmpty(joined) ? null : joined;
     }
 
     private static bool HasUsing(SyntaxNode root, string namespaceName)
