@@ -238,6 +238,18 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
             progress = false;
             cancellationToken.ThrowIfCancellationRequested();
 
+            // Scan every remaining eligible site, then generate the best one.
+            // Prefer call sites that constrain a non-void return type so a
+            // later statement-form call to the same signature does not lock
+            // in void and leave typed usages uncompilable (Codex P1).
+            Document? bestCallSiteDocument = null;
+            SyntaxNode? bestRoot = null;
+            InvocationExpressionSyntax? bestInvocation = null;
+            StubPlan? bestPlan = null;
+            string? bestSignatureKey = null;
+            var bestPriority = int.MaxValue;
+            DocumentId? bestGeneratedDocId = null;
+
             foreach (var document in allDocuments)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -267,17 +279,19 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
                         continue;
                     }
 
-                    // Already-resolved calls are not eligible for bulk stubbing
-                    // (replaceExisting still applies only when an unresolved
-                    // site's inferred signature collides with an existing method).
+                    // Already-resolved calls are not eligible for bulk stubbing.
+                    // replaceExisting still applies when an unresolved site's
+                    // inferred signature collides with an existing ordinary
+                    // method (ResolveMethodToReplace). Walking resolved calls
+                    // would rewrite every invoked method.
                     if (semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol != null)
                         continue;
 
-                    Solution? updated = null;
+                    StubPlan? plan = null;
                     string? signatureKey = null;
                     try
                     {
-                        var plan = await BuildStubPlanAsync(
+                        plan = await BuildStubPlanAsync(
                             currentDocument,
                             root,
                             semanticModel,
@@ -291,44 +305,79 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
                             plan.TypeParameters.Count,
                             plan.Parameters);
 
-                        if (!processedSignatures.Add(signatureKey))
+                        if (processedSignatures.Contains(signatureKey))
                         {
                             skippedSpans.Add(spanKey);
                             continue;
                         }
-
-                        updated = await ApplyChangesAsync(
-                            currentDocument,
-                            root,
-                            plan.TargetDocument,
-                            plan.TargetDeclaration,
-                            plan.Method,
-                            plan.RewriteCallSite ? plan.InvokedName : null,
-                            plan.MethodName,
-                            plan.ExistingMethod,
-                            plan.Target.Type,
-                            cancellationToken);
                     }
                     catch (RefactoringException)
                     {
                         skippedSpans.Add(spanKey);
-                        if (signatureKey != null)
-                            processedSignatures.Add(signatureKey);
-                        updated = null;
+                        continue;
                     }
 
-                    if (updated == null)
+                    var priority = GetAllFilesStubPriority(plan!);
+                    if (priority > bestPriority)
                         continue;
+                    if (priority == bestPriority
+                        && bestInvocation != null
+                        && (currentDocument.Id != bestCallSiteDocument!.Id
+                            || invocation.SpanStart >= bestInvocation.SpanStart))
+                    {
+                        continue;
+                    }
 
-                    currentSolution = updated;
-                    generatedCountByDoc[document.Id] =
-                        generatedCountByDoc.GetValueOrDefault(document.Id) + 1;
-                    progress = true;
-                    break;
+                    bestPriority = priority;
+                    bestCallSiteDocument = currentDocument;
+                    bestRoot = root;
+                    bestInvocation = invocation;
+                    bestPlan = plan;
+                    bestSignatureKey = signatureKey;
+                    bestGeneratedDocId = document.Id;
+                }
+            }
+
+            if (bestPlan == null
+                || bestCallSiteDocument == null
+                || bestRoot == null
+                || bestInvocation == null
+                || bestSignatureKey == null
+                || bestGeneratedDocId == null)
+            {
+                break;
+            }
+
+            var spanToSkip = (bestCallSiteDocument.Id, bestInvocation.SpanStart);
+            try
+            {
+                if (!processedSignatures.Add(bestSignatureKey))
+                {
+                    skippedSpans.Add(spanToSkip);
+                    continue;
                 }
 
-                if (progress)
-                    break;
+                var updated = await ApplyChangesAsync(
+                    bestCallSiteDocument,
+                    bestRoot,
+                    bestPlan.TargetDocument,
+                    bestPlan.TargetDeclaration,
+                    bestPlan.Method,
+                    bestPlan.RewriteCallSite ? bestPlan.InvokedName : null,
+                    bestPlan.MethodName,
+                    bestPlan.ExistingMethod,
+                    bestPlan.Target.Type,
+                    cancellationToken);
+
+                currentSolution = updated;
+                generatedCountByDoc[bestGeneratedDocId] =
+                    generatedCountByDoc.GetValueOrDefault(bestGeneratedDocId) + 1;
+                progress = true;
+            }
+            catch (RefactoringException)
+            {
+                skippedSpans.Add(spanToSkip);
+                processedSignatures.Add(bestSignatureKey);
             }
         }
 
@@ -411,6 +460,19 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         generatedCount == 1
             ? "Generate method stub"
             : $"Generate {generatedCount} method stubs";
+
+    /// <summary>
+    /// Lower is better. Prefer stubs whose inferred return type is not
+    /// <c>void</c> so statement-form siblings of the same signature do not
+    /// win the walk and leave typed call sites broken.
+    /// </summary>
+    private static int GetAllFilesStubPriority(StubPlan plan)
+    {
+        var returnType = plan.Method.ReturnType.ToString().Trim();
+        if (returnType.Equals("void", StringComparison.Ordinal))
+            return 1;
+        return 0;
+    }
 
     /// <summary>
     /// De-dupes stubs by target type + name + type-parameter arity +

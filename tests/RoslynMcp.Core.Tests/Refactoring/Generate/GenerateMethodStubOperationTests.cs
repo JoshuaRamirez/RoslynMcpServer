@@ -2906,6 +2906,37 @@ public class GenerateMethodStubOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_PrefersTypedCallSiteOverVoidSibling()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public void Run()
+                {
+                    Shared();
+                    int value = Shared();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private int Shared()", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private void Shared()", updated, StringComparison.Ordinal);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
     public async Task GenerateMethodStub_AllFilesTrue_DedupesSameSignatureAcrossCallSites()
     {
         const string source = """
