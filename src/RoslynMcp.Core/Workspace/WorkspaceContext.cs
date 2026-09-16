@@ -78,10 +78,13 @@ public sealed class WorkspaceContext : IDisposable
     /// <returns>Document if found, null otherwise.</returns>
     public Document? GetDocumentByPath(string filePath)
     {
-        var normalizedPath = PathResolver.NormalizePath(filePath);
+        var normalizedPath = PathResolver.GetPathComparisonKey(filePath);
         return _solution.Projects
             .SelectMany(p => p.Documents)
-            .FirstOrDefault(d => PathResolver.NormalizePath(d.FilePath ?? "") == normalizedPath);
+            .FirstOrDefault(d => string.Equals(
+                PathResolver.GetPathComparisonKey(d.FilePath ?? ""),
+                normalizedPath,
+                StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -126,6 +129,9 @@ public sealed class WorkspaceContext : IDisposable
             // Collect all file operations first, then execute sequentially
             // This prevents interleaved writes to the same file from different documents
             var fileOperations = new List<(string FilePath, Func<Task> Operation, string Category)>();
+            var queuedCreatedPaths = new HashSet<string>(StringComparer.Ordinal);
+            var queuedModifiedPaths = new HashSet<string>(StringComparer.Ordinal);
+            var queuedDeletedPaths = new HashSet<string>(StringComparer.Ordinal);
 
             foreach (var projectChanges in changes.GetProjectChanges())
             {
@@ -136,6 +142,9 @@ public sealed class WorkspaceContext : IDisposable
                     if (doc?.FilePath == null) continue;
 
                     var filePath = doc.FilePath;
+                    if (!queuedCreatedPaths.Add(PathResolver.GetPathComparisonKey(filePath)))
+                        continue;
+
                     fileOperations.Add((filePath, async () =>
                     {
                         var text = await doc.GetTextAsync(cancellationToken);
@@ -151,6 +160,9 @@ public sealed class WorkspaceContext : IDisposable
                     if (doc?.FilePath == null) continue;
 
                     var filePath = doc.FilePath;
+                    if (!queuedModifiedPaths.Add(PathResolver.GetPathComparisonKey(filePath)))
+                        continue;
+
                     fileOperations.Add((filePath, async () =>
                     {
                         var text = await doc.GetTextAsync(cancellationToken);
@@ -166,6 +178,9 @@ public sealed class WorkspaceContext : IDisposable
                     if (doc?.FilePath == null) continue;
 
                     var filePath = doc.FilePath;
+                    if (!queuedDeletedPaths.Add(PathResolver.GetPathComparisonKey(filePath)))
+                        continue;
+
                     fileOperations.Add((filePath, () =>
                     {
                         _fileWriter.Delete(filePath);
@@ -177,7 +192,7 @@ public sealed class WorkspaceContext : IDisposable
 
             // Sort operations by file path to ensure consistent ordering
             // and prevent potential deadlocks with external file locks
-            fileOperations.Sort((a, b) => string.Compare(a.FilePath, b.FilePath, StringComparison.OrdinalIgnoreCase));
+            fileOperations.Sort((a, b) => string.Compare(a.FilePath, b.FilePath, StringComparison.Ordinal));
 
             // Execute file operations sequentially to prevent race conditions
             foreach (var (_, operation, _) in fileOperations)

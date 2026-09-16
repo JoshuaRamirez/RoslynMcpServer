@@ -33,13 +33,13 @@ public sealed class ConvertToBlockBodyTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a selected expression-bodied C# member (=> expr) to a block body. Methods become { return expr; } or { expr; } as appropriate; properties and accessors that are expression-bodied are converted too. column (optional) picks the member whose identifier or declaration span covers that column on the given line. Omitted keeps today's memberName and/or line pick (smallest containing node). Preview describes the rewrite and writes nothing.";
+        "Convert a selected expression-bodied C# member (=> expr) to a block body. Methods become { return expr; } or { expr; } as appropriate; properties and accessors that are expression-bodied are converted too. column (optional) picks the member whose identifier or declaration span covers that column on the given line. Omitted keeps today's memberName and/or line pick (smallest containing node). Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every eligible expression-bodied member (sourceFile optional when true; cannot be combined with memberName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,23 +50,29 @@ public sealed class ConvertToBlockBodyTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false. Optional when allFiles is true to limit the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with memberName, line, or column.",
+                @default = false
             },
             memberName = new
             {
                 type = "string",
-                description = "Name of the member to convert"
+                description = "Name of the member to convert. Single-member only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "Line number of the member (1-based). Required when memberName is omitted.",
+                description = "Line number of the member (1-based). Required when memberName is omitted. Single-member only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set, selects the member whose identifier or declaration span covers that column on the given line. Omitted keeps today's memberName and/or line pick."
+                description = "1-based column for disambiguation. When set, selects the member whose identifier or declaration span covers that column on the given line. Omitted keeps today's memberName and/or line pick. Single-member only; cannot be combined with allFiles."
             },
             preview = new
             {
@@ -102,6 +108,7 @@ public sealed class ConvertToBlockBodyTool : IToolHandler
             var @params = new ConvertToBlockBodyParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 MemberName = args.MemberName,
                 Line = args.Line,
                 Column = args.Column,
@@ -133,7 +140,8 @@ public sealed class ConvertToBlockBodyTool : IToolHandler
     private sealed class ConvertToBlockBodyArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public string? MemberName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }

@@ -6,17 +6,25 @@ namespace RoslynMcp.Contracts.Models;
 public sealed class ConvertToBlockBodyParams
 {
     /// <summary>
-    /// Absolute path to the source file.
+    /// Absolute path to the source file. Required when <see cref="AllFiles"/> is false.
+    /// When <see cref="AllFiles"/> is true, optional — limits the walk to that one file.
     /// </summary>
-    public required string SourceFile { get; init; }
+    public string? SourceFile { get; init; }
 
     /// <summary>
-    /// Name of the member to convert.
+    /// When true, process all C# documents in the solution instead of a single member.
+    /// When true, <see cref="SourceFile"/> is optional. Cannot be combined with
+    /// <see cref="MemberName"/>, <see cref="Line"/>, or <see cref="Column"/>.
+    /// </summary>
+    public bool AllFiles { get; init; }
+
+    /// <summary>
+    /// Name of the member to convert. Single-member only.
     /// </summary>
     public string? MemberName { get; init; }
 
     /// <summary>
-    /// 1-based line number for position-based resolution.
+    /// 1-based line number for position-based resolution. Single-member only.
     /// </summary>
     public int? Line { get; init; }
 
@@ -26,7 +34,7 @@ public sealed class ConvertToBlockBodyParams
     /// signature. Optional. When set, selects the member whose identifier
     /// or declaration span covers that column (using <see cref="Line"/> when
     /// present). Omitted keeps today's memberName and/or line pick (smallest
-    /// containing node).
+    /// containing node). Single-member only.
     /// </summary>
     public int? Column { get; init; }
 

@@ -61,4 +61,95 @@ public class PathResolverTests
         { WinOrUnix(@"C:\project\File.cs", "/project/File.cs"), false },
         { @"relative\Solution.sln", false }
     };
+
+    [Fact]
+    public void GetPathComparisonKey_IdenticalPath_ReturnsSameKey()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "roslyn-mcp-pr-same-" + Path.GetRandomFileName() + ".cs");
+
+        Assert.Equal(
+            PathResolver.GetPathComparisonKey(path),
+            PathResolver.GetPathComparisonKey(path));
+    }
+
+    [Fact]
+    public void GetPathComparisonKey_CaseVariantExistingPath_MatchesFilesystemBehavior()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "roslyn-mcp-pr-case-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(path, "class C {}");
+
+        try
+        {
+            var query = Path.Combine(Path.GetDirectoryName(path)!, FlipAsciiCase(Path.GetFileName(path)));
+            var expectedEqual = File.Exists(query);
+
+            var createdKey = PathResolver.GetPathComparisonKey(path);
+            var queryKey = PathResolver.GetPathComparisonKey(query);
+
+            Assert.Equal(
+                expectedEqual,
+                string.Equals(createdKey, queryKey, StringComparison.Ordinal));
+
+            // On case-insensitive volumes the key must be the directory entry's
+            // actual casing, not the wrong-cased alias spelling (Codex P1).
+            if (expectedEqual)
+            {
+                Assert.Equal(createdKey, queryKey);
+                Assert.Equal(
+                    Path.GetFileName(path),
+                    Path.GetFileName(queryKey),
+                    StringComparer.Ordinal);
+            }
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void GetPathComparisonKey_WindowsDriveLetterRoot_IsCanonicalized()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var path = Path.Combine(Path.GetTempPath(), "roslyn-mcp-pr-drive-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var root = Path.GetPathRoot(path)!;
+            var flippedRoot = char.IsUpper(root[0])
+                ? char.ToLowerInvariant(root[0]) + root[1..]
+                : char.ToUpperInvariant(root[0]) + root[1..];
+            var flipped = flippedRoot + path[root.Length..];
+            Assert.True(File.Exists(flipped));
+
+            var keyA = PathResolver.GetPathComparisonKey(path);
+            var keyB = PathResolver.GetPathComparisonKey(flipped);
+            Assert.Equal(keyA, keyB);
+            Assert.Equal(
+                char.ToUpperInvariant(root[0]),
+                Path.GetPathRoot(keyA)![0]);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    private static string FlipAsciiCase(string value)
+    {
+        var chars = value.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (chars[i] is >= 'a' and <= 'z')
+                chars[i] = char.ToUpperInvariant(chars[i]);
+            else if (chars[i] is >= 'A' and <= 'Z')
+                chars[i] = char.ToLowerInvariant(chars[i]);
+        }
+
+        return new string(chars);
+    }
 }

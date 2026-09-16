@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -34,14 +35,25 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     /// </summary>
     internal static void Validate(ConvertToBlockBodyParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.MemberName) || @params.Line.HasValue || @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with memberName, line, or column.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        ValidateSourceFilePath(@params.SourceFile);
 
         if (!@params.Line.HasValue && string.IsNullOrWhiteSpace(@params.MemberName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Either memberName or line must be provided.");
@@ -56,13 +68,26 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
 
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+    }
+
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
         ConvertToBlockBodyParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var currentSolution = Context.Solution;
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -87,7 +112,36 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
                 $"Member '{GetMemberName(member) ?? member.Kind().ToString()}' does not support block body conversion.");
         }
 
-        var (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member);
+        var model = await document.GetSemanticModelAsync(cancellationToken);
+        var (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member, model);
+        var newRoot = root.ReplaceNode(member, newMember);
+        var newDocument = document.WithSyntaxRoot(newRoot);
+        var changedText = await newDocument.GetTextAsync(cancellationToken);
+
+        var linkedDocuments = GetLinkedDocumentsByPhysicalPath(currentSolution, document);
+        foreach (var linked in linkedDocuments)
+        {
+            if (linked.Id == document.Id)
+                continue;
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var linkedRoot = await linked.GetSyntaxRootAsync(cancellationToken);
+            if (linkedRoot == null)
+                throw new RefactoringException(ErrorCodes.CannotConvert, BuildLinkedDocumentDivergenceMessage(linked.FilePath));
+
+            var linkedMember = FindMember(linkedRoot, @params.MemberName, @params.Line, @params.Column);
+            if (linkedMember == null || !IsConvertibleKind(linkedMember))
+                throw new RefactoringException(ErrorCodes.CannotConvert, BuildLinkedDocumentDivergenceMessage(linked.FilePath));
+
+            var linkedModel = await linked.GetSemanticModelAsync(cancellationToken);
+            var (newLinkedMember, _, _) = ConvertToBlockBody(linkedMember, linkedModel);
+            var linkedText = await linked.WithSyntaxRoot(linkedRoot.ReplaceNode(linkedMember, newLinkedMember))
+                .GetTextAsync(cancellationToken);
+            if (!changedText.ContentEquals(linkedText))
+                throw new RefactoringException(ErrorCodes.CannotConvert, BuildLinkedDocumentDivergenceMessage(linked.FilePath));
+
+            currentSolution = currentSolution.WithDocumentText(linked.Id, changedText);
+        }
 
         if (@params.Preview)
         {
@@ -95,7 +149,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             {
                 new()
                 {
-                    File = @params.SourceFile,
+                    File = @params.SourceFile!,
                     ChangeType = ChangeKind.Modify,
                     Description = $"Convert '{GetMemberName(member)}' to block body",
                     BeforeSnippet = beforeSnippet,
@@ -105,9 +159,8 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             return RefactoringResult.PreviewResult(operationId, pendingChanges);
         }
 
-        var newRoot = root.ReplaceNode(member, newMember);
-        var newDocument = document.WithSyntaxRoot(newRoot);
-        var commitResult = await CommitChangesAsync(newDocument.Project.Solution, cancellationToken);
+        currentSolution = currentSolution.WithDocumentText(document.Id, changedText);
+        var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
 
         return RefactoringResult.Succeeded(
             operationId,
@@ -125,6 +178,253 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             },
             0,
             0);
+    }
+
+    /// <summary>
+    /// Converts every eligible expression-bodied member in every C# document
+    /// (same document filter as <c>ConvertExpressionBodyOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ConvertPropertyOperation.ExecuteAllFilesAsync</c> /
+    /// <c>AddBracesOperation.ExecuteAllFilesAsync</c>: <c>FilePath</c> ends
+    /// with <c>.cs</c>). Optional <c>sourceFile</c> limits the walk via
+    /// <see cref="DocumentSourceFileFilter"/>. Already-block and otherwise
+    /// ineligible members or documents are skipped. When every file is a
+    /// no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ConvertToBlockBodyParams @params,
+        CancellationToken cancellationToken)
+    {
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+        }
+
+        // One physical path may appear as multiple Documents when linked into
+        // several projects. Rewrite once per normalized path and apply the same
+        // text to every sibling DocumentId so CommitChanges cannot last-write-wins
+        // conflicting preprocessor variants (Codex P2). Group by the physical
+        // path comparison key so case-insensitive filesystems coalesce wrong-
+        // cased aliases while case-sensitive files stay distinct.
+        var documentGroups = allDocuments
+            .GroupBy(d => PathResolver.GetPathComparisonKey(d.FilePath!), StringComparer.Ordinal)
+            .Select(group => group
+                .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+                .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
+                .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
+                .ToList())
+            .OrderBy(group => group[0].FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Document? previewDocument = null;
+            SyntaxNode? previewRoot = null;
+            SyntaxNode? previewNewRoot = null;
+            SourceText? changedText = null;
+            var convertedCount = 0;
+
+            foreach (var linked in linkedDocuments)
+            {
+                var currentDocument = currentSolution.GetDocument(linked.Id) ?? linked;
+                if (currentDocument is SourceGeneratedDocument)
+                    continue;
+
+                if (!DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                    continue;
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (root == null)
+                    continue;
+
+                // Bottom-up rewriter so a nested convertible member (e.g. local
+                // function) is rewritten before its enclosing member; returning a
+                // precomputed ancestor from ReplaceNodes would discard the nested
+                // conversion (Codex P2 on allFiles). SemanticModel is captured on
+                // original nodes before descendants rewrite (Codex P2 alias Task).
+                var model = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                var rewriter = new ConvertToBlockBodyAllFilesRewriter(model);
+                var newRoot = rewriter.Visit(root)!;
+                if (rewriter.ConvertedCount == 0)
+                    continue;
+
+                var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+                var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+                var afterText = await newDocument.GetTextAsync(cancellationToken);
+                if (beforeText.ContentEquals(afterText))
+                    continue;
+
+                if (changedText != null && !changedText.ContentEquals(afterText))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.CannotConvert,
+                        $"Linked workspace documents for '{currentDocument.FilePath}' produce different rewrites under current project contexts.");
+                }
+
+                previewDocument ??= currentDocument;
+                previewRoot ??= root;
+                previewNewRoot ??= newRoot;
+                changedText ??= afterText;
+                convertedCount = Math.Max(convertedCount, rewriter.ConvertedCount);
+            }
+
+            if (changedText == null || previewDocument == null || previewRoot == null || previewNewRoot == null)
+                continue;
+
+            if (@params.Preview)
+            {
+                var span = previewRoot.GetLocation().GetLineSpan();
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = previewDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = BuildAllFilesDescription(convertedCount),
+                    BeforeSnippet = previewRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = previewNewRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            foreach (var linked in linkedDocuments)
+            {
+                var sibling = currentSolution.GetDocument(linked.Id) ?? linked;
+                if (sibling is SourceGeneratedDocument)
+                    continue;
+                if (!DocumentEditableHelpers.IsDocumentEditable(sibling, Context.Workspace))
+                    continue;
+                currentSolution = currentSolution.WithDocumentText(sibling.Id, changedText);
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var sourceFileKey = PathResolver.GetPathComparisonKey(sourceFile);
+        var exactMatches = documents
+            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
+            .ToList();
+        if (exactMatches.Count > 0)
+        {
+            // Exact spelling disambiguates case-distinct files; still return every
+            // linked Document that shares the same physical comparison key so
+            // linked-view divergence checks are not skipped (Codex P2).
+            var exactKeys = exactMatches
+                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+                .ToHashSet(StringComparer.Ordinal);
+            return documents
+                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
+                .ToList();
+        }
+
+        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
+        // Ambiguity is distinct case-sensitive paths, not linked Document count
+        // (one physical file linked into multiple projects is not ambiguous).
+        var distinctPaths = matchedDocuments
+            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return distinctPaths.Count switch
+        {
+            0 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"File not found in workspace: {sourceFile}"),
+            > 1 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ when !string.Equals(distinctPaths[0], sourceFileKey, StringComparison.Ordinal) && !File.Exists(sourceFile) =>
+                throw new RefactoringException(
+                    ErrorCodes.SourceNotInWorkspace,
+                    $"File not found in workspace: {sourceFile}"),
+            _ => matchedDocuments
+        };
+    }
+
+    private static string BuildLinkedDocumentDivergenceMessage(string? filePath) =>
+        $"Linked workspace documents for '{filePath}' produce different rewrites under current project contexts.";
+
+    private List<Document> GetLinkedDocumentsByPhysicalPath(Solution solution, Document document)
+    {
+        var normalizedPath = PathResolver.GetPathComparisonKey(document.FilePath!);
+        return solution.Projects
+            .SelectMany(project => project.Documents)
+            .Where(candidate => candidate.FilePath != null
+                && string.Equals(
+                    PathResolver.GetPathComparisonKey(candidate.FilePath),
+                    normalizedPath,
+                    StringComparison.Ordinal))
+            .OrderBy(candidate => candidate.FilePath, StringComparer.Ordinal)
+            .ThenBy(candidate => candidate.Project.Name, StringComparer.Ordinal)
+            .ThenBy(candidate => candidate.Id.Id.ToString(), StringComparer.Ordinal)
+            .ToList();
+    }
+
+    internal static string BuildAllFilesDescription(int convertedCount) =>
+        convertedCount == 1
+            ? "Convert member to block body"
+            : $"Convert {convertedCount} members to block body";
+
+
+    /// <summary>
+    /// Attempts a conversion without throwing. Used by allFiles so already-
+    /// block and otherwise ineligible members stay no-ops.
+    /// </summary>
+    internal static bool TryConvert(
+        SyntaxNode member,
+        out SyntaxNode newMember,
+        out string beforeSnippet,
+        out string afterSnippet,
+        SemanticModel? model = null,
+        IMethodSymbol? precomputedSymbol = null)
+    {
+        try
+        {
+            (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member, model, precomputedSymbol);
+            return true;
+        }
+        catch (RefactoringException)
+        {
+            newMember = member;
+            beforeSnippet = string.Empty;
+            afterSnippet = string.Empty;
+            return false;
+        }
     }
 
     /// <summary>
@@ -230,12 +530,20 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         _ => Contracts.Enums.SymbolKind.Method
     };
 
-    private static (SyntaxNode newNode, string before, string after) ConvertToBlockBody(SyntaxNode member)
+    private static (SyntaxNode newNode, string before, string after) ConvertToBlockBody(
+        SyntaxNode member,
+        SemanticModel? model = null,
+        IMethodSymbol? precomputedSymbol = null)
     {
+        // Skip / reject members whose expression body is selected by #if/#else
+        // (Codex P2): converting only the active branch leaves inactive branch
+        // text in a broken shape for the other configuration.
+        EnsureExpressionBodyHasNoPreprocessorBoundary(member);
+
         return member switch
         {
-            MethodDeclarationSyntax method => ConvertMethod(method),
-            LocalFunctionStatementSyntax localFunction => ConvertLocalFunction(localFunction),
+            MethodDeclarationSyntax method => ConvertMethod(method, model, precomputedSymbol),
+            LocalFunctionStatementSyntax localFunction => ConvertLocalFunction(localFunction, model, precomputedSymbol),
             OperatorDeclarationSyntax op => ConvertOperator(op),
             ConversionOperatorDeclarationSyntax conversion => ConvertConversionOperator(conversion),
             ConstructorDeclarationSyntax constructor => ConvertConstructor(constructor),
@@ -249,31 +557,44 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         };
     }
 
-    private static (SyntaxNode newNode, string before, string after) ConvertMethod(MethodDeclarationSyntax method)
+    private static (SyntaxNode newNode, string before, string after) ConvertMethod(
+        MethodDeclarationSyntax method,
+        SemanticModel? model = null,
+        IMethodSymbol? precomputedSymbol = null)
     {
         EnsureExpressionBody(method.ExpressionBody, method.Body, "Method");
-        var expr = method.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: !IsNonReturning(method.ReturnType, method.Modifiers));
-        var before = FormatExpressionBody(expr);
+        var expressionBody = method.ExpressionBody!;
+        var symbol = precomputedSymbol ?? model?.GetDeclaredSymbol(method) as IMethodSymbol;
+        EnsureAsyncReturnTypeSafeToConvert(method.Modifiers, symbol);
+        var stmt = CreateStatement(
+            expressionBody,
+            useReturn: !IsNonReturning(method.ReturnType, method.Modifiers, symbol));
+        var before = FormatExpressionBody(expressionBody.Expression);
         var newMethod = method
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(stmt))
+            .WithBody(CreateBlock(stmt, method.SemicolonToken))
             .NormalizeWhitespace();
         return (newMethod, before, newMethod.Body!.ToString().Trim());
     }
 
     private static (SyntaxNode newNode, string before, string after) ConvertLocalFunction(
-        LocalFunctionStatementSyntax localFunction)
+        LocalFunctionStatementSyntax localFunction,
+        SemanticModel? model = null,
+        IMethodSymbol? precomputedSymbol = null)
     {
         EnsureExpressionBody(localFunction.ExpressionBody, localFunction.Body, "Local function");
-        var expr = localFunction.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: !IsNonReturning(localFunction.ReturnType, localFunction.Modifiers));
-        var before = FormatExpressionBody(expr);
+        var expressionBody = localFunction.ExpressionBody!;
+        var symbol = precomputedSymbol ?? model?.GetDeclaredSymbol(localFunction) as IMethodSymbol;
+        EnsureAsyncReturnTypeSafeToConvert(localFunction.Modifiers, symbol);
+        var stmt = CreateStatement(
+            expressionBody,
+            useReturn: !IsNonReturning(localFunction.ReturnType, localFunction.Modifiers, symbol));
+        var before = FormatExpressionBody(expressionBody.Expression);
         var converted = localFunction
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(stmt))
+            .WithBody(CreateBlock(stmt, localFunction.SemicolonToken))
             .NormalizeWhitespace();
         return (converted, before, converted.Body!.ToString().Trim());
     }
@@ -281,13 +602,13 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     private static (SyntaxNode newNode, string before, string after) ConvertOperator(OperatorDeclarationSyntax op)
     {
         EnsureExpressionBody(op.ExpressionBody, op.Body, "Operator");
-        var expr = op.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: true);
-        var before = FormatExpressionBody(expr);
+        var expressionBody = op.ExpressionBody!;
+        var stmt = CreateStatement(expressionBody, useReturn: true);
+        var before = FormatExpressionBody(expressionBody.Expression);
         var converted = op
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(stmt))
+            .WithBody(CreateBlock(stmt, op.SemicolonToken))
             .NormalizeWhitespace();
         return (converted, before, converted.Body!.ToString().Trim());
     }
@@ -296,13 +617,13 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         ConversionOperatorDeclarationSyntax conversion)
     {
         EnsureExpressionBody(conversion.ExpressionBody, conversion.Body, "Conversion operator");
-        var expr = conversion.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: true);
-        var before = FormatExpressionBody(expr);
+        var expressionBody = conversion.ExpressionBody!;
+        var stmt = CreateStatement(expressionBody, useReturn: true);
+        var before = FormatExpressionBody(expressionBody.Expression);
         var converted = conversion
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(stmt))
+            .WithBody(CreateBlock(stmt, conversion.SemicolonToken))
             .NormalizeWhitespace();
         return (converted, before, converted.Body!.ToString().Trim());
     }
@@ -311,13 +632,13 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         ConstructorDeclarationSyntax constructor)
     {
         EnsureExpressionBody(constructor.ExpressionBody, constructor.Body, "Constructor");
-        var expr = constructor.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: false);
-        var before = FormatExpressionBody(expr);
+        var expressionBody = constructor.ExpressionBody!;
+        var stmt = CreateStatement(expressionBody, useReturn: false);
+        var before = FormatExpressionBody(expressionBody.Expression);
         var converted = constructor
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(stmt))
+            .WithBody(CreateBlock(stmt, constructor.SemicolonToken))
             .NormalizeWhitespace();
         return (converted, before, converted.Body!.ToString().Trim());
     }
@@ -326,13 +647,13 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         DestructorDeclarationSyntax destructor)
     {
         EnsureExpressionBody(destructor.ExpressionBody, destructor.Body, "Destructor");
-        var expr = destructor.ExpressionBody!.Expression;
-        var stmt = CreateStatement(expr, useReturn: false);
-        var before = FormatExpressionBody(expr);
+        var expressionBody = destructor.ExpressionBody!;
+        var stmt = CreateStatement(expressionBody, useReturn: false);
+        var before = FormatExpressionBody(expressionBody.Expression);
         var converted = destructor
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(stmt))
+            .WithBody(CreateBlock(stmt, destructor.SemicolonToken))
             .NormalizeWhitespace();
         return (converted, before, converted.Body!.ToString().Trim());
     }
@@ -341,13 +662,16 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     {
         if (property.ExpressionBody != null)
         {
-            var expr = property.ExpressionBody.Expression;
-            var accessor = CreateBlockAccessor(SyntaxKind.GetAccessorDeclaration, expr, useReturn: true);
-            var before = FormatExpressionBody(expr);
+            var expressionBody = property.ExpressionBody;
+            var accessor = CreateBlockAccessor(SyntaxKind.GetAccessorDeclaration, expressionBody, useReturn: true);
+            var before = FormatExpressionBody(expressionBody.Expression);
+            var accessorList = AttachSemicolonTrailingTrivia(
+                SyntaxFactory.AccessorList(SyntaxFactory.SingletonList(accessor)),
+                property.SemicolonToken);
             var newProp = property
                 .WithExpressionBody(null)
                 .WithSemicolonToken(default)
-                .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.SingletonList(accessor)))
+                .WithAccessorList(accessorList)
                 .NormalizeWhitespace();
             return (newProp, before, newProp.AccessorList!.ToString().Trim());
         }
@@ -364,13 +688,16 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     {
         if (indexer.ExpressionBody != null)
         {
-            var expr = indexer.ExpressionBody.Expression;
-            var accessor = CreateBlockAccessor(SyntaxKind.GetAccessorDeclaration, expr, useReturn: true);
-            var before = FormatExpressionBody(expr);
+            var expressionBody = indexer.ExpressionBody;
+            var accessor = CreateBlockAccessor(SyntaxKind.GetAccessorDeclaration, expressionBody, useReturn: true);
+            var before = FormatExpressionBody(expressionBody.Expression);
+            var accessorList = AttachSemicolonTrailingTrivia(
+                SyntaxFactory.AccessorList(SyntaxFactory.SingletonList(accessor)),
+                indexer.SemicolonToken);
             var converted = indexer
                 .WithExpressionBody(null)
                 .WithSemicolonToken(default)
-                .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.SingletonList(accessor)))
+                .WithAccessorList(accessorList)
                 .NormalizeWhitespace();
             return (converted, before, converted.AccessorList!.ToString().Trim());
         }
@@ -441,16 +768,57 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         return accessor
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
-            .WithBody(SyntaxFactory.Block(CreateStatement(accessor.ExpressionBody!.Expression, useReturn)));
+            .WithBody(CreateBlock(
+                CreateStatement(accessor.ExpressionBody!, useReturn),
+                accessor.SemicolonToken));
+    }
+
+    /// <summary>
+    /// Builds a block body and moves leading + trailing trivia from the removed
+    /// expression-body semicolon onto the closing brace so comments like
+    /// <c>=> 1; // explanation</c> and next-line <c>/* explanation */;</c>
+    /// survive conversion (including allFiles).
+    /// </summary>
+    private static BlockSyntax CreateBlock(StatementSyntax statement, SyntaxToken semicolonToken)
+    {
+        var block = SyntaxFactory.Block(statement);
+        return block.WithCloseBraceToken(
+            AttachSemicolonTrivia(block.CloseBraceToken, semicolonToken));
+    }
+
+    /// <summary>
+    /// Same semicolon-trivia transfer for expression-bodied properties/indexers
+    /// that become an accessor list instead of a method body.
+    /// </summary>
+    private static AccessorListSyntax AttachSemicolonTrailingTrivia(
+        AccessorListSyntax accessorList,
+        SyntaxToken semicolonToken)
+    {
+        return accessorList.WithCloseBraceToken(
+            AttachSemicolonTrivia(accessorList.CloseBraceToken, semicolonToken));
+    }
+
+    private static SyntaxToken AttachSemicolonTrivia(SyntaxToken closeBrace, SyntaxToken semicolonToken)
+    {
+        var leading = semicolonToken.LeadingTrivia;
+        var trailing = semicolonToken.TrailingTrivia;
+        if (leading.Count == 0 && trailing.Count == 0)
+            return closeBrace;
+
+        if (leading.Count > 0)
+            closeBrace = closeBrace.WithLeadingTrivia(closeBrace.LeadingTrivia.AddRange(leading));
+        if (trailing.Count > 0)
+            closeBrace = closeBrace.WithTrailingTrivia(closeBrace.TrailingTrivia.AddRange(trailing));
+        return closeBrace;
     }
 
     private static AccessorDeclarationSyntax CreateBlockAccessor(
         SyntaxKind kind,
-        ExpressionSyntax expression,
+        ArrowExpressionClauseSyntax expressionBody,
         bool useReturn)
     {
         return SyntaxFactory.AccessorDeclaration(kind)
-            .WithBody(SyntaxFactory.Block(CreateStatement(expression, useReturn)));
+            .WithBody(SyntaxFactory.Block(CreateStatement(expressionBody, useReturn)));
     }
 
     private static void EnsureExpressionBody(ArrowExpressionClauseSyntax? expressionBody, BlockSyntax? body, string memberKind)
@@ -470,10 +838,21 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             $"{memberKind} does not have an expression body.");
     }
 
+    /// <summary>
+    /// Builds the block statement and keeps non-whitespace trivia from the
+    /// removed <c>=&gt;</c> token (e.g. <c>=&gt; /* rationale */ 1</c>) on the
+    /// statement so comments survive conversion (including allFiles).
+    /// </summary>
+    private static StatementSyntax CreateStatement(ArrowExpressionClauseSyntax expressionBody, bool useReturn)
+    {
+        var statement = CreateStatement(expressionBody.Expression, useReturn);
+        return AttachArrowTrivia(statement, expressionBody.ArrowToken);
+    }
+
     private static StatementSyntax CreateStatement(ExpressionSyntax expression, bool useReturn)
     {
         if (expression is ThrowExpressionSyntax throwExpression)
-            return SyntaxFactory.ThrowStatement(throwExpression.Expression);
+            return CreateThrowStatement(throwExpression);
 
         if (useReturn)
             return SyntaxFactory.ReturnStatement(expression);
@@ -481,12 +860,213 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         return SyntaxFactory.ExpressionStatement(expression);
     }
 
-    private static bool IsNonReturning(TypeSyntax returnType, SyntaxTokenList modifiers) =>
-        IsVoidReturn(returnType) ||
-        (modifiers.Any(SyntaxKind.AsyncKeyword) && IsNonGenericTaskLike(returnType));
+    /// <summary>
+    /// Builds a throw statement and keeps trivia from the removed throw
+    /// expression keyword (e.g. <c>throw /* reason */ new Exception()</c>)
+    /// so comments survive conversion (including allFiles).
+    /// </summary>
+    private static ThrowStatementSyntax CreateThrowStatement(ThrowExpressionSyntax throwExpression)
+    {
+        var statement = SyntaxFactory.ThrowStatement(throwExpression.Expression);
+        var leading = NonWhitespaceTrivia(throwExpression.ThrowKeyword.LeadingTrivia).ToArray();
+        var trailing = NonWhitespaceTrivia(throwExpression.ThrowKeyword.TrailingTrivia).ToArray();
+        if (leading.Length == 0 && trailing.Length == 0)
+            return statement;
+
+        var keyword = statement.ThrowKeyword;
+        if (leading.Length > 0)
+            keyword = keyword.WithLeadingTrivia(
+                SyntaxFactory.TriviaList(leading).AddRange(keyword.LeadingTrivia));
+        if (trailing.Length > 0)
+            keyword = keyword.WithTrailingTrivia(
+                SyntaxFactory.TriviaList(trailing).AddRange(keyword.TrailingTrivia));
+        return statement.WithThrowKeyword(keyword);
+    }
+
+    private static StatementSyntax AttachArrowTrivia(StatementSyntax statement, SyntaxToken arrowToken)
+    {
+        var arrowTrivia = NonWhitespaceTrivia(arrowToken.LeadingTrivia)
+            .Concat(NonWhitespaceTrivia(arrowToken.TrailingTrivia))
+            .ToArray();
+        if (arrowTrivia.Length == 0)
+            return statement;
+
+        return statement.WithLeadingTrivia(
+            SyntaxFactory.TriviaList(arrowTrivia).AddRange(statement.GetLeadingTrivia()));
+    }
+
+    private static IEnumerable<SyntaxTrivia> NonWhitespaceTrivia(SyntaxTriviaList trivia) =>
+        trivia.Where(item => !item.IsKind(SyntaxKind.WhitespaceTrivia)
+            && !item.IsKind(SyntaxKind.EndOfLineTrivia));
+
+
+    /// <summary>
+    /// True when an expression-body arrow/semicolon boundary carries
+    /// preprocessor directives or disabled text (e.g. <c>#if DEBUG =&gt; 1;
+    /// #else =&gt; 2; #endif</c>). Converting only the active branch would leave
+    /// the inactive branch as disabled text after an unconditional block.
+    /// </summary>
+    private static void EnsureExpressionBodyHasNoPreprocessorBoundary(SyntaxNode member)
+    {
+        foreach (var (expressionBody, semicolon) in EnumerateExpressionBodyTargets(member))
+        {
+            if (ExpressionBodyBoundaryHasDirectives(expressionBody, semicolon))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CannotConvert,
+                    "Expression body is selected by preprocessor directives and cannot be safely converted to a block body.");
+            }
+        }
+    }
+
+    private static IEnumerable<(ArrowExpressionClauseSyntax ExpressionBody, SyntaxToken Semicolon)> EnumerateExpressionBodyTargets(
+        SyntaxNode member)
+    {
+        switch (member)
+        {
+            case MethodDeclarationSyntax method when method.ExpressionBody != null:
+                yield return (method.ExpressionBody, method.SemicolonToken);
+                yield break;
+            case LocalFunctionStatementSyntax local when local.ExpressionBody != null:
+                yield return (local.ExpressionBody, local.SemicolonToken);
+                yield break;
+            case OperatorDeclarationSyntax op when op.ExpressionBody != null:
+                yield return (op.ExpressionBody, op.SemicolonToken);
+                yield break;
+            case ConversionOperatorDeclarationSyntax conversion when conversion.ExpressionBody != null:
+                yield return (conversion.ExpressionBody, conversion.SemicolonToken);
+                yield break;
+            case ConstructorDeclarationSyntax constructor when constructor.ExpressionBody != null:
+                yield return (constructor.ExpressionBody, constructor.SemicolonToken);
+                yield break;
+            case DestructorDeclarationSyntax destructor when destructor.ExpressionBody != null:
+                yield return (destructor.ExpressionBody, destructor.SemicolonToken);
+                yield break;
+            case PropertyDeclarationSyntax property:
+                if (property.ExpressionBody != null)
+                {
+                    yield return (property.ExpressionBody, property.SemicolonToken);
+                    yield break;
+                }
+
+                if (property.AccessorList != null)
+                {
+                    foreach (var accessor in property.AccessorList.Accessors)
+                    {
+                        if (accessor.ExpressionBody != null)
+                            yield return (accessor.ExpressionBody, accessor.SemicolonToken);
+                    }
+                }
+
+                yield break;
+            case IndexerDeclarationSyntax indexer:
+                if (indexer.ExpressionBody != null)
+                {
+                    yield return (indexer.ExpressionBody, indexer.SemicolonToken);
+                    yield break;
+                }
+
+                if (indexer.AccessorList != null)
+                {
+                    foreach (var accessor in indexer.AccessorList.Accessors)
+                    {
+                        if (accessor.ExpressionBody != null)
+                            yield return (accessor.ExpressionBody, accessor.SemicolonToken);
+                    }
+                }
+
+                yield break;
+            case EventDeclarationSyntax @event when @event.AccessorList != null:
+                foreach (var accessor in @event.AccessorList.Accessors)
+                {
+                    if (accessor.ExpressionBody != null)
+                        yield return (accessor.ExpressionBody, accessor.SemicolonToken);
+                }
+
+                yield break;
+        }
+    }
+
+    private static bool ExpressionBodyBoundaryHasDirectives(
+        ArrowExpressionClauseSyntax expressionBody,
+        SyntaxToken semicolonToken)
+    {
+        return HasDirectiveOrDisabledText(expressionBody.GetLeadingTrivia())
+            || HasDirectiveOrDisabledText(expressionBody.ArrowToken.LeadingTrivia)
+            || HasDirectiveOrDisabledText(expressionBody.ArrowToken.TrailingTrivia)
+            || HasDirectiveOrDisabledText(expressionBody.Expression.GetLeadingTrivia())
+            || HasDirectiveOrDisabledText(expressionBody.Expression.GetTrailingTrivia())
+            || HasDirectiveOrDisabledText(semicolonToken.LeadingTrivia)
+            || HasDirectiveOrDisabledText(semicolonToken.TrailingTrivia);
+    }
+
+    private static bool HasDirectiveOrDisabledText(SyntaxTriviaList trivia) =>
+        trivia.Any(item => item.IsDirective || item.IsKind(SyntaxKind.DisabledTextTrivia));
+
+    /// <summary>
+    /// Async expression-bodied members whose semantic return type is not a
+    /// known BCL <c>Task</c>/<c>ValueTask</c> (generic or non-generic) cannot
+    /// be classified as expression-statement vs <c>return await</c> without
+    /// AsyncMethodBuilder <c>SetResult</c> inspection. Skip rather than emit an
+    /// unsafe <c>return await</c> for custom task-like returns, including
+    /// generic builders with parameterless <c>SetResult()</c> (Codex P2).
+    /// </summary>
+    private static void EnsureAsyncReturnTypeSafeToConvert(
+        SyntaxTokenList modifiers,
+        IMethodSymbol? symbol)
+    {
+        if (!modifiers.Any(SyntaxKind.AsyncKeyword))
+            return;
+        if (symbol is not { ReturnType.TypeKind: not TypeKind.Error })
+            return;
+        if (symbol.ReturnsVoid)
+            return;
+        if (IsBclTaskLikeSymbol(symbol.ReturnType))
+            return;
+
+        throw new RefactoringException(
+            ErrorCodes.CannotConvert,
+            "Async member with a custom task-like return type cannot be safely converted to a block body.");
+    }
+
+    private static bool IsBclTaskLikeSymbol(ITypeSymbol type)
+    {
+        if (type is not INamedTypeSymbol { Name: "Task" or "ValueTask" } named)
+            return false;
+        if (named.ContainingNamespace?.ToDisplayString() != "System.Threading.Tasks")
+            return false;
+        return !named.IsGenericType || named.TypeArguments.Length == 1;
+    }
+
+    private static bool IsNonReturning(
+        TypeSyntax returnType,
+        SyntaxTokenList modifiers,
+        IMethodSymbol? symbol = null)
+    {
+        if (symbol is { ReturnType.TypeKind: not TypeKind.Error })
+        {
+            if (symbol.ReturnsVoid)
+                return true;
+
+            return modifiers.Any(SyntaxKind.AsyncKeyword) &&
+                   IsNonGenericTaskLikeSymbol(symbol.ReturnType);
+        }
+
+        return IsVoidReturn(returnType) ||
+               (modifiers.Any(SyntaxKind.AsyncKeyword) && IsNonGenericTaskLike(returnType));
+    }
 
     private static bool IsVoidReturn(TypeSyntax returnType) =>
         returnType is PredefinedTypeSyntax predefined && predefined.Keyword.IsKind(SyntaxKind.VoidKeyword);
+
+    private static bool IsNonGenericTaskLikeSymbol(ITypeSymbol type)
+    {
+        if (type is INamedTypeSymbol { IsGenericType: true })
+            return false;
+
+        return type.Name is "Task" or "ValueTask" &&
+               type.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks";
+    }
 
     private static bool IsNonGenericTaskLike(TypeSyntax returnType) => returnType switch
     {
@@ -501,4 +1081,44 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
 
     private static string FormatExpressionBody(ExpressionSyntax expression) =>
         $"=> {expression.NormalizeWhitespace()};";
+
+    /// <summary>
+    /// Bottom-up allFiles rewriter: converts each eligible member after its
+    /// descendants, so nested conversions are not discarded by an ancestor
+    /// replacement.
+    /// </summary>
+    private sealed class ConvertToBlockBodyAllFilesRewriter : CSharpSyntaxRewriter
+    {
+        private readonly SemanticModel? _model;
+
+        public ConvertToBlockBodyAllFilesRewriter(SemanticModel? model)
+        {
+            _model = model;
+        }
+
+        public int ConvertedCount { get; private set; }
+
+        public override SyntaxNode? Visit(SyntaxNode? node)
+        {
+            // Capture symbols from the original tree before descendants rewrite
+            // replaces nodes; GetDeclaredSymbol cannot bind rewritten nodes.
+            IMethodSymbol? precomputedSymbol = node switch
+            {
+                MethodDeclarationSyntax method => _model?.GetDeclaredSymbol(method) as IMethodSymbol,
+                LocalFunctionStatementSyntax localFunction =>
+                    _model?.GetDeclaredSymbol(localFunction) as IMethodSymbol,
+                _ => null
+            };
+
+            var visited = base.Visit(node);
+            if (visited == null || !IsConvertibleKind(visited))
+                return visited;
+
+            if (!TryConvert(visited, out var converted, out _, out _, _model, precomputedSymbol))
+                return visited;
+
+            ConvertedCount++;
+            return converted;
+        }
+    }
 }

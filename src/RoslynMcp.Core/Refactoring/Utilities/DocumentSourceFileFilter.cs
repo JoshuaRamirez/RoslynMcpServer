@@ -6,14 +6,18 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// <summary>
 /// Shared source-file document filter used by Generate / Extract / Inline
 /// AllFiles paths that narrow candidate documents to a caller-supplied
-/// <c>sourceFile</c> (PathResolver normalize + OrdinalIgnoreCase match).
+/// <c>sourceFile</c> via <see cref="PathResolver.GetPathComparisonKey"/>
+/// compared with <see cref="StringComparison.OrdinalIgnoreCase"/>.
 /// </summary>
 internal static class DocumentSourceFileFilter
 {
     /// <summary>
-    /// Keeps documents whose normalized FilePath equals
-    /// the normalized <paramref name="sourceFile"/> (OrdinalIgnoreCase). When
-    /// <see cref="PathResolver.NormalizePath"/> throws ArgumentException,
+    /// Keeps documents whose physical/comparison path key equals the
+    /// <paramref name="sourceFile"/> key ignoring case. Comparison keys still
+    /// canonicalize casing on case-insensitive volumes (Codex P1); ignore-case
+    /// equality keeps advertised optional-<c>sourceFile</c> matching working on
+    /// case-sensitive volumes where a wrong-cased alias does not <c>File.Exists</c>.
+    /// When <see cref="PathResolver.NormalizePath"/> throws ArgumentException,
     /// NotSupportedException, or PathTooLongException for the requested path,
     /// the raw <paramref name="sourceFile"/> is used instead. Same body as the
     /// 9 MakeStatic / MakeNonStatic / GenerateOverrides / GenerateEqualsHashCode /
@@ -25,7 +29,7 @@ internal static class DocumentSourceFileFilter
         string wanted;
         try
         {
-            wanted = PathResolver.NormalizePath(sourceFile);
+            wanted = PathResolver.GetPathComparisonKey(sourceFile);
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
@@ -34,7 +38,7 @@ internal static class DocumentSourceFileFilter
 
         return documents
             .Where(d => string.Equals(
-                PathResolver.NormalizePath(d.FilePath!),
+                PathResolver.GetPathComparisonKey(d.FilePath!),
                 wanted,
                 StringComparison.OrdinalIgnoreCase))
             .ToList();
