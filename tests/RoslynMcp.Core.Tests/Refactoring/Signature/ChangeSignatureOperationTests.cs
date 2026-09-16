@@ -1833,6 +1833,159 @@ public class ChangeSignatureOperationTests
     }
 
 
+    [Fact]
+    public void RequestedTypesAndDefaultsBind_RejectsVoidParameterType()
+    {
+        const string source = """
+            namespace TestApp;
+            public class Sample { public void Process(int x) { } }
+            """;
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+            "Dbg",
+            new[] { tree },
+            new[]
+            {
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(Console).Assembly.Location)
+            });
+        var model = compilation.GetSemanticModel(tree);
+        var method = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+        var symbol = (IMethodSymbol)model.GetDeclaredSymbol(method)!;
+        var ok = ChangeSignatureOperation.RequestedTypesAndDefaultsBind(
+            model,
+            method,
+            symbol,
+            [
+                new ParameterChange { OriginalName = "x", Name = "x" },
+                new ParameterChange { Name = "value", Type = "void" }
+            ]);
+        Assert.False(ok);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsVoidParameterType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Sample
+            {
+                public void Process(int x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x" },
+                new ParameterChange { Name = "value", Type = "void" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsTypedDefaultIncompatibleWithParameter()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Sample
+            {
+                public void Process(int x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x", DefaultValue = "default(string)" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsNestedUnresolvedNameOfDefault()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Sample
+            {
+                public void Process(string x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x", DefaultValue = "\"prefix\" + nameof(MissingSymbol)" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_AcceptsConstantByteDefaultFromIntLiteral()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Sample
+            {
+                public void Process(byte x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x", DefaultValue = "1" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var normalized = updated.Replace(" ", "", StringComparison.Ordinal);
+        Assert.Contains("bytex=1", normalized, StringComparison.Ordinal);
+        Assert.NotEmpty(result.Changes!.FilesModified);
+    }
+
+
     #endregion
 
     #region Helpers

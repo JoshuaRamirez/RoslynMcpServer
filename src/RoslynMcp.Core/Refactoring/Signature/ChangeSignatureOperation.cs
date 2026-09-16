@@ -691,11 +691,23 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             if (!string.IsNullOrWhiteSpace(change.Type))
             {
                 var typeSyntax = SyntaxFactory.ParseTypeName(change.Type);
+                // Predefined `void` (and other illegal shapes) before speculative bind —
+                // some positions bind `void` oddly or not at all (Codex).
+                if (typeSyntax is PredefinedTypeSyntax { Keyword.RawKind: (int)SyntaxKind.VoidKeyword } ||
+                    typeSyntax.IsMissing ||
+                    typeSyntax.ContainsDiagnostics)
+                {
+                    return false;
+                }
+
                 var typeInfo = semanticModel.GetSpeculativeTypeInfo(
                     position,
                     typeSyntax,
                     SpeculativeBindingOption.BindAsTypeOrNamespace);
                 if (typeInfo.Type == null || typeInfo.Type is IErrorTypeSymbol)
+                    return false;
+                // void / static classes / unbound generics are not legal parameter types (Codex).
+                if (!IsLegalParameterType(typeInfo.Type))
                     return false;
                 resultingType = typeInfo.Type;
             }
@@ -758,6 +770,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             return false;
         }
 
+        // Target-typed `default` and typed `default(T)` both need an implicit
+        // conversion to the parameter type — `default(string)` must not land on
+        // int (Codex). ClassifyConversion on the expression also preserves
+        // constant numeric conversions (e.g. byte x = 1) (Codex).
         if (IsDefaultValueExpression(speculativeExpression))
         {
             var defaultConversion = speculativeModel.ClassifyConversion(speculativeExpression, parameterType);
@@ -826,36 +842,57 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         expression is DefaultExpressionSyntax;
 
     /// <summary>
-    /// Non-<c>nameof</c> defaults are fine; for <c>nameof(...)</c>, the argument
-    /// must bind as an expression or type (otherwise CS0103).
+    /// Every nested <c>nameof(...)</c> argument in <paramref name="expression"/>
+    /// must bind as an expression or type (otherwise CS0103) — including
+    /// <c>"prefix" + nameof(Missing)</c> (Codex).
     /// </summary>
     private static bool NameOfArgumentBinds(
         SemanticModel semanticModel,
         int position,
         ExpressionSyntax expression)
     {
-        if (expression is not InvocationExpressionSyntax
-            {
-                Expression: IdentifierNameSyntax { Identifier.Text: "nameof" },
-                ArgumentList.Arguments: { Count: 1 } arguments
-            })
+        foreach (var invocation in expression.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>())
         {
-            return true;
+            if (invocation.Expression is not IdentifierNameSyntax { Identifier.Text: "nameof" } ||
+                invocation.ArgumentList.Arguments.Count != 1)
+            {
+                continue;
+            }
+
+            var arg = invocation.ArgumentList.Arguments[0].Expression;
+            var symbolInfo = semanticModel.GetSpeculativeSymbolInfo(
+                position,
+                arg,
+                SpeculativeBindingOption.BindAsExpression);
+            if (symbolInfo.Symbol != null || !symbolInfo.CandidateSymbols.IsDefaultOrEmpty)
+                continue;
+
+            var typeInfo = semanticModel.GetSpeculativeTypeInfo(
+                position,
+                arg,
+                SpeculativeBindingOption.BindAsTypeOrNamespace);
+            if (typeInfo.Type == null || typeInfo.Type is IErrorTypeSymbol)
+                return false;
         }
 
-        var arg = arguments[0].Expression;
-        var symbolInfo = semanticModel.GetSpeculativeSymbolInfo(
-            position,
-            arg,
-            SpeculativeBindingOption.BindAsExpression);
-        if (symbolInfo.Symbol != null || !symbolInfo.CandidateSymbols.IsDefaultOrEmpty)
-            return true;
+        return true;
+    }
 
-        var typeInfo = semanticModel.GetSpeculativeTypeInfo(
-            position,
-            arg,
-            SpeculativeBindingOption.BindAsTypeOrNamespace);
-        return typeInfo.Type != null && typeInfo.Type is not IErrorTypeSymbol;
+    /// <summary>
+    /// True when <paramref name="type"/> is legal as a C# method parameter type
+    /// (rejects <c>void</c>, static classes, unbound generic types) (Codex).
+    /// </summary>
+    private static bool IsLegalParameterType(ITypeSymbol type)
+    {
+        if (type.SpecialType == SpecialType.System_Void)
+            return false;
+        if (type.TypeKind == TypeKind.Error)
+            return false;
+        if (type is INamedTypeSymbol { IsUnboundGenericType: true })
+            return false;
+        if (type.TypeKind == TypeKind.Class && type.IsStatic)
+            return false;
+        return true;
     }
 
     private async Task<Solution?> TryChangeOneAsync(
