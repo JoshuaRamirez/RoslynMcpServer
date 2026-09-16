@@ -140,6 +140,45 @@ public class ConvertToBlockBodyOperationTests
     }
 
     [Fact]
+    public void Validate_AllFilesTrue_WithRelativeSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToBlockBodyOperation.Validate(new ConvertToBlockBodyParams
+            {
+                AllFiles = true,
+                SourceFile = "Types.cs"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithNonCSharpSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToBlockBodyOperation.Validate(new ConvertToBlockBodyParams
+            {
+                AllFiles = true,
+                SourceFile = "/tmp/Types.txt"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMissingSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToBlockBodyOperation.Validate(new ConvertToBlockBodyParams
+            {
+                AllFiles = true,
+                SourceFile = AbsoluteTestPath()
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
     public void Validate_AllFilesTrue_WithMemberName_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -1342,4 +1381,3 @@ public class ConvertToBlockBodyOperationTests
 
     #endregion
 }
-

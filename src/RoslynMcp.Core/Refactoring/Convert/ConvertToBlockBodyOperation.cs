@@ -43,17 +43,19 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
                     "allFiles cannot be combined with memberName, line, or column.");
             }
 
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile) && !File.Exists(@params.SourceFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+
             return;
         }
 
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        ValidateSourceFilePath(@params.SourceFile);
 
         if (!@params.Line.HasValue && string.IsNullOrWhiteSpace(@params.MemberName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Either memberName or line must be provided.");
@@ -66,6 +68,15 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+    }
+
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
     }
 
     /// <inheritdoc />
