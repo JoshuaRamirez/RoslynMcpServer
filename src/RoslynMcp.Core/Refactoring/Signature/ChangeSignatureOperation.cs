@@ -193,7 +193,8 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             methodSymbol,
             newParameters,
             @params.Parameters,
-            cancellationToken);
+            cancellationToken,
+            callSites);
 
         // Commit changes
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
@@ -530,6 +531,9 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 continue;
             if (existing.RefKind != RefKind.None || existing.IsParams)
                 return false;
+            // CreateParameterSyntax drops attribute lists (CallerMemberName, etc.).
+            if (existing.GetAttributes().Length > 0)
+                return false;
         }
 
         return true;
@@ -765,11 +769,14 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         IMethodSymbol methodSymbol,
         List<NewParameter> newParameters,
         IReadOnlyList<ParameterChange> changes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<CallSite>? precollectedCallSites = null)
     {
         // Collect call sites against the pre-rewrite solution / symbols so
         // spans stay valid, including linked sibling compilations (Codex).
-        var callSites = await CollectCallSitesAsync(
+        // Reuse a precollected list from the single-site path to avoid a second
+        // solution-wide FindReferences (Copilot).
+        var callSites = precollectedCallSites ?? await CollectCallSitesAsync(
             document,
             methodDecl,
             methodSymbol,
@@ -798,21 +805,11 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 declaringInvocations.Add(invocation);
         }
 
-        // Invocation replacements only — the method node is composed from the
-        // already-rewritten descendant tree so recursive self-calls keep the
-        // updated argument list (Codex).
-        var invocationReplacements = new Dictionary<InvocationExpressionSyntax, InvocationExpressionSyntax>();
-        foreach (var invocation in declaringInvocations.Distinct())
-        {
-            invocationReplacements[invocation] = UpdateInvocation(
-                invocation,
-                originalParams,
-                newParameters,
-                changes);
-        }
-
+        // Compose method + invocations from the already-rewritten descendant
+        // tree so recursive and nested calls (M(M(1))) keep updated args (Codex).
+        var invocationKeys = declaringInvocations.Distinct().Cast<SyntaxNode>().ToList();
         var nodesToReplace = new List<SyntaxNode> { methodDecl };
-        nodesToReplace.AddRange(invocationReplacements.Keys);
+        nodesToReplace.AddRange(invocationKeys);
 
         var newRoot = root.ReplaceNodes(
             nodesToReplace,
@@ -820,46 +817,53 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             {
                 if (original == methodDecl)
                 {
-                    // rewritten already includes in-body invocation updates.
                     return ((MethodDeclarationSyntax)rewritten).WithParameterList(newParamList);
                 }
 
-                return invocationReplacements[(InvocationExpressionSyntax)original];
+                return UpdateInvocation(
+                    (InvocationExpressionSyntax)rewritten,
+                    originalParams,
+                    newParameters,
+                    changes);
             });
         var newSolution = document.WithSyntaxRoot(newRoot).Project.Solution;
 
         // Other documents: one ReplaceNodes pass per document (spans still
-        // valid against the pre-rewrite solution for those files).
+        // valid against the pre-rewrite solution for those files). Compose from
+        // rewritten descendants so nested same-target calls survive (Codex).
         foreach (var group in otherCallSites.GroupBy(c => c.DocumentId))
         {
             var callDoc = newSolution.GetDocument(group.Key);
-            if (callDoc == null)
+            if (callDoc == null ||
+                callDoc is SourceGeneratedDocument ||
+                !DocumentEditableHelpers.IsDocumentEditable(callDoc, Context.Workspace))
+            {
                 continue;
+            }
 
             var callRoot = await callDoc.GetSyntaxRootAsync(cancellationToken);
             if (callRoot == null)
                 continue;
 
-            var replacements = new Dictionary<InvocationExpressionSyntax, InvocationExpressionSyntax>();
+            var keys = new List<InvocationExpressionSyntax>();
             foreach (var site in group.OrderByDescending(c => c.Span.Start))
             {
                 var invocation = RematchInvocation(callRoot, site.Span);
-                if (invocation == null || replacements.ContainsKey(invocation))
+                if (invocation == null || keys.Contains(invocation))
                     continue;
-
-                replacements[invocation] = UpdateInvocation(
-                    invocation,
-                    originalParams,
-                    newParameters,
-                    changes);
+                keys.Add(invocation);
             }
 
-            if (replacements.Count == 0)
+            if (keys.Count == 0)
                 continue;
 
             var newCallRoot = callRoot.ReplaceNodes(
-                replacements.Keys,
-                (original, _) => replacements[original]);
+                keys,
+                (original, rewritten) => UpdateInvocation(
+                    (InvocationExpressionSyntax)rewritten,
+                    originalParams,
+                    newParameters,
+                    changes));
             newSolution = callDoc.WithSyntaxRoot(newCallRoot).Project.Solution;
         }
 
@@ -974,9 +978,17 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                     continue;
 
                 var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
-                var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-                if (invocation == null)
+                if (SignatureReferenceHelpers.IsNameOfArgument(node))
                     continue;
+
+                var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
+                // Method-group / nested refs under an unrelated invocation are not
+                // call sites of this method (AddParameter / Copilot).
+                if (invocation == null ||
+                    !SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
+                {
+                    continue;
+                }
 
                 var key = (document.Id, invocation.Span.Start, invocation.Span.End);
                 if (!seen.Add(key))
