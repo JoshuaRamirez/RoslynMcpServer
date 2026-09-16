@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -60,6 +61,11 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                     "allFiles cannot be combined with methodName, line, or column.");
             }
 
+            // Optional sourceFile still must be an absolute .cs path when set
+            // (ConvertToBlockBody allFiles / Copilot).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -69,13 +75,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (string.IsNullOrWhiteSpace(@params.MethodName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
 
-        var sourceFile = @params.SourceFile!;
-
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        ValidateSourceFilePath(@params.SourceFile!);
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
@@ -83,8 +83,17 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!File.Exists(sourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {sourceFile}");
+        if (!File.Exists(@params.SourceFile!))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+    }
+
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
     }
 
     /// <inheritdoc />
@@ -160,16 +169,14 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         // Build new parameter list
         var newParameters = BuildNewParameterList(methodSymbol.Parameters.ToList(), @params.Parameters);
 
-        // Find all call sites
-        var references = await SymbolFinder.FindReferencesAsync(
+        // Collect call sites against the pre-rewrite solution, including linked
+        // sibling compilations (IntroduceParameter / Copilot).
+        var callSites = await CollectCallSitesAsync(
+            document,
+            methodDecl,
             methodSymbol,
             Context.Solution,
             cancellationToken);
-
-        var callSites = references
-            .SelectMany(r => r.Locations)
-            .Where(loc => loc.Document.Id != document.Id || !loc.Location.SourceSpan.IntersectsWith(methodDecl.Span))
-            .ToList();
 
         // If preview mode, return without applying
         if (@params.Preview)
@@ -625,49 +632,254 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         IReadOnlyList<ParameterChange> changes,
         CancellationToken cancellationToken)
     {
-        var references = await SymbolFinder.FindReferencesAsync(
+        // Collect call sites against the pre-rewrite solution / symbols so
+        // spans stay valid, including linked sibling compilations (Codex).
+        var callSites = await CollectCallSitesAsync(
+            document,
+            methodDecl,
             methodSymbol,
             document.Project.Solution,
             cancellationToken);
 
-        var callSites = references
-            .SelectMany(r => r.Locations)
-            .Where(loc => loc.Document.Id != document.Id || !loc.Location.SourceSpan.IntersectsWith(methodDecl.Span))
-            .ToList();
-
+        var originalParams = methodSymbol.Parameters.ToList();
         var newParamSyntax = newParameters.Select(CreateParameterSyntax);
         var newParamList = SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(newParamSyntax));
         var newMethodDecl = methodDecl.WithParameterList(newParamList);
 
-        var newRoot = root.ReplaceNode(methodDecl, newMethodDecl);
+        // Resolve same-file invocations from the original root so multiple
+        // call sites rewrite with the declaration in one ReplaceNodes pass —
+        // post-edit spans would otherwise shift (IntroduceParameter / Copilot).
+        var declaringInvocations = new List<InvocationExpressionSyntax>();
+        var otherCallSites = new List<CallSite>();
+        foreach (var site in callSites)
+        {
+            if (site.DocumentId != document.Id)
+            {
+                otherCallSites.Add(site);
+                continue;
+            }
+
+            var invocation = RematchInvocation(root, site.Span);
+            if (invocation != null)
+                declaringInvocations.Add(invocation);
+        }
+
+        var declaringReplacements = new Dictionary<SyntaxNode, SyntaxNode>
+        {
+            [methodDecl] = newMethodDecl
+        };
+        foreach (var invocation in declaringInvocations.Distinct())
+        {
+            declaringReplacements[invocation] = UpdateInvocation(
+                invocation,
+                originalParams,
+                newParameters,
+                changes);
+        }
+
+        var newRoot = root.ReplaceNodes(
+            declaringReplacements.Keys,
+            (original, _) => declaringReplacements[original]);
         var newSolution = document.WithSyntaxRoot(newRoot).Project.Solution;
 
-        foreach (var callSite in callSites)
+        // Other documents: one ReplaceNodes pass per document (spans still
+        // valid against the pre-rewrite solution for those files).
+        foreach (var group in otherCallSites.GroupBy(c => c.DocumentId))
         {
-            var callDoc = newSolution.GetDocument(callSite.Document.Id);
-            if (callDoc == null) continue;
+            var callDoc = newSolution.GetDocument(group.Key);
+            if (callDoc == null)
+                continue;
 
             var callRoot = await callDoc.GetSyntaxRootAsync(cancellationToken);
-            if (callRoot == null) continue;
+            if (callRoot == null)
+                continue;
 
-            var callNode = callRoot.FindNode(callSite.Location.SourceSpan);
-            var invocation = callNode.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-
-            if (invocation != null)
+            var replacements = new Dictionary<InvocationExpressionSyntax, InvocationExpressionSyntax>();
+            foreach (var site in group.OrderByDescending(c => c.Span.Start))
             {
-                var newInvocation = UpdateInvocation(
+                var invocation = RematchInvocation(callRoot, site.Span);
+                if (invocation == null || replacements.ContainsKey(invocation))
+                    continue;
+
+                replacements[invocation] = UpdateInvocation(
                     invocation,
-                    methodSymbol.Parameters.ToList(),
+                    originalParams,
                     newParameters,
                     changes);
-
-                var newCallRoot = callRoot.ReplaceNode(invocation, newInvocation);
-                newSolution = callDoc.WithSyntaxRoot(newCallRoot).Project.Solution;
             }
+
+            if (replacements.Count == 0)
+                continue;
+
+            var newCallRoot = callRoot.ReplaceNodes(
+                replacements.Keys,
+                (original, _) => replacements[original]);
+            newSolution = callDoc.WithSyntaxRoot(newCallRoot).Project.Solution;
         }
 
         return newSolution;
     }
+
+    private static async Task<IReadOnlyList<CallSite>> CollectCallSitesAsync(
+        Document declaringDocument,
+        MethodDeclarationSyntax methodSyntax,
+        IMethodSymbol methodSymbol,
+        Solution solution,
+        CancellationToken cancellationToken)
+    {
+        var callSites = new List<CallSite>();
+        var seen = new HashSet<(DocumentId Id, int SpanStart, int SpanEnd)>();
+        var declaringPathKey = declaringDocument.FilePath != null
+            ? PathResolver.GetPathComparisonKey(declaringDocument.FilePath)
+            : null;
+
+        await CollectCallSitesForSymbolAsync(
+            methodSymbol,
+            declaringDocument,
+            declaringDocument,
+            declaringPathKey,
+            solution,
+            callSites,
+            seen,
+            cancellationToken);
+
+        // Linked sibling DocumentIds bind a distinct IMethodSymbol for the same
+        // physical declaration. SymbolFinder on the primary symbol misses callers
+        // that bind only under those sibling compilations.
+        if (declaringPathKey != null)
+        {
+            foreach (var project in solution.Projects)
+            {
+                foreach (var siblingDoc in project.Documents)
+                {
+                    if (siblingDoc.Id == declaringDocument.Id || siblingDoc.FilePath == null)
+                        continue;
+                    if (PathResolver.GetPathComparisonKey(siblingDoc.FilePath) != declaringPathKey)
+                        continue;
+
+                    var siblingRoot = await siblingDoc.GetSyntaxRootAsync(cancellationToken);
+                    var siblingModel = await siblingDoc.GetSemanticModelAsync(cancellationToken);
+                    if (siblingRoot == null || siblingModel == null)
+                        continue;
+
+                    var rematched = RematchMethod(siblingRoot, methodSyntax);
+                    if (rematched == null)
+                        continue;
+
+                    var siblingSymbol = siblingModel.GetDeclaredSymbol(rematched, cancellationToken) as IMethodSymbol;
+                    if (siblingSymbol == null)
+                        continue;
+
+                    await CollectCallSitesForSymbolAsync(
+                        siblingSymbol,
+                        siblingDoc,
+                        declaringDocument,
+                        declaringPathKey,
+                        solution,
+                        callSites,
+                        seen,
+                        cancellationToken);
+                }
+            }
+        }
+
+        return callSites;
+    }
+
+    private static async Task CollectCallSitesForSymbolAsync(
+        IMethodSymbol methodSymbol,
+        Document symbolDeclaringDocument,
+        Document primaryDeclaringDocument,
+        string? declaringPathKey,
+        Solution solution,
+        List<CallSite> callSites,
+        HashSet<(DocumentId Id, int SpanStart, int SpanEnd)> seen,
+        CancellationToken cancellationToken)
+    {
+        var references = await SymbolFinder.FindReferencesAsync(
+            methodSymbol, solution, cancellationToken);
+
+        foreach (var referencedSymbol in references)
+        {
+            foreach (var location in referencedSymbol.Locations)
+            {
+                if (location.Location.Kind != LocationKind.SourceFile)
+                    continue;
+
+                var document = solution.GetDocument(location.Document.Id) ?? location.Document;
+
+                // Linked sibling DocumentIds share the physical path but belong
+                // to another compilation. In-file call sites are rewritten only
+                // via the primary declaring DocumentId; sibling compilations are
+                // consulted for callers in other files.
+                if (document.FilePath != null &&
+                    declaringPathKey != null &&
+                    PathResolver.GetPathComparisonKey(document.FilePath) == declaringPathKey)
+                {
+                    if (symbolDeclaringDocument.Id != primaryDeclaringDocument.Id ||
+                        document.Id != primaryDeclaringDocument.Id)
+                    {
+                        continue;
+                    }
+                }
+
+                var root = await document.GetSyntaxRootAsync(cancellationToken);
+                if (root == null)
+                    continue;
+
+                var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
+                var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
+                if (invocation == null)
+                    continue;
+
+                var key = (document.Id, invocation.Span.Start, invocation.Span.End);
+                if (!seen.Add(key))
+                    continue;
+
+                callSites.Add(new CallSite(document.Id, invocation.Span));
+            }
+        }
+    }
+
+    private static MethodDeclarationSyntax? RematchMethod(SyntaxNode root, MethodDeclarationSyntax original)
+    {
+        var candidates = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == original.Identifier.Text)
+            .ToList();
+        if (candidates.Count == 0)
+            return null;
+        if (candidates.Count == 1)
+            return candidates[0];
+
+        return candidates
+            .OrderBy(m => Math.Abs(m.SpanStart - original.SpanStart))
+            .ThenBy(m => m.Span.Length)
+            .FirstOrDefault();
+    }
+
+    private static InvocationExpressionSyntax? RematchInvocation(SyntaxNode root, TextSpan span)
+    {
+        if (span.Start < 0 || span.End > root.FullSpan.End)
+        {
+            return root.DescendantNodes()
+                .OfType<InvocationExpressionSyntax>()
+                .OrderBy(i => Math.Abs(i.SpanStart - span.Start))
+                .ThenBy(i => i.Span.Length)
+                .FirstOrDefault();
+        }
+
+        var node = root.FindNode(span, getInnermostNodeForTie: true);
+        return node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault()
+            ?? root.DescendantNodes()
+                .OfType<InvocationExpressionSyntax>()
+                .Where(i => i.Span.OverlapsWith(span) || span.OverlapsWith(i.Span))
+                .OrderBy(i => Math.Abs(i.SpanStart - span.Start))
+                .ThenBy(i => i.Span.Length)
+                .FirstOrDefault();
+    }
+
+    private readonly record struct CallSite(DocumentId DocumentId, TextSpan Span);
 
     /// <summary>
     /// Finds a method. Omitted <paramref name="column"/> keeps today's
