@@ -2271,6 +2271,62 @@ public class ChangeSignatureOperationTests
     }
 
 
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_NamesSubsequentArgsAfterOmittingInsertedOptional()
+    {
+        const string source = """
+            namespace TestApp;
+            public class Sample
+            {
+                public void Process(int x = 0) { }
+                public void Call() => Process(5);
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { Name = "y", Type = "int", DefaultValue = "2", NewPosition = 0 },
+                new ParameterChange { OriginalName = "x", Name = "x", DefaultValue = "0", NewPosition = 1 }
+            ]
+        });
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        var normalized = updated.Replace(" ", "", StringComparison.Ordinal);
+        Assert.Contains("Process(x:5)", normalized, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsProtectedMethodWithInternalParameterType()
+    {
+        const string source = """
+            namespace TestApp;
+            internal class Hidden { }
+            public class Sample
+            {
+                protected void Process(string x) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x", Type = "Hidden" }
+            ]
+        });
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+
     #endregion
 
     #region Helpers

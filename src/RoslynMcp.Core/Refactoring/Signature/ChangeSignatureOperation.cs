@@ -665,6 +665,14 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             var collision = true;
             for (var i = 0; i < newParameters.Count; i++)
             {
+                // Bulk CreateParameterSyntax emits RefKind.None; a sibling with
+                // ref/in/out of the same type remains a distinct overload (Codex).
+                if (sibling.Parameters[i].RefKind != RefKind.None)
+                {
+                    collision = false;
+                    break;
+                }
+
                 if (!TypeEquivalenceHelpers.TypesEquivalent(sibling.Parameters[i].Type, boundTypes[i]!))
                 {
                     collision = false;
@@ -1038,27 +1046,29 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// </summary>
     private static bool IsParameterTypeAccessibleFrom(ITypeSymbol type, IMethodSymbol method)
     {
-        var methodRank = AccessibilityRankHelpers.AccessibilityRank(
-            ContextValidTypeHelpers.GetEffectiveAccessibility(method));
-        return IsTypeAtLeastAsAccessibleAs(type, methodRank);
+        var methodAccess = ContextValidTypeHelpers.GetEffectiveAccessibility(method);
+        return IsTypeAccessibleInMemberDomain(type, methodAccess);
     }
 
-    private static bool IsTypeAtLeastAsAccessibleAs(ITypeSymbol type, int methodRank)
+    /// <summary>
+    /// CS0051 accessibility domains are not a total order (e.g. internal is not
+    /// valid on a protected member). Compare domains explicitly (Codex).
+    /// </summary>
+    private static bool IsTypeAccessibleInMemberDomain(ITypeSymbol type, Accessibility memberAccess)
     {
         switch (type)
         {
             case IArrayTypeSymbol array:
-                return IsTypeAtLeastAsAccessibleAs(array.ElementType, methodRank);
+                return IsTypeAccessibleInMemberDomain(array.ElementType, memberAccess);
             case IPointerTypeSymbol pointer:
-                return IsTypeAtLeastAsAccessibleAs(pointer.PointedAtType, methodRank);
+                return IsTypeAccessibleInMemberDomain(pointer.PointedAtType, memberAccess);
             case INamedTypeSymbol named:
-                var typeRank = AccessibilityRankHelpers.AccessibilityRank(
-                    ContextValidTypeHelpers.GetEffectiveAccessibility(named));
-                if (typeRank < methodRank)
+                var typeAccess = ContextValidTypeHelpers.GetEffectiveAccessibility(named);
+                if (!IsAccessibilityValidForMember(typeAccess, memberAccess))
                     return false;
                 foreach (var argument in named.TypeArguments)
                 {
-                    if (!IsTypeAtLeastAsAccessibleAs(argument, methodRank))
+                    if (!IsTypeAccessibleInMemberDomain(argument, memberAccess))
                         return false;
                 }
 
@@ -1067,6 +1077,23 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 return true;
         }
     }
+
+    private static bool IsAccessibilityValidForMember(Accessibility typeAccess, Accessibility memberAccess) =>
+        memberAccess switch
+        {
+            Accessibility.Public => typeAccess == Accessibility.Public,
+            Accessibility.Protected => typeAccess is Accessibility.Public or Accessibility.Protected,
+            Accessibility.Internal => typeAccess is Accessibility.Public or Accessibility.Internal,
+            Accessibility.ProtectedOrInternal =>
+                typeAccess is Accessibility.Public or Accessibility.ProtectedOrInternal,
+            Accessibility.ProtectedAndInternal =>
+                typeAccess is Accessibility.Public
+                    or Accessibility.ProtectedAndInternal
+                    or Accessibility.Protected
+                    or Accessibility.Internal,
+            Accessibility.Private => true,
+            _ => typeAccess == Accessibility.Public
+        };
 
 
     /// <summary>
@@ -1728,28 +1755,44 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             argMap[paramName] = arg;
         }
 
+        // After omitting an inserted optional, later retained positional args
+        // must be named so they stay bound to their original parameters (Codex).
+        var requireNamedSubsequentArgs = false;
         foreach (var newParam in newParams)
         {
             if (newParam.OriginalName != null && argMap.TryGetValue(newParam.OriginalName, out var existingArg))
             {
-                // Rename the argument if needed
                 if (newParam.Name != newParam.OriginalName && existingArg.NameColon != null)
                 {
                     existingArg = existingArg.WithNameColon(
                         SyntaxFactory.NameColon(newParam.Name));
                 }
+                else if (requireNamedSubsequentArgs && existingArg.NameColon == null)
+                {
+                    existingArg = existingArg.WithNameColon(
+                        SyntaxFactory.NameColon(SyntaxFactory.IdentifierName(newParam.Name)));
+                }
+
                 newArgs.Add(existingArg);
             }
             else if (!string.IsNullOrEmpty(newParam.DefaultValue))
             {
                 // Omit optional defaults at call sites (Codex / foreign context).
+                requireNamedSubsequentArgs = true;
                 continue;
             }
             else
             {
                 // New parameter without default - add placeholder
-                newArgs.Add(SyntaxFactory.Argument(
-                    SyntaxFactory.ParseExpression($"default /* TODO: {newParam.Name} */")));
+                var placeholder = SyntaxFactory.Argument(
+                    SyntaxFactory.ParseExpression($"default /* TODO: {newParam.Name} */"));
+                if (requireNamedSubsequentArgs)
+                {
+                    placeholder = placeholder.WithNameColon(
+                        SyntaxFactory.NameColon(SyntaxFactory.IdentifierName(newParam.Name)));
+                }
+
+                newArgs.Add(placeholder);
             }
         }
 
