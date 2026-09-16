@@ -2610,6 +2610,52 @@ public class GeneratePropertyOperationTests
         Assert.Equal(2, result.Changes!.FilesModified.Count);
     }
 
+    [SkippableFact]
+    public async Task GenerateProperty_AllFilesTrue_FieldName_WrapsOnlyTypesWithField()
+    {
+        const string withField = """
+            namespace TestApp;
+
+            public class HasField
+            {
+                private string _name;
+            }
+            """;
+        const string withoutField = """
+            namespace TestApp;
+
+            public class NoField
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("HasField.cs", withField),
+            ("NoField.cs", withoutField));
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var pathHas = workspace.PathFor("HasField.cs");
+        var pathNo = workspace.PathFor("NoField.cs");
+        var beforeNo = await File.ReadAllTextAsync(pathNo);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            AllFiles = true,
+            FieldName = "_name"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedHas = NormalizeNewlines(await File.ReadAllTextAsync(pathHas));
+        Assert.Contains("private string _name;", updatedHas, StringComparison.Ordinal);
+        Assert.Contains("public string Name", updatedHas, StringComparison.Ordinal);
+        Assert.Contains("get => _name;", updatedHas, StringComparison.Ordinal);
+        Assert.Contains("set => _name = value;", updatedHas, StringComparison.Ordinal);
+        Assert.Equal(beforeNo, await File.ReadAllTextAsync(pathNo));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, pathHas));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, pathNo));
+    }
+
     #endregion
 
     #region Helpers
