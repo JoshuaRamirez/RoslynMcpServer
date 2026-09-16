@@ -9,13 +9,17 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Inline;
 
 /// <summary>
-/// Inlines a method by replacing call sites with the method body and optionally removing the method.
+/// Inlines a method by replacing call sites with the method body and optionally
+/// removing the method. Optional <c>allFiles</c> walks every C# document (or the
+/// optional single <c>sourceFile</c>) and inlines every eligible method, skipping
+/// ineligible methods rather than throwing.
 /// </summary>
 public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMethodParams>
 {
@@ -41,23 +45,41 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
     /// </summary>
     internal static void Validate(InlineMethodParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.MethodName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue ||
+                @params.CallSiteLocation != null)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with methodName, line, column, or callSiteLocation.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (string.IsNullOrWhiteSpace(@params.MethodName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
+        var sourceFile = @params.SourceFile!;
+        var methodName = @params.MethodName!;
+
+        if (!PathResolver.IsAbsolutePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
 
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+        if (!File.Exists(sourceFile))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {sourceFile}");
 
-        if (!IdentifierPattern.IsMatch(@params.MethodName))
-            throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"'{@params.MethodName}' is not a valid method name.");
+        if (!IdentifierPattern.IsMatch(methodName))
+            throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"'{methodName}' is not a valid method name.");
 
         if (@params.Line.HasValue && @params.Line < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
@@ -90,7 +112,13 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         InlineMethodParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var sourceFile = @params.SourceFile!;
+        var methodName = @params.MethodName!;
+
+        var document = GetDocumentOrThrow(sourceFile);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -110,7 +138,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         {
             throw new RefactoringException(
                 ErrorCodes.NoCallSitesFound,
-                $"No call sites found for method '{@params.MethodName}'.");
+                $"No call sites found for method '{methodName}'.");
         }
 
         await ValidateCallSitesAsync(methodSyntax, methodSymbol, callSites, cancellationToken);
@@ -148,7 +176,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.MethodName,
+                Name = methodName,
                 FullyQualifiedName = methodSymbol.ToDisplayString(),
                 Kind = Contracts.Enums.SymbolKind.Method
             },
@@ -156,18 +184,356 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
             0);
     }
 
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>InlineConstantOperation.ExecuteAllFilesAsync</c>
+    /// / <c>InlineVariableOperation.ExecuteAllFilesAsync</c>) and inlines
+    /// every eligible <see cref="MethodDeclarationSyntax"/>. Optional
+    /// <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
+    /// Linked documents that share a physical path are rewritten once and the
+    /// same text is applied to every sibling <see cref="DocumentId"/>
+    /// (<see cref="PathResolver.GetPathComparisonKey"/>). Ineligible methods
+    /// (no body, virtual/override/abstract, interface impl, recursive,
+    /// unsupported control flow, no call sites, method-group / foreign-receiver
+    /// / side-effect call sites, uneditable / source-generated docs) are
+    /// skipped rather than failing the walk. Deterministic <c>SpanStart</c>
+    /// order within a file. When every file is a no-op, succeeds with empty
+    /// changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        InlineMethodParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        // One physical path may appear as multiple Documents when linked into
+        // several projects. Discover methods once per normalized path.
+        var documentGroups = allDocuments
+            .GroupBy(d => PathResolver.GetPathComparisonKey(d.FilePath!), StringComparer.Ordinal)
+            .Select(group => group
+                .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+                .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
+                .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
+                .ToList())
+            .OrderBy(group => group[0].FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var inlinedCountByDoc = new Dictionary<DocumentId, int>();
+        var processedMethods = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var primary = linkedDocuments.FirstOrDefault(d =>
+                d is not SourceGeneratedDocument &&
+                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+            if (primary == null)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(primary.Id);
+                if (currentDocument == null ||
+                    currentDocument is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                {
+                    break;
+                }
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var methodSyntax in CollectMethodDeclarations(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var methodSymbol = semanticModel.GetDeclaredSymbol(methodSyntax, cancellationToken) as IMethodSymbol;
+                    if (methodSymbol == null || !processedMethods.Add(methodSymbol.OriginalDefinition))
+                        continue;
+
+                    try
+                    {
+                        updated = await TryInlineOneAsync(
+                            currentDocument,
+                            methodSyntax,
+                            methodSymbol,
+                            @params.RemoveMethod,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        // Skip ineligible methods rather than failing the walk.
+                        updated = null;
+                    }
+
+                    if (updated != null)
+                        break;
+                }
+
+                if (updated == null)
+                    break;
+
+                // Coalesce linked siblings for every physical path whose text
+                // changed in this rewrite (declaring file and any call-site files).
+                // Prefer a DocumentId that actually changed so an unchanged
+                // sorted-first sibling cannot overwrite the rewrite (Codex/Copilot).
+                var beforeSolution = currentSolution;
+                currentSolution = updated;
+                var changedDocIds = new HashSet<DocumentId>();
+                var changedPathKeys = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var projectChanges in updated.GetChanges(beforeSolution).GetProjectChanges())
+                {
+                    foreach (var docId in projectChanges.GetChangedDocuments())
+                    {
+                        changedDocIds.Add(docId);
+                        var changedDoc = updated.GetDocument(docId);
+                        if (changedDoc?.FilePath != null)
+                            changedPathKeys.Add(PathResolver.GetPathComparisonKey(changedDoc.FilePath));
+                    }
+                }
+
+                if (changedPathKeys.Count > 0)
+                {
+                    var allCurrent = currentSolution.Projects
+                        .SelectMany(p => p.Documents)
+                        .Where(d => d.FilePath != null)
+                        .ToList();
+
+                    foreach (var pathKey in changedPathKeys)
+                    {
+                        var siblings = allCurrent
+                            .Where(d => PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+                            .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
+                            .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
+                            .ToList();
+                        if (siblings.Count <= 1)
+                            continue;
+
+                        var sourceDoc = siblings.FirstOrDefault(d =>
+                                changedDocIds.Contains(d.Id) &&
+                                d is not SourceGeneratedDocument &&
+                                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace))
+                            ?? siblings.FirstOrDefault(d =>
+                                d is not SourceGeneratedDocument &&
+                                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+                        if (sourceDoc == null)
+                            continue;
+
+                        var live = currentSolution.GetDocument(sourceDoc.Id);
+                        if (live == null)
+                            continue;
+                        var sharedText = await live.GetTextAsync(cancellationToken);
+
+                        foreach (var sibling in siblings)
+                        {
+                            if (sibling.Id == sourceDoc.Id)
+                                continue;
+                            var siblingLive = currentSolution.GetDocument(sibling.Id);
+                            if (siblingLive == null || siblingLive is SourceGeneratedDocument)
+                                continue;
+                            if (!DocumentEditableHelpers.IsDocumentEditable(siblingLive, Context.Workspace))
+                                continue;
+                            currentSolution = currentSolution.WithDocumentText(sibling.Id, sharedText);
+                        }
+                    }
+                }
+
+                inlinedCountByDoc[primary.Id] =
+                    inlinedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var inlinedCount = inlinedCountByDoc.GetValueOrDefault(document.Id);
+                if (inlinedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        inlinedCount = Math.Max(inlinedCount, inlinedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = inlinedCount > 0
+                        ? BuildAllFilesDescription(inlinedCount)
+                        : "Update references of inlined methods",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that inlined
+    /// <paramref name="inlinedCount"/> methods.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int inlinedCount) =>
+        inlinedCount == 1
+            ? "Inline method"
+            : $"Inline {inlinedCount} methods";
+
+    /// <summary>
+    /// Collects every <see cref="MethodDeclarationSyntax"/> in
+    /// <paramref name="root"/>. Deterministic <c>SpanStart</c> then
+    /// span-length order.
+    /// </summary>
+    internal static IReadOnlyList<MethodDeclarationSyntax> CollectMethodDeclarations(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .OrderBy(method => method.SpanStart)
+            .ThenBy(method => method.Span.Length)
+            .ToList();
+
+    private async Task<Solution?> TryInlineOneAsync(
+        Document document,
+        MethodDeclarationSyntax methodSyntax,
+        IMethodSymbol methodSymbol,
+        bool removeMethod,
+        CancellationToken cancellationToken)
+    {
+        var root = await document.GetSyntaxRootAsync(cancellationToken);
+        var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+        if (root == null || semanticModel == null)
+            return null;
+
+        // Rematch against the current root (spans may have shifted).
+        var currentMethod = RematchMethod(root, methodSyntax) ?? methodSyntax;
+
+        ValidateInlineable(currentMethod, methodSymbol, semanticModel, cancellationToken);
+
+        var emptyParams = new InlineMethodParams
+        {
+            SourceFile = document.FilePath,
+            MethodName = methodSymbol.Name,
+            RemoveMethod = removeMethod
+        };
+
+        var callSites = await FindCallSitesAsync(
+            methodSymbol,
+            currentMethod,
+            document,
+            emptyParams,
+            cancellationToken);
+        if (callSites.Count == 0)
+            return null;
+
+        await ValidateCallSitesAsync(currentMethod, methodSymbol, callSites, cancellationToken);
+
+        if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        foreach (var site in callSites)
+        {
+            if (!DocumentEditableHelpers.IsDocumentEditable(site.Document, Context.Workspace))
+                return null;
+        }
+
+        return await ApplyInliningAsync(
+            document,
+            currentMethod,
+            methodSymbol,
+            callSites,
+            removeMethod,
+            cancellationToken);
+    }
+
     internal static MethodDeclarationSyntax FindMethodDeclaration(SyntaxNode root, InlineMethodParams @params)
     {
+        var methodName = @params.MethodName
+            ?? throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
+
         var methods = root.DescendantNodes()
             .OfType<MethodDeclarationSyntax>()
-            .Where(m => m.Identifier.Text == @params.MethodName)
+            .Where(m => m.Identifier.Text == methodName)
             .ToList();
 
         if (methods.Count == 0)
         {
             throw new RefactoringException(
                 ErrorCodes.MethodNotFound,
-                $"Method '{@params.MethodName}' not found.");
+                $"Method '{methodName}' not found.");
         }
 
         // Line is required when more than one method matches, even if
@@ -184,19 +550,19 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 .ToList();
             throw new RefactoringException(
                 ErrorCodes.SymbolAmbiguous,
-                $"Multiple methods named '{@params.MethodName}' found. Provide line number. Options: {string.Join(", ", lines)}");
+                $"Multiple methods named '{methodName}' found. Provide line number. Options: {string.Join(", ", lines)}");
         }
 
         if (@params.Column.HasValue)
         {
-            var covering = FindMethod(root, @params.MethodName, @params.Line, @params.Column);
+            var covering = FindMethod(root, methodName, @params.Line, @params.Column);
             if (covering == null)
             {
                 throw new RefactoringException(
                     ErrorCodes.MethodNotFound,
                     @params.Line.HasValue
-                        ? $"Method '{@params.MethodName}' not found at line {@params.Line}."
-                        : $"Method '{@params.MethodName}' not found.");
+                        ? $"Method '{methodName}' not found at line {@params.Line}."
+                        : $"Method '{methodName}' not found.");
             }
 
             return covering;
@@ -226,8 +592,8 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
             throw new RefactoringException(
                 ErrorCodes.MethodNotFound,
                 @params.Line.HasValue
-                    ? $"Method '{@params.MethodName}' not found at line {@params.Line}."
-                    : $"Method '{@params.MethodName}' not found.");
+                    ? $"Method '{methodName}' not found at line {@params.Line}."
+                    : $"Method '{methodName}' not found.");
         }
 
         var optionLines = matches
@@ -235,7 +601,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
             .ToList();
         throw new RefactoringException(
             ErrorCodes.SymbolAmbiguous,
-            $"Multiple methods named '{@params.MethodName}' found. Provide line number. Options: {string.Join(", ", optionLines)}");
+            $"Multiple methods named '{methodName}' found. Provide line number. Options: {string.Join(", ", optionLines)}");
     }
 
     /// <summary>
@@ -405,12 +771,83 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         InlineMethodParams @params,
         CancellationToken cancellationToken)
     {
-        var references = await SymbolFinder.FindReferencesAsync(
+        var callSites = new List<CallSite>();
+        var seen = new HashSet<(DocumentId Id, int SpanStart, int SpanEnd)>();
+        var declaringPathKey = declaringDocument.FilePath != null
+            ? PathResolver.GetPathComparisonKey(declaringDocument.FilePath)
+            : null;
+
+        await CollectCallSitesForSymbolAsync(
             methodSymbol,
-            Context.Solution,
+            methodSyntax,
+            declaringDocument,
+            declaringDocument,
+            declaringPathKey,
+            @params,
+            callSites,
+            seen,
             cancellationToken);
 
-        var callSites = new List<CallSite>();
+        // Linked sibling DocumentIds bind a distinct IMethodSymbol for the same
+        // physical declaration. SymbolFinder on the primary symbol misses callers
+        // that bind only under those sibling compilations — collect them before
+        // coalescing physical text (Codex P1).
+        if (declaringPathKey != null)
+        {
+            foreach (var project in declaringDocument.Project.Solution.Projects)
+            {
+                foreach (var siblingDoc in project.Documents)
+                {
+                    if (siblingDoc.Id == declaringDocument.Id || siblingDoc.FilePath == null)
+                        continue;
+                    if (PathResolver.GetPathComparisonKey(siblingDoc.FilePath) != declaringPathKey)
+                        continue;
+
+                    var siblingRoot = await siblingDoc.GetSyntaxRootAsync(cancellationToken);
+                    var siblingModel = await siblingDoc.GetSemanticModelAsync(cancellationToken);
+                    if (siblingRoot == null || siblingModel == null)
+                        continue;
+
+                    var rematched = RematchMethod(siblingRoot, methodSyntax);
+                    if (rematched == null)
+                        continue;
+
+                    var siblingSymbol = siblingModel.GetDeclaredSymbol(rematched, cancellationToken) as IMethodSymbol;
+                    if (siblingSymbol == null)
+                        continue;
+
+                    await CollectCallSitesForSymbolAsync(
+                        siblingSymbol,
+                        rematched,
+                        siblingDoc,
+                        declaringDocument,
+                        declaringPathKey,
+                        @params,
+                        callSites,
+                        seen,
+                        cancellationToken);
+                }
+            }
+        }
+
+        return callSites;
+    }
+
+    private static async Task CollectCallSitesForSymbolAsync(
+        IMethodSymbol methodSymbol,
+        MethodDeclarationSyntax methodSyntax,
+        Document symbolDeclaringDocument,
+        Document primaryDeclaringDocument,
+        string? declaringPathKey,
+        InlineMethodParams @params,
+        List<CallSite> callSites,
+        HashSet<(DocumentId Id, int SpanStart, int SpanEnd)> seen,
+        CancellationToken cancellationToken)
+    {
+        var references = await SymbolFinder.FindReferencesAsync(
+            methodSymbol,
+            symbolDeclaringDocument.Project.Solution,
+            cancellationToken);
 
         foreach (var referencedSymbol in references)
         {
@@ -424,8 +861,31 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 if (root == null)
                     continue;
 
-                var node = root.FindNode(location.Location.SourceSpan);
-                if (IsMethodDeclarationReference(node, methodSyntax, declaringDocument, document, location.Location))
+                // Linked sibling DocumentIds share the physical path but belong
+                // to another compilation. In-file call sites are rewritten only
+                // via the primary declaring DocumentId; sibling compilations are
+                // consulted for callers in other files (skip the whole declaring
+                // path there — primary DocumentId locations bind to the primary
+                // symbol and would fail equality against the sibling symbol).
+                if (document.FilePath != null &&
+                    declaringPathKey != null &&
+                    PathResolver.GetPathComparisonKey(document.FilePath) == declaringPathKey)
+                {
+                    if (symbolDeclaringDocument.Id != primaryDeclaringDocument.Id ||
+                        document.Id != primaryDeclaringDocument.Id)
+                    {
+                        continue;
+                    }
+                }
+
+                var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
+                if (IsMethodDeclarationReference(
+                        node, methodSyntax, symbolDeclaringDocument, document, location.Location))
+                    continue;
+
+                // Same-named method declaration identifier (defensive; linked
+                // siblings already skipped above).
+                if (IsMethodDeclarationIdentifierReference(node, location.Location, methodSymbol.Name))
                     continue;
 
                 var invocation = FindInvokedCall(node, location.Location.SourceSpan);
@@ -442,13 +902,33 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 if (invoked == null ||
                     !SymbolEqualityComparer.Default.Equals(invoked.OriginalDefinition, methodSymbol.OriginalDefinition))
                 {
+                    // SymbolFinder can surface callers that bind under a linked
+                    // sibling compilation to a distinct IMethodSymbol for the
+                    // same physical declaration. Skip those here; the sibling
+                    // CollectCallSitesForSymbolAsync pass matches them.
+                    if (invoked != null &&
+                        declaringPathKey != null &&
+                        IsDeclaredOnPath(invoked, declaringPathKey))
+                    {
+                        continue;
+                    }
+
                     throw new RefactoringException(
                         ErrorCodes.InvalidSelection,
                         $"Method '{methodSymbol.Name}' is used as a method group or non-invocation reference and cannot be inlined.");
                 }
 
-                if (document.Id == declaringDocument.Id && methodSyntax.Span.Contains(invocation.Span))
+                if (document.Id == primaryDeclaringDocument.Id && methodSyntax.Span.Contains(invocation.Span))
                     continue;
+
+                // When collecting from a sibling symbol, also skip recursive
+                // invocations under that sibling's rematched declaration span.
+                if (document.Id == symbolDeclaringDocument.Id &&
+                    symbolDeclaringDocument.Id != primaryDeclaringDocument.Id &&
+                    methodSyntax.Span.Contains(invocation.Span))
+                {
+                    continue;
+                }
 
                 if (@params.CallSiteLocation != null &&
                     !MatchesCallSiteLocation(document, invocation, @params.CallSiteLocation))
@@ -456,11 +936,27 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                     continue;
                 }
 
+                var key = (document.Id, invocation.Span.Start, invocation.Span.End);
+                if (!seen.Add(key))
+                    continue;
+
                 callSites.Add(new CallSite(document, invocation.Span));
             }
         }
+    }
 
-        return callSites;
+
+    private static bool IsMethodDeclarationIdentifierReference(
+        SyntaxNode node,
+        Location location,
+        string methodName)
+    {
+        var methodDecl = node.AncestorsAndSelf().OfType<MethodDeclarationSyntax>().FirstOrDefault();
+        if (methodDecl == null || methodDecl.Identifier.Text != methodName)
+            return false;
+
+        return methodDecl.Identifier.Span.Contains(location.SourceSpan) ||
+               location.SourceSpan.Contains(methodDecl.Identifier.Span);
     }
 
     private static bool IsMethodDeclarationReference(
@@ -696,6 +1192,19 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         return solution;
     }
 
+
+    private static bool IsDeclaredOnPath(IMethodSymbol method, string pathKey)
+    {
+        foreach (var reference in method.DeclaringSyntaxReferences)
+        {
+            var path = reference.SyntaxTree.FilePath;
+            if (path != null && PathResolver.GetPathComparisonKey(path) == pathKey)
+                return true;
+        }
+
+        return false;
+    }
+
     private static MethodDeclarationSyntax? RematchMethod(SyntaxNode root, MethodDeclarationSyntax original)
     {
         return root.DescendantNodes()
@@ -772,7 +1281,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 {
                     File = oldDoc.FilePath,
                     ChangeType = ChangeKind.Modify,
-                    Description = $"Inline method '{@params.MethodName}' ({callSiteCount} call site(s)" +
+                    Description = $"Inline method '{@params.MethodName!}' ({callSiteCount} call site(s)" +
                                   (removeMethod ? ", method removed" : "") + ")",
                     BeforeSnippet = before.ToString(),
                     AfterSnippet = after.ToString()
@@ -784,9 +1293,9 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         {
             pendingChanges.Add(new PendingChange
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Inline method '{@params.MethodName}' ({callSiteCount} call site(s))",
+                Description = $"Inline method '{@params.MethodName!}' ({callSiteCount} call site(s))",
                 BeforeSnippet = null,
                 AfterSnippet = null
             });
