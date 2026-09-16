@@ -513,6 +513,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         // (Codex).
         if (method.IsOverride)
             return false;
+        // Interface member declarations: rewriting I.M while C.M is skipped as
+        // ImplementsAnyInterfaceMember breaks the contract (Codex).
+        if (method.ContainingType?.TypeKind == TypeKind.Interface)
+            return false;
         if (!method.ExplicitInterfaceImplementations.IsDefaultOrEmpty &&
             method.ExplicitInterfaceImplementations.Length > 0)
             return false;
@@ -557,6 +561,25 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 if (impl != null && SymbolEqualityComparer.Default.Equals(impl, method))
                     return true;
             }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when a required parameter (no default) follows an optional one
+    /// in <paramref name="newParameters"/> (CS1737).
+    /// </summary>
+    private static bool HasRequiredAfterOptional(IReadOnlyList<NewParameter> newParameters)
+    {
+        var seenOptional = false;
+        foreach (var parameter in newParameters)
+        {
+            var isOptional = !string.IsNullOrEmpty(parameter.DefaultValue);
+            if (seenOptional && !isOptional)
+                return true;
+            if (isOptional)
+                seenOptional = true;
         }
 
         return false;
@@ -746,6 +769,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         // the method stays present and still matches originalName eligibility).
         // Include defaults so default-only ParameterChange entries still apply (Codex).
         if (SignatureAlreadyMatches(methodDecl, methodSymbol, newParameters))
+            return null;
+
+        // Required after optional is illegal C# (CS1737) (Codex / AddParameter).
+        if (HasRequiredAfterOptional(newParameters))
             return null;
 
         // Avoid collapsing overloads into identical signatures (Codex).
