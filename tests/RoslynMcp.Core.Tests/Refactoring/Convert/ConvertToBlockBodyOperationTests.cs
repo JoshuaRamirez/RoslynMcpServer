@@ -1473,6 +1473,50 @@ public class ConvertToBlockBodyOperationTests
         Assert.IsType<ExpressionStatementSyntax>(nested.Body.Statements[0]);
     }
 
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_SkipsPreprocessorConditionalExpressionBodies()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class ConditionalBodies
+            {
+                public int Safe() => 1;
+
+                public int Conditional()
+            #if DEBUG
+                    => 2;
+            #else
+                    => 3;
+            #endif
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "ConditionalBodies.cs");
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["ConditionalBodies.cs"]));
+        AssertMethodIsBlockBodied(updated, "Safe");
+        Assert.Contains("#if DEBUG", updated, StringComparison.Ordinal);
+        Assert.Contains("#else", updated, StringComparison.Ordinal);
+        Assert.Contains("#endif", updated, StringComparison.Ordinal);
+        var conditional = CSharpSyntaxTree.ParseText(
+                updated,
+                CSharpParseOptions.Default.WithPreprocessorSymbols("DEBUG"))
+            .GetRoot()
+            .DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "Conditional");
+        Assert.NotNull(conditional.ExpressionBody);
+        Assert.Null(conditional.Body);
+    }
+
     #endregion
 
     #region Helpers

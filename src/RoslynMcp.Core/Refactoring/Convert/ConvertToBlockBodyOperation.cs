@@ -440,6 +440,11 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         SemanticModel? model = null,
         IMethodSymbol? precomputedSymbol = null)
     {
+        // Skip / reject members whose expression body is selected by #if/#else
+        // (Codex P2): converting only the active branch leaves inactive branch
+        // text in a broken shape for the other configuration.
+        EnsureExpressionBodyHasNoPreprocessorBoundary(member);
+
         return member switch
         {
             MethodDeclarationSyntax method => ConvertMethod(method, model, precomputedSymbol),
@@ -796,6 +801,110 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     private static IEnumerable<SyntaxTrivia> NonWhitespaceTrivia(SyntaxTriviaList trivia) =>
         trivia.Where(item => !item.IsKind(SyntaxKind.WhitespaceTrivia)
             && !item.IsKind(SyntaxKind.EndOfLineTrivia));
+
+
+    /// <summary>
+    /// True when an expression-body arrow/semicolon boundary carries
+    /// preprocessor directives or disabled text (e.g. <c>#if DEBUG =&gt; 1;
+    /// #else =&gt; 2; #endif</c>). Converting only the active branch would leave
+    /// the inactive branch as disabled text after an unconditional block.
+    /// </summary>
+    private static void EnsureExpressionBodyHasNoPreprocessorBoundary(SyntaxNode member)
+    {
+        foreach (var (expressionBody, semicolon) in EnumerateExpressionBodyTargets(member))
+        {
+            if (ExpressionBodyBoundaryHasDirectives(expressionBody, semicolon))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CannotConvert,
+                    "Expression body is selected by preprocessor directives and cannot be safely converted to a block body.");
+            }
+        }
+    }
+
+    private static IEnumerable<(ArrowExpressionClauseSyntax ExpressionBody, SyntaxToken Semicolon)> EnumerateExpressionBodyTargets(
+        SyntaxNode member)
+    {
+        switch (member)
+        {
+            case MethodDeclarationSyntax method when method.ExpressionBody != null:
+                yield return (method.ExpressionBody, method.SemicolonToken);
+                yield break;
+            case LocalFunctionStatementSyntax local when local.ExpressionBody != null:
+                yield return (local.ExpressionBody, local.SemicolonToken);
+                yield break;
+            case OperatorDeclarationSyntax op when op.ExpressionBody != null:
+                yield return (op.ExpressionBody, op.SemicolonToken);
+                yield break;
+            case ConversionOperatorDeclarationSyntax conversion when conversion.ExpressionBody != null:
+                yield return (conversion.ExpressionBody, conversion.SemicolonToken);
+                yield break;
+            case ConstructorDeclarationSyntax constructor when constructor.ExpressionBody != null:
+                yield return (constructor.ExpressionBody, constructor.SemicolonToken);
+                yield break;
+            case DestructorDeclarationSyntax destructor when destructor.ExpressionBody != null:
+                yield return (destructor.ExpressionBody, destructor.SemicolonToken);
+                yield break;
+            case PropertyDeclarationSyntax property:
+                if (property.ExpressionBody != null)
+                {
+                    yield return (property.ExpressionBody, property.SemicolonToken);
+                    yield break;
+                }
+
+                if (property.AccessorList != null)
+                {
+                    foreach (var accessor in property.AccessorList.Accessors)
+                    {
+                        if (accessor.ExpressionBody != null)
+                            yield return (accessor.ExpressionBody, accessor.SemicolonToken);
+                    }
+                }
+
+                yield break;
+            case IndexerDeclarationSyntax indexer:
+                if (indexer.ExpressionBody != null)
+                {
+                    yield return (indexer.ExpressionBody, indexer.SemicolonToken);
+                    yield break;
+                }
+
+                if (indexer.AccessorList != null)
+                {
+                    foreach (var accessor in indexer.AccessorList.Accessors)
+                    {
+                        if (accessor.ExpressionBody != null)
+                            yield return (accessor.ExpressionBody, accessor.SemicolonToken);
+                    }
+                }
+
+                yield break;
+            case EventDeclarationSyntax @event when @event.AccessorList != null:
+                foreach (var accessor in @event.AccessorList.Accessors)
+                {
+                    if (accessor.ExpressionBody != null)
+                        yield return (accessor.ExpressionBody, accessor.SemicolonToken);
+                }
+
+                yield break;
+        }
+    }
+
+    private static bool ExpressionBodyBoundaryHasDirectives(
+        ArrowExpressionClauseSyntax expressionBody,
+        SyntaxToken semicolonToken)
+    {
+        return HasDirectiveOrDisabledText(expressionBody.GetLeadingTrivia())
+            || HasDirectiveOrDisabledText(expressionBody.ArrowToken.LeadingTrivia)
+            || HasDirectiveOrDisabledText(expressionBody.ArrowToken.TrailingTrivia)
+            || HasDirectiveOrDisabledText(expressionBody.Expression.GetLeadingTrivia())
+            || HasDirectiveOrDisabledText(expressionBody.Expression.GetTrailingTrivia())
+            || HasDirectiveOrDisabledText(semicolonToken.LeadingTrivia)
+            || HasDirectiveOrDisabledText(semicolonToken.TrailingTrivia);
+    }
+
+    private static bool HasDirectiveOrDisabledText(SyntaxTriviaList trivia) =>
+        trivia.Any(item => item.IsDirective || item.IsKind(SyntaxKind.DisabledTextTrivia));
 
     private static bool IsNonReturning(
         TypeSyntax returnType,
