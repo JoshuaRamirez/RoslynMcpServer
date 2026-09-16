@@ -108,6 +108,37 @@ public class PathResolverTests
         }
     }
 
+    [Fact]
+    public void GetPathComparisonKey_WindowsDriveLetterRoot_IsCanonicalized()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var path = Path.Combine(Path.GetTempPath(), "roslyn-mcp-pr-drive-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var root = Path.GetPathRoot(path)!;
+            var flippedRoot = char.IsUpper(root[0])
+                ? char.ToLowerInvariant(root[0]) + root[1..]
+                : char.ToUpperInvariant(root[0]) + root[1..];
+            var flipped = flippedRoot + path[root.Length..];
+            Assert.True(File.Exists(flipped));
+
+            var keyA = PathResolver.GetPathComparisonKey(path);
+            var keyB = PathResolver.GetPathComparisonKey(flipped);
+            Assert.Equal(keyA, keyB);
+            Assert.Equal(
+                char.ToUpperInvariant(root[0]),
+                Path.GetPathRoot(keyA)![0]);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
     private static string FlipAsciiCase(string value)
     {
         var chars = value.ToCharArray();
