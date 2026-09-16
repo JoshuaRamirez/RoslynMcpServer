@@ -161,7 +161,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         var allDocuments = currentSolution.Projects
             .SelectMany(p => p.Documents)
             .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(d => d.FilePath, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
             .ToList();
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
