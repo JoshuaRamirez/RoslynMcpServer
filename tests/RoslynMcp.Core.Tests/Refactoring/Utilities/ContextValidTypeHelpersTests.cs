@@ -115,7 +115,7 @@ public class ContextValidTypeHelpersTests
     }
 
     [Fact]
-    public void ContainsTypeParameter_GenericNamedWithTypeParam_ReturnsTrue()
+    public void ContainsTypeParameter_NestedGenericNamedWithTypeParam_ReturnsTrue()
     {
         var (_, _, type) = BuildAtMarker("""
             class Box<T> { }
@@ -124,7 +124,7 @@ public class ContextValidTypeHelpersTests
             {
                 void M<T>()
                 {
-                    /*pos*/Box<T> box = null!;
+                    /*pos*/Box<System.Collections.Generic.List<T>> box = null!;
                 }
             }
             """, "/*pos*/", typeFromLocal: "box");
