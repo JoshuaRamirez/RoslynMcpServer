@@ -1226,6 +1226,37 @@ public class ConvertToBlockBodyOperationTests
         Assert.Contains("// property note", updated, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_PreservesLeadingSemicolonComments()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class LeadingComments
+            {
+                public int Value() => 1
+                    /* explanation */;
+                public int Prop => 2
+                    /* property note */;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "LeadingComments.cs");
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["LeadingComments.cs"]));
+        AssertMethodIsBlockBodied(updated, "Value");
+        AssertPropertyIsBlockBodied(updated, "Prop");
+        Assert.Contains("/* explanation */", updated, StringComparison.Ordinal);
+        Assert.Contains("/* property note */", updated, StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region Helpers

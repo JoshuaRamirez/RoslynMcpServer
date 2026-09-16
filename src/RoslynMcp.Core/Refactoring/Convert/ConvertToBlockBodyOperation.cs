@@ -608,20 +608,16 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     }
 
     /// <summary>
-    /// Builds a block body and moves trailing trivia from the removed
-    /// expression-body semicolon onto the closing brace so EOL comments
-    /// like <c>=> 1; // explanation</c> survive conversion (including allFiles).
+    /// Builds a block body and moves leading + trailing trivia from the removed
+    /// expression-body semicolon onto the closing brace so comments like
+    /// <c>=> 1; // explanation</c> and next-line <c>/* explanation */;</c>
+    /// survive conversion (including allFiles).
     /// </summary>
     private static BlockSyntax CreateBlock(StatementSyntax statement, SyntaxToken semicolonToken)
     {
         var block = SyntaxFactory.Block(statement);
-        var trailing = semicolonToken.TrailingTrivia;
-        if (trailing.Count == 0)
-            return block;
-
         return block.WithCloseBraceToken(
-            block.CloseBraceToken.WithTrailingTrivia(
-                block.CloseBraceToken.TrailingTrivia.AddRange(trailing)));
+            AttachSemicolonTrivia(block.CloseBraceToken, semicolonToken));
     }
 
     /// <summary>
@@ -632,13 +628,22 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         AccessorListSyntax accessorList,
         SyntaxToken semicolonToken)
     {
-        var trailing = semicolonToken.TrailingTrivia;
-        if (trailing.Count == 0)
-            return accessorList;
-
         return accessorList.WithCloseBraceToken(
-            accessorList.CloseBraceToken.WithTrailingTrivia(
-                accessorList.CloseBraceToken.TrailingTrivia.AddRange(trailing)));
+            AttachSemicolonTrivia(accessorList.CloseBraceToken, semicolonToken));
+    }
+
+    private static SyntaxToken AttachSemicolonTrivia(SyntaxToken closeBrace, SyntaxToken semicolonToken)
+    {
+        var leading = semicolonToken.LeadingTrivia;
+        var trailing = semicolonToken.TrailingTrivia;
+        if (leading.Count == 0 && trailing.Count == 0)
+            return closeBrace;
+
+        if (leading.Count > 0)
+            closeBrace = closeBrace.WithLeadingTrivia(closeBrace.LeadingTrivia.AddRange(leading));
+        if (trailing.Count > 0)
+            closeBrace = closeBrace.WithTrailingTrivia(closeBrace.TrailingTrivia.AddRange(trailing));
+        return closeBrace;
     }
 
     private static AccessorDeclarationSyntax CreateBlockAccessor(
