@@ -32,6 +32,23 @@ public class ContextValidTypeHelpersTests
     }
 
     [Fact]
+    public void ToContextValidTypeName_Void_ReturnsVoidKeyword()
+    {
+        var compilation = CreateCompilation("""
+            class Worker
+            {
+                void M() { }
+            }
+            """);
+        var voidType = compilation.GetSpecialType(SpecialType.System_Void);
+        var tree = compilation.SyntaxTrees.Single();
+        var model = compilation.GetSemanticModel(tree);
+        var method = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+        var display = ContextValidTypeHelpers.ToContextValidTypeName(voidType, model, method.ReturnType.SpanStart);
+        Assert.Equal("void", display);
+    }
+
+    [Fact]
     public void MemberTypeBindsAtInsertion_PublicNamedType_ReturnsTrue()
     {
         var (model, position, type) = BuildAtMarker("""
