@@ -600,6 +600,25 @@ public class InlineVariableOperationTests
                 int local = 1;
                 UseRef(ref local);
             }
+
+            public void UseIn(in int value)
+            {
+                int local = 1;
+                UseIn(in local);
+            }
+
+            public string NameOfOnly()
+            {
+                int local = 1;
+                return nameof(local);
+            }
+
+            public int IncrementOnly()
+            {
+                int local = 1;
+                local++;
+                return local;
+            }
         }
         """;
 
@@ -895,6 +914,263 @@ public class InlineVariableOperationTests
         Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
     }
 
+    [SkippableFact]
+    public async Task InlineVariable_AllFilesTrue_SkipsInArgumentRefExpressionIncrementAndNameof()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Mixed
+            {
+                public void UseIn(in int value) { }
+
+                public void InArg()
+                {
+                    int x = 1;
+                    UseIn(in x);
+                }
+
+                public int RefAlias()
+                {
+                    int value = 2;
+                    ref int alias = ref value;
+                    alias = 3;
+                    return value;
+                }
+
+                public int Increment()
+                {
+                    int count = 3;
+                    count++;
+                    return count;
+                }
+
+                public string NameOf()
+                {
+                    int named = 4;
+                    return nameof(named);
+                }
+
+                public int Eligible()
+                {
+                    int total = 5;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(("Mixed.cs", source));
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineVariableParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Mixed.cs"]));
+        Assert.Contains("UseIn(in x);", updated, StringComparison.Ordinal);
+        Assert.Contains("int x = 1;", updated, StringComparison.Ordinal);
+        Assert.Contains("ref int alias = ref value;", updated, StringComparison.Ordinal);
+        Assert.Contains("int value = 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("count++;", updated, StringComparison.Ordinal);
+        Assert.Contains("int count = 3;", updated, StringComparison.Ordinal);
+        Assert.Contains("nameof(named)", updated, StringComparison.Ordinal);
+        Assert.Contains("int named = 4;", updated, StringComparison.Ordinal);
+        Assert.Contains("return 5;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("int total", updated, StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task InlineVariable_SingleSite_InArgument_ThrowsUsedInRefContext()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class C
+            {
+                public void UseIn(in int value) { }
+
+                public void Run()
+                {
+                    int x = 1;
+                    UseIn(in x);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                VariableName = "x"
+            }));
+
+        Assert.Equal(ErrorCodes.UsedInRefContext, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InlineVariable_SingleSite_RefExpression_ThrowsUsedInRefContext()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class C
+            {
+                public int Run()
+                {
+                    int value = 1;
+                    ref int alias = ref value;
+                    alias = 2;
+                    return value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                VariableName = "value"
+            }));
+
+        Assert.Equal(ErrorCodes.UsedInRefContext, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InlineVariable_SingleSite_PostIncrement_ThrowsMultipleAssignments()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class C
+            {
+                public int Run()
+                {
+                    int count = 1;
+                    count++;
+                    return count;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                VariableName = "count"
+            }));
+
+        Assert.Equal(ErrorCodes.MultipleAssignments, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InlineVariable_SingleSite_Nameof_ThrowsInvalidSelection()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class C
+            {
+                public string Run()
+                {
+                    int named = 1;
+                    return nameof(named);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                VariableName = "named"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelection, ex.ErrorCode);
+        Assert.Contains("nameof", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InlineVariable_AllFilesTrue_LinkedDocument_CoalescesToOnePhysicalWrite()
+    {
+        const string sharedSource = """
+            namespace TestApp;
+
+            public class Shared
+            {
+                public int Run()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+        const string anchorSource = """
+            namespace TestApp;
+
+            public static class Anchor
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorSource, anchorSource);
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathEquals(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineVariableParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Shared.cs"]));
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]));
+        Assert.Contains("return 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("int total", updated, StringComparison.Ordinal);
+
+        // Sibling DocumentIds must carry identical text after coalescing.
+        var texts = new List<string>();
+        foreach (var document in linkedDocuments)
+        {
+            var current = workspace.Context.Solution.GetDocument(document.Id);
+            Assert.NotNull(current);
+            texts.Add((await current!.GetTextAsync()).ToString());
+        }
+
+        Assert.Equal(2, texts.Count);
+        Assert.Equal(texts[0], texts[1], StringComparer.Ordinal);
+        Assert.Contains("return 1 + 2;", texts[0], StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region Helpers
@@ -1030,6 +1306,144 @@ public class InlineVariableOperationTests
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
                     SourcePath = firstSource!,
+                    SourcePaths = sourcePaths,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+
+        public static async Task<TempWorkspace> CreateWithLinkedProjectsAsync(
+            string sharedSource,
+            string anchorASource,
+            string anchorBSource)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpInlineVariableLinked_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            var sharedPath = Path.Combine(directory, "Shared.cs");
+            var rootProjectPath = Path.Combine(directory, "ProjectA.csproj");
+            var referencedProjectPath = Path.Combine(directory, "ProjectB.csproj");
+            var anchorAPath = Path.Combine(directory, "AnchorA.cs");
+            var anchorBPath = Path.Combine(directory, "AnchorB.cs");
+            var projectTypeGuid = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
+            var projectAGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+            var projectBGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+
+            await File.WriteAllTextAsync(sharedPath, sharedSource);
+            await File.WriteAllTextAsync(anchorAPath, anchorASource);
+            await File.WriteAllTextAsync(anchorBPath, anchorBSource);
+            await File.WriteAllTextAsync(solutionPath, $$"""
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                VisualStudioVersion = 17.0.31903.59
+                MinimumVisualStudioVersion = 10.0.40219.1
+                Project("{{projectTypeGuid}}") = "ProjectA", "ProjectA.csproj", "{{projectAGuid}}"
+                EndProject
+                Project("{{projectTypeGuid}}") = "ProjectB", "ProjectB.csproj", "{{projectBGuid}}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                		Release|Any CPU = Release|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{{projectAGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectAGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            await File.WriteAllTextAsync(rootProjectPath, $$"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="AnchorA.cs" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            await File.WriteAllTextAsync(referencedProjectPath, $$"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="AnchorB.cs" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Shared.cs"] = sharedPath,
+                ["AnchorA.cs"] = anchorAPath,
+                ["AnchorB.cs"] = anchorBPath
+            };
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                foreach (var sourcePath in sourcePaths.Values)
+                {
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
+                }
+
+                var linkedCount = context.Solution.Projects
+                    .SelectMany(p => p.Documents)
+                    .Count(d => d.FilePath != null &&
+                                string.Equals(Path.GetFullPath(d.FilePath), Path.GetFullPath(sharedPath), StringComparison.OrdinalIgnoreCase));
+                if (linkedCount < 2)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException($"Expected linked document in both projects, found {linkedCount}.");
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = rootProjectPath,
+                    SourcePath = sharedPath,
                     SourcePaths = sourcePaths,
                     Context = context
                 };

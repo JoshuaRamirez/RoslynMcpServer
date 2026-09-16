@@ -1,7 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -188,36 +187,25 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             })
             .ToList();
 
-        // Check for ref/out usage
+        // Align single-site eligibility with allFiles skip rules.
         foreach (var usage in usages)
         {
-            var parent = usage.Parent;
-            if (parent is ArgumentSyntax arg)
+            if (IsByReferenceUsage(usage))
             {
-                if (arg.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) ||
-                    arg.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword))
-                {
-                    throw new RefactoringException(
-                        ErrorCodes.UsedInRefContext,
-                        "Cannot inline variable used in ref/out context.");
-                }
+                throw new RefactoringException(
+                    ErrorCodes.UsedInRefContext,
+                    "Cannot inline variable used in ref/out/in or by-reference context.");
+            }
+
+            if (IsInNameOf(usage))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.InvalidSelection,
+                    "Cannot inline variable used in nameof(...).");
             }
         }
 
-        // Check for assignments to the variable
-        var assignments = containingMethod.DescendantNodes()
-            .OfType<AssignmentExpressionSyntax>()
-            .Where(a =>
-            {
-                if (a.Left is not IdentifierNameSyntax id) return false;
-                if (id.Identifier.Text != variableName) return false;
-
-                var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
-                return SymbolEqualityComparer.Default.Equals(symbol, variableSymbol);
-            })
-            .ToList();
-
-        if (assignments.Count > 0)
+        if (IsReassigned(containingMethod, variableName, variableSymbol, semanticModel, cancellationToken))
         {
             throw new RefactoringException(
                 ErrorCodes.MultipleAssignments,
@@ -293,8 +281,9 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
     /// Linked documents that share a physical path are rewritten once and the
     /// same text is applied to every sibling <see cref="DocumentId"/>
     /// (<see cref="PathResolver.GetPathComparisonKey"/>). Ineligible locals
-    /// (no initializer, side effects, reassignment, ref/out, not in a method,
-    /// uneditable / source-generated docs) are skipped rather than failing the
+    /// (no initializer, side effects, reassignment including ++/--, ref/out/in
+    /// or <c>ref</c> expression, nameof, not in a method, uneditable /
+    /// source-generated docs) are skipped rather than failing the
     /// walk. Deterministic <c>SpanStart</c> order within a file. When every
     /// file is a no-op, succeeds with empty changes.
     /// </summary>
@@ -557,26 +546,11 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
 
         foreach (var usage in usages)
         {
-            if (usage.Parent is ArgumentSyntax arg &&
-                (arg.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) ||
-                 arg.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword)))
-            {
+            if (IsByReferenceUsage(usage) || IsInNameOf(usage))
                 return null;
-            }
         }
 
-        var assignments = containingMethod.DescendantNodes()
-            .OfType<AssignmentExpressionSyntax>()
-            .Where(a =>
-            {
-                if (a.Left is not IdentifierNameSyntax id) return false;
-                if (id.Identifier.Text != variableName) return false;
-                var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
-                return SymbolEqualityComparer.Default.Equals(symbol, variableSymbol);
-            })
-            .ToList();
-
-        if (assignments.Count > 0)
+        if (IsReassigned(containingMethod, variableName, variableSymbol, semanticModel, cancellationToken))
             return null;
 
         if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
@@ -638,6 +612,101 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         };
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
+    }
+
+
+    /// <summary>
+    /// True when <paramref name="usage"/> is passed as <c>ref</c>/<c>out</c>/<c>in</c>
+    /// or appears under a <see cref="RefExpressionSyntax"/> (ref alias / <c>return ref</c>).
+    /// </summary>
+    private static bool IsByReferenceUsage(IdentifierNameSyntax usage)
+    {
+        if (usage.Parent is ArgumentSyntax arg &&
+            (arg.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) ||
+             arg.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword) ||
+             arg.RefOrOutKeyword.IsKind(SyntaxKind.InKeyword)))
+        {
+            return true;
+        }
+
+        return usage.Parent is RefExpressionSyntax;
+    }
+
+    /// <summary>
+    /// True when <paramref name="node"/> sits inside a <c>nameof(...)</c> invocation.
+    /// Mirrors <c>InlineConstantOperation.IsInNameOf</c>.
+    /// </summary>
+    private static bool IsInNameOf(SyntaxNode node)
+    {
+        foreach (var invocation in node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>())
+        {
+            if (invocation.Expression is IdentifierNameSyntax identifier &&
+                identifier.Identifier.Text == "nameof")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when the local is written after initialization via assignment or
+    /// pre/post increment/decrement.
+    /// </summary>
+    private static bool IsReassigned(
+        BaseMethodDeclarationSyntax containingMethod,
+        string variableName,
+        ILocalSymbol variableSymbol,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        foreach (var assignment in containingMethod.DescendantNodes().OfType<AssignmentExpressionSyntax>())
+        {
+            if (assignment.Left is not IdentifierNameSyntax id)
+                continue;
+            if (id.Identifier.Text != variableName)
+                continue;
+            var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
+            if (SymbolEqualityComparer.Default.Equals(symbol, variableSymbol))
+                return true;
+        }
+
+        foreach (var prefix in containingMethod.DescendantNodes().OfType<PrefixUnaryExpressionSyntax>())
+        {
+            if (!prefix.IsKind(SyntaxKind.PreIncrementExpression) &&
+                !prefix.IsKind(SyntaxKind.PreDecrementExpression))
+            {
+                continue;
+            }
+
+            if (prefix.Operand is not IdentifierNameSyntax id)
+                continue;
+            if (id.Identifier.Text != variableName)
+                continue;
+            var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
+            if (SymbolEqualityComparer.Default.Equals(symbol, variableSymbol))
+                return true;
+        }
+
+        foreach (var postfix in containingMethod.DescendantNodes().OfType<PostfixUnaryExpressionSyntax>())
+        {
+            if (!postfix.IsKind(SyntaxKind.PostIncrementExpression) &&
+                !postfix.IsKind(SyntaxKind.PostDecrementExpression))
+            {
+                continue;
+            }
+
+            if (postfix.Operand is not IdentifierNameSyntax id)
+                continue;
+            if (id.Identifier.Text != variableName)
+                continue;
+            var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
+            if (SymbolEqualityComparer.Default.Equals(symbol, variableSymbol))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -732,6 +801,12 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             // Don't replace the declaration itself
             if (node.Parent is VariableDeclaratorSyntax ||
                 node.Parent?.Parent is VariableDeclaratorSyntax)
+            {
+                return base.VisitIdentifierName(node);
+            }
+
+            // nameof(x) is not a value use; rewriting yields nameof(1).
+            if (IsInNameOf(node))
             {
                 return base.VisitIdentifierName(node);
             }
