@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -201,45 +202,69 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var document = linkedDocuments[0];
-            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
-            if (currentDocument is SourceGeneratedDocument)
-                continue;
+            Document? previewDocument = null;
+            SyntaxNode? previewRoot = null;
+            SyntaxNode? previewNewRoot = null;
+            SourceText? changedText = null;
+            var convertedCount = 0;
 
-            if (!DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
-                continue;
+            foreach (var linked in linkedDocuments)
+            {
+                var currentDocument = currentSolution.GetDocument(linked.Id) ?? linked;
+                if (currentDocument is SourceGeneratedDocument)
+                    continue;
 
-            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
-            if (root == null)
-                continue;
+                if (!DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                    continue;
 
-            // Bottom-up rewriter so a nested convertible member (e.g. local
-            // function) is rewritten before its enclosing member; returning a
-            // precomputed ancestor from ReplaceNodes would discard the nested
-            // conversion (Codex P2 on allFiles). SemanticModel is captured on
-            // original nodes before descendants rewrite (Codex P2 alias Task).
-            var model = await currentDocument.GetSemanticModelAsync(cancellationToken);
-            var rewriter = new ConvertToBlockBodyAllFilesRewriter(model);
-            var newRoot = rewriter.Visit(root)!;
-            if (rewriter.ConvertedCount == 0)
-                continue;
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (root == null)
+                    continue;
 
-            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
-            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
-            var afterText = await newDocument.GetTextAsync(cancellationToken);
-            if (beforeText.ContentEquals(afterText))
+                // Bottom-up rewriter so a nested convertible member (e.g. local
+                // function) is rewritten before its enclosing member; returning a
+                // precomputed ancestor from ReplaceNodes would discard the nested
+                // conversion (Codex P2 on allFiles). SemanticModel is captured on
+                // original nodes before descendants rewrite (Codex P2 alias Task).
+                var model = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                var rewriter = new ConvertToBlockBodyAllFilesRewriter(model);
+                var newRoot = rewriter.Visit(root)!;
+                if (rewriter.ConvertedCount == 0)
+                    continue;
+
+                var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+                var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+                var afterText = await newDocument.GetTextAsync(cancellationToken);
+                if (beforeText.ContentEquals(afterText))
+                    continue;
+
+                if (changedText != null && !changedText.ContentEquals(afterText))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.CannotConvert,
+                        $"Linked workspace documents for '{currentDocument.FilePath}' produce different rewrites under current project contexts.");
+                }
+
+                previewDocument ??= currentDocument;
+                previewRoot ??= root;
+                previewNewRoot ??= newRoot;
+                changedText ??= afterText;
+                convertedCount = Math.Max(convertedCount, rewriter.ConvertedCount);
+            }
+
+            if (changedText == null || previewDocument == null || previewRoot == null || previewNewRoot == null)
                 continue;
 
             if (@params.Preview)
             {
-                var span = root.GetLocation().GetLineSpan();
+                var span = previewRoot.GetLocation().GetLineSpan();
                 allPendingChanges.Add(new PendingChange
                 {
-                    File = currentDocument.FilePath!,
+                    File = previewDocument.FilePath!,
                     ChangeType = ChangeKind.Modify,
-                    Description = BuildAllFilesDescription(rewriter.ConvertedCount),
-                    BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
-                    AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    Description = BuildAllFilesDescription(convertedCount),
+                    BeforeSnippet = previewRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = previewNewRoot.NormalizeWhitespace().ToFullString().Trim(),
                     StartLine = span.StartLinePosition.Line + 1,
                     EndLine = span.EndLinePosition.Line + 1
                 });
@@ -253,7 +278,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
                     continue;
                 if (!DocumentEditableHelpers.IsDocumentEditable(sibling, Context.Workspace))
                     continue;
-                currentSolution = currentSolution.WithDocumentText(sibling.Id, afterText);
+                currentSolution = currentSolution.WithDocumentText(sibling.Id, changedText);
             }
 
             anyChanged = true;

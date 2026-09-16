@@ -1155,6 +1155,31 @@ public class ConvertToBlockBodyOperationTests
     }
 
     [SkippableFact]
+    public async Task Convert_AllFilesTrue_CaseDistinctFiles_AreConvertedIndependently()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("FileA.cs", MixedExpressionFileA), ("filea.cs", MixedExpressionFileB)],
+            explicitCompileItems: true);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedUpper = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedLower = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["filea.cs"]));
+        AssertMethodIsBlockBodied(updatedUpper, "One");
+        AssertMethodIsBlockBodied(updatedUpper, "Two");
+        AssertMethodIsBlockBodied(updatedLower, "Value");
+        AssertPropertyIsBlockBodied(updatedLower, "Prop");
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["filea.cs"]));
+    }
+
+    [SkippableFact]
     public async Task Convert_AllFilesTrue_EveryFileAlreadyBlock_SucceedsWithEmptyChanges()
     {
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
@@ -1474,6 +1499,56 @@ public class ConvertToBlockBodyOperationTests
     }
 
     [SkippableFact]
+    public async Task Convert_AllFilesTrue_LinkedDocumentViewsThatRewriteDifferently_Throws()
+    {
+        const string sharedSource = """
+            namespace TestApp;
+
+            public partial class Shared
+            {
+                public async Work Run() => await Delay();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(sharedSource);
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathEquals(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .OrderBy(d => d.Project.Name, StringComparer.Ordinal)
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var rewrittenRuns = new List<string>();
+        foreach (var document in linkedDocuments)
+        {
+            var root = await document.GetSyntaxRootAsync();
+            var model = await document.GetSemanticModelAsync();
+            var run = root!.DescendantNodes()
+                .OfType<MethodDeclarationSyntax>()
+                .First(m => m.Identifier.Text == "Run");
+            Assert.True(ConvertToBlockBodyOperation.TryConvert(
+                run,
+                out var convertedRun,
+                out _,
+                out _,
+                model));
+            rewrittenRuns.Add(convertedRun.NormalizeWhitespace().ToFullString());
+        }
+
+        Assert.Equal(2, rewrittenRuns.Distinct(StringComparer.Ordinal).Count());
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToBlockBodyParams
+            {
+                AllFiles = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("Linked workspace documents", ex.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task Convert_AllFilesTrue_SkipsPreprocessorConditionalExpressionBodies()
     {
         const string source = """
@@ -1656,6 +1731,151 @@ public class ConvertToBlockBodyOperationTests
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
                     SourcePath = sourcePaths.Values.First(),
+                    SourcePaths = sourcePaths,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        public static async Task<TempWorkspace> CreateWithLinkedProjectsAsync(string sharedSource)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertToBlockBodyLinked_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            var sharedPath = Path.Combine(directory, "Shared.cs");
+            var rootProjectPath = Path.Combine(directory, "ProjectA.csproj");
+            var referencedProjectPath = Path.Combine(directory, "ProjectB.csproj");
+            var anchorAPath = Path.Combine(directory, "AnchorA.cs");
+            var anchorBPath = Path.Combine(directory, "AnchorB.cs");
+            var projectTypeGuid = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
+            var projectAGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+            var projectBGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+
+            await File.WriteAllTextAsync(sharedPath, sharedSource);
+            await File.WriteAllTextAsync(anchorAPath, """
+                using System.Threading.Tasks;
+                global using Work = System.Threading.Tasks.Task;
+
+                namespace TestApp;
+
+                public partial class Shared
+                {
+                    private static Work Delay() => Task.CompletedTask;
+                }
+                """);
+            await File.WriteAllTextAsync(anchorBPath, """
+                using System.Threading.Tasks;
+                global using Work = System.Threading.Tasks.Task<int>;
+
+                namespace TestApp;
+
+                public partial class Shared
+                {
+                    private static Work Delay() => Task.FromResult(1);
+                }
+                """);
+            await File.WriteAllTextAsync(solutionPath, $$"""
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                VisualStudioVersion = 17.0.31903.59
+                MinimumVisualStudioVersion = 10.0.40219.1
+                Project("{{projectTypeGuid}}") = "ProjectA", "ProjectA.csproj", "{{projectAGuid}}"
+                EndProject
+                Project("{{projectTypeGuid}}") = "ProjectB", "ProjectB.csproj", "{{projectBGuid}}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                		Release|Any CPU = Release|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{{projectAGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectAGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            await File.WriteAllTextAsync(rootProjectPath, $$"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="AnchorA.cs" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            await File.WriteAllTextAsync(referencedProjectPath, $$"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                    <DefineConstants>$(DefineConstants);DEBUG</DefineConstants>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="AnchorB.cs" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Shared.cs"] = sharedPath,
+                ["AnchorA.cs"] = anchorAPath,
+                ["AnchorB.cs"] = anchorBPath
+            };
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                foreach (var sourcePath in sourcePaths.Values)
+                {
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = rootProjectPath,
+                    SourcePath = sharedPath,
                     SourcePaths = sourcePaths,
                     Context = context
                 };
