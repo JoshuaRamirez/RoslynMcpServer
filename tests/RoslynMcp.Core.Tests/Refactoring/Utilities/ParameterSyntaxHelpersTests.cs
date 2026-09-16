@@ -39,6 +39,23 @@ public class ParameterSyntaxHelpersTests
         Assert.False(ParameterSyntaxHelpers.IsOptional(parameter));
     }
 
+    [Fact]
+    public void IsParams_And_IsOptional_Independent()
+    {
+        var paramsOnly = ParseParameter("params string[] items");
+        var optionalOnly = ParseParameter("string? name = null");
+        var neither = ParseParameter("string name");
+
+        Assert.True(ParameterSyntaxHelpers.IsParams(paramsOnly));
+        Assert.False(ParameterSyntaxHelpers.IsOptional(paramsOnly));
+
+        Assert.False(ParameterSyntaxHelpers.IsParams(optionalOnly));
+        Assert.True(ParameterSyntaxHelpers.IsOptional(optionalOnly));
+
+        Assert.False(ParameterSyntaxHelpers.IsParams(neither));
+        Assert.False(ParameterSyntaxHelpers.IsOptional(neither));
+    }
+
     private static ParameterSyntax ParseParameter(string text)
     {
         var root = (CompilationUnitSyntax)CSharpSyntaxTree.ParseText(
