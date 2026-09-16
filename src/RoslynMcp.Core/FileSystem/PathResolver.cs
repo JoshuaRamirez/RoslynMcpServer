@@ -144,6 +144,11 @@ public static class PathResolver
             return false;
         }
 
+        // Windows roots retain caller casing (c:\ vs C:\, \\Server vs \\SERVER).
+        // Segment enumeration never rewrites the root, so canonicalize it first or
+        // Ordinal path keys split the same physical file (Codex P2).
+        root = CanonicalizeWindowsPathRoot(root);
+
         var current = root;
 
         var remainder = normalizedPath[root.Length..];
@@ -187,6 +192,34 @@ public static class PathResolver
 
         resolvedPath = current;
         return true;
+    }
+
+
+    /// <summary>
+    /// On Windows, normalizes drive-letter and UNC roots to a stable casing so
+    /// ordinal comparison keys do not diverge for the same physical path.
+    /// </summary>
+    private static string CanonicalizeWindowsPathRoot(string root)
+    {
+        if (!OperatingSystem.IsWindows() || string.IsNullOrEmpty(root))
+            return root;
+
+        // Drive root: "c:\" -> "C:\"
+        if (root.Length >= 2 && char.IsAsciiLetter(root[0]) && root[1] == ':')
+        {
+            if (char.IsLower(root[0]))
+                return char.ToUpperInvariant(root[0]) + root[1..];
+            return root;
+        }
+
+        // UNC root: "\\server\\share\\" — server and share are case-insensitive.
+        if (root.StartsWith(@"\", StringComparison.Ordinal) ||
+            root.StartsWith("//", StringComparison.Ordinal))
+        {
+            return root.ToUpperInvariant();
+        }
+
+        return root;
     }
 
     private static string EnsureTrailingSlash(string path)
