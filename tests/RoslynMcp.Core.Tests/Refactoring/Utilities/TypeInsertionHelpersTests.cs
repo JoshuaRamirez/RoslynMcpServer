@@ -75,6 +75,53 @@ public class TypeInsertionHelpersTests
     }
 
     [Fact]
+    public void FindNamespace_DuplicateDeclarations_ReturnsLastMatchingDeclaration()
+    {
+        var root = Parse("""
+            namespace N
+            {
+                class First { }
+            }
+
+            namespace N
+            {
+                class Second { }
+            }
+            """);
+
+        var found = TypeInsertionHelpers.FindNamespace(root, "N");
+        Assert.NotNull(found);
+        Assert.Contains(
+            found!.Members,
+            m => m is TypeDeclarationSyntax td && td.Identifier.Text == "Second");
+    }
+
+    [Fact]
+    public void FindNamespace_LaterMatch_WinsOverEarlierEquivalentMatch()
+    {
+        var root = Parse("""
+            namespace Outer
+            {
+                namespace Inner
+                {
+                    class First { }
+                }
+            }
+
+            namespace Outer.Inner
+            {
+                class Second { }
+            }
+            """);
+
+        var found = TypeInsertionHelpers.FindNamespace(root, "Outer.Inner");
+        Assert.NotNull(found);
+        Assert.Contains(
+            found!.Members,
+            m => m is TypeDeclarationSyntax td && td.Identifier.Text == "Second");
+    }
+
+    [Fact]
     public void FindNamespace_Miss_ReturnsNull()
     {
         var root = Parse("""
