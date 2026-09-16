@@ -91,7 +91,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                 ErrorCodes.InvalidReturnType,
                 $"'{@params.NewReturnType}' is not a valid C# return type.");
 
-        if (TypesEquivalent(methodSymbol.ReturnType, newReturnType))
+        if (TypeEquivalenceHelpers.TypesEquivalent(methodSymbol.ReturnType, newReturnType))
         {
             throw new RefactoringException(
                 ErrorCodes.SameLocation,
@@ -242,7 +242,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                 continue;
             if (!ParameterTypesMatch(method, candidate))
                 continue;
-            if (!TypesEquivalent(candidate.ReturnType, newReturnType))
+            if (!TypeEquivalenceHelpers.TypesEquivalent(candidate.ReturnType, newReturnType))
                 continue;
 
             throw new RefactoringException(
@@ -259,55 +259,12 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             var right = other.Parameters[i];
             if (left.RefKind != right.RefKind)
                 return false;
-            if (!TypesEquivalent(left.Type, right.Type))
+            if (!TypeEquivalenceHelpers.TypesEquivalent(left.Type, right.Type))
                 return false;
         }
 
         return true;
     }
-
-    internal static bool TypesEquivalent(ITypeSymbol left, ITypeSymbol right)
-    {
-        if (SymbolEqualityComparer.Default.Equals(left, right))
-            return true;
-
-        if (left is ITypeParameterSymbol leftTypeParameter &&
-            right is ITypeParameterSymbol rightTypeParameter)
-        {
-            return leftTypeParameter.TypeParameterKind == rightTypeParameter.TypeParameterKind &&
-                   leftTypeParameter.Ordinal == rightTypeParameter.Ordinal &&
-                   (leftTypeParameter.TypeParameterKind != TypeParameterKind.Type ||
-                    SymbolEqualityComparer.Default.Equals(
-                        leftTypeParameter.ContainingType,
-                        rightTypeParameter.ContainingType));
-        }
-
-        if (left is IArrayTypeSymbol leftArray && right is IArrayTypeSymbol rightArray)
-        {
-            return leftArray.Rank == rightArray.Rank &&
-                   TypesEquivalent(leftArray.ElementType, rightArray.ElementType);
-        }
-
-        if (left is INamedTypeSymbol leftNamed && right is INamedTypeSymbol rightNamed)
-        {
-            if (!SymbolEqualityComparer.Default.Equals(leftNamed.OriginalDefinition, rightNamed.OriginalDefinition))
-                return false;
-            if (leftNamed.TypeArguments.Length != rightNamed.TypeArguments.Length)
-                return false;
-
-            for (var i = 0; i < leftNamed.TypeArguments.Length; i++)
-            {
-                if (!TypesEquivalent(leftNamed.TypeArguments[i], rightNamed.TypeArguments[i]))
-                    return false;
-            }
-
-            return true;
-        }
-
-        return false;
-    }
-
-
 
     private async Task<List<IMethodSymbol>> GetRelatedMethodsAsync(
         IMethodSymbol method,
@@ -420,7 +377,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         ITypeSymbol newReturn,
         Compilation compilation)
     {
-        if (TypesEquivalent(contractReturn, newReturn))
+        if (TypeEquivalenceHelpers.TypesEquivalent(contractReturn, newReturn))
             return true;
 
         if (!newReturn.IsReferenceType || !contractReturn.IsReferenceType)
@@ -808,7 +765,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         if (spec.Type == null || spec.Type.TypeKind == TypeKind.Error)
             return true;
 
-        return !TypesEquivalent(spec.Type, expected);
+        return !TypeEquivalenceHelpers.TypesEquivalent(spec.Type, expected);
     }
 
     internal static bool MethodGroupStillCompatible(
@@ -1011,7 +968,6 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
-
 
     internal readonly record struct ReturnRewritePlan(
         ReturnRewriteKind Kind,
