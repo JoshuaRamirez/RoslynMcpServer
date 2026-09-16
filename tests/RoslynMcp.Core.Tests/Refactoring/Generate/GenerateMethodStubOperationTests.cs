@@ -14,7 +14,7 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
 /// Operation-level tests for <see cref="GenerateMethodStubOperation"/>,
-/// including <c>throwNotImplemented</c> and <c>replaceExisting</c>.
+/// including <c>throwNotImplemented</c>, <c>replaceExisting</c>, and <c>allFiles</c>.
 /// </summary>
 public class GenerateMethodStubOperationTests
 {
@@ -2564,7 +2564,383 @@ public class GenerateMethodStubOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string StubEligibleFileA = """
+        namespace TestApp;
+
+        public class FileA
+        {
+            public void Run()
+            {
+                MissingA();
+            }
+        }
+        """;
+
+    private const string StubEligibleFileB = """
+        namespace TestApp;
+
+        public class FileB
+        {
+            public void Run()
+            {
+                MissingB();
+            }
+        }
+        """;
+
+    private const string StubAlreadyResolved = """
+        namespace TestApp;
+
+        public class AlreadyHas
+        {
+            public void Run()
+            {
+                Existing();
+            }
+
+            private void Existing()
+            {
+            }
+        }
+        """;
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateMethodStubOperation.Validate(new GenerateMethodStubParams
+            {
+                AllFiles = false,
+                Line = 1,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutLine_Throws()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateMethodStubAllFilesLine.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                GenerateMethodStubOperation.Validate(new GenerateMethodStubParams
+                {
+                    AllFiles = false,
+                    SourceFile = path,
+                    Column = 1
+                }));
+
+            Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+            Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutLineColumn_DoesNotThrow()
+    {
+        GenerateMethodStubOperation.Validate(new GenerateMethodStubParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateMethodStubOperation.Validate(new GenerateMethodStubParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateMethodStubOperation.Validate(new GenerateMethodStubParams
+            {
+                AllFiles = true,
+                Column = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMethodName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GenerateMethodStubOperation.Validate(new GenerateMethodStubParams
+            {
+                AllFiles = true,
+                MethodName = "Renamed"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Generate method stub", GenerateMethodStubOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Generate 2 method stubs", GenerateMethodStubOperation.BuildAllFilesDescription(2));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesFalse_GeneratesOnlySpecifiedCallSite()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", StubEligibleFileA),
+            ("FileB.cs", StubEligibleFileB));
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var pathA = workspace.PathFor("FileA.cs");
+        var pathB = workspace.PathFor("FileB.cs");
+        var (line, column) = FindIdentifier(StubEligibleFileA, "MissingA");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            AllFiles = false,
+            SourceFile = pathA,
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(pathA));
+        Assert.Contains("private void MissingA()", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_OmittedAllFiles_KeepsSingleSiteGenerate()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StubEligibleFileA, "FileA.cs");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var (line, column) = FindIdentifier(StubEligibleFileA, "MissingA");
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = line,
+            Column = column
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private void MissingA()", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_GeneratesEligibleCallSitesAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", StubEligibleFileA),
+            ("FileB.cs", StubEligibleFileB),
+            ("Already.cs", StubAlreadyResolved));
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var pathA = workspace.PathFor("FileA.cs");
+        var pathB = workspace.PathFor("FileB.cs");
+        var pathAlready = workspace.PathFor("Already.cs");
+        var beforeAlready = await File.ReadAllTextAsync(pathAlready);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(pathA));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(pathB));
+        Assert.Contains("private void MissingA()", updatedA, StringComparison.Ordinal);
+        Assert.Contains("private void MissingB()", updatedB, StringComparison.Ordinal);
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(pathAlready));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, pathA));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, pathB));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, pathAlready));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StubEligibleFileA, "FileA.cs");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateMethodStubParams
+            {
+                AllFiles = true,
+                Line = 8
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StubEligibleFileA, "FileA.cs");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateMethodStubParams
+            {
+                AllFiles = true,
+                Column = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_WithMethodName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(StubEligibleFileA, "FileA.cs");
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateMethodStubParams
+            {
+                AllFiles = true,
+                MethodName = "Renamed"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", StubEligibleFileA),
+            ("FileB.cs", StubEligibleFileB));
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var pathA = workspace.PathFor("FileA.cs");
+        var pathB = workspace.PathFor("FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            AllFiles = true,
+            SourceFile = pathA
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(pathA));
+        Assert.Contains("private void MissingA()", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, pathA));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, pathB));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", StubEligibleFileA),
+            ("FileB.cs", StubEligibleFileB),
+            ("Already.cs", StubAlreadyResolved));
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var pathA = workspace.PathFor("FileA.cs");
+        var pathB = workspace.PathFor("FileB.cs");
+        var pathAlready = workspace.PathFor("Already.cs");
+        var beforeA = await File.ReadAllTextAsync(pathA);
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var beforeAlready = await File.ReadAllTextAsync(pathAlready);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, pathA));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, pathB));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, pathAlready));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(pathA));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(pathAlready));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Already.cs", StubAlreadyResolved));
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_DedupesSameSignatureAcrossCallSites()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Widget
+            {
+                public void Run()
+                {
+                    Shared();
+                    Shared();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(1, CountOccurrences(updated, "private void Shared()"));
+        AssertCompiles(updated);
+    }
+
+    #endregion
+
     #region Helpers
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateMethodStubMissing.cs");
