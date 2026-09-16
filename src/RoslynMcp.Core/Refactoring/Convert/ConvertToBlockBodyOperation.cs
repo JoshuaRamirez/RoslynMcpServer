@@ -110,7 +110,8 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
                 $"Member '{GetMemberName(member) ?? member.Kind().ToString()}' does not support block body conversion.");
         }
 
-        var (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member);
+        var model = await document.GetSemanticModelAsync(cancellationToken);
+        var (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member, model);
 
         if (@params.Preview)
         {
@@ -177,13 +178,28 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
         }
 
+        // One physical path may appear as multiple Documents when linked into
+        // several projects. Rewrite once per normalized path and apply the same
+        // text to every sibling DocumentId so CommitChanges cannot last-write-wins
+        // conflicting preprocessor variants (Codex P2).
+        var documentGroups = allDocuments
+            .GroupBy(d => PathResolver.NormalizePath(d.FilePath!), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+                .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
+                .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
+                .ToList())
+            .OrderBy(group => group[0].FilePath, StringComparer.Ordinal)
+            .ToList();
+
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;
 
-        foreach (var document in allDocuments)
+        foreach (var linkedDocuments in documentGroups)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var document = linkedDocuments[0];
             var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
             if (currentDocument is SourceGeneratedDocument)
                 continue;
@@ -198,8 +214,10 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             // Bottom-up rewriter so a nested convertible member (e.g. local
             // function) is rewritten before its enclosing member; returning a
             // precomputed ancestor from ReplaceNodes would discard the nested
-            // conversion (Codex P2 on allFiles).
-            var rewriter = new ConvertToBlockBodyAllFilesRewriter();
+            // conversion (Codex P2 on allFiles). SemanticModel is captured on
+            // original nodes before descendants rewrite (Codex P2 alias Task).
+            var model = await currentDocument.GetSemanticModelAsync(cancellationToken);
+            var rewriter = new ConvertToBlockBodyAllFilesRewriter(model);
             var newRoot = rewriter.Visit(root)!;
             if (rewriter.ConvertedCount == 0)
                 continue;
@@ -226,7 +244,16 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
                 continue;
             }
 
-            currentSolution = newDocument.Project.Solution;
+            foreach (var linked in linkedDocuments)
+            {
+                var sibling = currentSolution.GetDocument(linked.Id) ?? linked;
+                if (sibling is SourceGeneratedDocument)
+                    continue;
+                if (!DocumentEditableHelpers.IsDocumentEditable(sibling, Context.Workspace))
+                    continue;
+                currentSolution = currentSolution.WithDocumentText(sibling.Id, afterText);
+            }
+
             anyChanged = true;
         }
 
@@ -287,11 +314,13 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         SyntaxNode member,
         out SyntaxNode newMember,
         out string beforeSnippet,
-        out string afterSnippet)
+        out string afterSnippet,
+        SemanticModel? model = null,
+        IMethodSymbol? precomputedSymbol = null)
     {
         try
         {
-            (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member);
+            (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member, model, precomputedSymbol);
             return true;
         }
         catch (RefactoringException)
@@ -406,12 +435,15 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         _ => Contracts.Enums.SymbolKind.Method
     };
 
-    private static (SyntaxNode newNode, string before, string after) ConvertToBlockBody(SyntaxNode member)
+    private static (SyntaxNode newNode, string before, string after) ConvertToBlockBody(
+        SyntaxNode member,
+        SemanticModel? model = null,
+        IMethodSymbol? precomputedSymbol = null)
     {
         return member switch
         {
-            MethodDeclarationSyntax method => ConvertMethod(method),
-            LocalFunctionStatementSyntax localFunction => ConvertLocalFunction(localFunction),
+            MethodDeclarationSyntax method => ConvertMethod(method, model, precomputedSymbol),
+            LocalFunctionStatementSyntax localFunction => ConvertLocalFunction(localFunction, model, precomputedSymbol),
             OperatorDeclarationSyntax op => ConvertOperator(op),
             ConversionOperatorDeclarationSyntax conversion => ConvertConversionOperator(conversion),
             ConstructorDeclarationSyntax constructor => ConvertConstructor(constructor),
@@ -425,11 +457,17 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         };
     }
 
-    private static (SyntaxNode newNode, string before, string after) ConvertMethod(MethodDeclarationSyntax method)
+    private static (SyntaxNode newNode, string before, string after) ConvertMethod(
+        MethodDeclarationSyntax method,
+        SemanticModel? model = null,
+        IMethodSymbol? precomputedSymbol = null)
     {
         EnsureExpressionBody(method.ExpressionBody, method.Body, "Method");
         var expressionBody = method.ExpressionBody!;
-        var stmt = CreateStatement(expressionBody, useReturn: !IsNonReturning(method.ReturnType, method.Modifiers));
+        var symbol = precomputedSymbol ?? model?.GetDeclaredSymbol(method) as IMethodSymbol;
+        var stmt = CreateStatement(
+            expressionBody,
+            useReturn: !IsNonReturning(method.ReturnType, method.Modifiers, symbol));
         var before = FormatExpressionBody(expressionBody.Expression);
         var newMethod = method
             .WithExpressionBody(null)
@@ -440,11 +478,16 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     }
 
     private static (SyntaxNode newNode, string before, string after) ConvertLocalFunction(
-        LocalFunctionStatementSyntax localFunction)
+        LocalFunctionStatementSyntax localFunction,
+        SemanticModel? model = null,
+        IMethodSymbol? precomputedSymbol = null)
     {
         EnsureExpressionBody(localFunction.ExpressionBody, localFunction.Body, "Local function");
         var expressionBody = localFunction.ExpressionBody!;
-        var stmt = CreateStatement(expressionBody, useReturn: !IsNonReturning(localFunction.ReturnType, localFunction.Modifiers));
+        var symbol = precomputedSymbol ?? model?.GetDeclaredSymbol(localFunction) as IMethodSymbol;
+        var stmt = CreateStatement(
+            expressionBody,
+            useReturn: !IsNonReturning(localFunction.ReturnType, localFunction.Modifiers, symbol));
         var before = FormatExpressionBody(expressionBody.Expression);
         var converted = localFunction
             .WithExpressionBody(null)
@@ -754,12 +797,35 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         trivia.Where(item => !item.IsKind(SyntaxKind.WhitespaceTrivia)
             && !item.IsKind(SyntaxKind.EndOfLineTrivia));
 
-    private static bool IsNonReturning(TypeSyntax returnType, SyntaxTokenList modifiers) =>
-        IsVoidReturn(returnType) ||
-        (modifiers.Any(SyntaxKind.AsyncKeyword) && IsNonGenericTaskLike(returnType));
+    private static bool IsNonReturning(
+        TypeSyntax returnType,
+        SyntaxTokenList modifiers,
+        IMethodSymbol? symbol = null)
+    {
+        if (symbol is { ReturnType.TypeKind: not TypeKind.Error })
+        {
+            if (symbol.ReturnsVoid)
+                return true;
+
+            return modifiers.Any(SyntaxKind.AsyncKeyword) &&
+                   IsNonGenericTaskLikeSymbol(symbol.ReturnType);
+        }
+
+        return IsVoidReturn(returnType) ||
+               (modifiers.Any(SyntaxKind.AsyncKeyword) && IsNonGenericTaskLike(returnType));
+    }
 
     private static bool IsVoidReturn(TypeSyntax returnType) =>
         returnType is PredefinedTypeSyntax predefined && predefined.Keyword.IsKind(SyntaxKind.VoidKeyword);
+
+    private static bool IsNonGenericTaskLikeSymbol(ITypeSymbol type)
+    {
+        if (type is INamedTypeSymbol { IsGenericType: true })
+            return false;
+
+        return type.Name is "Task" or "ValueTask" &&
+               type.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks";
+    }
 
     private static bool IsNonGenericTaskLike(TypeSyntax returnType) => returnType switch
     {
@@ -782,15 +848,32 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     /// </summary>
     private sealed class ConvertToBlockBodyAllFilesRewriter : CSharpSyntaxRewriter
     {
+        private readonly SemanticModel? _model;
+
+        public ConvertToBlockBodyAllFilesRewriter(SemanticModel? model)
+        {
+            _model = model;
+        }
+
         public int ConvertedCount { get; private set; }
 
         public override SyntaxNode? Visit(SyntaxNode? node)
         {
+            // Capture symbols from the original tree before descendants rewrite
+            // replaces nodes; GetDeclaredSymbol cannot bind rewritten nodes.
+            IMethodSymbol? precomputedSymbol = node switch
+            {
+                MethodDeclarationSyntax method => _model?.GetDeclaredSymbol(method) as IMethodSymbol,
+                LocalFunctionStatementSyntax localFunction =>
+                    _model?.GetDeclaredSymbol(localFunction) as IMethodSymbol,
+                _ => null
+            };
+
             var visited = base.Visit(node);
             if (visited == null || !IsConvertibleKind(visited))
                 return visited;
 
-            if (!TryConvert(visited, out var converted, out _, out _))
+            if (!TryConvert(visited, out var converted, out _, out _, _model, precomputedSymbol))
                 return visited;
 
             ConvertedCount++;

@@ -1419,6 +1419,60 @@ public class ConvertToBlockBodyOperationTests
         Assert.Contains("/* property reason */", updated, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_AsyncTaskAlias_ProducesExpressionStatementNotReturnAwait()
+    {
+        const string source = """
+            using System.Threading.Tasks;
+            using Work = System.Threading.Tasks.Task;
+            using WorkValue = System.Threading.Tasks.ValueTask;
+
+            namespace TestApp;
+
+            public class AsyncAlias
+            {
+                public async Work Run() => await Delay();
+                public async WorkValue RunValue() => await DelayValue();
+                public void Host()
+                {
+                    async Work Nested() => await Delay();
+                    _ = Nested();
+                }
+                private static Work Delay() => Task.CompletedTask;
+                private static WorkValue DelayValue() => ValueTask.CompletedTask;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "AsyncAlias.cs");
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["AsyncAlias.cs"]));
+        AssertMethodIsBlockBodied(updated, "Run");
+        AssertMethodIsBlockBodied(updated, "RunValue");
+        Assert.DoesNotContain("return await", updated, StringComparison.Ordinal);
+        var root = CSharpSyntaxTree.ParseText(updated).GetRoot();
+        var run = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "Run");
+        Assert.Single(run.Body!.Statements);
+        Assert.IsType<ExpressionStatementSyntax>(run.Body.Statements[0]);
+        var runValue = root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == "RunValue");
+        Assert.Single(runValue.Body!.Statements);
+        Assert.IsType<ExpressionStatementSyntax>(runValue.Body.Statements[0]);
+        var nested = root.DescendantNodes().OfType<LocalFunctionStatementSyntax>()
+            .First(m => m.Identifier.Text == "Nested");
+        Assert.Null(nested.ExpressionBody);
+        Assert.NotNull(nested.Body);
+        Assert.Single(nested.Body!.Statements);
+        Assert.IsType<ExpressionStatementSyntax>(nested.Body.Statements[0]);
+    }
+
     #endregion
 
     #region Helpers
