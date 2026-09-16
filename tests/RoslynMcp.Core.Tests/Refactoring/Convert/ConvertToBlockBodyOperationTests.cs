@@ -1111,6 +1111,50 @@ public class ConvertToBlockBodyOperationTests
     }
 
     [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_ExactCase_PrefersSingleWorkspaceFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("FileA.cs", MixedExpressionFileA), ("filea.cs", MixedExpressionFileB)],
+            explicitCompileItems: true);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+        var beforeLower = await File.ReadAllTextAsync(workspace.SourcePaths["filea.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        AssertMethodIsBlockBodied(updatedA, "One");
+        AssertMethodIsBlockBodied(updatedA, "Two");
+        Assert.Equal(beforeLower, await File.ReadAllTextAsync(workspace.SourcePaths["filea.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_AmbiguousIgnoreCase_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("FileA.cs", MixedExpressionFileA), ("filea.cs", MixedExpressionFileB)],
+            explicitCompileItems: true);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+        var ambiguous = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToBlockBodyParams
+            {
+                AllFiles = true,
+                SourceFile = ambiguous
+            }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
     public async Task Convert_AllFilesTrue_EveryFileAlreadyBlock_SucceedsWithEmptyChanges()
     {
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
@@ -1453,9 +1497,14 @@ public class ConvertToBlockBodyOperationTests
         public required WorkspaceContext Context { get; init; }
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
-            CreateWithFilesAsync((fileName, source));
+            CreateWithFilesAsync([(fileName, source)]);
 
-        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
+        public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
+            CreateWithFilesAsync(files, explicitCompileItems: false);
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(
+            IReadOnlyList<(string FileName, string Source)> files,
+            bool explicitCompileItems)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1463,18 +1512,24 @@ public class ConvertToBlockBodyOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            var compileItems = explicitCompileItems
+                ? string.Join(Environment.NewLine, files.Select(f => $"    <Compile Include=\"{f.FileName}\" />"))
+                : string.Empty;
 
             // Pin authored sources so generated AssemblyInfo / TFM attributes
             // are not hit by the allFiles .cs document walk.
-            await File.WriteAllTextAsync(projectPath, """
+            await File.WriteAllTextAsync(projectPath, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
                     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
                     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                {(explicitCompileItems ? "    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>" : string.Empty)}
                   </PropertyGroup>
+                {(explicitCompileItems ? $"  <ItemGroup>{Environment.NewLine}{compileItems}{Environment.NewLine}  </ItemGroup>" : string.Empty)}
                 </Project>
                 """);
 

@@ -174,13 +174,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
         {
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
-            if (allDocuments.Count == 0)
-            {
-                throw new RefactoringException(
-                    ErrorCodes.SourceNotInWorkspace,
-                    $"File not found in workspace: {@params.SourceFile}");
-            }
+            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
         }
 
         var allPendingChanges = new List<PendingChange>();
@@ -255,6 +249,28 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         return RefactoringResult.Succeeded(operationId,
             new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
             null, 0, 0);
+    }
+
+    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var exactMatches = documents
+            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
+            .ToList();
+        if (exactMatches.Count > 0)
+            return exactMatches;
+
+        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
+        return matchedDocuments.Count switch
+        {
+            0 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"File not found in workspace: {sourceFile}"),
+            > 1 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ => matchedDocuments
+        };
     }
 
     internal static string BuildAllFilesDescription(int convertedCount) =>
