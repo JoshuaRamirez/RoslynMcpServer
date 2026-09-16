@@ -46,9 +46,6 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             if (!string.IsNullOrWhiteSpace(@params.SourceFile))
                 ValidateSourceFilePath(@params.SourceFile!);
 
-            if (!string.IsNullOrWhiteSpace(@params.SourceFile) && !File.Exists(@params.SourceFile))
-                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
-
             return;
         }
 
@@ -176,7 +173,15 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             .ToList();
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
             allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            if (allDocuments.Count == 0)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.SourceNotInWorkspace,
+                    $"File not found in workspace: {@params.SourceFile}");
+            }
+        }
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;

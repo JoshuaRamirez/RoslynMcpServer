@@ -166,16 +166,13 @@ public class ConvertToBlockBodyOperationTests
     }
 
     [Fact]
-    public void Validate_AllFilesTrue_WithMissingSourceFile_Throws()
+    public void Validate_AllFilesTrue_WithMissingSourceFile_DoesNotThrow()
     {
-        var ex = Assert.Throws<RefactoringException>(() =>
-            ConvertToBlockBodyOperation.Validate(new ConvertToBlockBodyParams
-            {
-                AllFiles = true,
-                SourceFile = AbsoluteTestPath()
-            }));
-
-        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+        ConvertToBlockBodyOperation.Validate(new ConvertToBlockBodyParams
+        {
+            AllFiles = true,
+            SourceFile = AbsoluteTestPath()
+        });
     }
 
     [Fact]
@@ -1056,6 +1053,64 @@ public class ConvertToBlockBodyOperationTests
     }
 
     [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", MixedExpressionFileA),
+            ("FileB.cs", MixedExpressionFileB),
+            ("FileC.cs", AlreadyBlockFileC));
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var flipped = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        AssertMethodIsBlockBodied(updatedA, "One");
+        AssertMethodIsBlockBodied(updatedA, "Two");
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", MixedExpressionFileA),
+            ("FileB.cs", MixedExpressionFileB));
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertToBlockBody_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "class Outside { int Value() => 1; }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new ConvertToBlockBodyParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
     public async Task Convert_AllFilesTrue_EveryFileAlreadyBlock_SucceedsWithEmptyChanges()
     {
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
@@ -1266,6 +1321,18 @@ public class ConvertToBlockBodyOperationTests
 
     private static bool PathEquals(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (char.IsLetter(chars[i]))
+                chars[i] = char.IsUpper(chars[i]) ? char.ToLowerInvariant(chars[i]) : char.ToUpperInvariant(chars[i]);
+        }
+
+        return new string(chars);
+    }
 
     private static void AssertMethodIsBlockBodied(string source, string name)
     {
