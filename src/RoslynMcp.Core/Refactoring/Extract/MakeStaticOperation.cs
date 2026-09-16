@@ -214,7 +214,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
                         continue;
                     }
 
-                    var canonical = CanonicalPartialMethod(method);
+                    var canonical = PartialMethodHelpers.CanonicalPartialMethod(method);
                     if (!processedMethods.Add(canonical))
                         continue;
 
@@ -402,44 +402,6 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         return method.Locations.Any(location => location.IsInSource);
     }
 
-    /// <summary>
-    /// Prefers the implementation part of a partial method so the walk
-    /// treats definition + implementation as one method.
-    /// </summary>
-    internal static IMethodSymbol CanonicalPartialMethod(IMethodSymbol method)
-    {
-        var implementation = method.PartialImplementationPart
-            ?? method.PartialDefinitionPart?.PartialImplementationPart;
-        return implementation ?? method.PartialDefinitionPart ?? method;
-    }
-
-    /// <summary>
-    /// Both partial definition and implementation (when present), plus
-    /// <paramref name="method"/> itself.
-    /// </summary>
-    internal static IEnumerable<IMethodSymbol> GetPartialMethodParts(IMethodSymbol method)
-    {
-        var parts = new List<IMethodSymbol> { method };
-        if (method.PartialDefinitionPart != null)
-            parts.Add(method.PartialDefinitionPart);
-        if (method.PartialImplementationPart != null)
-            parts.Add(method.PartialImplementationPart);
-        if (method.PartialDefinitionPart?.PartialImplementationPart != null)
-            parts.Add(method.PartialDefinitionPart.PartialImplementationPart);
-        if (method.PartialImplementationPart?.PartialDefinitionPart != null)
-            parts.Add(method.PartialImplementationPart.PartialDefinitionPart);
-        return parts.Distinct<IMethodSymbol>(SymbolEqualityComparer.Default);
-    }
-
-    private static IEnumerable<SyntaxReference> EnumerateDeclaringSyntaxReferences(IMethodSymbol method)
-    {
-        foreach (var part in GetPartialMethodParts(method))
-        {
-            foreach (var reference in part.DeclaringSyntaxReferences)
-                yield return reference;
-        }
-    }
-
     private static bool PlanConflictsWithClaimedSpans(
         StaticPlan plan,
         HashSet<(SyntaxTree Tree, TextSpan Span)> claimedSpans)
@@ -584,7 +546,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         CancellationToken cancellationToken)
     {
         var documents = new List<Document>();
-        foreach (var reference in EnumerateDeclaringSyntaxReferences(method))
+        foreach (var reference in PartialMethodHelpers.EnumerateDeclaringSyntaxReferences(method))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var syntax = await reference.GetSyntaxAsync(cancellationToken);
@@ -616,7 +578,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         CancellationToken cancellationToken)
     {
         var members = new List<ISymbol>();
-        foreach (var reference in EnumerateDeclaringSyntaxReferences(method))
+        foreach (var reference in PartialMethodHelpers.EnumerateDeclaringSyntaxReferences(method))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var syntax = await reference.GetSyntaxAsync(cancellationToken);
@@ -774,7 +736,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
     {
         var declarations = new List<DeclarationEdit>();
         var seenDeclarations = new HashSet<(SyntaxTree Tree, TextSpan Span)>();
-        foreach (var reference in EnumerateDeclaringSyntaxReferences(method))
+        foreach (var reference in PartialMethodHelpers.EnumerateDeclaringSyntaxReferences(method))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var syntax = await reference.GetSyntaxAsync(cancellationToken);
@@ -802,7 +764,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
                 $"Could not locate a declaration to make static for '{method.Name}'.");
         }
 
-        var callSites = await FindCallSiteEditsAsync(CanonicalPartialMethod(method), cancellationToken);
+        var callSites = await FindCallSiteEditsAsync(PartialMethodHelpers.CanonicalPartialMethod(method), cancellationToken);
         return new StaticPlan(
             method.Name,
             method.ToDisplayString(),
