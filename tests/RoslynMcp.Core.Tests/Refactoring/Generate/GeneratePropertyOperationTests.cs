@@ -16,7 +16,7 @@ namespace RoslynMcp.Core.Tests.Refactoring.Generate;
 
 /// <summary>
 /// Operation-level tests for <see cref="GeneratePropertyOperation"/>, including
-/// optional <c>line</c> / <c>column</c> and <c>replaceExisting</c>.
+/// optional <c>line</c> / <c>column</c>, <c>replaceExisting</c>, and <c>allFiles</c>.
 /// </summary>
 public class GeneratePropertyOperationTests
 {
@@ -2207,6 +2207,457 @@ public class GeneratePropertyOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string PropertyEligibleFileA = """
+        namespace TestApp;
+
+        public class FileA
+        {
+        }
+
+        public interface ISkip
+        {
+            string Title { get; set; }
+        }
+        """;
+
+    private const string PropertyEligibleFileB = """
+        namespace TestApp;
+
+        public class FileB
+        {
+        }
+        """;
+
+    private const string PropertyAlreadyHasName = """
+        namespace TestApp;
+
+        public class AlreadyHas
+        {
+            public string Name { get; set; }
+        }
+
+        public interface ISkip
+        {
+            string Title { get; set; }
+        }
+        """;
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.Validate(new GeneratePropertyParams
+            {
+                AllFiles = false,
+                TypeName = "Widget",
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutTypeName_DoesNotThrow_WhenPropertyShapePresent()
+    {
+        GeneratePropertyOperation.Validate(new GeneratePropertyParams
+        {
+            AllFiles = true,
+            PropertyName = "Name",
+            PropertyType = "string"
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.Validate(new GeneratePropertyParams
+            {
+                AllFiles = true,
+                TypeName = "Widget",
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.Validate(new GeneratePropertyParams
+            {
+                AllFiles = true,
+                Line = 8,
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.Validate(new GeneratePropertyParams
+            {
+                AllFiles = true,
+                Column = 1,
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutPropertyNameAndFieldName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            GeneratePropertyOperation.Validate(new GeneratePropertyParams
+            {
+                AllFiles = true,
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("propertyName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Generate property", GeneratePropertyOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Generate 2 properties", GeneratePropertyOperation.BuildAllFilesDescription(2));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_AllFilesFalse_GeneratesOnlySpecifiedType()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", PropertyEligibleFileA),
+            ("FileB.cs", PropertyEligibleFileB));
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var pathA = workspace.PathFor("FileA.cs");
+        var pathB = workspace.PathFor("FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = pathA,
+            AllFiles = false,
+            TypeName = "FileA",
+            PropertyName = "Name",
+            PropertyType = "string"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(pathA));
+        Assert.Contains("public string Name", updatedA, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(updatedA, "public string Name"));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, pathA));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_OmittedAllFiles_KeepsSingleSiteGenerate()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PropertyEligibleFileA, "FileA.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "FileA",
+            PropertyName = "Name",
+            PropertyType = "string"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public string Name", updated, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(updated, "public string Name"));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_AllFilesTrue_GeneratesEligibleTypesAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", PropertyEligibleFileA),
+            ("FileB.cs", PropertyEligibleFileB),
+            ("Already.cs", PropertyAlreadyHasName));
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var pathA = workspace.PathFor("FileA.cs");
+        var pathB = workspace.PathFor("FileB.cs");
+        var pathAlready = workspace.PathFor("Already.cs");
+        var beforeAlready = await File.ReadAllTextAsync(pathAlready);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            AllFiles = true,
+            PropertyName = "Name",
+            PropertyType = "string"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(pathA));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(pathB));
+        Assert.Contains("public string Name", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public string Name", updatedB, StringComparison.Ordinal);
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(pathAlready));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, pathA));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, pathB));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, pathAlready));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_AllFilesTrue_WithTypeName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PropertyEligibleFileA, "FileA.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                AllFiles = true,
+                TypeName = "FileA",
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("typeName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PropertyEligibleFileA, "FileA.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                AllFiles = true,
+                Line = 4,
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(PropertyEligibleFileA, "FileA.cs");
+        var operation = new GeneratePropertyOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                AllFiles = true,
+                Column = 1,
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", PropertyEligibleFileA),
+            ("FileB.cs", PropertyEligibleFileB));
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var pathA = workspace.PathFor("FileA.cs");
+        var pathB = workspace.PathFor("FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            AllFiles = true,
+            SourceFile = pathA,
+            PropertyName = "Name",
+            PropertyType = "string"
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(pathA));
+        Assert.Contains("public string Name", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, pathA));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", PropertyEligibleFileA),
+            ("FileB.cs", PropertyEligibleFileB),
+            ("Already.cs", PropertyAlreadyHasName));
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var pathA = workspace.PathFor("FileA.cs");
+        var pathB = workspace.PathFor("FileB.cs");
+        var pathAlready = workspace.PathFor("Already.cs");
+        var beforeA = await File.ReadAllTextAsync(pathA);
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var beforeAlready = await File.ReadAllTextAsync(pathAlready);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            AllFiles = true,
+            Preview = true,
+            PropertyName = "Name",
+            PropertyType = "string"
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, pathA));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, pathB));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, pathAlready));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(pathA));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Equal(beforeAlready, await File.ReadAllTextAsync(pathAlready));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Already.cs", PropertyAlreadyHasName));
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            AllFiles = true,
+            PropertyName = "Name",
+            PropertyType = "string"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_AllFilesTrue_ReplaceExistingAndInitOnly_ReplacesAcrossFiles()
+    {
+        const string fileA = """
+            namespace TestApp;
+
+            public class FileA
+            {
+                public string Name { get; set; }
+            }
+            """;
+        const string fileB = """
+            namespace TestApp;
+
+            public class FileB
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", fileA),
+            ("FileB.cs", fileB));
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var pathA = workspace.PathFor("FileA.cs");
+        var pathB = workspace.PathFor("FileB.cs");
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            AllFiles = true,
+            PropertyName = "Name",
+            PropertyType = "string",
+            ReplaceExisting = true,
+            InitOnly = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(pathA));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(pathB));
+        Assert.Contains("public string Name { get; init; }", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public string Name { get; init; }", updatedB, StringComparison.Ordinal);
+        Assert.DoesNotContain("{ get; set; }", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("{ get; set; }", updatedB, StringComparison.Ordinal);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_AllFilesTrue_FieldName_WrapsOnlyTypesWithField()
+    {
+        const string withField = """
+            namespace TestApp;
+
+            public class HasField
+            {
+                private string _name;
+            }
+            """;
+        const string withoutField = """
+            namespace TestApp;
+
+            public class NoField
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("HasField.cs", withField),
+            ("NoField.cs", withoutField));
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var pathHas = workspace.PathFor("HasField.cs");
+        var pathNo = workspace.PathFor("NoField.cs");
+        var beforeNo = await File.ReadAllTextAsync(pathNo);
+
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            AllFiles = true,
+            FieldName = "_name"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedHas = NormalizeNewlines(await File.ReadAllTextAsync(pathHas));
+        Assert.Contains("private string _name;", updatedHas, StringComparison.Ordinal);
+        Assert.Contains("public string Name", updatedHas, StringComparison.Ordinal);
+        Assert.Contains("get => _name;", updatedHas, StringComparison.Ordinal);
+        Assert.Contains("set => _name = value;", updatedHas, StringComparison.Ordinal);
+        Assert.Equal(beforeNo, await File.ReadAllTextAsync(pathNo));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, pathHas));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, pathNo));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static INamedTypeSymbol CompileType(string source, string typeName)
@@ -2239,6 +2690,26 @@ public class GeneratePropertyOperationTests
             .Select(d => d.ToString())
             .ToList();
         Assert.True(errors.Count == 0, "Replaced source did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
+    }
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
     }
 
     private static string AbsoluteTestPath() =>
@@ -2315,9 +2786,13 @@ public class GeneratePropertyOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
         public string PathFor(string fileName) => Path.Combine(DirectoryPath, fileName);
+
+        public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
+            CreateAsync(files);
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
             CreateAsync((fileName, source));
@@ -2341,10 +2816,12 @@ public class GeneratePropertyOperationTests
                 """);
 
             string? sourcePath = null;
+            var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var (fileName, source) in files)
             {
                 var path = Path.Combine(directory, fileName);
                 await File.WriteAllTextAsync(path, source);
+                sourcePaths[fileName] = path;
                 sourcePath ??= path;
             }
 
@@ -2365,6 +2842,7 @@ public class GeneratePropertyOperationTests
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
                     SourcePath = sourcePath,
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }
