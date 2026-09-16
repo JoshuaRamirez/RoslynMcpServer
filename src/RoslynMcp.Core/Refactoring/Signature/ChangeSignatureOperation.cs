@@ -216,8 +216,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// physical path are rewritten once and the same text is applied to every
     /// sibling <see cref="DocumentId"/> via <see cref="Solution.GetChanges(Solution)"/>
     /// coalesce (prefer a changed DocumentId as source). Methods missing any
-    /// <c>originalName</c>, uneditable / source-generated docs, and otherwise
-    /// inapplicable methods are skipped rather than failing the walk.
+    /// <c>originalName</c>, kept <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c>
+    /// parameters (modifiers not preserved by <c>CreateParameterSyntax</c>),
+    /// uneditable / source-generated docs, and otherwise inapplicable methods
+    /// are skipped rather than failing the walk.
     /// Deterministic <c>SpanStart</c> order within a file. When every file is
     /// a no-op, succeeds with empty changes.
     /// </summary>
@@ -479,14 +481,24 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
 
     /// <summary>
     /// True when every <c>originalName</c> in <paramref name="changes"/>
-    /// exists on <paramref name="method"/>.
+    /// exists on <paramref name="method"/>, and no kept parameter uses
+    /// <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c> (bulk rewrite cannot
+    /// preserve those modifiers yet — <c>CreateParameterSyntax</c> only
+    /// emits type/name/default).
     /// </summary>
     internal static bool IsEligible(IMethodSymbol method, IReadOnlyList<ParameterChange> changes)
     {
-        var names = method.Parameters.Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
+        var byName = method.Parameters.ToDictionary(p => p.Name, StringComparer.Ordinal);
         foreach (var change in changes)
         {
-            if (change.OriginalName != null && !names.Contains(change.OriginalName))
+            if (change.OriginalName == null)
+                continue;
+            if (!byName.TryGetValue(change.OriginalName, out var existing))
+                return false;
+            // Skipping Remove entries: dropped params need no modifier emit.
+            if (change.Remove)
+                continue;
+            if (existing.RefKind != RefKind.None || existing.IsParams)
                 return false;
         }
 

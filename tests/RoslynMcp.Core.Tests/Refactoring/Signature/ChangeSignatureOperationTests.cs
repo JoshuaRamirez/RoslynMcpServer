@@ -843,6 +843,46 @@ public class ChangeSignatureOperationTests
     }
 
     [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsRefParamsRatherThanStrippingModifiers()
+    {
+        const string withRef = """
+            namespace TestApp;
+
+            public class FileA
+            {
+                public void Process(ref int x) { }
+            }
+            """;
+        const string plain = """
+            namespace TestApp;
+
+            public class FileB
+            {
+                public void Process(int x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", withRef),
+            ("FileB.cs", plain));
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters = KeepXAddFlag()
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        Assert.True(HasParameters(updatedB, "Process", ("int", "x"), ("bool", "flag")));
+        Assert.DoesNotContain(result.Changes!.FilesModified, p => PathsEqual(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
     public async Task ChangeSignature_AllFilesTrue_DefaultOnlyChange_UpdatesDefaults()
     {
         const string withDefault = """
