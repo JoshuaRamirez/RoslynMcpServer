@@ -12,11 +12,15 @@ internal static class ContextValidTypeHelpers
     /// <summary>
     /// Minimal display string for <paramref name="type"/> at
     /// <paramref name="position"/>, falling back to fully-qualified when the
-    /// minimal name is empty or binds to a different type. Same body as the
-    /// two Convert copies.
+    /// minimal name is empty or binds to a different type. Returns
+    /// <c>"void"</c> for <see cref="SpecialType.System_Void"/> (aligned with
+    /// change_return_type). Same body as the Convert copies plus void.
     /// </summary>
     internal static string ToContextValidTypeName(ITypeSymbol type, SemanticModel model, int position)
     {
+        if (type.SpecialType == SpecialType.System_Void)
+            return "void";
+
         var display = type.ToMinimalDisplayString(model, position);
         if (string.IsNullOrWhiteSpace(display) || NamespaceEqualityHelpers.TypeNameBindsToDifferentType(display, type, model, position))
         {

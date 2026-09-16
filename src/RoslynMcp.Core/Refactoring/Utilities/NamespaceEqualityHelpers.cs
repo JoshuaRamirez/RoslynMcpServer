@@ -5,9 +5,10 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
 /// Shared namespace-name equality and type-name speculative binding used by
-/// convert_anonymous_to_class / convert_tuple_to_struct. Same bodies as the
-/// two private copies. Distinct from change_return_type
-/// (<c>TypesEquivalent</c> instead of <see cref="SymbolEqualityComparer"/>).
+/// convert_anonymous_to_class / convert_tuple_to_struct / change_return_type
+/// (via <see cref="ContextValidTypeHelpers"/>). Same bodies as the Convert
+/// private copies. Uses <see cref="SymbolEqualityComparer"/> (distinct from
+/// Signature collision checks that use <see cref="TypeEquivalenceHelpers"/>).
 /// </summary>
 internal static class NamespaceEqualityHelpers
 {
