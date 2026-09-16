@@ -6,9 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-09-16
+
 ### Changed
-- Aligned `ChangeReturnTypeOperation.ToContextValidTypeName` void special-case onto shared `ContextValidTypeHelpers.ToContextValidTypeName` (deleted local twin + private bind helper) (#1217)
 - Extracted shared `PartialMethodHelpers.CanonicalPartialMethod` + `GetPartialMethodParts` + `EnumerateDeclaringSyntaxReferences` and replaced 2 identical Extract copies (`make_static` / `make_non_static`) (#1216)
+- Aligned `ChangeReturnTypeOperation.ToContextValidTypeName` void special-case onto shared `ContextValidTypeHelpers.ToContextValidTypeName` (deleted local twin + private bind helper) (#1217)
 - Extracted shared `BraceTypeNameHelpers.FindTypeDeclaration` + `GetQualifiedTypeName` + `NormalizeScope` + `TypeNameMatches` and replaced 2 identical Convert copies (`add_braces` / `remove_braces`) (#1208)
 - Extracted shared `ContextValidTypeHelpers.ToContextValidTypeName` + `MemberTypeBindsAtInsertion` + `ContainsTypeParameter` + `IsLessAccessibleThanPublic` + `GetEffectiveAccessibility` and replaced 2 identical Convert copies (`convert_anonymous_to_class` / `convert_tuple_to_struct`) (#1203)
 - Extracted shared `HierarchyAbstractEventIndexerHelpers.CanMakeEventAbstract` + `ToAbstractEvent` + `CanMakeIndexerAbstract` + `ToAbstractIndexer` and replaced 2 identical Hierarchy copies (`HierarchyAbstractMemberRewriter` / `push_members_down`) (#1197)
@@ -402,7 +404,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
-[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.5.2...v0.6.0
