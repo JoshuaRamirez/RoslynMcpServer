@@ -45,7 +45,7 @@ public class DocumentSourceFileFilterTests
     }
 
     [Fact]
-    public void FilterDocumentsBySourceFile_UsesPhysicalPathComparisonKey()
+    public void FilterDocumentsBySourceFile_MatchesIgnoreCase()
     {
         using var workspace = new AdhocWorkspace();
         var project = workspace.AddProject("P", LanguageNames.CSharp);
@@ -66,21 +66,10 @@ public class DocumentSourceFileFilterTests
                 new List<Document> { document },
                 query);
 
-            if (File.Exists(query))
-            {
-                Assert.Single(result);
-                Assert.Equal(document.Id, result[0].Id);
-                Assert.Equal(
-                    PathResolver.GetPathComparisonKey(path),
-                    PathResolver.GetPathComparisonKey(query));
-            }
-            else
-            {
-                Assert.Empty(result);
-                Assert.NotEqual(
-                    PathResolver.GetPathComparisonKey(path),
-                    PathResolver.GetPathComparisonKey(query));
-            }
+            // Shared allFiles sourceFile filter is OrdinalIgnoreCase on
+            // NormalizePath (historical contract for Generate/Extract/Inline).
+            Assert.Single(result);
+            Assert.Equal(document.Id, result[0].Id);
         }
         finally
         {
