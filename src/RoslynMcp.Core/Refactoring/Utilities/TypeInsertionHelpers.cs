@@ -8,9 +8,7 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// Shared type-declaration insertion helpers used by convert_anonymous_to_class /
 /// convert_tuple_to_struct when placing a new named type into a namespace or
 /// compilation unit. Same bodies as the two private Convert copies.
-/// <see cref="FindNamespace"/> uses a private <c>GetFullNamespaceName</c> twin
-/// so Utilities does not depend on Convert operations; Convert retains its own
-/// GetFullNamespaceName / GetContainingNamespaceName for other call sites.
+/// <see cref="FindNamespace"/> uses <see cref="NamespaceNameHelpers.GetFullNamespaceName"/>.
 /// </summary>
 internal static class TypeInsertionHelpers
 {
@@ -51,7 +49,7 @@ internal static class TypeInsertionHelpers
 
         return root.DescendantNodes()
             .OfType<BaseNamespaceDeclarationSyntax>()
-            .LastOrDefault(ns => string.Equals(GetFullNamespaceName(ns), targetNamespace, StringComparison.Ordinal));
+            .LastOrDefault(ns => string.Equals(NamespaceNameHelpers.GetFullNamespaceName(ns), targetNamespace, StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -67,24 +65,5 @@ internal static class TypeInsertionHelpers
         if (ns != null)
             return ns.Span.End;
         return root.Span.End;
-    }
-
-    /// <summary>
-    /// Private twin of Convert GetFullNamespaceName used only by
-    /// <see cref="FindNamespace"/>. Convert retains its own copies for other callers.
-    /// </summary>
-    private static string? GetFullNamespaceName(BaseNamespaceDeclarationSyntax? ns)
-    {
-        if (ns == null)
-            return null;
-
-        var parts = ns.AncestorsAndSelf()
-            .OfType<BaseNamespaceDeclarationSyntax>()
-            .Reverse()
-            .Select(n => n.Name.ToString())
-            .Where(part => !string.IsNullOrEmpty(part));
-
-        var joined = string.Join(".", parts);
-        return string.IsNullOrEmpty(joined) ? null : joined;
     }
 }

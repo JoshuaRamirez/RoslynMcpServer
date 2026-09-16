@@ -82,7 +82,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         var creation = FindTupleCreation(root, semanticModel, @params);
         var tupleType = GetTupleType(semanticModel, creation);
         var members = GetTupleMembers(tupleType);
-        var targetNamespace = GetContainingNamespaceName(semanticModel, creation);
+        var targetNamespace = NamespaceNameHelpers.GetContainingNamespaceName(semanticModel, creation);
         var lookupName = StripVerbatimPrefix(@params.NewTypeName);
 
         if (!ContextAcceptsStructReplacement(creation, semanticModel))
@@ -452,42 +452,6 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         return keywordKind != SyntaxKind.None ? "@" + bare : bare;
     }
 
-    internal static string? GetContainingNamespaceName(SemanticModel semanticModel, SyntaxNode node)
-    {
-        var enclosing = semanticModel.GetEnclosingSymbol(node.SpanStart);
-        var fromSymbol = NamespaceEqualityHelpers.ToNamespaceName(enclosing?.ContainingNamespace);
-        if (!string.IsNullOrEmpty(fromSymbol))
-            return fromSymbol;
-
-        return GetContainingNamespaceName(node);
-    }
-
-    internal static string? GetContainingNamespaceName(SyntaxNode node)
-    {
-        var name = GetFullNamespaceName(
-            node.Ancestors().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault());
-        return string.IsNullOrEmpty(name) ? null : name;
-    }
-
-    /// <summary>
-    /// Joins nested namespace declarations into the full enclosing name
-    /// (e.g. <c>Outer.Inner</c>, not <c>Inner</c>).
-    /// </summary>
-    internal static string? GetFullNamespaceName(BaseNamespaceDeclarationSyntax? ns)
-    {
-        if (ns == null)
-            return null;
-
-        var parts = ns.AncestorsAndSelf()
-            .OfType<BaseNamespaceDeclarationSyntax>()
-            .Reverse()
-            .Select(n => n.Name.ToString())
-            .Where(part => !string.IsNullOrEmpty(part));
-
-        var joined = string.Join(".", parts);
-        return string.IsNullOrEmpty(joined) ? null : joined;
-    }
-
     internal readonly record struct TupleMember(string Name, ITypeSymbol Type);
 
     private async Task ValidateNoNameConflictAsync(
@@ -644,7 +608,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     private static string TypeNameForCreation(SyntaxNode creation, string newTypeName, string? targetNamespace)
     {
-        var creationNamespace = GetContainingNamespaceName(creation);
+        var creationNamespace = NamespaceNameHelpers.GetContainingNamespaceName(creation);
         if (NamespaceEqualityHelpers.NamespacesEqual(creationNamespace, targetNamespace))
             return newTypeName;
 

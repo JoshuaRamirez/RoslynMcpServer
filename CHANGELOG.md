@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `NamespaceNameHelpers.GetContainingNamespaceName` + `GetFullNamespaceName` and replaced 2 identical Convert copies (`convert_anonymous_to_class` / `convert_tuple_to_struct`); folded TypeInsertionHelpers private twin (#1188)
 - Extracted shared `TypeInsertionHelpers.InsertTypeDeclaration` + `FindNamespace` + `GetTypeInsertionPosition` and replaced 2 identical Convert copies (`convert_anonymous_to_class` / `convert_tuple_to_struct`) (#1184)
 - Extracted shared `ParameterTypeMatchHelpers.ParameterTypesMatch` + `NamedTypesMatch` and replaced 2 identical Generate copies (`implement_interface` / `implement_abstract`) (#1179)
 - Extracted shared `ParameterSyntaxHelpers.IsParams` + `IsOptional` and replaced 2 identical Signature copies (`add_parameter` / `reorder_parameters`) (#1174)
