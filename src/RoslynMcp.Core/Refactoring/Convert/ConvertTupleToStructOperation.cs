@@ -264,7 +264,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         var properties = members.Select(member =>
         {
-            var typeText = ToContextValidTypeName(member.Type, semanticModel, insertPosition);
+            var typeText = ContextValidTypeHelpers.ToContextValidTypeName(member.Type, semanticModel, insertPosition);
             var accessors = new[]
             {
                 SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
@@ -327,18 +327,6 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             .WithTrailingTrivia(creation.GetTrailingTrivia());
     }
 
-    internal static string ToContextValidTypeName(ITypeSymbol type, SemanticModel model, int position)
-    {
-        var display = type.ToMinimalDisplayString(model, position);
-        if (string.IsNullOrWhiteSpace(display) || NamespaceEqualityHelpers.TypeNameBindsToDifferentType(display, type, model, position))
-        {
-            display = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat
-                .WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.Omitted));
-        }
-
-        return display;
-    }
-
     internal static void ValidateMembersForGeneratedType(
         IReadOnlyList<TupleMember> members,
         SemanticModel semanticModel,
@@ -346,84 +334,20 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         foreach (var member in members)
         {
-            if (IsLessAccessibleThanPublic(member.Type))
+            if (ContextValidTypeHelpers.IsLessAccessibleThanPublic(member.Type))
             {
                 throw new RefactoringException(
                     ErrorCodes.BreaksAccessibility,
                     $"Tuple member type '{member.Type.ToDisplayString()}' is less accessible than the generated public type.");
             }
 
-            if (!MemberTypeBindsAtInsertion(member.Type, semanticModel, insertPosition))
+            if (!ContextValidTypeHelpers.MemberTypeBindsAtInsertion(member.Type, semanticModel, insertPosition))
             {
                 throw new RefactoringException(
                     ErrorCodes.CannotConvert,
                     $"Tuple member type '{member.Type.ToDisplayString()}' is not available at the generated type location.");
             }
         }
-    }
-
-    internal static bool MemberTypeBindsAtInsertion(ITypeSymbol type, SemanticModel model, int position)
-    {
-        if (ContainsTypeParameter(type))
-            return false;
-
-        var display = ToContextValidTypeName(type, model, position);
-        return !NamespaceEqualityHelpers.TypeNameBindsToDifferentType(display, type, model, position);
-    }
-
-    internal static bool ContainsTypeParameter(ITypeSymbol type)
-    {
-        if (type is ITypeParameterSymbol)
-            return true;
-
-        if (type is IArrayTypeSymbol array)
-            return ContainsTypeParameter(array.ElementType);
-
-        if (type is IPointerTypeSymbol pointer)
-            return ContainsTypeParameter(pointer.PointedAtType);
-
-        if (type is INamedTypeSymbol named)
-        {
-            foreach (var argument in named.TypeArguments)
-            {
-                if (ContainsTypeParameter(argument))
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
-    internal static bool IsLessAccessibleThanPublic(ITypeSymbol type)
-    {
-        if (type is IArrayTypeSymbol array)
-            return IsLessAccessibleThanPublic(array.ElementType);
-
-        if (type is IPointerTypeSymbol pointer)
-            return IsLessAccessibleThanPublic(pointer.PointedAtType);
-
-        if (type is INamedTypeSymbol named)
-        {
-            if (GetEffectiveAccessibility(named) is not (Accessibility.Public or Accessibility.NotApplicable))
-                return true;
-
-            foreach (var argument in named.TypeArguments)
-            {
-                if (IsLessAccessibleThanPublic(argument))
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
-    internal static Accessibility GetEffectiveAccessibility(ISymbol symbol)
-    {
-        var current = symbol.DeclaredAccessibility;
-        for (var container = symbol.ContainingType; container != null; container = container.ContainingType)
-            current = AccessibilityRankHelpers.MinAccessibility(current, container.DeclaredAccessibility);
-
-        return current;
     }
 
     internal static SyntaxToken CreateIdentifier(string name)
