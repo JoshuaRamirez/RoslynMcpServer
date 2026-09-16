@@ -115,6 +115,24 @@ public class ContextValidTypeHelpersTests
     }
 
     [Fact]
+    public void ContainsTypeParameter_GenericNamedWithTypeParam_ReturnsTrue()
+    {
+        var (_, _, type) = BuildAtMarker("""
+            class Box<T> { }
+
+            class Worker
+            {
+                void M<T>()
+                {
+                    /*pos*/Box<T> box = null!;
+                }
+            }
+            """, "/*pos*/", typeFromLocal: "box");
+
+        Assert.True(ContextValidTypeHelpers.ContainsTypeParameter(type));
+    }
+
+    [Fact]
     public void IsLessAccessibleThanPublic_PublicType_ReturnsFalse()
     {
         var compilation = CreateCompilation("""
