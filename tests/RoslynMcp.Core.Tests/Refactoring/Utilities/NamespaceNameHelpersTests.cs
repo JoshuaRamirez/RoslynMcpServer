@@ -119,6 +119,28 @@ public class NamespaceNameHelpersTests
         Assert.Null(NamespaceNameHelpers.GetContainingNamespaceName(model, node));
     }
 
+    [Fact]
+    public void GetContainingNamespaceName_SemanticModelFallback_PreservesEnclosingSyntaxNamespace()
+    {
+        var (globalModel, _) = BuildModelAtMarker(new string(' ', 256) + "/*pos*/", "/*pos*/");
+
+        var syntaxRoot = Parse("""
+            namespace Outer.Inner
+            {
+                class Worker
+                {
+                    void M()
+                    {
+                        var x = 1;
+                    }
+                }
+            }
+            """);
+        var syntaxNode = syntaxRoot.DescendantNodes().OfType<VariableDeclaratorSyntax>().Single();
+
+        Assert.Equal("Outer.Inner", NamespaceNameHelpers.GetContainingNamespaceName(globalModel, syntaxNode));
+    }
+
     private static SyntaxNode Parse(string source) =>
         CSharpSyntaxTree.ParseText(source).GetRoot();
 
