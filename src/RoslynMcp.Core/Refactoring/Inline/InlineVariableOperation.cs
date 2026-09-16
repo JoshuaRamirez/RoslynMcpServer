@@ -168,6 +168,20 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve variable symbol.");
         }
 
+        if (IsUsingDeclaration(declarator))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSelection,
+                "Cannot inline a using declaration (disposal would be lost).");
+        }
+
+        if (IsRefLocal(variableSymbol, initializerExpression))
+        {
+            throw new RefactoringException(
+                ErrorCodes.UsedInRefContext,
+                "Cannot inline a ref local.");
+        }
+
         // Find all usages
         var containingMethod = declarator.Ancestors().OfType<BaseMethodDeclarationSyntax>().FirstOrDefault();
         if (containingMethod == null)
@@ -202,6 +216,13 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
                 throw new RefactoringException(
                     ErrorCodes.InvalidSelection,
                     "Cannot inline variable used in nameof(...).");
+            }
+
+            if (IsInferredAnonymousObjectMember(usage))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.InvalidSelection,
+                    "Cannot inline variable used as an inferred anonymous-object member name.");
             }
         }
 
@@ -507,7 +528,24 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             .ToList();
 
     private static bool IsLocalDeclarator(VariableDeclaratorSyntax declarator) =>
-        declarator.Parent is VariableDeclarationSyntax { Parent: LocalDeclarationStatementSyntax };
+        declarator.Parent is VariableDeclarationSyntax
+        {
+            Parent: LocalDeclarationStatementSyntax statement
+        } &&
+        !IsUsingDeclaration(declarator);
+
+    /// <summary>
+    /// True for <c>using var</c> / <c>await using</c> locals (and classic
+    /// <c>using (...)</c> declarators). Mirrors
+    /// <c>IntroduceFieldOperation.IsUsingDeclaration</c>.
+    /// </summary>
+    private static bool IsUsingDeclaration(VariableDeclaratorSyntax declarator) =>
+        declarator.Parent?.Parent switch
+        {
+            LocalDeclarationStatementSyntax statement => statement.UsingKeyword != default,
+            UsingStatementSyntax => true,
+            _ => false
+        };
 
     private async Task<Solution?> TryInlineOneAsync(
         Document document,
@@ -525,6 +563,9 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
 
         var variableSymbol = semanticModel.GetDeclaredSymbol(declarator, cancellationToken) as ILocalSymbol;
         if (variableSymbol == null)
+            return null;
+
+        if (IsUsingDeclaration(declarator) || IsRefLocal(variableSymbol, initializerExpression))
             return null;
 
         var containingMethod = declarator.Ancestors().OfType<BaseMethodDeclarationSyntax>().FirstOrDefault();
@@ -546,8 +587,12 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
 
         foreach (var usage in usages)
         {
-            if (IsByReferenceUsage(usage) || IsInNameOf(usage))
+            if (IsByReferenceUsage(usage) ||
+                IsInNameOf(usage) ||
+                IsInferredAnonymousObjectMember(usage))
+            {
                 return null;
+            }
         }
 
         if (IsReassigned(containingMethod, variableName, variableSymbol, semanticModel, cancellationToken))
@@ -629,8 +674,35 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             return true;
         }
 
-        return usage.Parent is RefExpressionSyntax;
+        // covers `return ref x`, `ref int alias = ref x`, etc.
+        if (usage.Parent is RefExpressionSyntax)
+            return true;
+
+        // &x address-of
+        if (usage.Parent is PrefixUnaryExpressionSyntax prefix &&
+            prefix.IsKind(SyntaxKind.AddressOfExpression))
+        {
+            return true;
+        }
+
+        return false;
     }
+
+    /// <summary>
+    /// True for ref/ref-readonly locals or initializers that are
+    /// <see cref="RefExpressionSyntax"/> (<c>ref int alias = ref value</c>).
+    /// </summary>
+    private static bool IsRefLocal(ILocalSymbol variableSymbol, ExpressionSyntax initializer) =>
+        variableSymbol.RefKind != RefKind.None ||
+        initializer is RefExpressionSyntax;
+
+    /// <summary>
+    /// True when <paramref name="usage"/> is an inferred anonymous-object
+    /// member (<c>new { x }</c>), which cannot be rewritten to a literal.
+    /// </summary>
+    private static bool IsInferredAnonymousObjectMember(IdentifierNameSyntax usage) =>
+        usage.Parent is AnonymousObjectMemberDeclaratorSyntax member &&
+        member.NameEquals == null;
 
     /// <summary>
     /// True when <paramref name="node"/> sits inside a <c>nameof(...)</c> invocation.
@@ -663,13 +735,16 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
     {
         foreach (var assignment in containingMethod.DescendantNodes().OfType<AssignmentExpressionSyntax>())
         {
-            if (assignment.Left is not IdentifierNameSyntax id)
-                continue;
-            if (id.Identifier.Text != variableName)
-                continue;
-            var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
-            if (SymbolEqualityComparer.Default.Equals(symbol, variableSymbol))
-                return true;
+            // Cover simple, parenthesized, and deconstruction lefts:
+            // (x, y) = ... still writes x.
+            foreach (var id in assignment.Left.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+            {
+                if (id.Identifier.Text != variableName)
+                    continue;
+                var symbol = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol;
+                if (SymbolEqualityComparer.Default.Equals(symbol, variableSymbol))
+                    return true;
+            }
         }
 
         foreach (var prefix in containingMethod.DescendantNodes().OfType<PrefixUnaryExpressionSyntax>())
@@ -811,12 +886,18 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
                 return base.VisitIdentifierName(node);
             }
 
-            // Wrap in parentheses if needed for precedence
+            // Wrap in parentheses if needed for precedence / call/member syntax.
+            // Anonymous functions especially need parens when used as f() / f.M.
             var needsParens = node.Parent is BinaryExpressionSyntax ||
                               node.Parent is MemberAccessExpressionSyntax ||
-                              node.Parent is ConditionalExpressionSyntax;
+                              node.Parent is ConditionalExpressionSyntax ||
+                              node.Parent is InvocationExpressionSyntax ||
+                              node.Parent is ElementAccessExpressionSyntax;
 
-            if (needsParens && _replacement is BinaryExpressionSyntax or ConditionalExpressionSyntax)
+            if (needsParens &&
+                (_replacement is BinaryExpressionSyntax or
+                 ConditionalExpressionSyntax or
+                 AnonymousFunctionExpressionSyntax))
             {
                 return SyntaxFactory.ParenthesizedExpression(_replacement)
                     .WithTriviaFrom(node);

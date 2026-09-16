@@ -1113,6 +1113,180 @@ public class InlineVariableOperationTests
     }
 
     [SkippableFact]
+    public async Task InlineVariable_AllFilesTrue_SkipsUsingRefLocalAnonymousLambdaAndDeconstruction()
+    {
+        const string source = """
+            namespace TestApp;
+
+            using System;
+
+            public class Mixed
+            {
+                public void UsingLocal()
+                {
+                    using var resource = (IDisposable?)null;
+                    Consume(resource);
+                }
+
+                public int RefLocal(ref int storage)
+                {
+                    ref int alias = ref storage;
+                    return alias;
+                }
+
+                public object Anonymous()
+                {
+                    int x = 1;
+                    return new { x };
+                }
+
+                public int Lambda()
+                {
+                    Func<int> f = () => 1;
+                    return f();
+                }
+
+                public int Deconstruction()
+                {
+                    int x = 1, y = 0;
+                    (x, y) = (2, 3);
+                    return x;
+                }
+
+                public int Eligible()
+                {
+                    int total = 9;
+                    return total;
+                }
+
+                private static void Consume(IDisposable? _) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(("Mixed2.cs", source));
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineVariableParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Mixed2.cs"]));
+        Assert.Contains("using var resource", updated, StringComparison.Ordinal);
+        Assert.Contains("ref int alias = ref storage;", updated, StringComparison.Ordinal);
+        Assert.Contains("return new { x };", updated, StringComparison.Ordinal);
+        Assert.Contains("int x = 1;", updated, StringComparison.Ordinal);
+        Assert.Contains("return (() => 1)();", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("Func<int> f", updated, StringComparison.Ordinal);
+        Assert.Contains("(x, y) = (2, 3);", updated, StringComparison.Ordinal);
+        Assert.Contains("return 9;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("int total", updated, StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task InlineVariable_SingleSite_UsingDeclaration_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            using System;
+
+            public class C
+            {
+                public void Run()
+                {
+                    using var resource = (IDisposable?)null;
+                    Consume(resource);
+                }
+
+                private static void Consume(IDisposable? _) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                VariableName = "resource"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSelection, ex.ErrorCode);
+        Assert.Contains("using", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InlineVariable_SingleSite_DeconstructionAssignment_ThrowsMultipleAssignments()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class C
+            {
+                public int Run()
+                {
+                    int x = 1, y = 0;
+                    (x, y) = (2, 3);
+                    return x;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new InlineVariableParams
+            {
+                SourceFile = workspace.SourcePath,
+                VariableName = "x"
+            }));
+
+        Assert.Equal(ErrorCodes.MultipleAssignments, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task InlineVariable_SingleSite_LambdaInvocation_ParenthesizesReplacement()
+    {
+        const string source = """
+            namespace TestApp;
+
+            using System;
+
+            public class C
+            {
+                public int Run()
+                {
+                    Func<int> f = () => 1;
+                    return f();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new InlineVariableOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineVariableParams
+        {
+            SourceFile = workspace.SourcePath,
+            VariableName = "f"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return (() => 1)();", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("Func<int> f", updated, StringComparison.Ordinal);
+    }
+
+        [SkippableFact]
     public async Task InlineVariable_AllFilesTrue_LinkedDocument_CoalescesToOnePhysicalWrite()
     {
         const string sharedSource = """
