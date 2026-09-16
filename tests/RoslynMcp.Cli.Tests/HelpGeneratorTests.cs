@@ -1217,7 +1217,7 @@ public class HelpGeneratorTests
     }
 
     [Fact]
-    public void GenerateToolHelp_ConvertToBlockBody_ShowsColumn()
+    public void GenerateToolHelp_ConvertToBlockBody_ShowsColumnAndAllFiles()
     {
         var registry = ToolRegistry.BuildDefault();
         var tool = registry.GetTool("convert-to-block-body")!;
@@ -1225,21 +1225,18 @@ public class HelpGeneratorTests
 
         Assert.Contains("convert-to-block-body", help);
         Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
 
-        var requiredIdx = help.IndexOf("REQUIRED:");
+        // sourceFile is optional when allFiles is true; Params has no required members.
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
+
         var optionalIdx = help.IndexOf("OPTIONAL:");
-        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
-        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
-
-        var requiredSection = help[requiredIdx..optionalIdx];
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
-        Assert.DoesNotContain("--column", requiredSection);
-        Assert.DoesNotContain("--member-name", requiredSection);
-        Assert.DoesNotContain("--line", requiredSection);
-        Assert.DoesNotContain("--preview", requiredSection);
-
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
         Assert.Contains("--column", optionalSection);
         Assert.Contains("--member-name", optionalSection);
         Assert.Contains("--line", optionalSection);

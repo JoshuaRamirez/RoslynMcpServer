@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+- `convert_to_block_body` now honors optional **`allFiles`**: omitted / false keeps today's single-site convert (`sourceFile` required, plus `memberName` or `line`, including `column` disambiguation and preview). `allFiles: true` walks every C# document in the solution (`FilePath` ends with `.cs`), converts every eligible expression-bodied member per file using today's convert helpers (methods, properties, accessors, indexers, operators, constructors, destructors, local functions, events — same kinds as single-site), commits once, and aggregates `FilesModified` (same document filter as `ConvertExpressionBodyOperation.ExecuteAllFilesAsync` / `ConvertPropertyOperation.ExecuteAllFilesAsync` / `AddBracesOperation.ExecuteAllFilesAsync`). Already-block and otherwise ineligible members or documents are skipped rather than failing the walk. Optional `sourceFile` when `allFiles` is true limits the walk via `DocumentSourceFileFilter`; omit it to walk the whole solution. If every file is a no-op, succeeds with empty changes. `sourceFile` is optional when `allFiles` is true. `allFiles: true` cannot be combined with `memberName`, `line`, or `column` (those stay single-member). `preview: true` with `allFiles: true` returns aggregated `PendingChanges` and writes nothing. This leftover does not invent a second tool, fix #1135 (`convert_expression_body` accessor ToBlockBody), or invent `rename_namespace` / `generate_property` allFiles. (#1218)
+
 ## [0.6.3] - 2026-09-16
 
 ### Changed

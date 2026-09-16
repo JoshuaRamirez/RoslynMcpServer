@@ -34,6 +34,18 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     /// </summary>
     internal static void Validate(ConvertToBlockBodyParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.MemberName) || @params.Line.HasValue || @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with memberName, line, or column.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -62,7 +74,10 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         ConvertToBlockBodyParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -95,7 +110,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             {
                 new()
                 {
-                    File = @params.SourceFile,
+                    File = @params.SourceFile!,
                     ChangeType = ChangeKind.Modify,
                     Description = $"Convert '{GetMemberName(member)}' to block body",
                     BeforeSnippet = beforeSnippet,
@@ -125,6 +140,147 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             },
             0,
             0);
+    }
+
+    /// <summary>
+    /// Converts every eligible expression-bodied member in every C# document
+    /// (same document filter as <c>ConvertExpressionBodyOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ConvertPropertyOperation.ExecuteAllFilesAsync</c> /
+    /// <c>AddBracesOperation.ExecuteAllFilesAsync</c>: <c>FilePath</c> ends
+    /// with <c>.cs</c>). Optional <c>sourceFile</c> limits the walk via
+    /// <see cref="DocumentSourceFileFilter"/>. Already-block and otherwise
+    /// ineligible members or documents are skipped. When every file is a
+    /// no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ConvertToBlockBodyParams @params,
+        CancellationToken cancellationToken)
+    {
+        var currentSolution = Context.Solution;
+        var allDocuments = currentSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+
+        foreach (var document in allDocuments)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            if (currentDocument is SourceGeneratedDocument)
+                continue;
+
+            if (!DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                continue;
+
+            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+            if (root == null)
+                continue;
+
+            var replacements = new Dictionary<SyntaxNode, SyntaxNode>();
+            foreach (var member in CollectConvertibleMembers(root))
+            {
+                if (TryConvert(member, out var newMember, out _, out _))
+                    replacements[member] = newMember;
+            }
+
+            if (replacements.Count == 0)
+                continue;
+
+            var newRoot = root.ReplaceNodes(replacements.Keys, (original, _) => replacements[original]);
+            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+            var beforeText = await currentDocument.GetTextAsync(cancellationToken);
+            var afterText = await newDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var span = root.GetLocation().GetLineSpan();
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = currentDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = BuildAllFilesDescription(replacements.Count),
+                    BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            currentSolution = newDocument.Project.Solution;
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    internal static string BuildAllFilesDescription(int convertedCount) =>
+        convertedCount == 1
+            ? "Convert member to block body"
+            : $"Convert {convertedCount} members to block body";
+
+    /// <summary>
+    /// Members the allFiles walk will attempt to convert, in deterministic
+    /// <see cref="SyntaxNode.SpanStart"/> order. Same kind set as
+    /// <see cref="IsConvertibleKind"/>.
+    /// </summary>
+    private static IEnumerable<SyntaxNode> CollectConvertibleMembers(SyntaxNode root) =>
+        root.DescendantNodes()
+            .Where(node => node is MemberDeclarationSyntax or LocalFunctionStatementSyntax)
+            .Where(IsConvertibleKind)
+            .OrderBy(node => node.SpanStart);
+
+    /// <summary>
+    /// Attempts a conversion without throwing. Used by allFiles so already-
+    /// block and otherwise ineligible members stay no-ops.
+    /// </summary>
+    internal static bool TryConvert(
+        SyntaxNode member,
+        out SyntaxNode newMember,
+        out string beforeSnippet,
+        out string afterSnippet)
+    {
+        try
+        {
+            (newMember, beforeSnippet, afterSnippet) = ConvertToBlockBody(member);
+            return true;
+        }
+        catch (RefactoringException)
+        {
+            newMember = member;
+            beforeSnippet = string.Empty;
+            afterSnippet = string.Empty;
+            return false;
+        }
     }
 
     /// <summary>

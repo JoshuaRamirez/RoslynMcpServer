@@ -117,6 +117,70 @@ public class ConvertToBlockBodyOperationTests
         Assert.Equal("1007", ex.ErrorCode);
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToBlockBodyOperation.Validate(new ConvertToBlockBodyParams
+            {
+                AllFiles = false,
+                MemberName = "Get"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFile_DoesNotThrow()
+    {
+        ConvertToBlockBodyOperation.Validate(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMemberName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToBlockBodyOperation.Validate(new ConvertToBlockBodyParams
+            {
+                AllFiles = true,
+                MemberName = "Get"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToBlockBodyOperation.Validate(new ConvertToBlockBodyParams
+            {
+                AllFiles = true,
+                Line = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToBlockBodyOperation.Validate(new ConvertToBlockBodyParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     #endregion
 
     #region P0 Happy Path
@@ -820,10 +884,274 @@ public class ConvertToBlockBodyOperationTests
 
     #endregion
 
+    #region AllFiles
+
+    private const string MixedExpressionFileA = """
+        namespace TestApp;
+
+        public class FileA
+        {
+            public int One() => 1;
+            public int Two() => 2;
+            public int Already() { return 3; }
+            public int Multi()
+            {
+                var x = 1;
+                return x;
+            }
+            public string Name { get => "Ada"; set => _ = value; }
+        }
+        """;
+
+    private const string MixedExpressionFileB = """
+        namespace TestApp;
+
+        public class FileB
+        {
+            public int Value() => 4;
+            public int Prop => 5;
+        }
+        """;
+
+    private const string AlreadyBlockFileC = """
+        namespace TestApp;
+
+        public class FileC
+        {
+            public int Done() { return 6; }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task Convert_AllFilesFalse_ConvertsOnlySpecifiedMember()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", MixedExpressionFileA),
+            ("FileB.cs", MixedExpressionFileB),
+            ("FileC.cs", AlreadyBlockFileC));
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            AllFiles = false,
+            MemberName = "One"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        AssertMethodIsBlockBodied(updatedA, "One");
+        Assert.Contains("public int Two() => 2;", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public int Already() { return 3; }", updatedA, StringComparison.Ordinal);
+        Assert.Contains("get =>", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_ConvertsEligibleMembersAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", MixedExpressionFileA),
+            ("FileB.cs", MixedExpressionFileB),
+            ("FileC.cs", AlreadyBlockFileC));
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        AssertMethodIsBlockBodied(updatedA, "One");
+        AssertMethodIsBlockBodied(updatedA, "Two");
+        Assert.Contains("public int Already() { return 3; }", updatedA, StringComparison.Ordinal);
+        Assert.Contains("var x = 1;", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("get =>", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("set =>", updatedA, StringComparison.Ordinal);
+        Assert.Contains("get", updatedA, StringComparison.Ordinal);
+        Assert.Contains("return \"Ada\";", updatedA, StringComparison.Ordinal);
+        AssertMethodIsBlockBodied(updatedB, "Value");
+        AssertPropertyIsBlockBodied(updatedB, "Prop");
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", MixedExpressionFileA),
+            ("FileB.cs", MixedExpressionFileB),
+            ("FileC.cs", AlreadyBlockFileC));
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        AssertMethodIsBlockBodied(updatedA, "One");
+        AssertMethodIsBlockBodied(updatedA, "Two");
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_EveryFileAlreadyBlock_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", AlreadyBlockFileC),
+            ("FileC2.cs", AlreadyBlockFileC.Replace("FileC", "FileC2", StringComparison.Ordinal)));
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.NotNull(result.Changes);
+        Assert.Empty(result.Changes.FilesModified);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileC2.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedExpressionFileA);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToBlockBodyParams
+            {
+                AllFiles = false,
+                MemberName = "One"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_WithMemberName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedExpressionFileA);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToBlockBodyParams
+            {
+                AllFiles = true,
+                MemberName = "One"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("memberName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedExpressionFileA);
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToBlockBodyParams
+            {
+                AllFiles = true,
+                Line = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task Convert_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", MixedExpressionFileA),
+            ("FileB.cs", MixedExpressionFileB),
+            ("FileC.cs", AlreadyBlockFileC));
+        var operation = new ConvertToBlockBodyOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Equal(2, result.PendingChanges.Count);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains(result.PendingChanges, c =>
+            c.Description.Contains("block body", StringComparison.OrdinalIgnoreCase) &&
+            c.AfterSnippet != null &&
+            c.AfterSnippet.Contains("return", StringComparison.Ordinal));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+    }
+
+    #endregion
+
     #region Helpers
 
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpConvertToBlockBodyMissing.cs");
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
+    private static void AssertMethodIsBlockBodied(string source, string name)
+    {
+        var method = CSharpSyntaxTree.ParseText(source).GetRoot()
+            .DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .First(m => m.Identifier.Text == name);
+        Assert.Null(method.ExpressionBody);
+        Assert.NotNull(method.Body);
+    }
+
+    private static void AssertPropertyIsBlockBodied(string source, string name)
+    {
+        var property = CSharpSyntaxTree.ParseText(source).GetRoot()
+            .DescendantNodes().OfType<PropertyDeclarationSyntax>()
+            .First(p => p.Identifier.Text == name);
+        Assert.Null(property.ExpressionBody);
+        Assert.NotNull(property.AccessorList);
+        Assert.Contains(property.AccessorList.Accessors, a => a.Body != null);
+    }
+
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal);
@@ -857,9 +1185,13 @@ public class ConvertToBlockBodyOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required Dictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateWithFilesAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -867,33 +1199,47 @@ public class ConvertToBlockBodyOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = sourcePaths.Values.First(),
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }
