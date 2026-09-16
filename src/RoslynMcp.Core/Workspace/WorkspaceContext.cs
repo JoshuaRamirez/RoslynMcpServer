@@ -78,10 +78,13 @@ public sealed class WorkspaceContext : IDisposable
     /// <returns>Document if found, null otherwise.</returns>
     public Document? GetDocumentByPath(string filePath)
     {
-        var normalizedPath = PathResolver.NormalizePath(filePath);
+        var normalizedPath = PathResolver.GetPathComparisonKey(filePath);
         return _solution.Projects
             .SelectMany(p => p.Documents)
-            .FirstOrDefault(d => PathResolver.NormalizePath(d.FilePath ?? "") == normalizedPath);
+            .FirstOrDefault(d => string.Equals(
+                PathResolver.GetPathComparisonKey(d.FilePath ?? ""),
+                normalizedPath,
+                StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -126,11 +129,9 @@ public sealed class WorkspaceContext : IDisposable
             // Collect all file operations first, then execute sequentially
             // This prevents interleaved writes to the same file from different documents
             var fileOperations = new List<(string FilePath, Func<Task> Operation, string Category)>();
-            // CommitPathComparer: Windows OrdinalIgnoreCase so linked-doc casing
-            // variants enqueue one disk write / one FilesModified entry.
-            var queuedCreatedPaths = new HashSet<string>(CommitPathComparer);
-            var queuedModifiedPaths = new HashSet<string>(CommitPathComparer);
-            var queuedDeletedPaths = new HashSet<string>(CommitPathComparer);
+            var queuedCreatedPaths = new HashSet<string>(StringComparer.Ordinal);
+            var queuedModifiedPaths = new HashSet<string>(StringComparer.Ordinal);
+            var queuedDeletedPaths = new HashSet<string>(StringComparer.Ordinal);
 
             foreach (var projectChanges in changes.GetProjectChanges())
             {
@@ -141,7 +142,7 @@ public sealed class WorkspaceContext : IDisposable
                     if (doc?.FilePath == null) continue;
 
                     var filePath = doc.FilePath;
-                    if (!queuedCreatedPaths.Add(PathResolver.NormalizePath(filePath)))
+                    if (!queuedCreatedPaths.Add(PathResolver.GetPathComparisonKey(filePath)))
                         continue;
 
                     fileOperations.Add((filePath, async () =>
@@ -159,7 +160,7 @@ public sealed class WorkspaceContext : IDisposable
                     if (doc?.FilePath == null) continue;
 
                     var filePath = doc.FilePath;
-                    if (!queuedModifiedPaths.Add(PathResolver.NormalizePath(filePath)))
+                    if (!queuedModifiedPaths.Add(PathResolver.GetPathComparisonKey(filePath)))
                         continue;
 
                     fileOperations.Add((filePath, async () =>
@@ -177,7 +178,7 @@ public sealed class WorkspaceContext : IDisposable
                     if (doc?.FilePath == null) continue;
 
                     var filePath = doc.FilePath;
-                    if (!queuedDeletedPaths.Add(PathResolver.NormalizePath(filePath)))
+                    if (!queuedDeletedPaths.Add(PathResolver.GetPathComparisonKey(filePath)))
                         continue;
 
                     fileOperations.Add((filePath, () =>
@@ -191,7 +192,7 @@ public sealed class WorkspaceContext : IDisposable
 
             // Sort operations by file path to ensure consistent ordering
             // and prevent potential deadlocks with external file locks
-            fileOperations.Sort((a, b) => string.Compare(a.FilePath, b.FilePath, StringComparison.OrdinalIgnoreCase));
+            fileOperations.Sort((a, b) => string.Compare(a.FilePath, b.FilePath, StringComparison.Ordinal));
 
             // Execute file operations sequentially to prevent race conditions
             foreach (var (_, operation, _) in fileOperations)
@@ -237,19 +238,6 @@ public sealed class WorkspaceContext : IDisposable
         _commitLock.Dispose();
         _workspace.Dispose();
     }
-
-    /// <summary>
-    /// Comparer for commit-level path sets (created/modified/deleted).
-    /// OrdinalIgnoreCase on Windows so linked documents that spell the same
-    /// physical path with different casing enqueue one write / one
-    /// <c>FilesModified</c> entry; Ordinal on Linux/macOS so case-distinct
-    /// paths stay separate. Same policy as convert_to_block_body
-    /// <c>PhysicalFilePathComparer</c>.
-    /// </summary>
-    internal static StringComparer CommitPathComparer { get; } =
-        OperatingSystem.IsWindows()
-            ? StringComparer.OrdinalIgnoreCase
-            : StringComparer.Ordinal;
 
     private void ThrowIfDisposed()
     {

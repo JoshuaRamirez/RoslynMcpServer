@@ -1064,7 +1064,7 @@ public class ConvertToBlockBodyOperationTests
         var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
         var flipped = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
 
-        if (OperatingSystem.IsWindows())
+        if (File.Exists(flipped))
         {
             var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
             {
@@ -1166,7 +1166,7 @@ public class ConvertToBlockBodyOperationTests
             }));
 
         Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
-        if (OperatingSystem.IsWindows())
+        if (File.Exists(ambiguous))
             Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
         else
             Assert.Contains("File not found in workspace", ex.Message, StringComparison.Ordinal);

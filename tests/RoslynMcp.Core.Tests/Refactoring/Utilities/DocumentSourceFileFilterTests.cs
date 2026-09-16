@@ -45,7 +45,7 @@ public class DocumentSourceFileFilterTests
     }
 
     [Fact]
-    public void FilterDocumentsBySourceFile_MatchesOrdinalIgnoreCase()
+    public void FilterDocumentsBySourceFile_UsesPhysicalPathComparisonKey()
     {
         using var workspace = new AdhocWorkspace();
         var project = workspace.AddProject("P", LanguageNames.CSharp);
@@ -66,12 +66,21 @@ public class DocumentSourceFileFilterTests
                 new List<Document> { document },
                 query);
 
-            Assert.Single(result);
-            Assert.Equal(document.Id, result[0].Id);
-            Assert.Equal(
-                PathResolver.NormalizePath(path),
-                PathResolver.NormalizePath(query),
-                ignoreCase: true);
+            if (File.Exists(query))
+            {
+                Assert.Single(result);
+                Assert.Equal(document.Id, result[0].Id);
+                Assert.Equal(
+                    PathResolver.GetPathComparisonKey(path),
+                    PathResolver.GetPathComparisonKey(query));
+            }
+            else
+            {
+                Assert.Empty(result);
+                Assert.NotEqual(
+                    PathResolver.GetPathComparisonKey(path),
+                    PathResolver.GetPathComparisonKey(query));
+            }
         }
         finally
         {

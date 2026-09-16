@@ -61,4 +61,53 @@ public class PathResolverTests
         { WinOrUnix(@"C:\project\File.cs", "/project/File.cs"), false },
         { @"relative\Solution.sln", false }
     };
+
+    [Fact]
+    public void GetPathComparisonKey_IdenticalPath_ReturnsSameKey()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "roslyn-mcp-pr-same-" + Path.GetRandomFileName() + ".cs");
+
+        Assert.Equal(
+            PathResolver.GetPathComparisonKey(path),
+            PathResolver.GetPathComparisonKey(path));
+    }
+
+    [Fact]
+    public void GetPathComparisonKey_CaseVariantExistingPath_MatchesFilesystemBehavior()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "roslyn-mcp-pr-case-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(path, "class C {}");
+
+        try
+        {
+            var query = Path.Combine(Path.GetDirectoryName(path)!, FlipAsciiCase(Path.GetFileName(path)));
+            var expectedEqual = File.Exists(query);
+
+            Assert.Equal(
+                expectedEqual,
+                string.Equals(
+                    PathResolver.GetPathComparisonKey(path),
+                    PathResolver.GetPathComparisonKey(query),
+                    StringComparison.Ordinal));
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    private static string FlipAsciiCase(string value)
+    {
+        var chars = value.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (chars[i] is >= 'a' and <= 'z')
+                chars[i] = char.ToUpperInvariant(chars[i]);
+            else if (chars[i] is >= 'A' and <= 'Z')
+                chars[i] = char.ToLowerInvariant(chars[i]);
+        }
+
+        return new string(chars);
+    }
 }

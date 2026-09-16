@@ -210,12 +210,11 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         // One physical path may appear as multiple Documents when linked into
         // several projects. Rewrite once per normalized path and apply the same
         // text to every sibling DocumentId so CommitChanges cannot last-write-wins
-        // conflicting preprocessor variants (Codex P2). Group with
-        // PhysicalFilePathComparer (OrdinalIgnoreCase on Windows; Ordinal on
-        // Linux/macOS, including case-sensitive APFS) so case-distinct files
-        // stay separate off Windows while Windows casing variants coalesce.
+        // conflicting preprocessor variants (Codex P2). Group by the physical
+        // path comparison key so case-insensitive filesystems coalesce wrong-
+        // cased aliases while case-sensitive files stay distinct.
         var documentGroups = allDocuments
-            .GroupBy(d => PathResolver.NormalizePath(d.FilePath!), PhysicalFilePathComparer)
+            .GroupBy(d => PathResolver.GetPathComparisonKey(d.FilePath!), StringComparer.Ordinal)
             .Select(group => group
                 .OrderBy(d => d.FilePath, StringComparer.Ordinal)
                 .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
@@ -334,40 +333,22 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             null, 0, 0);
     }
 
-    /// <summary>
-    /// Path comparer for physical files: OrdinalIgnoreCase on Windows
-    /// (same path may differ only by casing across linked projects);
-    /// Ordinal on Linux/macOS so <c>Foo.cs</c> and <c>foo.cs</c> stay
-    /// distinct on case-sensitive volumes. Linked docs on case-insensitive
-    /// macOS typically share an identical FilePath string from MSBuild.
-    /// </summary>
-    private static StringComparer PhysicalFilePathComparer { get; } =
-        OperatingSystem.IsWindows()
-            ? StringComparer.OrdinalIgnoreCase
-            : StringComparer.Ordinal;
-
     private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
     {
         var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var sourceFileKey = PathResolver.GetPathComparisonKey(sourceFile);
         var exactMatches = documents
             .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
             .ToList();
         if (exactMatches.Count > 0)
             return exactMatches;
 
-        if (!OperatingSystem.IsWindows())
-        {
-            throw new RefactoringException(
-                ErrorCodes.SourceNotInWorkspace,
-                $"File not found in workspace: {sourceFile}");
-        }
-
         var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
         // Ambiguity is distinct case-sensitive paths, not linked Document count
         // (one physical file linked into multiple projects is not ambiguous).
         var distinctPaths = matchedDocuments
-            .Select(d => PathResolver.NormalizePath(d.FilePath!))
-            .Distinct(PhysicalFilePathComparer)
+            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+            .Distinct(StringComparer.Ordinal)
             .ToList();
         return distinctPaths.Count switch
         {
@@ -377,6 +358,10 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             > 1 => throw new RefactoringException(
                 ErrorCodes.SourceNotInWorkspace,
                 $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ when !string.Equals(distinctPaths[0], sourceFileKey, StringComparison.Ordinal) && !File.Exists(sourceFile) =>
+                throw new RefactoringException(
+                    ErrorCodes.SourceNotInWorkspace,
+                    $"File not found in workspace: {sourceFile}"),
             _ => matchedDocuments
         };
     }
@@ -386,13 +371,14 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
 
     private List<Document> GetLinkedDocumentsByPhysicalPath(Solution solution, Document document)
     {
-        var normalizedPath = PathResolver.NormalizePath(document.FilePath!);
+        var normalizedPath = PathResolver.GetPathComparisonKey(document.FilePath!);
         return solution.Projects
             .SelectMany(project => project.Documents)
             .Where(candidate => candidate.FilePath != null
-                && PhysicalFilePathComparer.Equals(
-                    PathResolver.NormalizePath(candidate.FilePath),
-                    normalizedPath))
+                && string.Equals(
+                    PathResolver.GetPathComparisonKey(candidate.FilePath),
+                    normalizedPath,
+                    StringComparison.Ordinal))
             .OrderBy(candidate => candidate.FilePath, StringComparer.Ordinal)
             .ThenBy(candidate => candidate.Project.Name, StringComparer.Ordinal)
             .ThenBy(candidate => candidate.Id.Id.ToString(), StringComparer.Ordinal)

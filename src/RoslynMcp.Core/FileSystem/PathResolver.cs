@@ -21,6 +21,37 @@ public static class PathResolver
     }
 
     /// <summary>
+    /// Returns a stable comparison key for a path. If the path exists, the key
+    /// uses the filesystem's canonical segment casing so wrong-cased aliases on
+    /// case-insensitive volumes compare equal while case-distinct files on
+    /// case-sensitive volumes remain different.
+    /// </summary>
+    public static string GetPathComparisonKey(string path)
+    {
+        var normalizedPath = NormalizePath(path);
+        if (string.IsNullOrWhiteSpace(normalizedPath))
+            return normalizedPath;
+
+        if (!File.Exists(normalizedPath) && !Directory.Exists(normalizedPath))
+            return normalizedPath;
+
+        try
+        {
+            return TryResolveExistingPathCasing(normalizedPath, out var resolved)
+                ? resolved
+                : normalizedPath;
+        }
+        catch (IOException)
+        {
+            return normalizedPath;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return normalizedPath;
+        }
+    }
+
+    /// <summary>
     /// Makes a path relative to a base path.
     /// </summary>
     /// <param name="basePath">Base path (directory).</param>
@@ -102,6 +133,51 @@ public static class PathResolver
     public static string Combine(params string[] paths)
     {
         return NormalizePath(Path.Combine(paths));
+    }
+
+    private static bool TryResolveExistingPathCasing(string normalizedPath, out string resolvedPath)
+    {
+        var root = Path.GetPathRoot(normalizedPath);
+        if (string.IsNullOrEmpty(root))
+        {
+            resolvedPath = normalizedPath;
+            return false;
+        }
+
+        var current = root;
+
+        var remainder = normalizedPath[root.Length..];
+        if (string.IsNullOrEmpty(remainder))
+        {
+            resolvedPath = root;
+            return true;
+        }
+
+        foreach (var segment in remainder.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var exactPath = Path.Combine(current, segment);
+            if (File.Exists(exactPath) || Directory.Exists(exactPath))
+            {
+                current = exactPath;
+                continue;
+            }
+
+            var candidate = Directory.EnumerateFileSystemEntries(current)
+                .FirstOrDefault(entry => string.Equals(
+                    Path.GetFileName(entry),
+                    segment,
+                    StringComparison.OrdinalIgnoreCase));
+            if (candidate == null)
+            {
+                resolvedPath = normalizedPath;
+                return false;
+            }
+
+            current = candidate.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+        }
+
+        resolvedPath = current;
+        return true;
     }
 
     private static string EnsureTrailingSlash(string path)
