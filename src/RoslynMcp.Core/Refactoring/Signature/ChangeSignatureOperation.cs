@@ -186,6 +186,9 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 "Required parameters cannot follow optional parameters.");
         }
 
+        // Parameter types less accessible than the method (CS0051) (Codex).
+        EnsureParameterTypesAccessible(semanticModel, methodDecl, methodSymbol, @params.Parameters);
+
         // Collect call sites against the pre-rewrite solution, including linked
         // sibling compilations (IntroduceParameter / Copilot).
         var (callSites, hasUnsupportedReferences) = await CollectCallSitesAsync(
@@ -538,6 +541,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (method.IsExtern)
             return false;
 
+        // UnmanagedCallersOnly: unmanaged ABI contract even when IsExtern is false (Codex).
+        if (HasUnmanagedCallersOnlyAttribute(method))
+            return false;
+
         // Overrides / interface implementations: changing the signature while
         // keeping override/impl modifiers breaks the contract when the related
         // declaration is outside the editable walk (metadata / other files)
@@ -670,6 +677,48 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         }
 
         return false;
+    }
+
+
+    /// <summary>
+    /// Throws when a requested parameter type is less accessible than
+    /// <paramref name="methodSymbol"/> (CS0051) — single-site path (Codex).
+    /// </summary>
+    private static void EnsureParameterTypesAccessible(
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl,
+        IMethodSymbol methodSymbol,
+        IReadOnlyList<ParameterChange> changes)
+    {
+        var position = methodDecl.Body?.SpanStart
+            ?? methodDecl.ExpressionBody?.Expression.SpanStart
+            ?? (methodDecl.ParameterList.Span.Length > 0
+                ? methodDecl.ParameterList.CloseParenToken.SpanStart
+                : methodDecl.SpanStart);
+
+        foreach (var change in changes)
+        {
+            if (change.Remove || string.IsNullOrWhiteSpace(change.Type))
+                continue;
+
+            var typeSyntax = SyntaxFactory.ParseTypeName(change.Type);
+            if (typeSyntax.IsMissing || typeSyntax.ContainsDiagnostics)
+                continue;
+
+            var typeInfo = semanticModel.GetSpeculativeTypeInfo(
+                position,
+                typeSyntax,
+                SpeculativeBindingOption.BindAsTypeOrNamespace);
+            if (typeInfo.Type == null || typeInfo.Type is IErrorTypeSymbol)
+                continue;
+
+            if (!IsParameterTypeAccessibleFrom(typeInfo.Type, methodSymbol))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.BreaksAccessibility,
+                    $"Parameter type '{change.Type}' is less accessible than method '{methodSymbol.Name}'.");
+            }
+        }
     }
 
     /// <summary>
@@ -945,9 +994,29 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     }
 
 
-    private static bool HasUnmanagedCallersOnlyAttribute(IMethodSymbol method) =>
-        method.GetAttributes().Any(attr =>
-            attr.AttributeClass?.Name is "UnmanagedCallersOnlyAttribute" or "UnmanagedCallersOnly");
+    private static bool HasUnmanagedCallersOnlyAttribute(IMethodSymbol method)
+    {
+        if (method.GetAttributes().Any(attr =>
+                (attr.AttributeClass?.Name ?? attr.AttributeClass?.ToDisplayString() ?? string.Empty)
+                    .Contains("UnmanagedCallersOnly", StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        // Attribute may not bind in incomplete references; fall back to syntax.
+        foreach (var syntaxRef in method.DeclaringSyntaxReferences)
+        {
+            if (syntaxRef.GetSyntax() is MethodDeclarationSyntax methodDecl &&
+                methodDecl.AttributeLists
+                    .SelectMany(list => list.Attributes)
+                    .Any(attr => attr.Name.ToString().Contains("UnmanagedCallersOnly", StringComparison.Ordinal)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static bool IsParameterTypeAccessibleFrom(ITypeSymbol type, IMethodSymbol method) =>
         IsTypeAtLeastAsAccessible(type, GetEffectiveAccessibility(method));
@@ -961,7 +1030,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 (!named.IsGenericType ||
                  named.TypeArguments.OfType<ITypeSymbol>().All(t => IsTypeAtLeastAsAccessible(t, required))) &&
                 (named.DeclaredAccessibility == Accessibility.NotApplicable ||
-                 AccessibilityRank(named.DeclaredAccessibility) >= AccessibilityRank(required)),
+                 AccessibilityRank(GetEffectiveAccessibility(named)) >= AccessibilityRank(required)),
             _ => true
         };
 
@@ -1022,6 +1091,14 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
 
         if (!IsEligible(methodSymbol, changes))
             return null;
+
+        // Syntax-level UnmanagedCallersOnly (attribute may not bind) (Codex).
+        if (methodDecl.AttributeLists
+                .SelectMany(list => list.Attributes)
+                .Any(attr => attr.Name.ToString().Contains("UnmanagedCallersOnly", StringComparison.Ordinal)))
+        {
+            return null;
+        }
 
         if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
             return null;
