@@ -171,6 +171,14 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         // Build new parameter list
         var newParameters = BuildNewParameterList(methodSymbol.Parameters.ToList(), @params.Parameters);
 
+        // Required after optional is illegal C# (CS1737) (Codex / AddParameter).
+        if (HasRequiredAfterOptional(newParameters))
+        {
+            throw new RefactoringException(
+                ErrorCodes.RequiredAfterOptional,
+                "Required parameters cannot follow optional parameters.");
+        }
+
         // Collect call sites against the pre-rewrite solution, including linked
         // sibling compilations (IntroduceParameter / Copilot).
         var callSites = await CollectCallSitesAsync(
@@ -494,10 +502,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// True when every <c>originalName</c> in <paramref name="changes"/>
     /// exists on <paramref name="method"/>, the method is not an extension
     /// method (<c>this</c> receiver not preserved by <c>CreateParameterSyntax</c>),
-    /// the method is not override / interface-implementing (bulk cannot rewrite
-    /// the full hierarchy / metadata contracts), and no kept parameter uses
-    /// <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c> (bulk rewrite cannot
-    /// preserve those modifiers yet — <c>CreateParameterSyntax</c> only emits
+    /// the method is not an interface declaration / override / interface-implementing
+    /// (bulk cannot rewrite the full hierarchy / metadata contracts), and no kept
+    /// parameter uses <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c> (bulk rewrite
+    /// cannot preserve those modifiers yet — <c>CreateParameterSyntax</c> only emits
     /// type/name/default).
     /// </summary>
     internal static bool IsEligible(IMethodSymbol method, IReadOnlyList<ParameterChange> changes)
