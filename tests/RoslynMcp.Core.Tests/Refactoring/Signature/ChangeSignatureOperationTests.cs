@@ -2129,6 +2129,104 @@ public class ChangeSignatureOperationTests
     }
 
 
+    [Fact]
+    public void Validate_InvalidProjectedParameterName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ChangeSignatureOperation.Validate(new ChangeSignatureParams
+            {
+                SourceFile = AbsoluteTestPath(),
+                MethodName = "Process",
+                Parameters = [new ParameterChange { Name = "class", Type = "int" }]
+            }));
+        Assert.Equal(ErrorCodes.InvalidSymbolName, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsUnmanagedCallersOnlyMethods()
+    {
+        const string source = """
+            namespace TestApp;
+            using System.Runtime.InteropServices;
+            public static class Exports
+            {
+                [UnmanagedCallersOnly]
+                public static void Process(int x) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams { AllFiles = true, Parameters = KeepXAddFlag() });
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsLessAccessibleParameterType()
+    {
+        const string source = """
+            namespace TestApp;
+            public class Sample
+            {
+                private class Hidden { }
+                public void Process(int x) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x" },
+                new ParameterChange { Name = "h", Type = "Hidden" }
+            ]
+        });
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_OmitsOptionalDefaultAtForeignCallSites()
+    {
+        const string source = """
+            namespace TestApp;
+            public class Sample
+            {
+                private const int SomeConst = 42;
+                public void Process(int x) { }
+                public void Call() => Process(1);
+            }
+            public class Other
+            {
+                public void Call(Sample s) => s.Process(2);
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x" },
+                new ParameterChange { Name = "y", Type = "int", DefaultValue = "SomeConst" }
+            ]
+        });
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("Process(1)", updated, StringComparison.Ordinal);
+        Assert.Contains("Process(2)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("Process(1, SomeConst)", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("Process(2, SomeConst)", updated, StringComparison.Ordinal);
+    }
+
+
     #endregion
 
     #region Helpers

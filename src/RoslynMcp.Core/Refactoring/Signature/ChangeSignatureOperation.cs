@@ -46,6 +46,13 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             if (string.IsNullOrWhiteSpace(change.Name))
                 throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Each parameter change requires a name.");
 
+            if (!SyntaxIdentifierValidation.IsValidIdentifier(change.Name))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.InvalidSymbolName,
+                    $"'{change.Name}' is not a valid parameter name.");
+            }
+
             if (change.OriginalName == null && !change.Remove && string.IsNullOrWhiteSpace(change.Type))
                 throw new RefactoringException(ErrorCodes.MissingRequiredParam, "New parameters require a type.");
         }
@@ -711,7 +718,8 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 if (typeInfo.Type == null || typeInfo.Type is IErrorTypeSymbol)
                     return false;
                 // void / static classes / unbound generics are not legal parameter types (Codex).
-                if (!IsLegalParameterType(typeInfo.Type))
+                if (!IsLegalParameterType(typeInfo.Type) ||
+                    !IsParameterTypeAccessibleFrom(typeInfo.Type, methodSymbol))
                     return false;
                 resultingType = typeInfo.Type;
             }
@@ -935,6 +943,49 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             ContainingNamespace.Name: "Tasks"
         };
     }
+
+
+    private static bool HasUnmanagedCallersOnlyAttribute(IMethodSymbol method) =>
+        method.GetAttributes().Any(attr =>
+            attr.AttributeClass?.Name is "UnmanagedCallersOnlyAttribute" or "UnmanagedCallersOnly");
+
+    private static bool IsParameterTypeAccessibleFrom(ITypeSymbol type, IMethodSymbol method) =>
+        IsTypeAtLeastAsAccessible(type, GetEffectiveAccessibility(method));
+
+    private static bool IsTypeAtLeastAsAccessible(ITypeSymbol type, Accessibility required) =>
+        type switch
+        {
+            IArrayTypeSymbol array => IsTypeAtLeastAsAccessible(array.ElementType, required),
+            IPointerTypeSymbol pointer => IsTypeAtLeastAsAccessible(pointer.PointedAtType, required),
+            INamedTypeSymbol named =>
+                (!named.IsGenericType ||
+                 named.TypeArguments.OfType<ITypeSymbol>().All(t => IsTypeAtLeastAsAccessible(t, required))) &&
+                (named.DeclaredAccessibility == Accessibility.NotApplicable ||
+                 AccessibilityRank(named.DeclaredAccessibility) >= AccessibilityRank(required)),
+            _ => true
+        };
+
+    private static Accessibility GetEffectiveAccessibility(ISymbol symbol)
+    {
+        var accessibility = symbol.DeclaredAccessibility;
+        for (var container = symbol.ContainingType; container != null; container = container.ContainingType)
+        {
+            if (AccessibilityRank(container.DeclaredAccessibility) < AccessibilityRank(accessibility))
+                accessibility = container.DeclaredAccessibility;
+        }
+
+        return accessibility;
+    }
+
+    private static int AccessibilityRank(Accessibility accessibility) => accessibility switch
+    {
+        Accessibility.Public => 5,
+        Accessibility.ProtectedOrInternal => 4,
+        Accessibility.Internal or Accessibility.Protected => 3,
+        Accessibility.ProtectedAndInternal => 2,
+        Accessibility.Private => 1,
+        _ => 5
+    };
 
     /// <summary>
     /// True when <paramref name="type"/> is legal as a C# method parameter type
@@ -1601,8 +1652,8 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             }
             else if (!string.IsNullOrEmpty(newParam.DefaultValue))
             {
-                // New parameter with default - use default
-                newArgs.Add(SyntaxFactory.Argument(SyntaxFactory.ParseExpression(newParam.DefaultValue)));
+                // Omit optional defaults at call sites (Codex / foreign context).
+                continue;
             }
             else
             {
