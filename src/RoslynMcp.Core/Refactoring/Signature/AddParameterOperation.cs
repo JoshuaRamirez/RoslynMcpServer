@@ -184,7 +184,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         {
             for (var i = 0; i < count; i++)
             {
-                if (IsParams(list.Parameters[i]) || IsOptional(list.Parameters[i]))
+                if (ParameterSyntaxHelpers.IsParams(list.Parameters[i]) || ParameterSyntaxHelpers.IsOptional(list.Parameters[i]))
                     return i;
             }
 
@@ -205,7 +205,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
     {
         for (var i = insertIndex; i < original.Parameters.Count; i++)
         {
-            if (!IsOptional(original.Parameters[i]) && !IsParams(original.Parameters[i]))
+            if (!ParameterSyntaxHelpers.IsOptional(original.Parameters[i]) && !ParameterSyntaxHelpers.IsParams(original.Parameters[i]))
                 return false;
         }
 
@@ -228,8 +228,8 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         for (var i = 0; i < hypothetical.Count; i++)
         {
             var parameter = hypothetical[i];
-            var isParams = IsParams(parameter);
-            var isOptional = IsOptional(parameter);
+            var isParams = ParameterSyntaxHelpers.IsParams(parameter);
+            var isOptional = ParameterSyntaxHelpers.IsOptional(parameter);
 
             if (isParams && i != hypothetical.Count - 1)
             {
@@ -713,13 +713,6 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
     private static bool IsDefaultValueExpression(ExpressionSyntax expression) =>
         expression.IsKind(SyntaxKind.DefaultLiteralExpression) ||
         expression is DefaultExpressionSyntax;
-
-    private static bool IsParams(ParameterSyntax parameter) =>
-        parameter.Modifiers.Any(m => m.IsKind(SyntaxKind.ParamsKeyword));
-
-    private static bool IsOptional(ParameterSyntax parameter) =>
-        parameter.Default != null;
-
 
     private static SeparatedSyntaxList<T> SeparatedWithSpaces<T>(IReadOnlyList<T> nodes)
         where T : SyntaxNode
