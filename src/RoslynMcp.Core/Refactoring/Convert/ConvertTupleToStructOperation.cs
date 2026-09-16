@@ -102,7 +102,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         foreach (var target in creations)
             DocumentEditableHelpers.ValidateDocumentIsEditable(target.Document, Context.Workspace);
 
-        var insertPosition = GetTypeInsertionPosition(root, creation);
+        var insertPosition = TypeInsertionHelpers.GetTypeInsertionPosition(root, creation);
         ValidateMembersForGeneratedType(members, semanticModel, insertPosition);
         var typeDeclaration = CreateNamedStruct(
             lookupName,
@@ -630,56 +630,16 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
             if (documentId == originatingDocument.Id)
             {
-                var insertionHost = FindNamespace(root, targetNamespace) ?? root;
+                var insertionHost = TypeInsertionHelpers.FindNamespace(root, targetNamespace) ?? root;
                 var typeToInsert = typeDeclaration
                     .WithLeadingTrivia(SyntaxFactory.ElasticCarriageReturnLineFeed, SyntaxFactory.ElasticCarriageReturnLineFeed);
-                root = InsertTypeDeclaration(root, insertionHost, typeToInsert);
+                root = TypeInsertionHelpers.InsertTypeDeclaration(root, insertionHost, typeToInsert);
             }
 
             solution = document.WithSyntaxRoot(root).Project.Solution;
         }
 
         return solution;
-    }
-
-    private static SyntaxNode InsertTypeDeclaration(
-        SyntaxNode root,
-        SyntaxNode? insertionHost,
-        TypeDeclarationSyntax typeDeclaration)
-    {
-        switch (insertionHost)
-        {
-            case BaseNamespaceDeclarationSyntax ns:
-                return root.ReplaceNode(ns, ns.AddMembers(typeDeclaration));
-            case CompilationUnitSyntax:
-                return ((CompilationUnitSyntax)root).AddMembers(typeDeclaration);
-            default:
-                if (root is CompilationUnitSyntax compilationUnit)
-                    return compilationUnit.AddMembers(typeDeclaration);
-                throw new RefactoringException(
-                    ErrorCodes.RoslynError,
-                    "Could not find a compilable location for the new type.");
-        }
-    }
-
-    private static BaseNamespaceDeclarationSyntax? FindNamespace(SyntaxNode root, string? targetNamespace)
-    {
-        if (string.IsNullOrEmpty(targetNamespace))
-            return null;
-
-        return root.DescendantNodes()
-            .OfType<BaseNamespaceDeclarationSyntax>()
-            .LastOrDefault(ns => string.Equals(GetFullNamespaceName(ns), targetNamespace, StringComparison.Ordinal));
-    }
-
-    private static int GetTypeInsertionPosition(SyntaxNode root, SyntaxNode creation)
-    {
-        var ns = creation.Ancestors().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault();
-        if (ns is NamespaceDeclarationSyntax blockNamespace)
-            return blockNamespace.CloseBraceToken.SpanStart;
-        if (ns != null)
-            return ns.Span.End;
-        return root.Span.End;
     }
 
     private static string TypeNameForCreation(SyntaxNode creation, string newTypeName, string? targetNamespace)
