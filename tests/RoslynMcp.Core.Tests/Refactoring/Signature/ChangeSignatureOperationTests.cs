@@ -1672,6 +1672,58 @@ public class ChangeSignatureOperationTests
         Assert.Empty(result.Changes!.FilesModified);
     }
 
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsWhenCallSiteDocumentNotEditable()
+    {
+        const string worker = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public void Process(int x) { }
+            }
+            """;
+        const string caller = """
+            namespace TestApp;
+
+            public class Caller
+            {
+                public void Run()
+                {
+                    new Worker().Process(1);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Worker.cs", worker),
+            ("Caller.cs", caller));
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var beforeWorker = await File.ReadAllTextAsync(workspace.SourcePaths["Worker.cs"]);
+
+        // Remap caller FilePath on the Context solution snapshot (MSBuildWorkspace
+        // rejects WithFilePath via TryApplyChanges). FindReferences still sees the
+        // in-memory invocation while IsDocumentEditable is false (Codex).
+        var callerDoc = workspace.Context.GetDocumentByPath(workspace.SourcePaths["Caller.cs"]);
+        Assert.NotNull(callerDoc);
+        var missingPath = Path.Combine(
+            Path.GetTempPath(),
+            "roslyn-mcp-missing-caller-" + Guid.NewGuid().ToString("N") + ".cs");
+        Assert.False(File.Exists(missingPath));
+        var remapped = callerDoc!.WithFilePath(missingPath);
+        workspace.Context.UpdateSolution(remapped.Project.Solution);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters = KeepXAddFlag()
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeWorker, await File.ReadAllTextAsync(workspace.SourcePaths["Worker.cs"]));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
 
     [SkippableFact]
     public async Task ChangeSignature_AllFilesTrue_AcceptsEnumMemberConstantDefault()
