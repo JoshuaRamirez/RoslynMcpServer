@@ -435,7 +435,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                     plan.Kind,
                     plan.AddTerminalDefault,
                     plan.ConvertExpressionBodyToBlock,
-                    ToContextValidTypeName(newReturnType, model, declaration.ReturnType.SpanStart)));
+                    ContextValidTypeHelpers.ToContextValidTypeName(newReturnType, model, declaration.ReturnType.SpanStart)));
             }
         }
 
@@ -739,34 +739,6 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             .Any(yield => !IsInNestedFunction(yield, declaration));
     }
 
-    internal static string ToContextValidTypeName(ITypeSymbol type, SemanticModel model, int position)
-    {
-        if (type.SpecialType == SpecialType.System_Void)
-            return "void";
-
-        var display = type.ToMinimalDisplayString(model, position);
-        if (string.IsNullOrWhiteSpace(display) || TypeNameBindsToDifferentType(display, type, model, position))
-        {
-            display = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat
-                .WithGlobalNamespaceStyle(SymbolDisplayGlobalNamespaceStyle.Omitted));
-        }
-
-        return display;
-    }
-
-    private static bool TypeNameBindsToDifferentType(
-        string display,
-        ITypeSymbol expected,
-        SemanticModel model,
-        int position)
-    {
-        var parsed = SyntaxFactory.ParseTypeName(display);
-        var spec = model.GetSpeculativeTypeInfo(position, parsed, SpeculativeBindingOption.BindAsTypeOrNamespace);
-        if (spec.Type == null || spec.Type.TypeKind == TypeKind.Error)
-            return true;
-
-        return !TypeEquivalenceHelpers.TypesEquivalent(spec.Type, expected);
-    }
 
     internal static bool MethodGroupStillCompatible(
         SyntaxNode node,
