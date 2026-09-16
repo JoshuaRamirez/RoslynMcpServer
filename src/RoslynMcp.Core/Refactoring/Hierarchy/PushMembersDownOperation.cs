@@ -1310,47 +1310,18 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property => ToAbstractProperty(property),
-            IndexerDeclarationSyntax indexer when CanMakeIndexerAbstract(indexer) => ToAbstractIndexer(indexer),
-            EventDeclarationSyntax eventDecl when CanMakeEventAbstract(eventDecl) => ToAbstractEvent(eventDecl),
-            EventFieldDeclarationSyntax eventField when CanMakeEventAbstract(eventField) => ToAbstractEvent(eventField),
+            IndexerDeclarationSyntax indexer when HierarchyAbstractEventIndexerHelpers.CanMakeIndexerAbstract(indexer) =>
+                HierarchyAbstractEventIndexerHelpers.ToAbstractIndexer(indexer, ToAbstractModifiers(indexer.Modifiers)),
+            EventDeclarationSyntax eventDecl when HierarchyAbstractEventIndexerHelpers.CanMakeEventAbstract(eventDecl) =>
+                HierarchyAbstractEventIndexerHelpers.ToAbstractEvent(eventDecl, ToAbstractModifiers(eventDecl.Modifiers)),
+            EventFieldDeclarationSyntax eventField when HierarchyAbstractEventIndexerHelpers.CanMakeEventAbstract(eventField) =>
+                HierarchyAbstractEventIndexerHelpers.ToAbstractEvent(eventField, ToAbstractModifiers(eventField.Modifiers)),
             _ => throw new RefactoringException(
                 ErrorCodes.MemberNotMoveable,
                 "Only methods, properties, indexers, and events can be left as abstract members.")
         };
     }
 
-    private static bool CanMakeIndexerAbstract(IndexerDeclarationSyntax indexer) =>
-        !indexer.Modifiers.Any(SyntaxKind.StaticKeyword) &&
-        indexer.ExplicitInterfaceSpecifier == null &&
-        (indexer.AccessorList == null
-            || indexer.AccessorList.Accessors.All(accessor => !AccessibilityModifiers.IsPrivateOnlyAccessor(accessor)));
-
-
-    private static bool CanMakeEventAbstract(EventDeclarationSyntax eventDecl) =>
-        !eventDecl.Modifiers.Any(SyntaxKind.StaticKeyword) &&
-        eventDecl.ExplicitInterfaceSpecifier == null;
-
-    private static bool CanMakeEventAbstract(EventFieldDeclarationSyntax eventField) =>
-        !eventField.Modifiers.Any(SyntaxKind.StaticKeyword);
-
-    private static EventDeclarationSyntax ToAbstractEvent(EventDeclarationSyntax eventDecl)
-    {
-        return eventDecl
-            .WithModifiers(ToAbstractModifiers(eventDecl.Modifiers))
-            .WithAccessorList(null)
-            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
-            .NormalizeWhitespace();
-    }
-
-    private static EventDeclarationSyntax ToAbstractEvent(EventFieldDeclarationSyntax eventField)
-    {
-        var variable = eventField.Declaration.Variables.First();
-        return SyntaxFactory.EventDeclaration(eventField.Declaration.Type, variable.Identifier)
-            .WithAttributeLists(eventField.AttributeLists)
-            .WithModifiers(ToAbstractModifiers(eventField.Modifiers))
-            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
-            .NormalizeWhitespace();
-    }
 
     private static PropertyDeclarationSyntax ToAbstractProperty(PropertyDeclarationSyntax property)
     {
@@ -1373,33 +1344,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
         return property
             .WithModifiers(ToAbstractModifiers(property.Modifiers))
-            .WithExpressionBody(null)
-            .WithSemicolonToken(default)
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
-            .NormalizeWhitespace();
-    }
-
-    private static IndexerDeclarationSyntax ToAbstractIndexer(IndexerDeclarationSyntax indexer)
-    {
-        var accessors = new List<AccessorDeclarationSyntax>();
-        if (indexer.AccessorList != null)
-        {
-            foreach (var accessor in indexer.AccessorList.Accessors)
-            {
-                accessors.Add(accessor
-                    .WithBody(null)
-                    .WithExpressionBody(null)
-                    .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-            }
-        }
-        else
-        {
-            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-        }
-
-        return indexer
-            .WithModifiers(ToAbstractModifiers(indexer.Modifiers))
             .WithExpressionBody(null)
             .WithSemicolonToken(default)
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
