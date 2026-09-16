@@ -2038,6 +2038,97 @@ public class ChangeSignatureOperationTests
     }
 
 
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsApplicationEntryPoint()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public static class Program
+            {
+                public static void Main() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { Name = "flag", Type = "bool" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsExternMethods()
+    {
+        const string source = """
+            namespace TestApp;
+            using System.Runtime.InteropServices;
+
+            public static class Native
+            {
+                [DllImport("kernel32.dll")]
+                public static extern void Process(int x);
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters = KeepXAddFlag()
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsPointerParameterType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Sample
+            {
+                public void Process(int x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x" },
+                new ParameterChange { Name = "p", Type = "int*" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+
     #endregion
 
     #region Helpers

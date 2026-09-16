@@ -527,6 +527,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (method.PartialDefinitionPart != null || method.PartialImplementationPart != null)
             return false;
 
+        // Extern / DllImport: managed rewrite cannot update native ABI (Codex).
+        if (method.IsExtern)
+            return false;
+
         // Overrides / interface implementations: changing the signature while
         // keeping override/impl modifiers breaks the contract when the related
         // declaration is outside the editable walk (metadata / other files)
@@ -878,6 +882,60 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         return true;
     }
 
+
+    /// <summary>
+    /// True for the compilation entry point, or a static <c>Main</c> with an
+    /// entry-point-legal signature when the host project has no recorded entry
+    /// point (class-library TempWorkspace) (Codex / CS5001).
+    /// </summary>
+    private static bool IsApplicationEntryPointCandidate(
+        IMethodSymbol method,
+        Compilation compilation,
+        CancellationToken cancellationToken)
+    {
+        var entryPoint = compilation.GetEntryPoint(cancellationToken);
+        if (entryPoint != null &&
+            SymbolEqualityComparer.Default.Equals(entryPoint, method))
+        {
+            return true;
+        }
+
+        if (!method.IsStatic ||
+            !string.Equals(method.Name, "Main", StringComparison.Ordinal) ||
+            method.Parameters.Length > 1)
+        {
+            return false;
+        }
+
+        if (method.Parameters.Length == 1)
+        {
+            var parameterType = method.Parameters[0].Type;
+            var isStringArray = parameterType is IArrayTypeSymbol
+            {
+                ElementType.SpecialType: SpecialType.System_String
+            };
+            var isReadOnlySpanOfString =
+                parameterType is INamedTypeSymbol
+                {
+                    Name: "ReadOnlySpan",
+                    TypeArguments: { Length: 1 } args
+                } &&
+                args[0].SpecialType == SpecialType.System_String;
+            if (!isStringArray && !isReadOnlySpanOfString)
+                return false;
+        }
+
+        var returnType = method.ReturnType;
+        if (returnType.SpecialType is SpecialType.System_Void or SpecialType.System_Int32)
+            return true;
+
+        return returnType is INamedTypeSymbol
+            {
+                Name: "Task" or "ValueTask",
+                ContainingNamespace.Name: "Tasks"
+            };
+    }
+
     /// <summary>
     /// True when <paramref name="type"/> is legal as a C# method parameter type
     /// (rejects <c>void</c>, static classes, unbound generic types) (Codex).
@@ -887,6 +945,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (type.SpecialType == SpecialType.System_Void)
             return false;
         if (type.TypeKind == TypeKind.Error)
+            return false;
+        // Pointer / function-pointer types require an unsafe declaration context
+        // that bulk CreateParameterSyntax does not introduce (Codex).
+        if (type.TypeKind is TypeKind.Pointer or TypeKind.FunctionPointer)
             return false;
         if (type is INamedTypeSymbol { IsUnboundGenericType: true })
             return false;
@@ -911,6 +973,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             return null;
 
         if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        // Application entry points (Main / top-level): rewriting leaves CS5001 (Codex).
+        if (IsApplicationEntryPointCandidate(methodSymbol, semanticModel.Compilation, cancellationToken))
             return null;
 
         // Base virtual/abstract still eligible under IsOverride==false, but
