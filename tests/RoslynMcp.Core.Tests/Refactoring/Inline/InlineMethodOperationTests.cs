@@ -1880,6 +1880,81 @@ public class InlineMethodOperationTests
         Assert.Contains("System.Console.WriteLine(\"shared\");", texts[0], StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task InlineMethod_AllFilesTrue_LinkedDocument_InlinesSiblingProjectCallers()
+    {
+        // Call site lives only in ProjectB's AnchorB; SymbolFinder on ProjectA's
+        // Shared method symbol would miss it without sibling-compilation collection.
+        const string sharedSource = """
+            namespace TestApp;
+
+            public static class Shared
+            {
+                public static int Double(int x)
+                {
+                    return x * 2;
+                }
+            }
+            """;
+        const string anchorASource = """
+            namespace TestApp;
+
+            public static class AnchorA
+            {
+            }
+            """;
+        const string anchorBSource = """
+            namespace TestApp;
+
+            public static class AnchorB
+            {
+                public static int Use()
+                {
+                    return Shared.Double(21);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorASource, anchorBSource);
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathEquals(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var operation = new InlineMethodOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new InlineMethodParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Shared.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["AnchorB.cs"]));
+
+        var updatedShared = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]));
+        Assert.DoesNotContain("public static int Double", updatedShared, StringComparison.Ordinal);
+
+        var updatedAnchorB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["AnchorB.cs"]));
+        Assert.Contains("return 21 * 2;", updatedAnchorB, StringComparison.Ordinal);
+        Assert.DoesNotContain("Shared.Double", updatedAnchorB, StringComparison.Ordinal);
+
+        var texts = new List<string>();
+        foreach (var document in linkedDocuments)
+        {
+            var current = workspace.Context.Solution.GetDocument(document.Id);
+            Assert.NotNull(current);
+            texts.Add((await current!.GetTextAsync()).ToString());
+        }
+
+        Assert.Equal(2, texts.Count);
+        Assert.Equal(texts[0], texts[1], StringComparer.Ordinal);
+        Assert.DoesNotContain("public static int Double", texts[0], StringComparison.Ordinal);
+    }
+
 
     #endregion
 

@@ -289,27 +289,20 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
 
                 // Coalesce linked siblings for every physical path whose text
                 // changed in this rewrite (declaring file and any call-site files).
+                // Prefer a DocumentId that actually changed so an unchanged
+                // sorted-first sibling cannot overwrite the rewrite (Codex/Copilot).
                 var beforeSolution = currentSolution;
                 currentSolution = updated;
+                var changedDocIds = new HashSet<DocumentId>();
                 var changedPathKeys = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var project in updated.Projects)
+                foreach (var projectChanges in updated.GetChanges(beforeSolution).GetProjectChanges())
                 {
-                    foreach (var document in project.Documents)
+                    foreach (var docId in projectChanges.GetChangedDocuments())
                     {
-                        if (document.FilePath == null)
-                            continue;
-
-                        var beforeDoc = beforeSolution.GetDocument(document.Id);
-                        var afterDoc = updated.GetDocument(document.Id);
-                        if (beforeDoc == null || afterDoc == null)
-                            continue;
-
-                        var beforeText = await beforeDoc.GetTextAsync(cancellationToken);
-                        var afterText = await afterDoc.GetTextAsync(cancellationToken);
-                        if (beforeText.ContentEquals(afterText))
-                            continue;
-
-                        changedPathKeys.Add(PathResolver.GetPathComparisonKey(document.FilePath));
+                        changedDocIds.Add(docId);
+                        var changedDoc = updated.GetDocument(docId);
+                        if (changedDoc?.FilePath != null)
+                            changedPathKeys.Add(PathResolver.GetPathComparisonKey(changedDoc.FilePath));
                     }
                 }
 
@@ -332,8 +325,12 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                             continue;
 
                         var sourceDoc = siblings.FirstOrDefault(d =>
-                            d is not SourceGeneratedDocument &&
-                            DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+                                changedDocIds.Contains(d.Id) &&
+                                d is not SourceGeneratedDocument &&
+                                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace))
+                            ?? siblings.FirstOrDefault(d =>
+                                d is not SourceGeneratedDocument &&
+                                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
                         if (sourceDoc == null)
                             continue;
 
@@ -774,12 +771,83 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         InlineMethodParams @params,
         CancellationToken cancellationToken)
     {
-        var references = await SymbolFinder.FindReferencesAsync(
+        var callSites = new List<CallSite>();
+        var seen = new HashSet<(DocumentId Id, int SpanStart, int SpanEnd)>();
+        var declaringPathKey = declaringDocument.FilePath != null
+            ? PathResolver.GetPathComparisonKey(declaringDocument.FilePath)
+            : null;
+
+        await CollectCallSitesForSymbolAsync(
             methodSymbol,
-            declaringDocument.Project.Solution,
+            methodSyntax,
+            declaringDocument,
+            declaringDocument,
+            declaringPathKey,
+            @params,
+            callSites,
+            seen,
             cancellationToken);
 
-        var callSites = new List<CallSite>();
+        // Linked sibling DocumentIds bind a distinct IMethodSymbol for the same
+        // physical declaration. SymbolFinder on the primary symbol misses callers
+        // that bind only under those sibling compilations — collect them before
+        // coalescing physical text (Codex P1).
+        if (declaringPathKey != null)
+        {
+            foreach (var project in declaringDocument.Project.Solution.Projects)
+            {
+                foreach (var siblingDoc in project.Documents)
+                {
+                    if (siblingDoc.Id == declaringDocument.Id || siblingDoc.FilePath == null)
+                        continue;
+                    if (PathResolver.GetPathComparisonKey(siblingDoc.FilePath) != declaringPathKey)
+                        continue;
+
+                    var siblingRoot = await siblingDoc.GetSyntaxRootAsync(cancellationToken);
+                    var siblingModel = await siblingDoc.GetSemanticModelAsync(cancellationToken);
+                    if (siblingRoot == null || siblingModel == null)
+                        continue;
+
+                    var rematched = RematchMethod(siblingRoot, methodSyntax);
+                    if (rematched == null)
+                        continue;
+
+                    var siblingSymbol = siblingModel.GetDeclaredSymbol(rematched, cancellationToken) as IMethodSymbol;
+                    if (siblingSymbol == null)
+                        continue;
+
+                    await CollectCallSitesForSymbolAsync(
+                        siblingSymbol,
+                        rematched,
+                        siblingDoc,
+                        declaringDocument,
+                        declaringPathKey,
+                        @params,
+                        callSites,
+                        seen,
+                        cancellationToken);
+                }
+            }
+        }
+
+        return callSites;
+    }
+
+    private static async Task CollectCallSitesForSymbolAsync(
+        IMethodSymbol methodSymbol,
+        MethodDeclarationSyntax methodSyntax,
+        Document symbolDeclaringDocument,
+        Document primaryDeclaringDocument,
+        string? declaringPathKey,
+        InlineMethodParams @params,
+        List<CallSite> callSites,
+        HashSet<(DocumentId Id, int SpanStart, int SpanEnd)> seen,
+        CancellationToken cancellationToken)
+    {
+        var references = await SymbolFinder.FindReferencesAsync(
+            methodSymbol,
+            symbolDeclaringDocument.Project.Solution,
+            cancellationToken);
 
         foreach (var referencedSymbol in references)
         {
@@ -794,20 +862,25 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                     continue;
 
                 // Linked sibling DocumentIds share the physical path but belong
-                // to another compilation — their IMethodSymbols are not equal
-                // under SymbolEqualityComparer. Skip them; coalescing copies
-                // declaring-document text onto siblings after rewrite.
-                if (document.Id != declaringDocument.Id &&
-                    document.FilePath != null &&
-                    declaringDocument.FilePath != null &&
-                    PathResolver.GetPathComparisonKey(document.FilePath) ==
-                    PathResolver.GetPathComparisonKey(declaringDocument.FilePath))
+                // to another compilation. In-file call sites are rewritten only
+                // via the primary declaring DocumentId; sibling compilations are
+                // consulted for callers in other files (skip the whole declaring
+                // path there — primary DocumentId locations bind to the primary
+                // symbol and would fail equality against the sibling symbol).
+                if (document.FilePath != null &&
+                    declaringPathKey != null &&
+                    PathResolver.GetPathComparisonKey(document.FilePath) == declaringPathKey)
                 {
-                    continue;
+                    if (symbolDeclaringDocument.Id != primaryDeclaringDocument.Id ||
+                        document.Id != primaryDeclaringDocument.Id)
+                    {
+                        continue;
+                    }
                 }
 
                 var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
-                if (IsMethodDeclarationReference(node, methodSyntax, declaringDocument, document, location.Location))
+                if (IsMethodDeclarationReference(
+                        node, methodSyntax, symbolDeclaringDocument, document, location.Location))
                     continue;
 
                 // Same-named method declaration identifier (defensive; linked
@@ -829,13 +902,33 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                 if (invoked == null ||
                     !SymbolEqualityComparer.Default.Equals(invoked.OriginalDefinition, methodSymbol.OriginalDefinition))
                 {
+                    // SymbolFinder can surface callers that bind under a linked
+                    // sibling compilation to a distinct IMethodSymbol for the
+                    // same physical declaration. Skip those here; the sibling
+                    // CollectCallSitesForSymbolAsync pass matches them.
+                    if (invoked != null &&
+                        declaringPathKey != null &&
+                        IsDeclaredOnPath(invoked, declaringPathKey))
+                    {
+                        continue;
+                    }
+
                     throw new RefactoringException(
                         ErrorCodes.InvalidSelection,
                         $"Method '{methodSymbol.Name}' is used as a method group or non-invocation reference and cannot be inlined.");
                 }
 
-                if (document.Id == declaringDocument.Id && methodSyntax.Span.Contains(invocation.Span))
+                if (document.Id == primaryDeclaringDocument.Id && methodSyntax.Span.Contains(invocation.Span))
                     continue;
+
+                // When collecting from a sibling symbol, also skip recursive
+                // invocations under that sibling's rematched declaration span.
+                if (document.Id == symbolDeclaringDocument.Id &&
+                    symbolDeclaringDocument.Id != primaryDeclaringDocument.Id &&
+                    methodSyntax.Span.Contains(invocation.Span))
+                {
+                    continue;
+                }
 
                 if (@params.CallSiteLocation != null &&
                     !MatchesCallSiteLocation(document, invocation, @params.CallSiteLocation))
@@ -843,11 +936,13 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                     continue;
                 }
 
+                var key = (document.Id, invocation.Span.Start, invocation.Span.End);
+                if (!seen.Add(key))
+                    continue;
+
                 callSites.Add(new CallSite(document, invocation.Span));
             }
         }
-
-        return callSites;
     }
 
 
@@ -1095,6 +1190,19 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         }
 
         return solution;
+    }
+
+
+    private static bool IsDeclaredOnPath(IMethodSymbol method, string pathKey)
+    {
+        foreach (var reference in method.DeclaringSyntaxReferences)
+        {
+            var path = reference.SyntaxTree.FilePath;
+            if (path != null && PathResolver.GetPathComparisonKey(path) == pathKey)
+                return true;
+        }
+
+        return false;
     }
 
     private static MethodDeclarationSyntax? RematchMethod(SyntaxNode root, MethodDeclarationSyntax original)
