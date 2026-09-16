@@ -251,8 +251,9 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// sibling <see cref="DocumentId"/> via <see cref="Solution.GetChanges(Solution)"/>
     /// coalesce (prefer a changed DocumentId as source). Methods missing any
     /// <c>originalName</c>, extension methods (<c>this</c> receiver not preserved),
-    /// kept <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c>
+    /// kept <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c>/<c>scoped</c>
     /// parameters (modifiers not preserved by <c>CreateParameterSyntax</c>),
+    /// <c>ModuleInitializer</c> / <c>UnmanagedCallersOnly</c> methods,
     /// uneditable / source-generated docs, and otherwise inapplicable methods
     /// are skipped rather than failing the walk.
     /// Deterministic <c>SpanStart</c> order within a file. When every file is
@@ -520,9 +521,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// method (<c>this</c> receiver not preserved by <c>CreateParameterSyntax</c>),
     /// not a partial definition/implementation pair, not an interface declaration /
     /// override / interface-implementing (bulk cannot rewrite the full hierarchy /
-    /// metadata contracts), and no kept parameter uses <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c>
-    /// (bulk rewrite cannot preserve those modifiers yet — <c>CreateParameterSyntax</c>
-    /// only emits type/name/default).
+    /// metadata contracts), not <c>[ModuleInitializer]</c> (must stay parameterless —
+    /// CS8815), and no kept parameter uses <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c>
+    /// or <c>scoped</c> (bulk rewrite cannot preserve those modifiers yet —
+    /// <c>CreateParameterSyntax</c> only emits type/name/default).
     /// </summary>
     internal static bool IsEligible(IMethodSymbol method, IReadOnlyList<ParameterChange> changes)
     {
@@ -543,6 +545,10 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
 
         // UnmanagedCallersOnly: unmanaged ABI contract even when IsExtern is false (Codex).
         if (HasUnmanagedCallersOnlyAttribute(method))
+            return false;
+
+        // ModuleInitializer: must remain parameterless (CS8815) (Codex).
+        if (HasModuleInitializerAttribute(method))
             return false;
 
         // Overrides / interface implementations: changing the signature while
@@ -572,6 +578,9 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             if (change.Remove)
                 continue;
             if (existing.RefKind != RefKind.None || existing.IsParams)
+                return false;
+            // CreateParameterSyntax drops scoped and breaks ref-safety (Codex).
+            if (existing.ScopedKind != ScopedKind.None)
                 return false;
             // CreateParameterSyntax drops attribute lists (CallerMemberName, etc.).
             if (existing.GetAttributes().Length > 0)
@@ -1004,6 +1013,42 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
 
     /// <summary>
     /// True when <paramref name="method"/> has
+    /// <c>System.Runtime.CompilerServices.ModuleInitializerAttribute</c>
+    /// (bound attribute or unbound syntax fallback) (Codex).
+    /// </summary>
+    private static bool HasModuleInitializerAttribute(IMethodSymbol method)
+    {
+        if (method.GetAttributes().Any(attr =>
+        {
+            var type = attr.AttributeClass;
+            if (type == null)
+                return false;
+            if (type.Name is not ("ModuleInitializerAttribute" or "ModuleInitializer"))
+                return false;
+            return type.ContainingNamespace?.ToDisplayString() == "System.Runtime.CompilerServices";
+        }))
+        {
+            return true;
+        }
+
+        // Attribute may not bind without a complete reference; fall back to syntax.
+        foreach (var syntaxRef in method.DeclaringSyntaxReferences)
+        {
+            if (syntaxRef.GetSyntax() is not MethodDeclarationSyntax methodDecl)
+                continue;
+            if (methodDecl.AttributeLists
+                .SelectMany(list => list.Attributes)
+                .Any(attr => attr.Name.ToString().Contains("ModuleInitializer", StringComparison.Ordinal)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="method"/> has
     /// <c>System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute</c>
     /// (bound attribute or unbound syntax fallback) (Codex).
     /// </summary>
@@ -1136,6 +1181,14 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (methodDecl.AttributeLists
                 .SelectMany(list => list.Attributes)
                 .Any(attr => attr.Name.ToString().Contains("UnmanagedCallersOnly", StringComparison.Ordinal)))
+        {
+            return null;
+        }
+
+        // Syntax-level ModuleInitializer (attribute may not bind) (Codex).
+        if (methodDecl.AttributeLists
+                .SelectMany(list => list.Attributes)
+                .Any(attr => attr.Name.ToString().Contains("ModuleInitializer", StringComparison.Ordinal)))
         {
             return null;
         }
