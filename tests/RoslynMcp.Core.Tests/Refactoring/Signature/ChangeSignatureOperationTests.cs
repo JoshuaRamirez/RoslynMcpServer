@@ -1089,6 +1089,84 @@ public class ChangeSignatureOperationTests
         Assert.True(HasParameters(texts[0], "Process", ("int", "x"), ("bool", "flag")));
     }
 
+    [SkippableFact]
+    public async Task ChangeSignature_RecursiveSelfCall_UpdatesInBodyInvocation()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Sample
+            {
+                public int Process(int x)
+                {
+                    if (x <= 0)
+                        return 0;
+                    return Process(x - 1);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeSignatureOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            Parameters = KeepXAddFlag()
+        });
+
+        Assert.True(result.Success);
+        var compact = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath))
+            .Replace(" ", "", StringComparison.Ordinal);
+        Assert.True(HasParameters(
+            await File.ReadAllTextAsync(workspace.SourcePath),
+            "Process",
+            ("int", "x"),
+            ("bool", "flag")));
+        Assert.Contains("returnProcess(x-1,default/*TODO:flag*/);", compact, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_SkipsExtensionMethodsRatherThanStrippingThis()
+    {
+        const string extension = """
+            namespace TestApp;
+
+            public static class Ext
+            {
+                public static void Process(this int x) { }
+            }
+            """;
+        const string plain = """
+            namespace TestApp;
+
+            public class FileB
+            {
+                public void Process(int x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Ext.cs", extension),
+            ("FileB.cs", plain));
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var beforeExt = await File.ReadAllTextAsync(workspace.SourcePaths["Ext.cs"]);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters = KeepXAddFlag()
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeExt, await File.ReadAllTextAsync(workspace.SourcePaths["Ext.cs"]));
+        var updatedB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        Assert.True(HasParameters(updatedB, "Process", ("int", "x"), ("bool", "flag")));
+        Assert.DoesNotContain(result.Changes!.FilesModified, p => PathsEqual(p, workspace.SourcePaths["Ext.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, workspace.SourcePaths["FileB.cs"]));
+    }
+
     #endregion
 
     #region Helpers

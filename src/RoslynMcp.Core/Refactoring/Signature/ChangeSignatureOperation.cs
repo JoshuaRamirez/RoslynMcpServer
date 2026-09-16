@@ -223,7 +223,8 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// physical path are rewritten once and the same text is applied to every
     /// sibling <see cref="DocumentId"/> via <see cref="Solution.GetChanges(Solution)"/>
     /// coalesce (prefer a changed DocumentId as source). Methods missing any
-    /// <c>originalName</c>, kept <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c>
+    /// <c>originalName</c>, extension methods (<c>this</c> receiver not preserved),
+    /// kept <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c>
     /// parameters (modifiers not preserved by <c>CreateParameterSyntax</c>),
     /// uneditable / source-generated docs, and otherwise inapplicable methods
     /// are skipped rather than failing the walk.
@@ -488,13 +489,19 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
 
     /// <summary>
     /// True when every <c>originalName</c> in <paramref name="changes"/>
-    /// exists on <paramref name="method"/>, and no kept parameter uses
-    /// <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c> (bulk rewrite cannot
-    /// preserve those modifiers yet — <c>CreateParameterSyntax</c> only
-    /// emits type/name/default).
+    /// exists on <paramref name="method"/>, the method is not an extension
+    /// method (<c>this</c> receiver not preserved by <c>CreateParameterSyntax</c>),
+    /// and no kept parameter uses <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c>
+    /// (bulk rewrite cannot preserve those modifiers yet —
+    /// <c>CreateParameterSyntax</c> only emits type/name/default).
     /// </summary>
     internal static bool IsEligible(IMethodSymbol method, IReadOnlyList<ParameterChange> changes)
     {
+        // Extension receivers lose the this modifier under CreateParameterSyntax
+        // and would break extension-style callers (Codex).
+        if (method.IsExtensionMethod)
+            return false;
+
         var byName = method.Parameters.ToDictionary(p => p.Name, StringComparer.Ordinal);
         foreach (var change in changes)
         {
@@ -644,7 +651,6 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         var originalParams = methodSymbol.Parameters.ToList();
         var newParamSyntax = newParameters.Select(CreateParameterSyntax);
         var newParamList = SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(newParamSyntax));
-        var newMethodDecl = methodDecl.WithParameterList(newParamList);
 
         // Resolve same-file invocations from the original root so multiple
         // call sites rewrite with the declaration in one ReplaceNodes pass —
@@ -664,22 +670,34 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 declaringInvocations.Add(invocation);
         }
 
-        var declaringReplacements = new Dictionary<SyntaxNode, SyntaxNode>
-        {
-            [methodDecl] = newMethodDecl
-        };
+        // Invocation replacements only — the method node is composed from the
+        // already-rewritten descendant tree so recursive self-calls keep the
+        // updated argument list (Codex).
+        var invocationReplacements = new Dictionary<InvocationExpressionSyntax, InvocationExpressionSyntax>();
         foreach (var invocation in declaringInvocations.Distinct())
         {
-            declaringReplacements[invocation] = UpdateInvocation(
+            invocationReplacements[invocation] = UpdateInvocation(
                 invocation,
                 originalParams,
                 newParameters,
                 changes);
         }
 
+        var nodesToReplace = new List<SyntaxNode> { methodDecl };
+        nodesToReplace.AddRange(invocationReplacements.Keys);
+
         var newRoot = root.ReplaceNodes(
-            declaringReplacements.Keys,
-            (original, _) => declaringReplacements[original]);
+            nodesToReplace,
+            (original, rewritten) =>
+            {
+                if (original == methodDecl)
+                {
+                    // rewritten already includes in-body invocation updates.
+                    return ((MethodDeclarationSyntax)rewritten).WithParameterList(newParamList);
+                }
+
+                return invocationReplacements[(InvocationExpressionSyntax)original];
+            });
         var newSolution = document.WithSyntaxRoot(newRoot).Project.Solution;
 
         // Other documents: one ReplaceNodes pass per document (spans still
