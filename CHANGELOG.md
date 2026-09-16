@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Extracted shared `ContextValidTypeHelpers.ToContextValidTypeName` + `MemberTypeBindsAtInsertion` + `ContainsTypeParameter` + `IsLessAccessibleThanPublic` + `GetEffectiveAccessibility` and replaced 2 identical Convert copies (`convert_anonymous_to_class` / `convert_tuple_to_struct`) (#1203)
 - Extracted shared `HierarchyAbstractEventIndexerHelpers.CanMakeEventAbstract` + `ToAbstractEvent` + `CanMakeIndexerAbstract` + `ToAbstractIndexer` and replaced 2 identical Hierarchy copies (`HierarchyAbstractMemberRewriter` / `push_members_down`) (#1197)
 - Extracted shared `NamespaceNameHelpers.GetContainingNamespaceName` + `GetFullNamespaceName` and replaced 2 identical Convert copies (`convert_anonymous_to_class` / `convert_tuple_to_struct`); folded TypeInsertionHelpers private twin (#1188)
 - Extracted shared `TypeInsertionHelpers.InsertTypeDeclaration` + `FindNamespace` + `GetTypeInsertionPosition` and replaced 2 identical Convert copies (`convert_anonymous_to_class` / `convert_tuple_to_struct`) (#1184)
