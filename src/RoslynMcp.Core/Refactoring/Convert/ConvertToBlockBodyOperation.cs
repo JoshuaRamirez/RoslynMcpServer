@@ -182,10 +182,10 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         // several projects. Rewrite once per normalized path and apply the same
         // text to every sibling DocumentId so CommitChanges cannot last-write-wins
         // conflicting preprocessor variants (Codex P2). Group with Ordinal so
-        // case-distinct files (Foo.cs vs foo.cs) stay separate on case-sensitive
-        // file systems (Codex P1).
+        // case-distinct files (Foo.cs vs foo.cs) stay separate on Linux;
+        // Windows/macOS coalesce casing variants of the same physical path.
         var documentGroups = allDocuments
-            .GroupBy(d => PathResolver.NormalizePath(d.FilePath!), StringComparer.Ordinal)
+            .GroupBy(d => PathResolver.NormalizePath(d.FilePath!), PhysicalFilePathComparer)
             .Select(group => group
                 .OrderBy(d => d.FilePath, StringComparer.Ordinal)
                 .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
@@ -280,6 +280,16 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             null, 0, 0);
     }
 
+    /// <summary>
+    /// Path comparer for physical files: case-insensitive on Windows/macOS
+    /// (same path may differ only by casing across linked projects), Ordinal
+    /// on Linux so <c>Foo.cs</c> and <c>foo.cs</c> stay distinct.
+    /// </summary>
+    private static StringComparer PhysicalFilePathComparer { get; } =
+        OperatingSystem.IsLinux()
+            ? StringComparer.Ordinal
+            : StringComparer.OrdinalIgnoreCase;
+
     private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
     {
         var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
@@ -294,7 +304,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         // (one physical file linked into multiple projects is not ambiguous).
         var distinctPaths = matchedDocuments
             .Select(d => PathResolver.NormalizePath(d.FilePath!))
-            .Distinct(StringComparer.Ordinal)
+            .Distinct(PhysicalFilePathComparer)
             .ToList();
         return distinctPaths.Count switch
         {
