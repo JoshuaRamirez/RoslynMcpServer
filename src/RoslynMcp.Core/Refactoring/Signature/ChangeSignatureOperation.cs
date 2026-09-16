@@ -515,7 +515,8 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         // Already at the target signature — skip so the while-loop cannot
         // re-apply the same parameters list forever (unlike introduce_parameter,
         // the method stays present and still matches originalName eligibility).
-        if (SignatureAlreadyMatches(methodSymbol, newParameters))
+        // Include defaults so default-only ParameterChange entries still apply (Codex).
+        if (SignatureAlreadyMatches(methodDecl, methodSymbol, newParameters))
             return null;
 
         var beforeText = await document.GetTextAsync(cancellationToken);
@@ -566,14 +567,19 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     }
 
     /// <summary>
-    /// True when <paramref name="method"/> already has the same parameter
-    /// names and types (in order) as <paramref name="newParameters"/>.
+    /// True when <paramref name="methodDecl"/> already has the same parameter
+    /// names, types, and default-value expressions (in order) as
+    /// <paramref name="newParameters"/>. Defaults are compared from syntax so
+    /// default-only <see cref="ParameterChange"/> entries still apply.
     /// </summary>
     private static bool SignatureAlreadyMatches(
+        MethodDeclarationSyntax methodDecl,
         IMethodSymbol method,
         IReadOnlyList<NewParameter> newParameters)
     {
         if (method.Parameters.Length != newParameters.Count)
+            return false;
+        if (methodDecl.ParameterList.Parameters.Count != newParameters.Count)
             return false;
 
         for (var i = 0; i < newParameters.Count; i++)
@@ -583,6 +589,15 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             if (!string.Equals(existing.Name, expected.Name, StringComparison.Ordinal))
                 return false;
             if (!string.Equals(existing.Type.ToDisplayString(), expected.Type, StringComparison.Ordinal))
+                return false;
+
+            var existingDefault = methodDecl.ParameterList.Parameters[i].Default?.Value.ToString();
+            var expectedDefault = expected.DefaultValue;
+            if (string.IsNullOrEmpty(existingDefault))
+                existingDefault = null;
+            if (string.IsNullOrEmpty(expectedDefault))
+                expectedDefault = null;
+            if (!string.Equals(existingDefault, expectedDefault, StringComparison.Ordinal))
                 return false;
         }
 

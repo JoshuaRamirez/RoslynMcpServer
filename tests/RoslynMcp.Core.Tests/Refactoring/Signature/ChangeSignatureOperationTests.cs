@@ -843,6 +843,48 @@ public class ChangeSignatureOperationTests
     }
 
     [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_DefaultOnlyChange_UpdatesDefaults()
+    {
+        const string withDefault = """
+            namespace TestApp;
+
+            public class FileA
+            {
+                public void Process(int x = 1) { }
+            }
+            """;
+        const string withoutDefault = """
+            namespace TestApp;
+
+            public class FileB
+            {
+                public void Process(int x) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", withDefault),
+            ("FileB.cs", withoutDefault));
+        var operation = new ChangeSignatureOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            Parameters =
+            [
+                new ParameterChange { OriginalName = "x", Name = "x", DefaultValue = "42" }
+            ]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var updatedB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        Assert.Contains("=42", updatedA.Replace(" ", "", StringComparison.Ordinal), StringComparison.Ordinal);
+        Assert.Contains("=42", updatedB.Replace(" ", "", StringComparison.Ordinal), StringComparison.Ordinal);
+        Assert.DoesNotContain("=1", updatedA.Replace(" ", "", StringComparison.Ordinal), StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task ChangeSignature_AllFilesTrue_OptionalSourceFile_LimitsWalk()
     {
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
