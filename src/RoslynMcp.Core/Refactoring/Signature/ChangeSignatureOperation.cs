@@ -673,7 +673,14 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         IMethodSymbol methodSymbol,
         IReadOnlyList<ParameterChange> changes)
     {
-        var position = methodDecl.SpanStart;
+        // Prefer a position inside the method (body / expression-body / parameter
+        // list) so TryGetSpeculativeSemanticModel(EqualsValueClause) and
+        // GetConstantValue succeed for optional defaults (Codex).
+        var position = methodDecl.Body?.SpanStart
+            ?? methodDecl.ExpressionBody?.Expression.SpanStart
+            ?? (methodDecl.ParameterList.Span.Length > 0
+                ? methodDecl.ParameterList.CloseParenToken.SpanStart
+                : methodDecl.SpanStart);
         var byOriginal = methodSymbol.Parameters.ToDictionary(p => p.Name, StringComparer.Ordinal);
         foreach (var change in changes)
         {
@@ -702,7 +709,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             {
                 if (resultingType == null)
                     return false;
-                if (!IsValidOptionalDefault(semanticModel, position, change.DefaultValue, resultingType))
+                if (!IsValidOptionalDefault(semanticModel, methodDecl, change.DefaultValue, resultingType))
                     return false;
             }
         }
@@ -719,25 +726,17 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// </summary>
     private static bool IsValidOptionalDefault(
         SemanticModel semanticModel,
-        int position,
+        MethodDeclarationSyntax methodDecl,
         string defaultValue,
         ITypeSymbol parameterType)
     {
         var expression = SyntaxFactory.ParseExpression(defaultValue);
+        if (expression.IsMissing || expression.ContainsDiagnostics)
+            return false;
 
         // nameof(MissingSymbol) still types as string; ensure the nameof
         // argument binds (Codex).
-        if (!NameOfArgumentBinds(semanticModel, position, expression))
-            return false;
-
-        if (!IsCompileTimeConstantOptionalDefault(semanticModel, position, expression))
-            return false;
-
-        var exprInfo = semanticModel.GetSpeculativeTypeInfo(
-            position,
-            expression,
-            SpeculativeBindingOption.BindAsExpression);
-        if (exprInfo.Type is IErrorTypeSymbol)
+        if (!NameOfArgumentBinds(semanticModel, methodDecl.SpanStart, expression))
             return false;
 
         // null literal: Type may be null; still valid for reference/nullable types.
@@ -745,74 +744,86 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             return parameterType.IsReferenceType ||
                    parameterType.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
 
-        if (IsDefaultValueExpression(expression))
-            return true;
+        // Speculative model in declaring context so GetConstantValue works for
+        // Mode.Default / -1 / SomeConst / "a"+"b" (not only literal/default/nameof).
+        if (!TryGetSpeculativeDefaultModel(
+                semanticModel,
+                methodDecl,
+                expression,
+                out var speculativeModel,
+                out var speculativeExpression) ||
+            speculativeModel == null ||
+            speculativeExpression == null)
+        {
+            return false;
+        }
 
-        if (exprInfo.Type == null)
+        if (IsDefaultValueExpression(speculativeExpression))
+        {
+            var defaultConversion = speculativeModel.ClassifyConversion(speculativeExpression, parameterType);
+            return defaultConversion.Exists && defaultConversion.IsImplicit;
+        }
+
+        if (!speculativeModel.GetConstantValue(speculativeExpression).HasValue)
             return false;
 
-        var conversion = semanticModel.Compilation.ClassifyConversion(exprInfo.Type, parameterType);
+        var conversion = speculativeModel.ClassifyConversion(speculativeExpression, parameterType);
         return conversion.Exists && conversion.IsImplicit;
+    }
+
+    /// <summary>
+    /// Speculative semantic model for an optional-default expression at a position
+    /// Roslyn accepts (method-body statement, else equals-value on a parameter).
+    /// </summary>
+    private static bool TryGetSpeculativeDefaultModel(
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl,
+        ExpressionSyntax expression,
+        out SemanticModel? speculativeModel,
+        out ExpressionSyntax? speculativeExpression)
+    {
+        speculativeModel = null;
+        speculativeExpression = null;
+
+        if (methodDecl.Body is { } body)
+        {
+            var statement = SyntaxFactory.ParseStatement(
+                $"var __roslynMcpDefaultProbe = {expression};");
+            if (statement is LocalDeclarationStatementSyntax local &&
+                semanticModel.TryGetSpeculativeSemanticModel(
+                    body.OpenBraceToken.Span.End,
+                    local,
+                    out var statementModel) &&
+                statementModel != null)
+            {
+                var init = local.Declaration.Variables.FirstOrDefault()?.Initializer?.Value;
+                if (init != null)
+                {
+                    speculativeModel = statementModel;
+                    speculativeExpression = init;
+                    return true;
+                }
+            }
+        }
+
+        var equalsPosition = methodDecl.ParameterList.Parameters.Count > 0
+            ? methodDecl.ParameterList.Parameters[0].Identifier.Span.End
+            : methodDecl.ParameterList.OpenParenToken.Span.End;
+        var equalsValue = SyntaxFactory.EqualsValueClause(expression);
+        if (semanticModel.TryGetSpeculativeSemanticModel(equalsPosition, equalsValue, out var equalsModel) &&
+            equalsModel != null)
+        {
+            speculativeModel = equalsModel;
+            speculativeExpression = equalsValue.Value;
+            return true;
+        }
+
+        return false;
     }
 
     private static bool IsDefaultValueExpression(ExpressionSyntax expression) =>
         expression.IsKind(SyntaxKind.DefaultLiteralExpression) ||
         expression is DefaultExpressionSyntax;
-
-    /// <summary>
-    /// True for compile-time constant optional-parameter expressions, including
-    /// enum members / const fields / unary minus / constant binaries — not
-    /// runtime values like <c>DateTime.Now</c> (Codex).
-    /// </summary>
-    private static bool IsCompileTimeConstantOptionalDefault(
-        SemanticModel semanticModel,
-        int position,
-        ExpressionSyntax expression)
-    {
-        while (expression is ParenthesizedExpressionSyntax parenthesized)
-            expression = parenthesized.Expression;
-
-        if (expression.IsKind(SyntaxKind.NullKeyword) ||
-            IsDefaultValueExpression(expression) ||
-            expression is LiteralExpressionSyntax)
-        {
-            return true;
-        }
-
-        if (expression is InvocationExpressionSyntax
-            {
-                Expression: IdentifierNameSyntax { Identifier.Text: "nameof" }
-            })
-        {
-            return true;
-        }
-
-        if (expression is PrefixUnaryExpressionSyntax unary &&
-            (unary.IsKind(SyntaxKind.UnaryMinusExpression) ||
-             unary.IsKind(SyntaxKind.UnaryPlusExpression)))
-        {
-            return IsCompileTimeConstantOptionalDefault(semanticModel, position, unary.Operand);
-        }
-
-        if (expression is BinaryExpressionSyntax binary)
-        {
-            return IsCompileTimeConstantOptionalDefault(semanticModel, position, binary.Left) &&
-                   IsCompileTimeConstantOptionalDefault(semanticModel, position, binary.Right);
-        }
-
-        if (expression is CastExpressionSyntax cast)
-            return IsCompileTimeConstantOptionalDefault(semanticModel, position, cast.Expression);
-
-        // Enum members / const fields / const locals bind as constant fields.
-        var symbolInfo = semanticModel.GetSpeculativeSymbolInfo(
-            position,
-            expression,
-            SpeculativeBindingOption.BindAsExpression);
-        if (symbolInfo.Symbol is IFieldSymbol { HasConstantValue: true })
-            return true;
-
-        return false;
-    }
 
     /// <summary>
     /// Non-<c>nameof</c> defaults are fine; for <c>nameof(...)</c>, the argument
