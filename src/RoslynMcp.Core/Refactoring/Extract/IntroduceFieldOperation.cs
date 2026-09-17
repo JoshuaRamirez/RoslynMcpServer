@@ -1238,8 +1238,8 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             }
         }
 
-        if (initializer.DescendantNodesAndSelf().OfType<ThisExpressionSyntax>().Any() ||
-            initializer.DescendantNodesAndSelf().OfType<BaseExpressionSyntax>().Any())
+        if (initializer.DescendantNodesAndSelf().OfType<ThisExpressionSyntax>().Any(n => !IsInsideNameofArgument(n)) ||
+            initializer.DescendantNodesAndSelf().OfType<BaseExpressionSyntax>().Any(n => !IsInsideNameofArgument(n)))
         {
             throw new RefactoringException(
                 ErrorCodes.ExpressionNotFieldInitializable,
@@ -1250,13 +1250,17 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
     /// <summary>
     /// True when <paramref name="name"/> refers to a member of the containing
     /// instance (implicit receiver, <c>this</c>, or <c>base</c>), rather than
-    /// an explicit other-object receiver or an object/with-initializer member designator.
+    /// an explicit other-object receiver, object/with-initializer member designator, or nameof argument.
     /// </summary>
     private static bool IsAccessedViaContainingInstance(
         SimpleNameSyntax name,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
+        // nameof(...) is unevaluated / compile-time — never captures the instance.
+        if (IsInsideNameofArgument(name))
+            return false;
+
         if (name.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == name)
         {
             return IsContainingInstanceReceiver(memberAccess.Expression, semanticModel, cancellationToken);
@@ -1276,6 +1280,25 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
         // Bare simple name / invocation target → implicit this (or static, already filtered).
         return true;
+    }
+
+    /// <summary>
+    /// True when <paramref name="node"/> occurs inside a <c>nameof(...)</c> argument.
+    /// </summary>
+    private static bool IsInsideNameofArgument(SyntaxNode node)
+    {
+        foreach (var ancestor in node.Ancestors())
+        {
+            if (ancestor is InvocationExpressionSyntax
+                {
+                    Expression: IdentifierNameSyntax { Identifier.ValueText: "nameof" }
+                })
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
