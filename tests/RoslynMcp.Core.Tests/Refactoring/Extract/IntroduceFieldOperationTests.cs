@@ -204,6 +204,19 @@ public class IntroduceFieldOperationTests
     }
 
     [Fact]
+    public void Validate_AllFilesTrue_MissingSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            IntroduceFieldOperation.Validate(new IntroduceFieldParams
+            {
+                AllFiles = true,
+                SourceFile = AbsoluteTestPath()
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
     public void Validate_AllFilesFalse_WithoutStartLine_Throws()
     {
         var file = Path.Combine(Path.GetTempPath(), "RoslynMcpIntroduceFieldAllFilesFalse.cs");
@@ -1335,6 +1348,36 @@ public class IntroduceFieldOperationTests
         Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
         Assert.Single(result.Changes!.FilesModified);
         Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpIntroduceField_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "class Outside { void M() { int value = 1; } }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new IntroduceFieldParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
     }
 
 

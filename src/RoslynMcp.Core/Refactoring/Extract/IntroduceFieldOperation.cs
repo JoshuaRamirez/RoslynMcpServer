@@ -54,7 +54,11 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             // Optional sourceFile still must be an absolute .cs path when set
             // (ChangeSignature allFiles / Copilot).
             if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            {
                 ValidateSourceFilePath(@params.SourceFile!);
+                if (!File.Exists(@params.SourceFile!))
+                    throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+            }
 
             return;
         }
@@ -194,7 +198,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             .ToList();
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = allDocuments
             .GroupBy(d => PathResolver.GetPathComparisonKey(d.FilePath!), StringComparer.Ordinal)
@@ -413,6 +417,47 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         return RefactoringResult.Succeeded(operationId,
             new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
             null, 0, 0);
+    }
+
+    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var sourceFileKey = PathResolver.GetPathComparisonKey(sourceFile);
+        var exactMatches = documents
+            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
+            .ToList();
+        if (exactMatches.Count > 0)
+        {
+            var exactKeys = exactMatches
+                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+                .ToHashSet(StringComparer.Ordinal);
+            return documents
+                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
+                .ToList();
+        }
+
+        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
+        var distinctPaths = matchedDocuments
+            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return distinctPaths.Count switch
+        {
+            0 when !File.Exists(sourceFile) => throw new RefactoringException(
+                ErrorCodes.SourceFileNotFound,
+                $"Source file not found: {sourceFile}"),
+            0 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"File not found in workspace: {sourceFile}"),
+            > 1 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ when !string.Equals(distinctPaths[0], sourceFileKey, StringComparison.Ordinal) && !File.Exists(sourceFile) =>
+                throw new RefactoringException(
+                    ErrorCodes.SourceFileNotFound,
+                    $"Source file not found: {sourceFile}"),
+            _ => matchedDocuments
+        };
     }
 
     /// <summary>
