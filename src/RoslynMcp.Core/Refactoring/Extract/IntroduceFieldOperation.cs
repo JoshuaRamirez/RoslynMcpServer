@@ -173,8 +173,10 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
     /// physical path are rewritten once and the same text is applied to every
     /// sibling <see cref="DocumentId"/> via <see cref="PathResolver.GetPathComparisonKey"/>.
     /// Expression-only (non-local) sites, uneditable / source-generated docs,
-    /// name collisions, unsupported captures, using declarations, and otherwise
-    /// ineligible locals are skipped rather than failing the walk. Deterministic
+    /// name collisions, unsupported captures, using declarations, locals whose
+    /// types use method type parameters, readonly sites written after
+    /// initialization (including ref/out), and otherwise ineligible locals are
+    /// skipped rather than failing the walk. Deterministic
     /// <c>SpanStart</c> order within a file. When every file is a no-op,
     /// succeeds with empty changes.
     /// </summary>
@@ -455,8 +457,30 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         if (declarator.Parent?.Parent is not LocalDeclarationStatementSyntax)
             return null;
 
-        if (semanticModel.GetDeclaredSymbol(declarator, cancellationToken) is not ILocalSymbol)
+        if (semanticModel.GetDeclaredSymbol(declarator, cancellationToken) is not ILocalSymbol local)
             return null;
+
+        // Method-scoped type parameters (including nested in constructed types)
+        // are unavailable at field scope — skip rather than emit uncompilable
+        // code under allFiles (Codex P1 on PR #1308).
+        if (ContainsMethodTypeParameter(local.Type))
+            return null;
+
+        // Readonly fields cannot be mutated outside a constructor; skip locals
+        // written after initialization (assignment, ++/--, ref/out) when the
+        // bulk walk propagates isReadonly (Codex P1 on PR #1308).
+        if (bulkParams.IsReadonly)
+        {
+            if (local.RefKind != RefKind.None)
+                return null;
+
+            var writeCandidates = FindLocalReferences(root, semanticModel, local, cancellationToken)
+                .Where(id => id.Span != declarator.Identifier.Span)
+                .Cast<SyntaxNode>()
+                .ToList();
+            if (LocalIsWrittenAfterInitialization(writeCandidates))
+                return null;
+        }
 
         var fieldName = declarator.Identifier.Text;
         if (string.IsNullOrWhiteSpace(fieldName) || !IsValidIdentifier(fieldName))
@@ -560,6 +584,14 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
                 .Where(id => id.Span != declarator.Identifier.Span)
                 .Cast<SyntaxNode>()
                 .ToList();
+
+            if (@params.IsReadonly &&
+                LocalIsWrittenAfterInitialization(references))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.ExpressionNotFieldInitializable,
+                    $"Local variable '{local.Name}' is written after initialization and cannot become a readonly field.");
+            }
 
             replacements = references;
             if (declaration.Declaration.Variables.Count == 1)
@@ -761,6 +793,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         return null;
     }
 
+
     private static IReadOnlyList<IdentifierNameSyntax> FindLocalReferences(
         SyntaxNode root,
         SemanticModel semanticModel,
@@ -934,6 +967,95 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
                 ErrorCodes.InvalidTargetType,
                 "Expression type is not a valid field type.");
         }
+
+        if (ContainsMethodTypeParameter(fieldType))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidTargetType,
+                "Cannot introduce a field whose type uses a method type parameter.");
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="type"/> is or nests a method type parameter
+    /// (arrays, pointers, and constructed type arguments). Class/type
+    /// parameters remain eligible for field promotion.
+    /// </summary>
+    private static bool ContainsMethodTypeParameter(ITypeSymbol type)
+    {
+        if (type is ITypeParameterSymbol typeParameter)
+            return typeParameter.TypeParameterKind == TypeParameterKind.Method;
+
+        if (type is IArrayTypeSymbol array)
+            return ContainsMethodTypeParameter(array.ElementType);
+
+        if (type is IPointerTypeSymbol pointer)
+            return ContainsMethodTypeParameter(pointer.PointedAtType);
+
+        if (type is INamedTypeSymbol named)
+        {
+            foreach (var argument in named.TypeArguments)
+            {
+                if (ContainsMethodTypeParameter(argument))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when any post-declaration use writes the local (assignment,
+    /// increment/decrement, or ref/out argument / ref expression).
+    /// </summary>
+    private static bool LocalIsWrittenAfterInitialization(IReadOnlyList<SyntaxNode> references)
+    {
+        foreach (var reference in references)
+        {
+            if (reference is not IdentifierNameSyntax identifier)
+                continue;
+
+            if (IsWriteUsage(identifier))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsWriteUsage(IdentifierNameSyntax identifier)
+    {
+        // Cover simple and deconstruction lefts: (x, y) = ... still writes x.
+        foreach (var assignment in identifier.Ancestors().OfType<AssignmentExpressionSyntax>())
+        {
+            if (assignment.Left.DescendantNodesAndSelf().Contains(identifier))
+                return true;
+        }
+
+        if (identifier.Parent is PrefixUnaryExpressionSyntax prefix &&
+            (prefix.IsKind(SyntaxKind.PreIncrementExpression) ||
+             prefix.IsKind(SyntaxKind.PreDecrementExpression)))
+        {
+            return true;
+        }
+
+        if (identifier.Parent is PostfixUnaryExpressionSyntax postfix &&
+            (postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
+             postfix.IsKind(SyntaxKind.PostDecrementExpression)))
+        {
+            return true;
+        }
+
+        if (identifier.Parent is ArgumentSyntax arg &&
+            (arg.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) ||
+             arg.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword)))
+        {
+            return true;
+        }
+
+        if (identifier.Parent is RefExpressionSyntax)
+            return true;
+
+        return false;
     }
 
     private static void ValidateExpressionCaptures(

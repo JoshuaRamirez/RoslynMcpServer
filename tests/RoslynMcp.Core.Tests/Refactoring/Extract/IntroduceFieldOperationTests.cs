@@ -1337,6 +1337,103 @@ public class IntroduceFieldOperationTests
         Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
     }
 
+
+    [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_SkipsLocalsWithMethodTypeParameters()
+    {
+        const string source = """
+            namespace TestApp;
+
+            using System.Collections.Generic;
+
+            public class Calculator
+            {
+                public T Generic<T>()
+                {
+                    T value = default!;
+                    List<T> items = new();
+                    return value;
+                }
+
+                public int Run()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return this.total;", updated, StringComparison.Ordinal);
+        Assert.Contains("T value = default!;", updated, StringComparison.Ordinal);
+        Assert.Contains("List<T> items = new();", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private T value", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private List<T> items", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_Readonly_SkipsMutatedLocals()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Mutated()
+                {
+                    int count = 0;
+                    count++;
+                    return count;
+                }
+
+                public void RefOut(ref int sink)
+                {
+                    int temp = 1;
+                    sink = temp;
+                    Set(out temp);
+                }
+
+                public int Clean()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+
+                private static void Set(out int value) => value = 2;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true,
+            IsReadonly = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private readonly int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return this.total;", updated, StringComparison.Ordinal);
+        Assert.Contains("int count = 0;", updated, StringComparison.Ordinal);
+        Assert.Contains("count++;", updated, StringComparison.Ordinal);
+        Assert.Contains("int temp = 1;", updated, StringComparison.Ordinal);
+        Assert.Contains("Set(out temp);", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private readonly int count", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private readonly int temp", updated, StringComparison.Ordinal);
+    }
+
     #endregion
 
 
