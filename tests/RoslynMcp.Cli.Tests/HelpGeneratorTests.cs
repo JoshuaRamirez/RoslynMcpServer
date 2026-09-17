@@ -238,6 +238,37 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_IntroduceField_ShowsAllFiles()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("introduce-field")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("introduce-field", help);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile, startLine, startColumn, endLine, endColumn, and fieldName are required", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var optionalSection = help[optionalIdx..];
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--start-line", optionalSection);
+        Assert.Contains("--start-column", optionalSection);
+        Assert.Contains("--end-line", optionalSection);
+        Assert.Contains("--end-column", optionalSection);
+        Assert.Contains("--field-name", optionalSection);
+        Assert.Contains("--is-readonly", optionalSection);
+        Assert.Contains("--is-static", optionalSection);
+        Assert.Contains("--initialize-in-constructor", optionalSection);
+        Assert.Contains("--replace-all", optionalSection);
+        Assert.Contains("--preview", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ExtractVariable_ShowsReplaceAll()
     {
         var registry = ToolRegistry.BuildDefault();

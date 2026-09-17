@@ -32,6 +32,7 @@ public class IntroduceFieldToolTests
     {
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -62,12 +63,29 @@ public class IntroduceFieldToolTests
         }
 
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("startLine", requiredFields);
-        Assert.Contains("startColumn", requiredFields);
-        Assert.Contains("endLine", requiredFields);
-        Assert.Contains("endColumn", requiredFields);
-        Assert.Contains("fieldName", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+        Assert.DoesNotContain("startLine", requiredFields);
+        Assert.DoesNotContain("startColumn", requiredFields);
+        Assert.DoesNotContain("endLine", requiredFields);
+        Assert.DoesNotContain("endColumn", requiredFields);
+        Assert.DoesNotContain("fieldName", requiredFields);
+        Assert.DoesNotContain("allFiles", requiredFields);
+    }
+
+    [Fact]
+    public void GetDefinition_HasOptionalAllFiles()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("allFiles", out var allFiles));
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("sourceFile", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("fieldName", description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -80,6 +98,7 @@ public class IntroduceFieldToolTests
 
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.True(properties.TryGetProperty("startLine", out _));
         Assert.True(properties.TryGetProperty("startColumn", out _));
         Assert.True(properties.TryGetProperty("endLine", out _));
@@ -132,6 +151,23 @@ public class IntroduceFieldToolTests
         var result = await _tool.ExecuteAsync(args);
 
         Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        // ThrowingWorkspaceProvider rejects workspace creation; args including allFiles parsed.
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Failed to parse arguments", GetResultText(result), StringComparison.Ordinal);
     }
 
     #endregion

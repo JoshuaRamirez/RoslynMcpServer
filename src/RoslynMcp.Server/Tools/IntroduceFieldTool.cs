@@ -32,13 +32,14 @@ public sealed class IntroduceFieldTool : IToolHandler
     public string Name => "introduce_field";
 
     /// <inheritdoc />
-    public string Description => "Turn a selected local variable or expression into a class field, optionally initializing it in a constructor.";
+    public string Description =>
+        "Turn a selected local variable or expression into a class field, optionally initializing it in a constructor. allFiles: true walks every C# file and promotes every eligible local (field named from that local; sourceFile optional when true; cannot be combined with startLine, startColumn, endLine, endColumn, or fieldName). isReadonly / isStatic / initializeInConstructor / replaceAll / preview remain valid with allFiles where they apply (sites that cannot honor them are skipped).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "startLine", "startColumn", "endLine", "endColumn", "fieldName" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -49,61 +50,71 @@ public sealed class IntroduceFieldTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with startLine, startColumn, endLine, endColumn, or fieldName.",
+                @default = false
             },
             startLine = new
             {
                 type = "integer",
-                description = "Start line of the local variable or expression (1-based)"
+                description = "Start line of the local variable or expression (1-based). Required when allFiles is false. Single-site only; cannot be combined with allFiles.",
+                minimum = 1
             },
             startColumn = new
             {
                 type = "integer",
-                description = "Start column of the local variable or expression (1-based)"
+                description = "Start column of the local variable or expression (1-based). Required when allFiles is false. Single-site only; cannot be combined with allFiles.",
+                minimum = 1
             },
             endLine = new
             {
                 type = "integer",
-                description = "End line of the local variable or expression (1-based)"
+                description = "End line of the local variable or expression (1-based). Required when allFiles is false. Single-site only; cannot be combined with allFiles.",
+                minimum = 1
             },
             endColumn = new
             {
                 type = "integer",
-                description = "End column of the local variable or expression (1-based)"
+                description = "End column of the local variable or expression (1-based). Required when allFiles is false. Single-site only; cannot be combined with allFiles.",
+                minimum = 1
             },
             fieldName = new
             {
                 type = "string",
-                description = "Name for the new field"
+                description = "Name for the new field. Required when allFiles is false. Single-site only; cannot be combined with allFiles. When allFiles is true, each field is named from its local."
             },
             isReadonly = new
             {
                 type = "boolean",
-                description = "Create as a readonly field",
+                description = "Create as a readonly field. Valid with allFiles.",
                 @default = false
             },
             isStatic = new
             {
                 type = "boolean",
-                description = "Create as a static field",
+                description = "Create as a static field. Valid with allFiles.",
                 @default = false
             },
             initializeInConstructor = new
             {
                 type = "boolean",
-                description = "Initialize the field in a constructor instead of inline",
+                description = "Initialize the field in a constructor instead of inline. Valid with allFiles.",
                 @default = false
             },
             replaceAll = new
             {
                 type = "boolean",
-                description = "Replace all identical expressions in the containing type",
+                description = "Replace all identical expressions in the containing type (single-site expression path). Valid with allFiles but ignored for local promote.",
                 @default = false
             },
             preview = new
             {
                 type = "boolean",
-                description = "Return computed changes without applying",
+                description = "Return computed changes without applying. Valid with allFiles.",
                 @default = false
             }
         },
@@ -134,6 +145,7 @@ public sealed class IntroduceFieldTool : IToolHandler
             var @params = new IntroduceFieldParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 StartLine = args.StartLine,
                 StartColumn = args.StartColumn,
                 EndLine = args.EndLine,
@@ -171,12 +183,13 @@ public sealed class IntroduceFieldTool : IToolHandler
     private sealed class IntroduceFieldArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public int StartLine { get; init; }
-        public int StartColumn { get; init; }
-        public int EndLine { get; init; }
-        public int EndColumn { get; init; }
-        public string FieldName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public int? StartLine { get; init; }
+        public int? StartColumn { get; init; }
+        public int? EndLine { get; init; }
+        public int? EndColumn { get; init; }
+        public string? FieldName { get; init; }
         public bool? IsReadonly { get; init; }
         public bool? IsStatic { get; init; }
         public bool? InitializeInConstructor { get; init; }

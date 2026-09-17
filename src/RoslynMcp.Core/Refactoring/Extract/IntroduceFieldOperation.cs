@@ -8,6 +8,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Refactoring.Utilities;
+using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Extract;
@@ -15,6 +16,9 @@ namespace RoslynMcp.Core.Refactoring.Extract;
 /// <summary>
 /// Promotes a local variable or expression to a class field, optionally
 /// initializing the field in a constructor.
+/// Optional <c>allFiles</c> walks every C# document (or the optional single
+/// <c>sourceFile</c>) and promotes every eligible local, naming each field
+/// from that local and skipping ineligible sites rather than throwing.
 /// </summary>
 public sealed class IntroduceFieldOperation : RefactoringOperationBase<IntroduceFieldParams>
 {
@@ -34,39 +38,77 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
     /// </summary>
     internal static void Validate(IntroduceFieldParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (@params.StartLine.HasValue ||
+                @params.StartColumn.HasValue ||
+                @params.EndLine.HasValue ||
+                @params.EndColumn.HasValue ||
+                !string.IsNullOrWhiteSpace(@params.FieldName))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with startLine, startColumn, endLine, endColumn, or fieldName.");
+            }
+
+            // Optional sourceFile still must be an absolute .cs path when set
+            // (ChangeSignature allFiles / Copilot).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (string.IsNullOrWhiteSpace(@params.FieldName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "fieldName is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+        if (!@params.StartLine.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "startLine is required.");
 
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        if (!@params.StartColumn.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "startColumn is required.");
 
-        if (@params.StartLine < 1)
+        if (!@params.EndLine.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endLine is required.");
+
+        if (!@params.EndColumn.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endColumn is required.");
+
+        ValidateSourceFilePath(@params.SourceFile!);
+
+        if (@params.StartLine.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "startLine must be >= 1.");
 
-        if (@params.StartColumn < 1)
+        if (@params.StartColumn.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "startColumn must be >= 1.");
 
-        if (@params.EndLine < 1)
+        if (@params.EndLine.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "endLine must be >= 1.");
 
-        if (@params.EndColumn < 1)
+        if (@params.EndColumn.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "endColumn must be >= 1.");
 
-        if (@params.EndLine < @params.StartLine ||
-            (@params.EndLine == @params.StartLine && @params.EndColumn < @params.StartColumn))
+        if (@params.EndLine.Value < @params.StartLine.Value ||
+            (@params.EndLine.Value == @params.StartLine.Value && @params.EndColumn.Value < @params.StartColumn.Value))
             throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
 
-        if (!IsValidIdentifier(@params.FieldName))
+        if (!IsValidIdentifier(@params.FieldName!))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid field name: {@params.FieldName}");
 
-        if (!File.Exists(@params.SourceFile))
+        if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+    }
+
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
     }
 
     /// <inheritdoc />
@@ -75,7 +117,13 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         IntroduceFieldParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var sourceFile = @params.SourceFile!;
+        var fieldName = @params.FieldName!;
+
+        var document = GetDocumentOrThrow(sourceFile);
         DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -90,7 +138,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         var plan = BuildPlan(node, span, semanticModel, @params, cancellationToken);
 
         if (@params.Preview)
-            return CreatePreviewResult(operationId, @params, plan);
+            return CreatePreviewResult(operationId, sourceFile, fieldName, @params, plan);
 
         var newRoot = ApplyPlan((CompilationUnitSyntax)root, plan, @params);
         var newDocument = document.WithSyntaxRoot(newRoot);
@@ -106,26 +154,363 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.FieldName,
-                FullyQualifiedName = $"{plan.ContainingTypeName}.{@params.FieldName}",
+                Name = fieldName,
+                FullyQualifiedName = $"{plan.ContainingTypeName}.{fieldName}",
                 Kind = Contracts.Enums.SymbolKind.Field
             },
             plan.ReplacementCount,
             0);
     }
 
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>IntroduceParameterOperation.ExecuteAllFilesAsync</c>
+    /// / <c>InlineVariableOperation.ExecuteAllFilesAsync</c>) and promotes
+    /// every eligible local <see cref="VariableDeclaratorSyntax"/> in a
+    /// <see cref="LocalDeclarationStatementSyntax"/> to a field named from
+    /// that local. Optional <c>sourceFile</c> limits via
+    /// <see cref="DocumentSourceFileFilter"/>. Linked documents that share a
+    /// physical path are rewritten once and the same text is applied to every
+    /// sibling <see cref="DocumentId"/> via <see cref="PathResolver.GetPathComparisonKey"/>.
+    /// Expression-only (non-local) sites, uneditable / source-generated docs,
+    /// name collisions, unsupported captures, using declarations, and otherwise
+    /// ineligible locals are skipped rather than failing the walk. Deterministic
+    /// <c>SpanStart</c> order within a file. When every file is a no-op,
+    /// succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        IntroduceFieldParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = allDocuments
+            .GroupBy(d => PathResolver.GetPathComparisonKey(d.FilePath!), StringComparer.Ordinal)
+            .Select(group => group
+                .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+                .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
+                .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
+                .ToList())
+            .OrderBy(group => group[0].FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var promotedCountByDoc = new Dictionary<DocumentId, int>();
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var primary = linkedDocuments.FirstOrDefault(d =>
+                d is not SourceGeneratedDocument &&
+                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+            if (primary == null)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(primary.Id);
+                if (currentDocument == null ||
+                    currentDocument is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                {
+                    break;
+                }
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var declarator in CollectLocalDeclarators(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        updated = await TryIntroduceOneAsync(
+                            currentDocument,
+                            root,
+                            semanticModel,
+                            declarator,
+                            @params,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        // Skip ineligible locals rather than failing the walk.
+                        updated = null;
+                    }
+
+                    if (updated != null)
+                        break;
+                }
+
+                if (updated == null)
+                    break;
+
+                var beforeSolution = currentSolution;
+                currentSolution = updated;
+                var changedDocIds = new HashSet<DocumentId>();
+                var changedPathKeys = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var projectChanges in updated.GetChanges(beforeSolution).GetProjectChanges())
+                {
+                    foreach (var docId in projectChanges.GetChangedDocuments())
+                    {
+                        changedDocIds.Add(docId);
+                        var changedDoc = updated.GetDocument(docId);
+                        if (changedDoc?.FilePath != null)
+                            changedPathKeys.Add(PathResolver.GetPathComparisonKey(changedDoc.FilePath));
+                    }
+                }
+
+                if (changedPathKeys.Count > 0)
+                {
+                    var allCurrent = currentSolution.Projects
+                        .SelectMany(p => p.Documents)
+                        .Where(d => d.FilePath != null)
+                        .ToList();
+
+                    foreach (var pathKey in changedPathKeys)
+                    {
+                        var siblings = allCurrent
+                            .Where(d => PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+                            .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
+                            .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
+                            .ToList();
+                        if (siblings.Count <= 1)
+                            continue;
+
+                        var sourceDoc = siblings.FirstOrDefault(d =>
+                                changedDocIds.Contains(d.Id) &&
+                                d is not SourceGeneratedDocument &&
+                                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace))
+                            ?? siblings.FirstOrDefault(d =>
+                                d is not SourceGeneratedDocument &&
+                                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+                        if (sourceDoc == null)
+                            continue;
+
+                        var live = currentSolution.GetDocument(sourceDoc.Id);
+                        if (live == null)
+                            continue;
+                        var sharedText = await live.GetTextAsync(cancellationToken);
+
+                        foreach (var sibling in siblings)
+                        {
+                            if (sibling.Id == sourceDoc.Id)
+                                continue;
+                            var siblingLive = currentSolution.GetDocument(sibling.Id);
+                            if (siblingLive == null || siblingLive is SourceGeneratedDocument)
+                                continue;
+                            if (!DocumentEditableHelpers.IsDocumentEditable(siblingLive, Context.Workspace))
+                                continue;
+                            currentSolution = currentSolution.WithDocumentText(sibling.Id, sharedText);
+                        }
+                    }
+                }
+
+                promotedCountByDoc[primary.Id] =
+                    promotedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var promotedCount = promotedCountByDoc.GetValueOrDefault(document.Id);
+                if (promotedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        promotedCount = Math.Max(promotedCount, promotedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = promotedCount > 0
+                        ? BuildAllFilesDescription(promotedCount)
+                        : "Update introduce_field rewrites",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that introduced
+    /// <paramref name="promotedCount"/> fields.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int promotedCount) =>
+        promotedCount == 1
+            ? "Introduce field"
+            : $"Introduce {promotedCount} fields";
+
+    /// <summary>
+    /// Collects every local <see cref="VariableDeclaratorSyntax"/> in
+    /// <paramref name="root"/> whose parent is a
+    /// <see cref="LocalDeclarationStatementSyntax"/> (fields and for-loop
+    /// declarators stay excluded). Deterministic <c>SpanStart</c> then
+    /// span-length order.
+    /// </summary>
+    internal static IReadOnlyList<VariableDeclaratorSyntax> CollectLocalDeclarators(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<VariableDeclaratorSyntax>()
+            .Where(declarator =>
+                declarator.Parent is VariableDeclarationSyntax
+                {
+                    Parent: LocalDeclarationStatementSyntax
+                })
+            .OrderBy(declarator => declarator.SpanStart)
+            .ThenBy(declarator => declarator.Span.Length)
+            .ToList();
+
+    private async Task<Solution?> TryIntroduceOneAsync(
+        Document document,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        VariableDeclaratorSyntax declarator,
+        IntroduceFieldParams bulkParams,
+        CancellationToken cancellationToken)
+    {
+        if (IsUsingDeclaration(declarator))
+            return null;
+
+        if (declarator.Parent?.Parent is not LocalDeclarationStatementSyntax)
+            return null;
+
+        if (semanticModel.GetDeclaredSymbol(declarator, cancellationToken) is not ILocalSymbol)
+            return null;
+
+        var fieldName = declarator.Identifier.Text;
+        if (string.IsNullOrWhiteSpace(fieldName) || !IsValidIdentifier(fieldName))
+            return null;
+
+        if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        var siteParams = new IntroduceFieldParams
+        {
+            SourceFile = document.FilePath,
+            FieldName = fieldName,
+            IsReadonly = bulkParams.IsReadonly,
+            IsStatic = bulkParams.IsStatic,
+            InitializeInConstructor = bulkParams.InitializeInConstructor,
+            ReplaceAll = bulkParams.ReplaceAll,
+            Preview = false
+        };
+
+        var span = declarator.Identifier.Span;
+        var node = root.FindNode(span);
+        // Ensure we stay on the local path — expression-only sites are out of
+        // scope for allFiles (skip-not-throw).
+        if (FindPromotableLocal(node, span, semanticModel, cancellationToken) == null)
+            return null;
+
+        var beforeText = await document.GetTextAsync(cancellationToken);
+        var plan = BuildPlan(node, span, semanticModel, siteParams, cancellationToken);
+        var newRoot = ApplyPlan((CompilationUnitSyntax)root, plan, siteParams);
+        var newDocument = document.WithSyntaxRoot(newRoot);
+        var afterText = await newDocument.GetTextAsync(cancellationToken);
+        if (beforeText.ContentEquals(afterText))
+            return null;
+
+        return newDocument.Project.Solution;
+    }
+
     private static TextSpan GetSelectionSpan(SourceText sourceText, IntroduceFieldParams @params)
     {
-        if (@params.StartLine > sourceText.Lines.Count || @params.EndLine > sourceText.Lines.Count)
+        var startLineNum = @params.StartLine!.Value;
+        var startColumn = @params.StartColumn!.Value;
+        var endLineNum = @params.EndLine!.Value;
+        var endColumn = @params.EndColumn!.Value;
+
+        if (startLineNum > sourceText.Lines.Count || endLineNum > sourceText.Lines.Count)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Selection is outside the file.");
 
-        var startLine = sourceText.Lines[@params.StartLine - 1];
-        var endLine = sourceText.Lines[@params.EndLine - 1];
-        if (@params.StartColumn - 1 > startLine.Span.Length || @params.EndColumn - 1 > endLine.SpanIncludingLineBreak.Length)
+        var startLine = sourceText.Lines[startLineNum - 1];
+        var endLine = sourceText.Lines[endLineNum - 1];
+        if (startColumn - 1 > startLine.Span.Length || endColumn - 1 > endLine.SpanIncludingLineBreak.Length)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Selection column is outside the line.");
 
-        var startPosition = startLine.Start + @params.StartColumn - 1;
-        var endPosition = endLine.Start + @params.EndColumn - 1;
+        var startPosition = startLine.Start + startColumn - 1;
+        var endPosition = endLine.Start + endColumn - 1;
         if (endPosition < startPosition)
             throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
 
@@ -222,7 +607,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         var planAnchor = local?.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() ?? expression!;
         var containingType = GetContainingTypeOrThrow(planAnchor);
         ValidateContainingType(containingType, @params.IsStatic, semanticModel, cancellationToken);
-        ValidateNameAvailable(containingType, semanticModel, @params.FieldName, cancellationToken);
+        ValidateNameAvailable(containingType, semanticModel, @params.FieldName!, cancellationToken);
         ValidateStaticUsage(planAnchor, @params.IsStatic);
 
         if (!@params.InitializeInConstructor && initializer != null)
@@ -292,7 +677,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             typeToAnnotate,
             typeToAnnotate.WithAdditionalAnnotations(typeAnn));
 
-        var fieldRef = CreateFieldReference(@params.IsStatic, plan.ContainingTypeName, @params.FieldName);
+        var fieldRef = CreateFieldReference(@params.IsStatic, plan.ContainingTypeName, @params.FieldName!);
         var replacements = annotated.GetAnnotatedNodes(replaceAnn).ToList();
         SyntaxNode newRoot = replacements.Count == 0
             ? annotated
@@ -690,7 +1075,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         if (@params.IsReadonly)
             modifiers.Add(SyntaxFactory.Token(SyntaxKind.ReadOnlyKeyword).WithTrailingTrivia(SyntaxFactory.Space));
 
-        var declarator = SyntaxFactory.VariableDeclarator(@params.FieldName);
+        var declarator = SyntaxFactory.VariableDeclarator(@params.FieldName!);
         if (initializer != null)
         {
             declarator = declarator.WithInitializer(
@@ -770,7 +1155,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         }
 
         var assignment = CreateAssignment(
-            CreateFieldReference(@params.IsStatic, typeDeclaration.Identifier.Text, @params.FieldName),
+            CreateFieldReference(@params.IsStatic, typeDeclaration.Identifier.Text, @params.FieldName!),
             initializer);
         var constructors = typeDeclaration.Members
             .OfType<ConstructorDeclarationSyntax>()
@@ -906,6 +1291,8 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,
+        string sourceFile,
+        string fieldName,
         IntroduceFieldParams @params,
         FieldPlan plan)
     {
@@ -917,9 +1304,9 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         {
             new()
             {
-                File = @params.SourceFile,
+                File = sourceFile,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Introduce field '{@params.FieldName}' of type {plan.FieldType}{initNote}",
+                Description = $"Introduce field '{fieldName}' of type {plan.FieldType}{initNote}",
                 BeforeSnippet = "// (selected expression or local)",
                 AfterSnippet = plan.Field.NormalizeWhitespace().ToFullString()
             }
