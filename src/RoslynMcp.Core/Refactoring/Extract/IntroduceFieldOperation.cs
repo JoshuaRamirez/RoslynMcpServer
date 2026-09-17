@@ -1200,29 +1200,37 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
     }
 
     /// <summary>
-    /// Field initializers cannot reference <c>this</c> or instance members.
-    /// Used for local promotions when not initializing in a constructor
-    /// (Codex P1 on PR #1308).
+    /// Field initializers cannot reference <c>this</c>/<c>base</c> or instance
+    /// members of the containing instance. Used for local promotions when not
+    /// initializing in a constructor (Codex P1 on PR #1308; tightened on #1316).
     /// </summary>
     private static void RejectInstanceCapturesInInlineFieldInitializer(
         ExpressionSyntax initializer,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        foreach (var ident in initializer.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+        // Include GenericNameSyntax (e.g. Get<int>()) — IdentifierNameSyntax alone misses those.
+        foreach (var name in initializer.DescendantNodesAndSelf().OfType<SimpleNameSyntax>())
         {
-            var symbol = semanticModel.GetSymbolInfo(ident, cancellationToken).Symbol;
+            var symbol = semanticModel.GetSymbolInfo(name, cancellationToken).Symbol;
             if (symbol == null)
                 continue;
 
             if (symbol is ILocalSymbol or IParameterSymbol)
                 continue;
 
-            if (symbol is ISymbol
+            if (symbol is not ISymbol
                 {
                     IsStatic: false,
                     Kind: not Microsoft.CodeAnalysis.SymbolKind.Namespace and not Microsoft.CodeAnalysis.SymbolKind.NamedType
                 })
+            {
+                continue;
+            }
+
+            // Only reject members accessed via implicit this, this, or base —
+            // not instance members of other objects (e.g. DateTime.Now.Day).
+            if (IsAccessedViaContainingInstance(name))
             {
                 throw new RefactoringException(
                     ErrorCodes.ExpressionNotFieldInitializable,
@@ -1230,12 +1238,35 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             }
         }
 
-        if (initializer.DescendantNodesAndSelf().OfType<ThisExpressionSyntax>().Any())
+        if (initializer.DescendantNodesAndSelf().OfType<ThisExpressionSyntax>().Any() ||
+            initializer.DescendantNodesAndSelf().OfType<BaseExpressionSyntax>().Any())
         {
             throw new RefactoringException(
                 ErrorCodes.ExpressionNotFieldInitializable,
                 "A field initializer cannot reference instance members.");
         }
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> refers to a member of the containing
+    /// instance (implicit receiver, <c>this</c>, or <c>base</c>), rather than
+    /// an explicit other-object receiver.
+    /// </summary>
+    private static bool IsAccessedViaContainingInstance(SimpleNameSyntax name)
+    {
+        if (name.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == name)
+        {
+            return memberAccess.Expression is ThisExpressionSyntax or BaseExpressionSyntax;
+        }
+
+        if (name.Parent is MemberBindingExpressionSyntax)
+        {
+            var conditional = name.Ancestors().OfType<ConditionalAccessExpressionSyntax>().FirstOrDefault();
+            return conditional?.Expression is ThisExpressionSyntax or BaseExpressionSyntax;
+        }
+
+        // Bare simple name / invocation target → implicit this (or static, already filtered).
+        return true;
     }
 
     private static void ValidateStaticUsage(SyntaxNode node, bool isStaticField)
