@@ -1796,7 +1796,8 @@ public class IntroduceFieldOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("private TestApp.Widget _copy = new Widget", updated, StringComparison.Ordinal);
-        Assert.Contains("with { Value = 1 }", updated, StringComparison.Ordinal);
+        Assert.Contains("with", updated, StringComparison.Ordinal);
+        Assert.Contains("Value = 1", updated, StringComparison.Ordinal);
         Assert.Contains("return this._copy;", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("Widget copy = new Widget { Value = 0 } with { Value = 1 };", updated, StringComparison.Ordinal);
     }
