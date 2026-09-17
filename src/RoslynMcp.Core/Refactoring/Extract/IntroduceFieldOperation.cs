@@ -1250,7 +1250,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
     /// <summary>
     /// True when <paramref name="name"/> refers to a member of the containing
     /// instance (implicit receiver, <c>this</c>, or <c>base</c>), rather than
-    /// an explicit other-object receiver.
+    /// an explicit other-object receiver or an object/with-initializer member designator.
     /// </summary>
     private static bool IsAccessedViaContainingInstance(SimpleNameSyntax name)
     {
@@ -1265,8 +1265,27 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             return conditional?.Expression is ThisExpressionSyntax or BaseExpressionSyntax;
         }
 
+        // Object/with-initializer member designators (e.g. new Widget { Value = 1 })
+        // bind to instance members but are not reads of the containing instance.
+        if (IsObjectOrWithInitializerMemberDesignator(name))
+            return false;
+
         // Bare simple name / invocation target → implicit this (or static, already filtered).
         return true;
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is the left-hand designator of an
+    /// assignment inside an object or with initializer expression.
+    /// </summary>
+    private static bool IsObjectOrWithInitializerMemberDesignator(SimpleNameSyntax name)
+    {
+        if (name.Parent is not AssignmentExpressionSyntax assignment || assignment.Left != name)
+            return false;
+
+        return assignment.Parent is InitializerExpressionSyntax initializer &&
+               (initializer.IsKind(SyntaxKind.ObjectInitializerExpression) ||
+                initializer.IsKind(SyntaxKind.WithInitializerExpression));
     }
 
     private static void ValidateStaticUsage(SyntaxNode node, bool isStaticField)
