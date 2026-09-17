@@ -912,6 +912,7 @@ public class HelpGeneratorTests
 
         Assert.Contains("change-signature", help);
         Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
 
         var requiredIdx = help.IndexOf("REQUIRED:");
         var optionalIdx = help.IndexOf("OPTIONAL:");
@@ -921,16 +922,21 @@ public class HelpGeneratorTests
         var requiredSection = help[requiredIdx..optionalIdx];
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
-        Assert.Contains("--method-name", requiredSection);
+        // parameters stays required; sourceFile/methodName become optional with allFiles.
         Assert.Contains("--parameters", requiredSection);
+        Assert.DoesNotContain("--source-file", requiredSection);
+        Assert.DoesNotContain("--method-name", requiredSection);
         Assert.DoesNotContain("--column", requiredSection);
         Assert.DoesNotContain("--line", requiredSection);
         Assert.DoesNotContain("--preview", requiredSection);
+        Assert.DoesNotContain("--all-files", requiredSection);
 
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--method-name", optionalSection);
         Assert.Contains("--line", optionalSection);
         Assert.Contains("--column", optionalSection);
         Assert.Contains("--preview", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
     }
 
     [Fact]

@@ -33,6 +33,36 @@ public class ChangeSignatureToolTests
     {
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_HasOptionalAllFiles()
+    {
+        var schema = _tool.InputSchema;
+        var json = System.Text.Json.JsonSerializer.Serialize(schema);
+        var doc = System.Text.Json.JsonDocument.Parse(json);
+        var allFiles = doc.RootElement.GetProperty("properties").GetProperty("allFiles");
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("methodName", description!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = System.Text.Json.JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true,
+                "parameters": [ { "name": "flag", "type": "bool" } ]
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Arguments required", result.Content.FirstOrDefault()?.Text ?? "");
     }
 
     [Fact]
@@ -67,9 +97,10 @@ public class ChangeSignatureToolTests
 
         // Assert
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("methodName", requiredFields);
         Assert.Contains("parameters", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+        Assert.DoesNotContain("methodName", requiredFields);
+        Assert.DoesNotContain("allFiles", requiredFields);
     }
 
     [Fact]
@@ -91,7 +122,9 @@ public class ChangeSignatureToolTests
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.False(RequiredFieldsContains(doc, "column"));
+        Assert.False(RequiredFieldsContains(doc, "allFiles"));
     }
 
     private static bool RequiredFieldsContains(JsonDocument doc, string name)

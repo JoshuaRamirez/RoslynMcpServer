@@ -2,11 +2,13 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.FindSymbols;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -14,6 +16,9 @@ namespace RoslynMcp.Core.Refactoring.Signature;
 
 /// <summary>
 /// Changes a method's signature by adding, removing, or reordering parameters.
+/// Optional <c>allFiles</c> walks every C# document (or the optional single
+/// <c>sourceFile</c>) and applies the same <c>parameters</c> list to every
+/// eligible method, skipping ineligible methods rather than throwing.
 /// </summary>
 public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSignatureParams>
 {
@@ -33,20 +38,53 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// </summary>
     internal static void Validate(ChangeSignatureParams @params)
     {
+        if (@params.Parameters == null || @params.Parameters.Count == 0)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "parameters is required.");
+
+        foreach (var change in @params.Parameters)
+        {
+            if (string.IsNullOrWhiteSpace(change.Name))
+                throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Each parameter change requires a name.");
+
+            if (!SyntaxIdentifierValidation.IsValidIdentifier(change.Name))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.InvalidSymbolName,
+                    $"'{change.Name}' is not a valid parameter name.");
+            }
+
+            if (change.OriginalName == null && !change.Remove && string.IsNullOrWhiteSpace(change.Type))
+                throw new RefactoringException(ErrorCodes.MissingRequiredParam, "New parameters require a type.");
+        }
+
+        EnsureProjectedParameterNamesAreUnique(@params.Parameters);
+
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.MethodName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with methodName, line, or column.");
+            }
+
+            // Optional sourceFile still must be an absolute .cs path when set
+            // (ConvertToBlockBody allFiles / Copilot).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (string.IsNullOrWhiteSpace(@params.MethodName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
 
-        if (@params.Parameters == null || @params.Parameters.Count == 0)
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "parameters is required.");
-
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        ValidateSourceFilePath(@params.SourceFile!);
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
@@ -54,18 +92,17 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!File.Exists(@params.SourceFile))
+        if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+    }
 
-        // Validate parameter changes
-        foreach (var change in @params.Parameters)
-        {
-            if (string.IsNullOrWhiteSpace(change.Name))
-                throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Each parameter change requires a name.");
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
 
-            if (change.OriginalName == null && !change.Remove && string.IsNullOrWhiteSpace(change.Type))
-                throw new RefactoringException(ErrorCodes.MissingRequiredParam, "New parameters require a type.");
-        }
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
     }
 
     /// <inheritdoc />
@@ -74,7 +111,13 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         ChangeSignatureParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var sourceFile = @params.SourceFile!;
+        var methodName = @params.MethodName!;
+
+        var document = GetDocumentOrThrow(sourceFile);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -86,14 +129,14 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         // Find method declaration
         var methodDeclarations = root.DescendantNodes()
             .OfType<MethodDeclarationSyntax>()
-            .Where(m => m.Identifier.Text == @params.MethodName)
+            .Where(m => m.Identifier.Text == methodName)
             .ToList();
 
         if (methodDeclarations.Count == 0)
         {
             throw new RefactoringException(
                 ErrorCodes.MethodNotFound,
-                $"Method '{@params.MethodName}' not found.");
+                $"Method '{methodName}' not found.");
         }
 
         // Line is required when more than one method matches, even if
@@ -110,17 +153,17 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 .ToList();
             throw new RefactoringException(
                 ErrorCodes.SymbolAmbiguous,
-                $"Multiple methods named '{@params.MethodName}' found. Provide line number. Options: {string.Join(", ", lines)}");
+                $"Multiple methods named '{methodName}' found. Provide line number. Options: {string.Join(", ", lines)}");
         }
 
-        var methodDecl = FindMethod(root, @params.MethodName, @params.Line, @params.Column);
+        var methodDecl = FindMethod(root, methodName, @params.Line, @params.Column);
         if (methodDecl == null)
         {
             var location = @params.Column.HasValue
                 ? @params.Line.HasValue
-                    ? $"'{@params.MethodName}' at line {@params.Line}, column {@params.Column.Value}"
-                    : $"'{@params.MethodName}' at column {@params.Column.Value}"
-                : $"'{@params.MethodName}' at line {@params.Line}";
+                    ? $"'{methodName}' at line {@params.Line}, column {@params.Column.Value}"
+                    : $"'{methodName}' at column {@params.Column.Value}"
+                : $"'{methodName}' at line {@params.Line}";
             throw new RefactoringException(
                 ErrorCodes.MethodNotFound,
                 $"Method {location} not found.");
@@ -135,55 +178,47 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         // Build new parameter list
         var newParameters = BuildNewParameterList(methodSymbol.Parameters.ToList(), @params.Parameters);
 
-        // Find all call sites
-        var references = await SymbolFinder.FindReferencesAsync(
+        // Required after optional is illegal C# (CS1737) (Codex / AddParameter).
+        if (HasRequiredAfterOptional(newParameters))
+        {
+            throw new RefactoringException(
+                ErrorCodes.RequiredAfterOptional,
+                "Required parameters cannot follow optional parameters.");
+        }
+
+        // Parameter types less accessible than the method (CS0051) (Codex).
+        EnsureParameterTypesAccessible(semanticModel, methodDecl, methodSymbol, @params.Parameters);
+
+        // Collect call sites against the pre-rewrite solution, including linked
+        // sibling compilations (IntroduceParameter / Copilot).
+        var (callSites, hasUnsupportedReferences) = await CollectCallSitesAsync(
+            document,
+            methodDecl,
             methodSymbol,
             Context.Solution,
             cancellationToken);
-
-        var callSites = references
-            .SelectMany(r => r.Locations)
-            .Where(loc => loc.Document.Id != document.Id || !loc.Location.SourceSpan.IntersectsWith(methodDecl.Span))
-            .ToList();
+        if (hasUnsupportedReferences)
+        {
+            throw new RefactoringException(
+                ErrorCodes.UnsupportedCallSite,
+                $"Method '{methodName}' is used as a method group or other unsupported reference and cannot be updated automatically.");
+        }
 
         // If preview mode, return without applying
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params, methodSymbol.Parameters.ToList(), newParameters, callSites.Count);
+            return CreatePreviewResult(operationId, sourceFile, methodName, methodSymbol.Parameters.ToList(), newParameters, callSites.Count);
         }
 
-        // Update method declaration
-        var newParamSyntax = newParameters.Select(p => CreateParameterSyntax(p));
-        var newParamList = SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(newParamSyntax));
-        var newMethodDecl = methodDecl.WithParameterList(newParamList);
-
-        var newRoot = root.ReplaceNode(methodDecl, newMethodDecl);
-        var newSolution = document.WithSyntaxRoot(newRoot).Project.Solution;
-
-        // Update call sites
-        foreach (var callSite in callSites)
-        {
-            var callDoc = newSolution.GetDocument(callSite.Document.Id);
-            if (callDoc == null) continue;
-
-            var callRoot = await callDoc.GetSyntaxRootAsync(cancellationToken);
-            if (callRoot == null) continue;
-
-            var callNode = callRoot.FindNode(callSite.Location.SourceSpan);
-            var invocation = callNode.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-
-            if (invocation != null)
-            {
-                var newInvocation = UpdateInvocation(
-                    invocation,
-                    methodSymbol.Parameters.ToList(),
-                    newParameters,
-                    @params.Parameters);
-
-                var newCallRoot = callRoot.ReplaceNode(invocation, newInvocation);
-                newSolution = callDoc.WithSyntaxRoot(newCallRoot).Project.Solution;
-            }
-        }
+        var newSolution = await ApplySignatureChangeAsync(
+            document,
+            root,
+            methodDecl,
+            methodSymbol,
+            newParameters,
+            @params.Parameters,
+            cancellationToken,
+            callSites);
 
         // Commit changes
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
@@ -198,13 +233,1425 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.MethodName,
+                Name = methodName,
                 FullyQualifiedName = methodSymbol.ToDisplayString(),
                 Kind = Contracts.Enums.SymbolKind.Method
             },
             callSites.Count,
             0);
     }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>IntroduceParameterOperation.ExecuteAllFilesAsync</c>)
+    /// and applies <paramref name="params"/>.Parameters to every eligible
+    /// <see cref="MethodDeclarationSyntax"/>. Optional <c>sourceFile</c> limits
+    /// via <see cref="DocumentSourceFileFilter"/>. Linked documents that share a
+    /// physical path are rewritten once and the same text is applied to every
+    /// sibling <see cref="DocumentId"/> via <see cref="Solution.GetChanges(Solution)"/>
+    /// coalesce (prefer a changed DocumentId as source). Methods missing any
+    /// <c>originalName</c>, extension methods (<c>this</c> receiver not preserved),
+    /// kept <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c>/<c>scoped</c>
+    /// parameters (modifiers not preserved by <c>CreateParameterSyntax</c>),
+    /// <c>ModuleInitializer</c> / <c>UnmanagedCallersOnly</c> methods,
+    /// uneditable / source-generated docs, and otherwise inapplicable methods
+    /// are skipped rather than failing the walk.
+    /// Deterministic <c>SpanStart</c> order within a file. When every file is
+    /// a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ChangeSignatureParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = allDocuments
+            .GroupBy(d => PathResolver.GetPathComparisonKey(d.FilePath!), StringComparer.Ordinal)
+            .Select(group => group
+                .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+                .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
+                .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
+                .ToList())
+            .OrderBy(group => group[0].FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var changedCountByDoc = new Dictionary<DocumentId, int>();
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var primary = linkedDocuments.FirstOrDefault(d =>
+                d is not SourceGeneratedDocument &&
+                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+            if (primary == null)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(primary.Id);
+                if (currentDocument == null ||
+                    currentDocument is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                {
+                    break;
+                }
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var methodDecl in CollectMethods(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        updated = await TryChangeOneAsync(
+                            currentDocument,
+                            root,
+                            semanticModel,
+                            methodDecl,
+                            @params.Parameters,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        // Skip ineligible methods rather than failing the walk.
+                        updated = null;
+                    }
+
+                    if (updated != null)
+                        break;
+                }
+
+                if (updated == null)
+                    break;
+
+                var beforeSolution = currentSolution;
+                currentSolution = updated;
+                var changedDocIds = new HashSet<DocumentId>();
+                var changedPathKeys = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var projectChanges in updated.GetChanges(beforeSolution).GetProjectChanges())
+                {
+                    foreach (var docId in projectChanges.GetChangedDocuments())
+                    {
+                        changedDocIds.Add(docId);
+                        var changedDoc = updated.GetDocument(docId);
+                        if (changedDoc?.FilePath != null)
+                            changedPathKeys.Add(PathResolver.GetPathComparisonKey(changedDoc.FilePath));
+                    }
+                }
+
+                if (changedPathKeys.Count > 0)
+                {
+                    var allCurrent = currentSolution.Projects
+                        .SelectMany(p => p.Documents)
+                        .Where(d => d.FilePath != null)
+                        .ToList();
+
+                    foreach (var pathKey in changedPathKeys)
+                    {
+                        var siblings = allCurrent
+                            .Where(d => PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+                            .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
+                            .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
+                            .ToList();
+                        if (siblings.Count <= 1)
+                            continue;
+
+                        var sourceDoc = siblings.FirstOrDefault(d =>
+                                changedDocIds.Contains(d.Id) &&
+                                d is not SourceGeneratedDocument &&
+                                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace))
+                            ?? siblings.FirstOrDefault(d =>
+                                d is not SourceGeneratedDocument &&
+                                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+                        if (sourceDoc == null)
+                            continue;
+
+                        var live = currentSolution.GetDocument(sourceDoc.Id);
+                        if (live == null)
+                            continue;
+                        var sharedText = await live.GetTextAsync(cancellationToken);
+
+                        foreach (var sibling in siblings)
+                        {
+                            if (sibling.Id == sourceDoc.Id)
+                                continue;
+                            var siblingLive = currentSolution.GetDocument(sibling.Id);
+                            if (siblingLive == null || siblingLive is SourceGeneratedDocument)
+                                continue;
+                            if (!DocumentEditableHelpers.IsDocumentEditable(siblingLive, Context.Workspace))
+                                continue;
+                            currentSolution = currentSolution.WithDocumentText(sibling.Id, sharedText);
+                        }
+                    }
+                }
+
+                changedCountByDoc[primary.Id] =
+                    changedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = originalSolution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var changedCount = changedCountByDoc.GetValueOrDefault(document.Id);
+                if (changedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        changedCount = Math.Max(changedCount, changedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = changedCount > 0
+                        ? BuildAllFilesDescription(changedCount)
+                        : "Update call sites of changed signatures",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that changed
+    /// <paramref name="changedCount"/> method signatures.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int changedCount) =>
+        changedCount == 1
+            ? "Change signature"
+            : $"Change {changedCount} signatures";
+
+    /// <summary>
+    /// Collects every <see cref="MethodDeclarationSyntax"/> in
+    /// <paramref name="root"/> in deterministic <c>SpanStart</c> then
+    /// span-length order.
+    /// </summary>
+    internal static IReadOnlyList<MethodDeclarationSyntax> CollectMethods(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .OrderBy(m => m.SpanStart)
+            .ThenBy(m => m.Span.Length)
+            .ToList();
+
+    /// <summary>
+    /// True when every <c>originalName</c> in <paramref name="changes"/>
+    /// exists on <paramref name="method"/>, the method is not an extension
+    /// method (<c>this</c> receiver not preserved by <c>CreateParameterSyntax</c>),
+    /// not a partial definition/implementation pair, not an interface declaration /
+    /// override / interface-implementing (bulk cannot rewrite the full hierarchy /
+    /// metadata contracts), not <c>[ModuleInitializer]</c> (must stay parameterless —
+    /// CS8815), and no kept parameter uses <c>ref</c>/<c>out</c>/<c>in</c>/<c>params</c>
+    /// or <c>scoped</c> (bulk rewrite cannot preserve those modifiers yet —
+    /// <c>CreateParameterSyntax</c> only emits type/name/default).
+    /// </summary>
+    internal static bool IsEligible(IMethodSymbol method, IReadOnlyList<ParameterChange> changes)
+    {
+        // Extension receivers lose the this modifier under CreateParameterSyntax
+        // and would break extension-style callers (Codex).
+        if (method.IsExtensionMethod)
+            return false;
+
+        // Partial definition/implementation pairs: rewriting one part alone can
+        // leave mismatched signatures when WouldCollideWithSibling skips the
+        // other (Codex). Skip until both can be updated atomically.
+        if (method.PartialDefinitionPart != null || method.PartialImplementationPart != null)
+            return false;
+
+        // Extern / DllImport: managed rewrite cannot update native ABI (Codex).
+        if (method.IsExtern)
+            return false;
+
+        // UnmanagedCallersOnly: unmanaged ABI contract even when IsExtern is false (Codex).
+        if (HasUnmanagedCallersOnlyAttribute(method))
+            return false;
+
+        // ModuleInitializer: must remain parameterless (CS8815) (Codex).
+        if (HasModuleInitializerAttribute(method))
+            return false;
+
+        // Overrides / interface implementations: changing the signature while
+        // keeping override/impl modifiers breaks the contract when the related
+        // declaration is outside the editable walk (metadata / other files)
+        // (Codex).
+        if (method.IsOverride)
+            return false;
+        // Interface member declarations: rewriting I.M while C.M is skipped as
+        // ImplementsAnyInterfaceMember breaks the contract (Codex).
+        if (method.ContainingType?.TypeKind == TypeKind.Interface)
+            return false;
+        if (!method.ExplicitInterfaceImplementations.IsDefaultOrEmpty &&
+            method.ExplicitInterfaceImplementations.Length > 0)
+            return false;
+        if (ImplementsAnyInterfaceMember(method))
+            return false;
+
+        var byName = method.Parameters.ToDictionary(p => p.Name, StringComparer.Ordinal);
+        foreach (var change in changes)
+        {
+            if (change.OriginalName == null)
+                continue;
+            if (!byName.TryGetValue(change.OriginalName, out var existing))
+                return false;
+            // Skipping Remove entries: dropped params need no modifier emit.
+            if (change.Remove)
+                continue;
+            if (existing.RefKind != RefKind.None || existing.IsParams)
+                return false;
+            // CreateParameterSyntax drops scoped and breaks ref-safety (Codex).
+            if (existing.ScopedKind != ScopedKind.None)
+                return false;
+            // CreateParameterSyntax drops attribute lists (CallerMemberName, etc.).
+            if (existing.GetAttributes().Length > 0)
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// True when <paramref name="method"/> is the implementation of any
+    /// interface member on its containing type.
+    /// </summary>
+    internal static bool ImplementsAnyInterfaceMember(IMethodSymbol method)
+    {
+        var containingType = method.ContainingType;
+        if (containingType == null)
+            return false;
+
+        foreach (var iface in containingType.AllInterfaces)
+        {
+            foreach (var member in iface.GetMembers().OfType<IMethodSymbol>())
+            {
+                var impl = containingType.FindImplementationForInterfaceMember(member) as IMethodSymbol;
+                if (impl != null && SymbolEqualityComparer.Default.Equals(impl, method))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when a required parameter (no default) follows an optional one
+    /// in <paramref name="newParameters"/> (CS1737).
+    /// </summary>
+    private static bool HasRequiredAfterOptional(IReadOnlyList<NewParameter> newParameters)
+    {
+        var seenOptional = false;
+        foreach (var parameter in newParameters)
+        {
+            var isOptional = !string.IsNullOrEmpty(parameter.DefaultValue);
+            if (seenOptional && !isOptional)
+                return true;
+            if (isOptional)
+                seenOptional = true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when applying <paramref name="newParameters"/> to
+    /// <paramref name="method"/> would collide with another method of the
+    /// same name in the containing type (same arity + bound type symbols).
+    /// </summary>
+    private static bool WouldCollideWithSibling(
+        IMethodSymbol method,
+        IReadOnlyList<NewParameter> newParameters,
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl)
+    {
+        var containingType = method.ContainingType;
+        if (containingType == null)
+            return false;
+
+        var position = methodDecl.SpanStart;
+        var boundTypes = new ITypeSymbol?[newParameters.Count];
+        for (var i = 0; i < newParameters.Count; i++)
+        {
+            var typeInfo = semanticModel.GetSpeculativeTypeInfo(
+                position,
+                SyntaxFactory.ParseTypeName(newParameters[i].Type),
+                SpeculativeBindingOption.BindAsTypeOrNamespace);
+            if (typeInfo.Type == null || typeInfo.Type is IErrorTypeSymbol)
+                return false;
+            boundTypes[i] = typeInfo.Type;
+        }
+
+        foreach (var sibling in containingType.GetMembers(method.Name).OfType<IMethodSymbol>())
+        {
+            if (SymbolEqualityComparer.Default.Equals(sibling, method))
+                continue;
+            if (sibling.Parameters.Length != newParameters.Count)
+                continue;
+            // Method type parameters are distinct symbols per overload; compare
+            // by arity + ordinal via TypeEquivalenceHelpers (Codex).
+            if (sibling.TypeParameters.Length != method.TypeParameters.Length)
+                continue;
+
+            var collision = true;
+            for (var i = 0; i < newParameters.Count; i++)
+            {
+                // Bulk CreateParameterSyntax emits RefKind.None; a sibling with
+                // ref/in/out of the same type remains a distinct overload (Codex).
+                if (sibling.Parameters[i].RefKind != RefKind.None)
+                {
+                    collision = false;
+                    break;
+                }
+
+                if (!TypeEquivalenceHelpers.TypesEquivalent(sibling.Parameters[i].Type, boundTypes[i]!))
+                {
+                    collision = false;
+                    break;
+                }
+            }
+
+            if (collision)
+                return true;
+        }
+
+        return false;
+    }
+
+
+    /// <summary>
+    /// Throws when a requested parameter type is less accessible than
+    /// <paramref name="methodSymbol"/> (CS0051) — single-site path (Codex).
+    /// </summary>
+    private static void EnsureParameterTypesAccessible(
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl,
+        IMethodSymbol methodSymbol,
+        IReadOnlyList<ParameterChange> changes)
+    {
+        var position = methodDecl.Body?.SpanStart
+            ?? methodDecl.ExpressionBody?.Expression.SpanStart
+            ?? (methodDecl.ParameterList.Span.Length > 0
+                ? methodDecl.ParameterList.CloseParenToken.SpanStart
+                : methodDecl.SpanStart);
+
+        foreach (var change in changes)
+        {
+            if (change.Remove || string.IsNullOrWhiteSpace(change.Type))
+                continue;
+
+            var typeSyntax = SyntaxFactory.ParseTypeName(change.Type);
+            if (typeSyntax.IsMissing || typeSyntax.ContainsDiagnostics)
+                continue;
+
+            var typeInfo = semanticModel.GetSpeculativeTypeInfo(
+                position,
+                typeSyntax,
+                SpeculativeBindingOption.BindAsTypeOrNamespace);
+            if (typeInfo.Type == null || typeInfo.Type is IErrorTypeSymbol)
+                continue;
+
+            if (!IsParameterTypeAccessibleFrom(typeInfo.Type, methodSymbol))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.BreaksAccessibility,
+                    $"Parameter type '{change.Type}' is less accessible than method '{methodSymbol.Name}'.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when every non-empty <c>Type</c> / <c>DefaultValue</c> on
+    /// <paramref name="changes"/> binds in <paramref name="semanticModel"/>
+    /// at <paramref name="methodDecl"/>, and each default is an implicit
+    /// constant-compatible value for the resulting parameter type (allFiles).
+    /// </summary>
+    internal static bool RequestedTypesAndDefaultsBind(
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl,
+        IMethodSymbol methodSymbol,
+        IReadOnlyList<ParameterChange> changes)
+    {
+        // Prefer a position inside the method (body / expression-body / parameter
+        // list) so TryGetSpeculativeSemanticModel(EqualsValueClause) and
+        // GetConstantValue succeed for optional defaults (Codex).
+        var position = methodDecl.Body?.SpanStart
+            ?? methodDecl.ExpressionBody?.Expression.SpanStart
+            ?? (methodDecl.ParameterList.Span.Length > 0
+                ? methodDecl.ParameterList.CloseParenToken.SpanStart
+                : methodDecl.SpanStart);
+        var byOriginal = methodSymbol.Parameters.ToDictionary(p => p.Name, StringComparer.Ordinal);
+        foreach (var change in changes)
+        {
+            if (change.Remove)
+                continue;
+
+            ITypeSymbol? resultingType = null;
+            if (!string.IsNullOrWhiteSpace(change.Type))
+            {
+                var typeSyntax = SyntaxFactory.ParseTypeName(change.Type);
+                // Predefined `void` (and other illegal shapes) before speculative bind —
+                // some positions bind `void` oddly or not at all (Codex).
+                if (typeSyntax is PredefinedTypeSyntax { Keyword.RawKind: (int)SyntaxKind.VoidKeyword } ||
+                    typeSyntax.IsMissing ||
+                    typeSyntax.ContainsDiagnostics)
+                {
+                    return false;
+                }
+
+                var typeInfo = semanticModel.GetSpeculativeTypeInfo(
+                    position,
+                    typeSyntax,
+                    SpeculativeBindingOption.BindAsTypeOrNamespace);
+                if (typeInfo.Type == null || typeInfo.Type is IErrorTypeSymbol)
+                    return false;
+                // void / static classes / unbound generics are not legal parameter types (Codex).
+                if (!IsLegalParameterType(typeInfo.Type) ||
+                    !IsParameterTypeAccessibleFrom(typeInfo.Type, methodSymbol))
+                    return false;
+                resultingType = typeInfo.Type;
+            }
+            else if (change.OriginalName != null &&
+                     byOriginal.TryGetValue(change.OriginalName, out var existing))
+            {
+                resultingType = existing.Type;
+            }
+
+            if (!string.IsNullOrWhiteSpace(change.DefaultValue))
+            {
+                if (resultingType == null)
+                    return false;
+                if (!IsValidOptionalDefault(semanticModel, methodDecl, change.DefaultValue, resultingType))
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Optional-parameter defaults must bind and implicitly convert to
+    /// <paramref name="parameterType"/>, and must be a compile-time constant
+    /// (or <c>default</c> / <c>nameof</c>) — not e.g. <c>DateTime.Now</c>.
+    /// Accepts legal constant expressions beyond literal/default/nameof
+    /// (enum members, unary minus, const identifiers, constant binary forms) (Codex).
+    /// </summary>
+    private static bool IsValidOptionalDefault(
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl,
+        string defaultValue,
+        ITypeSymbol parameterType)
+    {
+        var expression = SyntaxFactory.ParseExpression(defaultValue);
+        if (expression.IsMissing || expression.ContainsDiagnostics)
+            return false;
+
+        // nameof(MissingSymbol) still types as string; ensure the nameof
+        // argument binds (Codex).
+        if (!NameOfArgumentBinds(semanticModel, methodDecl.SpanStart, expression))
+            return false;
+
+        // null literal: Type may be null; still valid for reference/nullable types.
+        if (expression.IsKind(SyntaxKind.NullKeyword))
+            return parameterType.IsReferenceType ||
+                   parameterType.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
+
+        // Speculative model in declaring context so GetConstantValue works for
+        // Mode.Default / -1 / SomeConst / "a"+"b" (not only literal/default/nameof).
+        if (!TryGetSpeculativeDefaultModel(
+                semanticModel,
+                methodDecl,
+                expression,
+                out var speculativeModel,
+                out var speculativeExpression) ||
+            speculativeModel == null ||
+            speculativeExpression == null)
+        {
+            return false;
+        }
+
+        // Target-typed `default` and typed `default(T)` both need an implicit
+        // conversion to the parameter type — `default(string)` must not land on
+        // int (Codex). ClassifyConversion on the expression also preserves
+        // constant numeric conversions (e.g. byte x = 1) (Codex).
+        if (IsDefaultValueExpression(speculativeExpression))
+        {
+            var defaultConversion = speculativeModel.ClassifyConversion(speculativeExpression, parameterType);
+            return defaultConversion.Exists && defaultConversion.IsImplicit;
+        }
+
+        if (!speculativeModel.GetConstantValue(speculativeExpression).HasValue)
+            return false;
+
+        var conversion = speculativeModel.ClassifyConversion(speculativeExpression, parameterType);
+        return conversion.Exists && conversion.IsImplicit;
+    }
+
+    /// <summary>
+    /// Speculative semantic model for an optional-default expression at a position
+    /// Roslyn accepts (method-body statement, else equals-value on a parameter).
+    /// </summary>
+    private static bool TryGetSpeculativeDefaultModel(
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl,
+        ExpressionSyntax expression,
+        out SemanticModel? speculativeModel,
+        out ExpressionSyntax? speculativeExpression)
+    {
+        speculativeModel = null;
+        speculativeExpression = null;
+
+        if (methodDecl.Body is { } body)
+        {
+            var statement = SyntaxFactory.ParseStatement(
+                $"var __roslynMcpDefaultProbe = {expression};");
+            if (statement is LocalDeclarationStatementSyntax local &&
+                semanticModel.TryGetSpeculativeSemanticModel(
+                    body.OpenBraceToken.Span.End,
+                    local,
+                    out var statementModel) &&
+                statementModel != null)
+            {
+                var init = local.Declaration.Variables.FirstOrDefault()?.Initializer?.Value;
+                if (init != null)
+                {
+                    speculativeModel = statementModel;
+                    speculativeExpression = init;
+                    return true;
+                }
+            }
+        }
+
+        var equalsPosition = methodDecl.ParameterList.Parameters.Count > 0
+            ? methodDecl.ParameterList.Parameters[0].Identifier.Span.End
+            : methodDecl.ParameterList.OpenParenToken.Span.End;
+        var equalsValue = SyntaxFactory.EqualsValueClause(expression);
+        if (semanticModel.TryGetSpeculativeSemanticModel(equalsPosition, equalsValue, out var equalsModel) &&
+            equalsModel != null)
+        {
+            speculativeModel = equalsModel;
+            speculativeExpression = equalsValue.Value;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsDefaultValueExpression(ExpressionSyntax expression) =>
+        expression.IsKind(SyntaxKind.DefaultLiteralExpression) ||
+        expression is DefaultExpressionSyntax;
+
+    /// <summary>
+    /// Every nested <c>nameof(...)</c> argument in <paramref name="expression"/>
+    /// must bind as an expression or type (otherwise CS0103) — including
+    /// <c>"prefix" + nameof(Missing)</c> (Codex).
+    /// </summary>
+    private static bool NameOfArgumentBinds(
+        SemanticModel semanticModel,
+        int position,
+        ExpressionSyntax expression)
+    {
+        foreach (var invocation in expression.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>())
+        {
+            if (invocation.Expression is not IdentifierNameSyntax { Identifier.Text: "nameof" } ||
+                invocation.ArgumentList.Arguments.Count != 1)
+            {
+                continue;
+            }
+
+            var arg = invocation.ArgumentList.Arguments[0].Expression;
+            var symbolInfo = semanticModel.GetSpeculativeSymbolInfo(
+                position,
+                arg,
+                SpeculativeBindingOption.BindAsExpression);
+            if (symbolInfo.Symbol != null || !symbolInfo.CandidateSymbols.IsDefaultOrEmpty)
+                continue;
+
+            var typeInfo = semanticModel.GetSpeculativeTypeInfo(
+                position,
+                arg,
+                SpeculativeBindingOption.BindAsTypeOrNamespace);
+            if (typeInfo.Type == null || typeInfo.Type is IErrorTypeSymbol)
+                return false;
+        }
+
+        return true;
+    }
+
+
+    /// <summary>
+    /// True for the compilation entry point, or a static <c>Main</c> with an
+    /// entry-point-legal signature when the host project has no recorded entry
+    /// point (class-library TempWorkspace) (Codex / CS5001).
+    /// </summary>
+    private static bool IsApplicationEntryPointCandidate(
+        IMethodSymbol method,
+        Compilation compilation,
+        CancellationToken cancellationToken)
+    {
+        var entryPoint = compilation.GetEntryPoint(cancellationToken);
+        if (entryPoint != null &&
+            SymbolEqualityComparer.Default.Equals(entryPoint, method))
+        {
+            return true;
+        }
+
+        if (!method.IsStatic ||
+            !string.Equals(method.Name, "Main", StringComparison.Ordinal) ||
+            method.Parameters.Length > 1)
+        {
+            return false;
+        }
+
+        if (method.Parameters.Length == 1)
+        {
+            var parameterType = method.Parameters[0].Type;
+            var isStringArray = parameterType is IArrayTypeSymbol
+            {
+                ElementType.SpecialType: SpecialType.System_String
+            };
+            var isReadOnlySpanOfString =
+                parameterType is INamedTypeSymbol
+                {
+                    Name: "ReadOnlySpan",
+                    TypeArguments: { Length: 1 } args
+                } &&
+                args[0].SpecialType == SpecialType.System_String;
+            if (!isStringArray && !isReadOnlySpanOfString)
+                return false;
+        }
+
+        var returnType = method.ReturnType;
+        if (returnType.SpecialType is SpecialType.System_Void or SpecialType.System_Int32)
+            return true;
+
+        return returnType is INamedTypeSymbol
+        {
+            Name: "Task" or "ValueTask",
+            ContainingNamespace.Name: "Tasks"
+        };
+    }
+
+
+    /// <summary>
+    /// True when <paramref name="method"/> has
+    /// <c>System.Runtime.CompilerServices.ModuleInitializerAttribute</c>
+    /// (bound attribute or unbound syntax fallback) (Codex).
+    /// </summary>
+    private static bool HasModuleInitializerAttribute(IMethodSymbol method)
+    {
+        if (method.GetAttributes().Any(attr =>
+        {
+            var type = attr.AttributeClass;
+            if (type == null)
+                return false;
+            if (type.Name is not ("ModuleInitializerAttribute" or "ModuleInitializer"))
+                return false;
+            return type.ContainingNamespace?.ToDisplayString() == "System.Runtime.CompilerServices";
+        }))
+        {
+            return true;
+        }
+
+        // Attribute may not bind without a complete reference; fall back to syntax.
+        foreach (var syntaxRef in method.DeclaringSyntaxReferences)
+        {
+            if (syntaxRef.GetSyntax() is not MethodDeclarationSyntax methodDecl)
+                continue;
+            if (methodDecl.AttributeLists
+                .SelectMany(list => list.Attributes)
+                .Any(attr => attr.Name.ToString().Contains("ModuleInitializer", StringComparison.Ordinal)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="method"/> has
+    /// <c>System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute</c>
+    /// (bound attribute or unbound syntax fallback) (Codex).
+    /// </summary>
+    private static bool HasUnmanagedCallersOnlyAttribute(IMethodSymbol method)
+    {
+        if (method.GetAttributes().Any(attr =>
+        {
+            var type = attr.AttributeClass;
+            if (type == null)
+                return false;
+            if (type.Name is not ("UnmanagedCallersOnlyAttribute" or "UnmanagedCallersOnly"))
+                return false;
+            return type.ContainingNamespace?.ToDisplayString() == "System.Runtime.InteropServices";
+        }))
+        {
+            return true;
+        }
+
+        // Attribute may not bind without a complete reference; fall back to syntax.
+        foreach (var syntaxRef in method.DeclaringSyntaxReferences)
+        {
+            if (syntaxRef.GetSyntax() is not MethodDeclarationSyntax methodDecl)
+                continue;
+            if (methodDecl.AttributeLists
+                .SelectMany(list => list.Attributes)
+                .Any(attr => attr.Name.ToString().Contains("UnmanagedCallersOnly", StringComparison.Ordinal)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when every type in <paramref name="type"/> (arrays, pointers, type
+    /// arguments) is at least as accessible as <paramref name="method"/> —
+    /// CS0051; reuses <see cref="ContextValidTypeHelpers.GetEffectiveAccessibility"/>
+    /// and <see cref="AccessibilityRankHelpers"/> (Codex).
+    /// </summary>
+    private static bool IsParameterTypeAccessibleFrom(ITypeSymbol type, IMethodSymbol method)
+    {
+        var methodAccess = ContextValidTypeHelpers.GetEffectiveAccessibility(method);
+        return IsTypeAccessibleInMemberDomain(type, methodAccess);
+    }
+
+    /// <summary>
+    /// CS0051 accessibility domains are not a total order (e.g. internal is not
+    /// valid on a protected member). Compare domains explicitly (Codex).
+    /// </summary>
+    private static bool IsTypeAccessibleInMemberDomain(ITypeSymbol type, Accessibility memberAccess)
+    {
+        switch (type)
+        {
+            case IArrayTypeSymbol array:
+                return IsTypeAccessibleInMemberDomain(array.ElementType, memberAccess);
+            case IPointerTypeSymbol pointer:
+                return IsTypeAccessibleInMemberDomain(pointer.PointedAtType, memberAccess);
+            case INamedTypeSymbol named:
+                var typeAccess = ContextValidTypeHelpers.GetEffectiveAccessibility(named);
+                if (!IsAccessibilityValidForMember(typeAccess, memberAccess))
+                    return false;
+                foreach (var argument in named.TypeArguments)
+                {
+                    if (!IsTypeAccessibleInMemberDomain(argument, memberAccess))
+                        return false;
+                }
+
+                return true;
+            default:
+                return true;
+        }
+    }
+
+    private static bool IsAccessibilityValidForMember(Accessibility typeAccess, Accessibility memberAccess) =>
+        memberAccess switch
+        {
+            Accessibility.Public => typeAccess == Accessibility.Public,
+            Accessibility.Protected => typeAccess is Accessibility.Public or Accessibility.Protected,
+            Accessibility.Internal => typeAccess is Accessibility.Public or Accessibility.Internal,
+            Accessibility.ProtectedOrInternal =>
+                typeAccess is Accessibility.Public or Accessibility.ProtectedOrInternal,
+            Accessibility.ProtectedAndInternal =>
+                typeAccess is Accessibility.Public
+                    or Accessibility.ProtectedAndInternal
+                    or Accessibility.Protected
+                    or Accessibility.Internal,
+            Accessibility.Private => true,
+            _ => typeAccess == Accessibility.Public
+        };
+
+
+    /// <summary>
+    /// True when <paramref name="type"/> is legal as a C# method parameter type
+    /// (rejects <c>void</c>, static classes, unbound generic types) (Codex).
+    /// </summary>
+    private static bool IsLegalParameterType(ITypeSymbol type)
+    {
+        if (type.SpecialType == SpecialType.System_Void)
+            return false;
+        if (type.TypeKind == TypeKind.Error)
+            return false;
+        // Pointer / function-pointer types require an unsafe declaration context
+        // that bulk CreateParameterSyntax does not introduce (Codex).
+        if (type.TypeKind is TypeKind.Pointer or TypeKind.FunctionPointer)
+            return false;
+        if (type is INamedTypeSymbol { IsUnboundGenericType: true })
+            return false;
+        if (type.TypeKind == TypeKind.Class && type.IsStatic)
+            return false;
+        return true;
+    }
+
+    private async Task<Solution?> TryChangeOneAsync(
+        Document document,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl,
+        IReadOnlyList<ParameterChange> changes,
+        CancellationToken cancellationToken)
+    {
+        var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken);
+        if (methodSymbol == null)
+            return null;
+
+        if (!IsEligible(methodSymbol, changes))
+            return null;
+
+        // Syntax-level UnmanagedCallersOnly (attribute may not bind) (Codex).
+        if (methodDecl.AttributeLists
+                .SelectMany(list => list.Attributes)
+                .Any(attr => attr.Name.ToString().Contains("UnmanagedCallersOnly", StringComparison.Ordinal)))
+        {
+            return null;
+        }
+
+        // Syntax-level ModuleInitializer (attribute may not bind) (Codex).
+        if (methodDecl.AttributeLists
+                .SelectMany(list => list.Attributes)
+                .Any(attr => attr.Name.ToString().Contains("ModuleInitializer", StringComparison.Ordinal)))
+        {
+            return null;
+        }
+
+        if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        // Application entry points (Main / top-level): rewriting leaves CS5001 (Codex).
+        if (IsApplicationEntryPointCandidate(methodSymbol, semanticModel.Compilation, cancellationToken))
+            return null;
+
+        // Base virtual/abstract still eligible under IsOverride==false, but
+        // rewriting it while derived overrides keep the old signature breaks
+        // the hierarchy (Codex).
+        var overrides = await SymbolFinder.FindOverridesAsync(
+            methodSymbol,
+            document.Project.Solution,
+            cancellationToken: cancellationToken);
+        if (overrides.Any())
+            return null;
+
+        if (!RequestedTypesAndDefaultsBind(semanticModel, methodDecl, methodSymbol, changes))
+            return null;
+
+        var newParameters = BuildNewParameterList(methodSymbol.Parameters.ToList(), changes);
+        // Already at the target signature — skip so the while-loop cannot
+        // re-apply the same parameters list forever (unlike introduce_parameter,
+        // the method stays present and still matches originalName eligibility).
+        // Include defaults so default-only ParameterChange entries still apply (Codex).
+        if (SignatureAlreadyMatches(methodDecl, methodSymbol, newParameters))
+            return null;
+
+        // Required after optional is illegal C# (CS1737) (Codex / AddParameter).
+        if (HasRequiredAfterOptional(newParameters))
+            return null;
+
+        // Avoid collapsing overloads into identical signatures (Codex).
+        if (WouldCollideWithSibling(methodSymbol, newParameters, semanticModel, methodDecl))
+            return null;
+
+        // Method-group / other non-invocation refs: skip rather than leave
+        // incompatible assignments (Codex / AddParameter).
+        var (callSites, hasUnsupportedReferences) = await CollectCallSitesAsync(
+            document,
+            methodDecl,
+            methodSymbol,
+            document.Project.Solution,
+            cancellationToken);
+        if (hasUnsupportedReferences)
+            return null;
+
+        var beforeText = await document.GetTextAsync(cancellationToken);
+        var newSolution = await ApplySignatureChangeAsync(
+            document,
+            root,
+            methodDecl,
+            methodSymbol,
+            newParameters,
+            changes,
+            cancellationToken,
+            callSites);
+
+        var afterDocument = newSolution.GetDocument(document.Id);
+        if (afterDocument == null)
+            return null;
+
+        var afterText = await afterDocument.GetTextAsync(cancellationToken);
+        if (beforeText.ContentEquals(afterText))
+        {
+            // Declaring file unchanged but call sites may have changed — keep
+            // the solution if any document differs from the input.
+            var anyDiff = false;
+            foreach (var project in newSolution.Projects)
+            {
+                foreach (var doc in project.Documents)
+                {
+                    var originalDoc = document.Project.Solution.GetDocument(doc.Id);
+                    if (originalDoc == null)
+                        continue;
+                    var before = await originalDoc.GetTextAsync(cancellationToken);
+                    var after = await doc.GetTextAsync(cancellationToken);
+                    if (!before.ContentEquals(after))
+                    {
+                        anyDiff = true;
+                        break;
+                    }
+                }
+
+                if (anyDiff)
+                    break;
+            }
+
+            if (!anyDiff)
+                return null;
+        }
+
+        return newSolution;
+    }
+
+    /// <summary>
+    /// True when <paramref name="methodDecl"/> already has the same parameter
+    /// names, types, and default-value expressions (in order) as
+    /// <paramref name="newParameters"/>. Defaults are compared from syntax so
+    /// default-only <see cref="ParameterChange"/> entries still apply.
+    /// </summary>
+    private static bool SignatureAlreadyMatches(
+        MethodDeclarationSyntax methodDecl,
+        IMethodSymbol method,
+        IReadOnlyList<NewParameter> newParameters)
+    {
+        if (method.Parameters.Length != newParameters.Count)
+            return false;
+        if (methodDecl.ParameterList.Parameters.Count != newParameters.Count)
+            return false;
+
+        for (var i = 0; i < newParameters.Count; i++)
+        {
+            var existing = method.Parameters[i];
+            var expected = newParameters[i];
+            if (!string.Equals(existing.Name, expected.Name, StringComparison.Ordinal))
+                return false;
+            if (!string.Equals(existing.Type.ToDisplayString(), expected.Type, StringComparison.Ordinal))
+                return false;
+
+            var existingDefault = methodDecl.ParameterList.Parameters[i].Default?.Value.ToString();
+            var expectedDefault = expected.DefaultValue;
+            if (string.IsNullOrEmpty(existingDefault))
+                existingDefault = null;
+            if (string.IsNullOrEmpty(expectedDefault))
+                expectedDefault = null;
+            if (!string.Equals(existingDefault, expectedDefault, StringComparison.Ordinal))
+                return false;
+        }
+
+        return true;
+    }
+
+    private async Task<Solution> ApplySignatureChangeAsync(
+        Document document,
+        SyntaxNode root,
+        MethodDeclarationSyntax methodDecl,
+        IMethodSymbol methodSymbol,
+        List<NewParameter> newParameters,
+        IReadOnlyList<ParameterChange> changes,
+        CancellationToken cancellationToken,
+        IReadOnlyList<CallSite>? precollectedCallSites = null)
+    {
+        // Collect call sites against the pre-rewrite solution / symbols so
+        // spans stay valid, including linked sibling compilations (Codex).
+        // Reuse a precollected list from the single-site path to avoid a second
+        // solution-wide FindReferences (Copilot).
+        IReadOnlyList<CallSite> callSites;
+        if (precollectedCallSites != null)
+        {
+            callSites = precollectedCallSites;
+        }
+        else
+        {
+            var collected = await CollectCallSitesAsync(
+                document,
+                methodDecl,
+                methodSymbol,
+                document.Project.Solution,
+                cancellationToken);
+            if (collected.HasUnsupportedReferences)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.UnsupportedCallSite,
+                    $"Method '{methodSymbol.Name}' is used as a method group or other unsupported reference and cannot be updated automatically.");
+            }
+
+            callSites = collected.CallSites;
+        }
+
+        var originalParams = methodSymbol.Parameters.ToList();
+        var newParamSyntax = newParameters.Select(CreateParameterSyntax);
+        var newParamList = SyntaxFactory.ParameterList(SyntaxFactory.SeparatedList(newParamSyntax));
+
+        // Resolve same-file invocations from the original root so multiple
+        // call sites rewrite with the declaration in one ReplaceNodes pass —
+        // post-edit spans would otherwise shift (IntroduceParameter / Copilot).
+        var declaringInvocations = new List<InvocationExpressionSyntax>();
+        var otherCallSites = new List<CallSite>();
+        foreach (var site in callSites)
+        {
+            if (site.DocumentId != document.Id)
+            {
+                otherCallSites.Add(site);
+                continue;
+            }
+
+            var invocation = RematchInvocation(root, site.Span);
+            if (invocation != null)
+                declaringInvocations.Add(invocation);
+        }
+
+        // Compose method + invocations from the already-rewritten descendant
+        // tree so recursive and nested calls (M(M(1))) keep updated args (Codex).
+        var invocationKeys = declaringInvocations.Distinct().Cast<SyntaxNode>().ToList();
+        var nodesToReplace = new List<SyntaxNode> { methodDecl };
+        nodesToReplace.AddRange(invocationKeys);
+
+        var newRoot = root.ReplaceNodes(
+            nodesToReplace,
+            (original, rewritten) =>
+            {
+                if (original == methodDecl)
+                {
+                    return ((MethodDeclarationSyntax)rewritten).WithParameterList(newParamList);
+                }
+
+                return UpdateInvocation(
+                    (InvocationExpressionSyntax)rewritten,
+                    originalParams,
+                    newParameters,
+                    changes);
+            });
+        var newSolution = document.WithSyntaxRoot(newRoot).Project.Solution;
+
+        // Other documents: one ReplaceNodes pass per document (spans still
+        // valid against the pre-rewrite solution for those files). Compose from
+        // rewritten descendants so nested same-target calls survive (Codex).
+        foreach (var group in otherCallSites.GroupBy(c => c.DocumentId))
+        {
+            var callDoc = newSolution.GetDocument(group.Key);
+            if (callDoc == null ||
+                callDoc is SourceGeneratedDocument ||
+                !DocumentEditableHelpers.IsDocumentEditable(callDoc, Context.Workspace))
+            {
+                continue;
+            }
+
+            var callRoot = await callDoc.GetSyntaxRootAsync(cancellationToken);
+            if (callRoot == null)
+                continue;
+
+            var keys = new List<InvocationExpressionSyntax>();
+            foreach (var site in group.OrderByDescending(c => c.Span.Start))
+            {
+                var invocation = RematchInvocation(callRoot, site.Span);
+                if (invocation == null || keys.Contains(invocation))
+                    continue;
+                keys.Add(invocation);
+            }
+
+            if (keys.Count == 0)
+                continue;
+
+            var newCallRoot = callRoot.ReplaceNodes(
+                keys,
+                (original, rewritten) => UpdateInvocation(
+                    (InvocationExpressionSyntax)rewritten,
+                    originalParams,
+                    newParameters,
+                    changes));
+            newSolution = callDoc.WithSyntaxRoot(newCallRoot).Project.Solution;
+        }
+
+        return newSolution;
+    }
+
+    private async Task<(IReadOnlyList<CallSite> CallSites, bool HasUnsupportedReferences)> CollectCallSitesAsync(
+        Document declaringDocument,
+        MethodDeclarationSyntax methodSyntax,
+        IMethodSymbol methodSymbol,
+        Solution solution,
+        CancellationToken cancellationToken)
+    {
+        var callSites = new List<CallSite>();
+        var seen = new HashSet<(DocumentId Id, int SpanStart, int SpanEnd)>();
+        var hasUnsupported = false;
+        var declaringPathKey = declaringDocument.FilePath != null
+            ? PathResolver.GetPathComparisonKey(declaringDocument.FilePath)
+            : null;
+
+        if (await CollectCallSitesForSymbolAsync(
+            methodSymbol,
+            declaringDocument,
+            declaringDocument,
+            declaringPathKey,
+            solution,
+            Context.Workspace,
+            callSites,
+            seen,
+            cancellationToken))
+        {
+            hasUnsupported = true;
+        }
+
+        // Linked sibling DocumentIds bind a distinct IMethodSymbol for the same
+        // physical declaration. SymbolFinder on the primary symbol misses callers
+        // that bind only under those sibling compilations.
+        if (declaringPathKey != null)
+        {
+            foreach (var project in solution.Projects)
+            {
+                foreach (var siblingDoc in project.Documents)
+                {
+                    if (siblingDoc.Id == declaringDocument.Id || siblingDoc.FilePath == null)
+                        continue;
+                    if (PathResolver.GetPathComparisonKey(siblingDoc.FilePath) != declaringPathKey)
+                        continue;
+
+                    var siblingRoot = await siblingDoc.GetSyntaxRootAsync(cancellationToken);
+                    var siblingModel = await siblingDoc.GetSemanticModelAsync(cancellationToken);
+                    if (siblingRoot == null || siblingModel == null)
+                        continue;
+
+                    var rematched = RematchMethod(siblingRoot, methodSyntax);
+                    if (rematched == null)
+                        continue;
+
+                    var siblingSymbol = siblingModel.GetDeclaredSymbol(rematched, cancellationToken) as IMethodSymbol;
+                    if (siblingSymbol == null)
+                        continue;
+
+                    if (await CollectCallSitesForSymbolAsync(
+                        siblingSymbol,
+                        siblingDoc,
+                        declaringDocument,
+                        declaringPathKey,
+                        solution,
+                        Context.Workspace,
+                        callSites,
+                        seen,
+                        cancellationToken))
+                    {
+                        hasUnsupported = true;
+                    }
+                }
+            }
+        }
+
+        return (callSites, hasUnsupported);
+    }
+
+    /// <summary>
+    /// Collects invocation call sites. Returns <c>true</c> when a non-invocation
+    /// semantic reference (method group / other) or an uneditable / source-generated
+    /// invocation was found — callers must skip or throw rather than rewrite the
+    /// declaration alone (Codex / AddParameter).
+    /// </summary>
+    private static async Task<bool> CollectCallSitesForSymbolAsync(
+        IMethodSymbol methodSymbol,
+        Document symbolDeclaringDocument,
+        Document primaryDeclaringDocument,
+        string? declaringPathKey,
+        Solution solution,
+        Microsoft.CodeAnalysis.Workspace workspace,
+        List<CallSite> callSites,
+        HashSet<(DocumentId Id, int SpanStart, int SpanEnd)> seen,
+        CancellationToken cancellationToken)
+    {
+        var references = await SymbolFinder.FindReferencesAsync(
+            methodSymbol, solution, cancellationToken);
+
+        foreach (var referencedSymbol in references)
+        {
+            foreach (var location in referencedSymbol.Locations)
+            {
+                if (location.Location.Kind != LocationKind.SourceFile)
+                    continue;
+
+                var document = solution.GetDocument(location.Document.Id) ?? location.Document;
+
+                // Linked sibling DocumentIds share the physical path but belong
+                // to another compilation. In-file call sites are rewritten only
+                // via the primary declaring DocumentId; sibling compilations are
+                // consulted for callers in other files.
+                if (document.FilePath != null &&
+                    declaringPathKey != null &&
+                    PathResolver.GetPathComparisonKey(document.FilePath) == declaringPathKey)
+                {
+                    if (symbolDeclaringDocument.Id != primaryDeclaringDocument.Id ||
+                        document.Id != primaryDeclaringDocument.Id)
+                    {
+                        continue;
+                    }
+                }
+
+                var root = await document.GetSyntaxRootAsync(cancellationToken);
+                if (root == null)
+                {
+                    // Unreadable reference document: refuse rather than rewrite
+                    // the declaration alone (deleted / generated / unloaded).
+                    return true;
+                }
+
+                var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
+                if (SignatureReferenceHelpers.IsDeclarationName(node, location.Location.SourceSpan))
+                    continue;
+                if (SignatureReferenceHelpers.IsNameOfArgument(node))
+                    continue;
+
+                // Source-generated / otherwise uneditable call sites cannot be
+                // rewritten; skipping them while changing the declaration leaves
+                // the project uncompilable (Codex).
+                if (document is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(document, workspace))
+                {
+                    return true;
+                }
+
+                var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
+                if (invocation != null &&
+                    SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
+                {
+                    var key = (document.Id, invocation.Span.Start, invocation.Span.End);
+                    if (!seen.Add(key))
+                        continue;
+
+                    callSites.Add(new CallSite(document.Id, invocation.Span));
+                    continue;
+                }
+
+                // Method-group / other non-invocation refs cannot be rewritten
+                // with the declaration (AddParameter / Codex).
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static MethodDeclarationSyntax? RematchMethod(SyntaxNode root, MethodDeclarationSyntax original)
+    {
+        var candidates = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == original.Identifier.Text)
+            .ToList();
+        if (candidates.Count == 0)
+            return null;
+        if (candidates.Count == 1)
+            return candidates[0];
+
+        return candidates
+            .OrderBy(m => Math.Abs(m.SpanStart - original.SpanStart))
+            .ThenBy(m => m.Span.Length)
+            .FirstOrDefault();
+    }
+
+    private static InvocationExpressionSyntax? RematchInvocation(SyntaxNode root, TextSpan span)
+    {
+        if (span.Start < 0 || span.End > root.FullSpan.End)
+        {
+            return root.DescendantNodes()
+                .OfType<InvocationExpressionSyntax>()
+                .OrderBy(i => Math.Abs(i.SpanStart - span.Start))
+                .ThenBy(i => i.Span.Length)
+                .FirstOrDefault();
+        }
+
+        var node = root.FindNode(span, getInnermostNodeForTie: true);
+        return node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault()
+            ?? root.DescendantNodes()
+                .OfType<InvocationExpressionSyntax>()
+                .Where(i => i.Span.OverlapsWith(span) || span.OverlapsWith(i.Span))
+                .OrderBy(i => Math.Abs(i.SpanStart - span.Start))
+                .ThenBy(i => i.Span.Length)
+                .FirstOrDefault();
+    }
+
+    private readonly record struct CallSite(DocumentId DocumentId, TextSpan Span);
 
     /// <summary>
     /// Finds a method. Omitted <paramref name="column"/> keeps today's
@@ -254,13 +1701,32 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     private static int StartLine(MethodDeclarationSyntax method) =>
         method.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
 
+    private static void EnsureProjectedParameterNamesAreUnique(IReadOnlyList<ParameterChange> changes)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var change in changes)
+        {
+            if (change.Remove)
+                continue;
+
+            var normalizedName = SyntaxIdentifierValidation.NormalizeIdentifier(change.Name);
+            if (!seen.Add(normalizedName))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.ParameterAlreadyExists,
+                    $"Parameter '{change.Name}' already exists in the resulting signature.");
+            }
+        }
+    }
+
     private static List<NewParameter> BuildNewParameterList(
         List<IParameterSymbol> originalParams,
         IReadOnlyList<ParameterChange> changes)
     {
+        EnsureProjectedParameterNamesAreUnique(changes);
+
         var result = new List<NewParameter>();
         var originalMap = originalParams.ToDictionary(p => p.Name);
-        var usedPositions = new HashSet<int>();
 
         // First pass: handle existing parameters and removals
         foreach (var change in changes.Where(c => c.OriginalName != null))
@@ -342,28 +1808,44 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             argMap[paramName] = arg;
         }
 
+        // After omitting an inserted optional, later retained positional args
+        // must be named so they stay bound to their original parameters (Codex).
+        var requireNamedSubsequentArgs = false;
         foreach (var newParam in newParams)
         {
             if (newParam.OriginalName != null && argMap.TryGetValue(newParam.OriginalName, out var existingArg))
             {
-                // Rename the argument if needed
                 if (newParam.Name != newParam.OriginalName && existingArg.NameColon != null)
                 {
                     existingArg = existingArg.WithNameColon(
                         SyntaxFactory.NameColon(newParam.Name));
                 }
+                else if (requireNamedSubsequentArgs && existingArg.NameColon == null)
+                {
+                    existingArg = existingArg.WithNameColon(
+                        SyntaxFactory.NameColon(SyntaxFactory.IdentifierName(newParam.Name)));
+                }
+
                 newArgs.Add(existingArg);
             }
             else if (!string.IsNullOrEmpty(newParam.DefaultValue))
             {
-                // New parameter with default - use default
-                newArgs.Add(SyntaxFactory.Argument(SyntaxFactory.ParseExpression(newParam.DefaultValue)));
+                // Omit optional defaults at call sites (Codex / foreign context).
+                requireNamedSubsequentArgs = true;
+                continue;
             }
             else
             {
                 // New parameter without default - add placeholder
-                newArgs.Add(SyntaxFactory.Argument(
-                    SyntaxFactory.ParseExpression($"default /* TODO: {newParam.Name} */")));
+                var placeholder = SyntaxFactory.Argument(
+                    SyntaxFactory.ParseExpression($"default /* TODO: {newParam.Name} */"));
+                if (requireNamedSubsequentArgs)
+                {
+                    placeholder = placeholder.WithNameColon(
+                        SyntaxFactory.NameColon(SyntaxFactory.IdentifierName(newParam.Name)));
+                }
+
+                newArgs.Add(placeholder);
             }
         }
 
@@ -373,7 +1855,8 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
 
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,
-        ChangeSignatureParams @params,
+        string sourceFile,
+        string methodName,
         List<IParameterSymbol> originalParams,
         List<NewParameter> newParams,
         int callSiteCount)
@@ -388,11 +1871,11 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         {
             new()
             {
-                File = @params.SourceFile,
+                File = sourceFile,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Change signature of '{@params.MethodName}' ({callSiteCount} call sites to update)",
-                BeforeSnippet = $"{@params.MethodName}({oldSig})",
-                AfterSnippet = $"{@params.MethodName}({newSig})"
+                Description = $"Change signature of '{methodName}' ({callSiteCount} call sites to update)",
+                BeforeSnippet = $"{methodName}({oldSig})",
+                AfterSnippet = $"{methodName}({newSig})"
             }
         };
 

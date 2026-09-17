@@ -32,13 +32,13 @@ public sealed class ChangeSignatureTool : IToolHandler
     public string Name => "change_signature";
 
     /// <inheritdoc />
-    public string Description => "Add, remove, or reorder method parameters and update all call sites.";
+    public string Description => "Add, remove, or reorder method parameters and update all call sites. column (optional) picks the smallest method whose identifier or declaration span covers that column; omitted keeps today's methodName and/or line start-line pick. allFiles: true walks every C# file and applies the same parameters list to every eligible method (sourceFile optional when true; cannot be combined with methodName, line, or column; parameters remains required).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "methodName", "parameters" },
+        required = new[] { "solutionPath", "parameters" },
         properties = new
         {
             solutionPath = new
@@ -49,22 +49,28 @@ public sealed class ChangeSignatureTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the method"
+                description = "Absolute path to the source file containing the method. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "When true, walk every C# document (or the optional single sourceFile) and apply parameters to every eligible method. Cannot be combined with methodName, line, or column. Default false.",
+                @default = false
             },
             methodName = new
             {
                 type = "string",
-                description = "Name of the method to modify"
+                description = "Name of the method to modify. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "Line number for disambiguation if multiple methods have the same name (1-based)"
+                description = "Line number for disambiguation if multiple methods have the same name (1-based). Single-site only; cannot be combined with allFiles."
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set, selects the smallest method whose identifier or declaration span covers that column. Omitted keeps today's MethodName and/or Line start-line pick."
+                description = "1-based column for disambiguation. When set, selects the smallest method whose identifier or declaration span covers that column. Omitted keeps today's MethodName and/or Line start-line pick. Single-site only; cannot be combined with allFiles."
             },
             parameters = new
             {
@@ -113,7 +119,7 @@ public sealed class ChangeSignatureTool : IToolHandler
             preview = new
             {
                 type = "boolean",
-                description = "Return computed changes without applying",
+                description = "Return computed changes without applying. Valid with allFiles.",
                 @default = false
             }
         },
@@ -144,6 +150,7 @@ public sealed class ChangeSignatureTool : IToolHandler
             var @params = new ChangeSignatureParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 MethodName = args.MethodName,
                 Line = args.Line,
                 Column = args.Column,
@@ -184,8 +191,9 @@ public sealed class ChangeSignatureTool : IToolHandler
     private sealed class ChangeSignatureArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string MethodName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? MethodName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
         public List<ParameterChangeArg>? Parameters { get; init; }
