@@ -1477,6 +1477,133 @@ public class IntroduceFieldOperationTests
         Assert.DoesNotContain("private readonly int temp", updated, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_SkipsLocalsCapturingInstanceMembersInline()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Value { get; set; } = 5;
+
+                public int CaptureThis()
+                {
+                    int n = this.Value;
+                    return n;
+                }
+
+                public int Clean()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return this.total;", updated, StringComparison.Ordinal);
+        Assert.Contains("int n = this.Value;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private int n = this.Value;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_SkipsConstLocals()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int SwitchOnConst(int input)
+                {
+                    const int label = 1;
+                    switch (input)
+                    {
+                        case label:
+                            return label;
+                        default:
+                            return 0;
+                    }
+                }
+
+                public int Clean()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return this.total;", updated, StringComparison.Ordinal);
+        Assert.Contains("const int label = 1;", updated, StringComparison.Ordinal);
+        Assert.Contains("case label:", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private int label", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("case this.label:", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_SkipsRefLocals()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                private static int[] StaticStorage = { 1, 2, 3 };
+
+                public int Alias()
+                {
+                    ref int alias = ref StaticStorage[0];
+                    return alias;
+                }
+
+                public int Clean()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return this.total;", updated, StringComparison.Ordinal);
+        Assert.Contains("ref int alias = ref StaticStorage[0];", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private int alias = ref StaticStorage[0];", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private int alias", updated, StringComparison.Ordinal);
+    }
+
     #endregion
 
 
