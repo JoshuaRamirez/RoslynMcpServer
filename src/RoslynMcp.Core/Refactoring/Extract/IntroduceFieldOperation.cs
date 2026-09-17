@@ -1230,7 +1230,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
             // Only reject members accessed via implicit this, this, or base —
             // not instance members of other objects (e.g. DateTime.Now.Day).
-            if (IsAccessedViaContainingInstance(name))
+            if (IsAccessedViaContainingInstance(name, semanticModel, cancellationToken))
             {
                 throw new RefactoringException(
                     ErrorCodes.ExpressionNotFieldInitializable,
@@ -1252,17 +1252,21 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
     /// instance (implicit receiver, <c>this</c>, or <c>base</c>), rather than
     /// an explicit other-object receiver or an object/with-initializer member designator.
     /// </summary>
-    private static bool IsAccessedViaContainingInstance(SimpleNameSyntax name)
+    private static bool IsAccessedViaContainingInstance(
+        SimpleNameSyntax name,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         if (name.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == name)
         {
-            return memberAccess.Expression is ThisExpressionSyntax or BaseExpressionSyntax;
+            return IsContainingInstanceReceiver(memberAccess.Expression, semanticModel, cancellationToken);
         }
 
         if (name.Parent is MemberBindingExpressionSyntax)
         {
             var conditional = name.Ancestors().OfType<ConditionalAccessExpressionSyntax>().FirstOrDefault();
-            return conditional?.Expression is ThisExpressionSyntax or BaseExpressionSyntax;
+            return conditional != null &&
+                IsContainingInstanceReceiver(conditional.Expression, semanticModel, cancellationToken);
         }
 
         // Object/with-initializer member designators (e.g. new Widget { Value = 1 })
@@ -1286,6 +1290,47 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         return assignment.Parent is InitializerExpressionSyntax initializer &&
                (initializer.IsKind(SyntaxKind.ObjectInitializerExpression) ||
                 initializer.IsKind(SyntaxKind.WithInitializerExpression));
+    }
+
+    private static bool IsContainingInstanceReceiver(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (expression is ParenthesizedExpressionSyntax parenthesized)
+            expression = parenthesized.Expression;
+
+        if (expression is ThisExpressionSyntax or BaseExpressionSyntax)
+            return true;
+
+        return expression switch
+        {
+            SimpleNameSyntax simpleName => IsImplicitContainingInstanceMember(simpleName, semanticModel, cancellationToken),
+            MemberAccessExpressionSyntax memberAccess => IsContainingInstanceReceiver(memberAccess.Expression, semanticModel, cancellationToken),
+            InvocationExpressionSyntax invocation => IsContainingInstanceReceiver(invocation.Expression, semanticModel, cancellationToken),
+            ElementAccessExpressionSyntax elementAccess => IsContainingInstanceReceiver(elementAccess.Expression, semanticModel, cancellationToken),
+            ConditionalAccessExpressionSyntax conditionalAccess => IsContainingInstanceReceiver(conditionalAccess.Expression, semanticModel, cancellationToken),
+            _ => expression.DescendantNodesAndSelf().Any(node =>
+                node is ThisExpressionSyntax or BaseExpressionSyntax)
+        };
+    }
+
+    private static bool IsImplicitContainingInstanceMember(
+        SimpleNameSyntax simpleName,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var symbol = semanticModel.GetSymbolInfo(simpleName, cancellationToken).Symbol;
+        if (symbol == null)
+            return false;
+
+        if (symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol)
+            return false;
+
+        if (symbol is ISymbol { IsStatic: false, Kind: not Microsoft.CodeAnalysis.SymbolKind.Namespace and not Microsoft.CodeAnalysis.SymbolKind.NamedType })
+            return true;
+
+        return false;
     }
 
     private static void ValidateStaticUsage(SyntaxNode node, bool isStaticField)

@@ -1558,6 +1558,46 @@ public class IntroduceFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_SkipsLocalsCapturingImplicitConditionalAccessInline()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public string? Name { get; set; } = "abc";
+
+                public int CaptureConditional()
+                {
+                    int len = Name?.Length ?? 0;
+                    return len;
+                }
+
+                public int Clean()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return this.total;", updated, StringComparison.Ordinal);
+        Assert.Contains("int len = Name?.Length ?? 0;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private int len = Name?.Length ?? 0;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task IntroduceField_AllFilesTrue_PromotesLocalsWithOtherObjectInstanceAccess()
     {
         const string source = """
@@ -1632,6 +1672,45 @@ public class IntroduceFieldOperationTests
         var unchanged = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("int n = Get<int>();", unchanged, StringComparison.Ordinal);
         Assert.DoesNotContain("private int _n", unchanged, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_LocalCapturingImplicitConditionalAccessInline_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public string? Name { get; set; } = "abc";
+
+                public int CaptureConditional()
+                {
+                    int len = Name?.Length ?? 0;
+                    return len;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "len = Name?.Length ?? 0");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new IntroduceFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                FieldName = "_len"
+            }));
+
+        Assert.Equal(ErrorCodes.ExpressionNotFieldInitializable, ex.ErrorCode);
+        var unchanged = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("int len = Name?.Length ?? 0;", unchanged, StringComparison.Ordinal);
+        Assert.DoesNotContain("private int _len", unchanged, StringComparison.Ordinal);
     }
 
     [SkippableFact]
