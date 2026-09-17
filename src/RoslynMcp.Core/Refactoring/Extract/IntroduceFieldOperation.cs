@@ -177,10 +177,12 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
     /// physical path are rewritten once and the same text is applied to every
     /// sibling <see cref="DocumentId"/> via <see cref="PathResolver.GetPathComparisonKey"/>.
     /// Expression-only (non-local) sites, uneditable / source-generated docs,
-    /// name collisions, unsupported captures, using declarations, locals whose
-    /// types use method type parameters, readonly sites written after
-    /// initialization (including ref/out), and otherwise ineligible locals are
-    /// skipped rather than failing the walk. Deterministic
+    /// name collisions, unsupported captures, using declarations, const locals,
+    /// ref / ref-readonly locals, locals whose types use method type parameters,
+    /// inline initializers that capture instance members (when not initializing
+    /// in a constructor), readonly sites written after initialization
+    /// (including ref/out), and otherwise ineligible locals are skipped rather
+    /// than failing the walk. Deterministic
     /// <c>SpanStart</c> order within a file. When every file is a no-op,
     /// succeeds with empty changes.
     /// </summary>
@@ -482,8 +484,11 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             .Where(declarator =>
                 declarator.Parent is VariableDeclarationSyntax
                 {
-                    Parent: LocalDeclarationStatementSyntax
-                })
+                    Parent: LocalDeclarationStatementSyntax local
+                } &&
+                // Const locals lose constant-expression semantics when promoted
+                // to ordinary fields (e.g. case labels) — exclude from allFiles.
+                !local.Modifiers.Any(SyntaxKind.ConstKeyword))
             .OrderBy(declarator => declarator.SpanStart)
             .ThenBy(declarator => declarator.Span.Length)
             .ToList();
@@ -505,6 +510,19 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         if (semanticModel.GetDeclaredSymbol(declarator, cancellationToken) is not ILocalSymbol local)
             return null;
 
+        // Const locals cannot keep constant-expression uses after promotion
+        // (Codex P1 on PR #1308) — skip rather than emit uncompilable code.
+        if (local.IsConst)
+            return null;
+
+        // Ref / ref-readonly locals cannot become ordinary fields for any
+        // allFiles invocation, not only when isReadonly is set (Codex P1).
+        if (local.RefKind != RefKind.None ||
+            declarator.Initializer?.Value is RefExpressionSyntax)
+        {
+            return null;
+        }
+
         // Method-scoped type parameters (including nested in constructed types)
         // are unavailable at field scope — skip rather than emit uncompilable
         // code under allFiles (Codex P1 on PR #1308).
@@ -516,9 +534,6 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         // bulk walk propagates isReadonly (Codex P1 on PR #1308).
         if (bulkParams.IsReadonly)
         {
-            if (local.RefKind != RefKind.None)
-                return null;
-
             var writeCandidates = FindLocalReferences(root, semanticModel, local, cancellationToken)
                 .Where(id => id.Span != declarator.Identifier.Span)
                 .Cast<SyntaxNode>()
@@ -617,6 +632,21 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
             RejectUsingLocal(local, declarator);
 
+            if (local.IsConst)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.ExpressionNotFieldInitializable,
+                    $"Local variable '{local.Name}' is const and cannot be promoted to a field.");
+            }
+
+            if (local.RefKind != RefKind.None ||
+                declarator.Initializer?.Value is RefExpressionSyntax)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.ExpressionNotFieldInitializable,
+                    $"Local variable '{local.Name}' is a ref local and cannot be promoted to a field.");
+            }
+
             var declaration = (LocalDeclarationStatementSyntax)declarator.Parent!.Parent!;
             initializer = declarator.Initializer?.Value;
             fieldType = local.Type;
@@ -688,7 +718,13 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         ValidateStaticUsage(planAnchor, @params.IsStatic);
 
         if (!@params.InitializeInConstructor && initializer != null)
+        {
             ValidateInlineInitializer(initializer, semanticModel, @params.IsStatic, cancellationToken);
+            // Local promotions: instance captures are illegal in field initializers
+            // (expression promotions keep prior allow-for-instance-fields behavior).
+            if (local != null)
+                RejectInstanceCapturesInInlineFieldInitializer(initializer, semanticModel, cancellationToken);
+        }
 
         if (@params.InitializeInConstructor && initializer == null)
         {
@@ -1161,6 +1197,167 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         }
 
         ValidateExpressionCaptures(initializer, semanticModel, excludedLocal: null, isStaticField, cancellationToken);
+    }
+
+    /// <summary>
+    /// Field initializers cannot reference <c>this</c>/<c>base</c> or instance
+    /// members of the containing instance. Used for local promotions when not
+    /// initializing in a constructor (Codex P1 on PR #1308; tightened on #1316).
+    /// </summary>
+    private static void RejectInstanceCapturesInInlineFieldInitializer(
+        ExpressionSyntax initializer,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        // Include GenericNameSyntax (e.g. Get<int>()) — IdentifierNameSyntax alone misses those.
+        foreach (var name in initializer.DescendantNodesAndSelf().OfType<SimpleNameSyntax>())
+        {
+            var symbol = semanticModel.GetSymbolInfo(name, cancellationToken).Symbol;
+            if (symbol == null)
+                continue;
+
+            if (symbol is ILocalSymbol or IParameterSymbol)
+                continue;
+
+            if (symbol is not ISymbol
+                {
+                    IsStatic: false,
+                    Kind: not Microsoft.CodeAnalysis.SymbolKind.Namespace and not Microsoft.CodeAnalysis.SymbolKind.NamedType
+                })
+            {
+                continue;
+            }
+
+            // Only reject members accessed via implicit this, this, or base —
+            // not instance members of other objects (e.g. DateTime.Now.Day).
+            if (IsAccessedViaContainingInstance(name, semanticModel, cancellationToken))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.ExpressionNotFieldInitializable,
+                    "A field initializer cannot reference instance members.");
+            }
+        }
+
+        if (initializer.DescendantNodesAndSelf().OfType<ThisExpressionSyntax>().Any(n => !IsInsideNameofArgument(n)) ||
+            initializer.DescendantNodesAndSelf().OfType<BaseExpressionSyntax>().Any(n => !IsInsideNameofArgument(n)))
+        {
+            throw new RefactoringException(
+                ErrorCodes.ExpressionNotFieldInitializable,
+                "A field initializer cannot reference instance members.");
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> refers to a member of the containing
+    /// instance (implicit receiver, <c>this</c>, or <c>base</c>), rather than
+    /// an explicit other-object receiver, object/with-initializer member designator, or nameof argument.
+    /// </summary>
+    private static bool IsAccessedViaContainingInstance(
+        SimpleNameSyntax name,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        // nameof(...) is unevaluated / compile-time — never captures the instance.
+        if (IsInsideNameofArgument(name))
+            return false;
+
+        if (name.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == name)
+        {
+            return IsContainingInstanceReceiver(memberAccess.Expression, semanticModel, cancellationToken);
+        }
+
+        if (name.Parent is MemberBindingExpressionSyntax)
+        {
+            var conditional = name.Ancestors().OfType<ConditionalAccessExpressionSyntax>().FirstOrDefault();
+            return conditional != null &&
+                IsContainingInstanceReceiver(conditional.Expression, semanticModel, cancellationToken);
+        }
+
+        // Object/with-initializer member designators (e.g. new Widget { Value = 1 })
+        // bind to instance members but are not reads of the containing instance.
+        if (IsObjectOrWithInitializerMemberDesignator(name))
+            return false;
+
+        // nameof(...) references are compile-time only and do not capture instance state.
+        if (MethodSymbolHelpers.IsInNameof(name))
+            return false;
+
+        // Bare simple name / invocation target → implicit this (or static, already filtered).
+        return true;
+    }
+
+    /// <summary>
+    /// True when <paramref name="node"/> occurs inside a <c>nameof(...)</c> argument.
+    /// </summary>
+    private static bool IsInsideNameofArgument(SyntaxNode node)
+    {
+        foreach (var ancestor in node.Ancestors())
+        {
+            if (ancestor is InvocationExpressionSyntax
+                {
+                    Expression: IdentifierNameSyntax { Identifier.ValueText: "nameof" }
+                })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is the left-hand designator of an
+    /// assignment inside an object or with initializer expression.
+    /// </summary>
+    private static bool IsObjectOrWithInitializerMemberDesignator(SimpleNameSyntax name)
+    {
+        if (name.Parent is not AssignmentExpressionSyntax assignment || assignment.Left != name)
+            return false;
+
+        return assignment.Parent is InitializerExpressionSyntax initializer &&
+               (initializer.IsKind(SyntaxKind.ObjectInitializerExpression) ||
+                initializer.IsKind(SyntaxKind.WithInitializerExpression));
+    }
+
+    private static bool IsContainingInstanceReceiver(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        if (expression is ParenthesizedExpressionSyntax parenthesized)
+            expression = parenthesized.Expression;
+
+        if (expression is ThisExpressionSyntax or BaseExpressionSyntax)
+            return true;
+
+        return expression switch
+        {
+            SimpleNameSyntax simpleName => IsImplicitContainingInstanceMember(simpleName, semanticModel, cancellationToken),
+            MemberAccessExpressionSyntax memberAccess => IsContainingInstanceReceiver(memberAccess.Expression, semanticModel, cancellationToken),
+            InvocationExpressionSyntax invocation => IsContainingInstanceReceiver(invocation.Expression, semanticModel, cancellationToken),
+            ElementAccessExpressionSyntax elementAccess => IsContainingInstanceReceiver(elementAccess.Expression, semanticModel, cancellationToken),
+            ConditionalAccessExpressionSyntax conditionalAccess => IsContainingInstanceReceiver(conditionalAccess.Expression, semanticModel, cancellationToken),
+            _ => expression.DescendantNodesAndSelf().Any(node =>
+                node is ThisExpressionSyntax or BaseExpressionSyntax)
+        };
+    }
+
+    private static bool IsImplicitContainingInstanceMember(
+        SimpleNameSyntax simpleName,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var symbol = semanticModel.GetSymbolInfo(simpleName, cancellationToken).Symbol;
+        if (symbol == null)
+            return false;
+
+        if (symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol)
+            return false;
+
+        if (symbol is ISymbol { IsStatic: false, Kind: not Microsoft.CodeAnalysis.SymbolKind.Namespace and not Microsoft.CodeAnalysis.SymbolKind.NamedType })
+            return true;
+
+        return false;
     }
 
     private static void ValidateStaticUsage(SyntaxNode node, bool isStaticField)
