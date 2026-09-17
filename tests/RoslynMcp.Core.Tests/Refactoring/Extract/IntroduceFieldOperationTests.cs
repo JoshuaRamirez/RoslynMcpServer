@@ -1759,6 +1759,49 @@ public class IntroduceFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task IntroduceField_LocalWithWithInitializer_Promotes()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record Widget
+            {
+                public int Value { get; init; }
+            }
+
+            public class Calculator
+            {
+                public Widget MakeCopy()
+                {
+                    Widget copy = new Widget { Value = 0 } with { Value = 1 };
+                    return copy;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "copy = new Widget { Value = 0 } with { Value = 1 }");
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            FieldName = "_copy"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private TestApp.Widget _copy = new Widget", updated, StringComparison.Ordinal);
+        Assert.Contains("with { Value = 1 }", updated, StringComparison.Ordinal);
+        Assert.Contains("return this._copy;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("Widget copy = new Widget { Value = 0 } with { Value = 1 };", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task IntroduceField_AllFilesTrue_SkipsConstLocals()
     {
         const string source = """
