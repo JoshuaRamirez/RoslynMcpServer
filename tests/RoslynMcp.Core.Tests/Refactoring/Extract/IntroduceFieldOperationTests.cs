@@ -1636,6 +1636,39 @@ public class IntroduceFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_PromotesLocalsWithNameofInstanceMember()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Value { get; set; }
+
+                public string CaptureName()
+                {
+                    string name = nameof(Value);
+                    return name;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private string name = nameof(Value);", updated, StringComparison.Ordinal);
+        Assert.Contains("return this.name;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("                    string name = nameof(Value);", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task IntroduceField_LocalCapturingGenericInstanceCallInline_Throws()
     {
         const string source = """
@@ -1747,6 +1780,45 @@ public class IntroduceFieldOperationTests
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("private int _n = System.DateTime.Now.Day;", updated, StringComparison.Ordinal);
         Assert.Contains("return this._n;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_LocalWithNameofInstanceMember_Promotes()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Value { get; set; }
+
+                public string CaptureName()
+                {
+                    string name = nameof(Value);
+                    return name;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "name = nameof(Value)");
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            FieldName = "_name"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private string _name = nameof(Value);", updated, StringComparison.Ordinal);
+        Assert.Contains("return this._name;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("                    string name = nameof(Value);", updated, StringComparison.Ordinal);
     }
 
     [SkippableFact]

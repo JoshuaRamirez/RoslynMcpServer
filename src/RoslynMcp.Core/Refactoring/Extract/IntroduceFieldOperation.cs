@@ -1278,6 +1278,10 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         if (IsObjectOrWithInitializerMemberDesignator(name))
             return false;
 
+        // nameof(...) references are compile-time only and do not capture instance state.
+        if (MethodSymbolHelpers.IsInNameof(name))
+            return false;
+
         // Bare simple name / invocation target → implicit this (or static, already filtered).
         return true;
     }
