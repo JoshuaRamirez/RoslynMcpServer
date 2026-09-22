@@ -94,6 +94,122 @@ public class ChangeReturnTypeOperationTests
         Assert.True(ChangeReturnTypeOperation.IsValidReturnType("List<string>"));
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ChangeReturnTypeOperation.Validate(new ChangeReturnTypeParams
+            {
+                AllFiles = false,
+                MethodName = "Process",
+                NewReturnType = "long"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrMethodName_DoesNotThrow()
+    {
+        ChangeReturnTypeOperation.Validate(new ChangeReturnTypeParams
+        {
+            AllFiles = true,
+            NewReturnType = "long"
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithRelativeSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ChangeReturnTypeOperation.Validate(new ChangeReturnTypeParams
+            {
+                AllFiles = true,
+                SourceFile = "Worker.cs",
+                NewReturnType = "long"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithNonCSharpSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ChangeReturnTypeOperation.Validate(new ChangeReturnTypeParams
+            {
+                AllFiles = true,
+                SourceFile = "/tmp/Worker.txt",
+                NewReturnType = "long"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMissingSourceFile_DoesNotThrow()
+    {
+        ChangeReturnTypeOperation.Validate(new ChangeReturnTypeParams
+        {
+            AllFiles = true,
+            SourceFile = Path.Combine(Path.GetTempPath(), "RoslynMcpChangeReturnTypeMissingAllFiles.cs"),
+            NewReturnType = "long"
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMethodName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ChangeReturnTypeOperation.Validate(new ChangeReturnTypeParams
+            {
+                AllFiles = true,
+                MethodName = "Process",
+                NewReturnType = "long"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ChangeReturnTypeOperation.Validate(new ChangeReturnTypeParams
+            {
+                AllFiles = true,
+                Line = 1,
+                NewReturnType = "long"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ChangeReturnTypeOperation.Validate(new ChangeReturnTypeParams
+            {
+                AllFiles = true,
+                Column = 1,
+                NewReturnType = "long"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Change return type", ChangeReturnTypeOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Change 2 return types", ChangeReturnTypeOperation.BuildAllFilesDescription(2));
+    }
+
     #endregion
 
     #region Happy Path
@@ -1417,6 +1533,231 @@ public class ChangeReturnTypeOperationTests
         Assert.Equal("3134", ex.ErrorCode);
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
+
+    #endregion
+
+
+    #region allFiles
+
+    private const string EligibleFileA = """
+        public class FileA
+        {
+            public int Process() => 1;
+            public int Other() => 2;
+            public string KeepString() => "x";
+        }
+        """;
+
+    private const string EligibleFileB = """
+        public class FileB
+        {
+            public int Process() => 3;
+        }
+        """;
+
+    private const string IneligibleFileC = """
+        using System.Threading.Tasks;
+        public class FileC
+        {
+            public async Task<int> Bad() => 1;
+            public long AlreadyLong() => 1L;
+        }
+        """;
+
+    [SkippableFact]
+    public async Task ChangeReturnType_OmittedAllFiles_KeepsSingleSiteRewrite()
+    {
+        const string source = """
+            public class Worker
+            {
+                public int Process() => 1;
+                public int Other() => 2;
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            NewReturnType = "long"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal("long", ReturnTypeText(GetMethods(updated, "Process").Single()));
+        Assert.Equal("int", ReturnTypeText(GetMethods(updated, "Other").Single()));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_AllFilesTrue_AppliesToEligibleMethodsAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var pathC = Path.Combine(workspace.DirectoryPath, "FileC.cs");
+        var beforeC = await File.ReadAllTextAsync(pathC);
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            AllFiles = true,
+            NewReturnType = "long"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = await File.ReadAllTextAsync(pathA);
+        var updatedB = await File.ReadAllTextAsync(pathB);
+        Assert.Equal("long", ReturnTypeText(GetMethods(updatedA, "Process").Single()));
+        Assert.Equal("long", ReturnTypeText(GetMethods(updatedA, "Other").Single()));
+        Assert.Equal("string", ReturnTypeText(GetMethods(updatedA, "KeepString").Single()));
+        Assert.Equal("long", ReturnTypeText(GetMethods(updatedB, "Process").Single()));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(pathC));
+        Assert.True(result.Changes!.FilesModified.Count >= 2);
+        Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, pathA));
+        Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathC));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_AllFilesTrue_WithoutSourceFileOrMethodName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            AllFiles = true,
+            NewReturnType = "long"
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Changes!.FilesModified.Count >= 2);
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeReturnTypeParams
+            {
+                AllFiles = false,
+                MethodName = "Process",
+                NewReturnType = "long"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_AllFilesTrue_WithMethodName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeReturnTypeParams
+            {
+                AllFiles = true,
+                MethodName = "Process",
+                NewReturnType = "long"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var pathC = Path.Combine(workspace.DirectoryPath, "FileC.cs");
+        var beforeA = await File.ReadAllTextAsync(pathA);
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var beforeC = await File.ReadAllTextAsync(pathC);
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            AllFiles = true,
+            NewReturnType = "long",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => PathsEqual(c.File, pathA));
+        Assert.Contains(result.PendingChanges, c => PathsEqual(c.File, pathB));
+        Assert.DoesNotContain(result.PendingChanges, c => PathsEqual(c.File, pathC));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(pathA));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(pathC));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileC.cs", IneligibleFileC),
+            ("FileC2.cs", IneligibleFileC));
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            AllFiles = true,
+            NewReturnType = "long"
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            AllFiles = true,
+            SourceFile = pathA,
+            NewReturnType = "long"
+        });
+
+        Assert.True(result.Success);
+        var updatedA = await File.ReadAllTextAsync(pathA);
+        Assert.Equal("long", ReturnTypeText(GetMethods(updatedA, "Process").Single()));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, pathA));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+    }
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
     #endregion
 

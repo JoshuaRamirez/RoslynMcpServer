@@ -32,13 +32,13 @@ public sealed class ChangeReturnTypeTool : IToolHandler
     public string Name => "change_return_type";
 
     /// <inheritdoc />
-    public string Description => "Change a method's return type and update return statements, overrides, and interface implementations.";
+    public string Description => "Change a method's return type and update return statements, overrides, and interface implementations. column (optional) picks the smallest method whose identifier or declaration span covers that column; omitted keeps today's methodName and/or line start-line pick. allFiles: true walks every C# file and changes the return type of every eligible method whose current return type can safely become newReturnType (sourceFile optional when true; cannot be combined with methodName, line, or column; newReturnType remains required).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "methodName", "newReturnType" },
+        required = new[] { "solutionPath", "newReturnType" },
         properties = new
         {
             solutionPath = new
@@ -49,50 +49,56 @@ public sealed class ChangeReturnTypeTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the method"
+                description = "Absolute path to the source file containing the method. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "When true, walk every C# document (or the optional single sourceFile) and change the return type of every eligible method. Cannot be combined with methodName, line, or column. Default false.",
+                @default = false
             },
             methodName = new
             {
                 type = "string",
-                description = "Name of the method to modify"
+                description = "Name of the method to modify. Single-site only; cannot be combined with allFiles."
             },
             newReturnType = new
             {
                 type = "string",
-                description = "New return type (C# type syntax)"
+                description = "New return type (C# type syntax). Required for both single-site and allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "Line number for disambiguation if multiple methods have the same name (1-based)"
+                description = "Line number for disambiguation if multiple methods have the same name (1-based). Single-site only; cannot be combined with allFiles."
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set, selects the smallest method whose identifier or declaration span covers that column. Omitted keeps today's MethodName and/or Line start-line pick."
+                description = "1-based column for disambiguation. When set, selects the smallest method whose identifier or declaration span covers that column. Omitted keeps today's MethodName and/or Line start-line pick. Single-site only; cannot be combined with allFiles."
             },
             updateOverrides = new
             {
                 type = "boolean",
-                description = "Update the virtual/override chain together",
+                description = "Update the virtual/override chain together. Valid with allFiles.",
                 @default = true
             },
             updateImplementations = new
             {
                 type = "boolean",
-                description = "Update interface declarations and implementations together",
+                description = "Update interface declarations and implementations together. Valid with allFiles.",
                 @default = true
             },
             convertReturnStatements = new
             {
                 type = "boolean",
-                description = "Attempt to convert return statements to the new type",
+                description = "Attempt to convert return statements to the new type. Valid with allFiles.",
                 @default = true
             },
             preview = new
             {
                 type = "boolean",
-                description = "Return computed changes without applying",
+                description = "Return computed changes without applying. Valid with allFiles.",
                 @default = false
             }
         },
@@ -123,6 +129,7 @@ public sealed class ChangeReturnTypeTool : IToolHandler
             var @params = new ChangeReturnTypeParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 MethodName = args.MethodName,
                 NewReturnType = args.NewReturnType,
                 Line = args.Line,
@@ -158,8 +165,9 @@ public sealed class ChangeReturnTypeTool : IToolHandler
     private sealed class ChangeReturnTypeArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string MethodName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? MethodName { get; init; }
         public string NewReturnType { get; init; } = "";
         public int? Line { get; init; }
         public int? Column { get; init; }

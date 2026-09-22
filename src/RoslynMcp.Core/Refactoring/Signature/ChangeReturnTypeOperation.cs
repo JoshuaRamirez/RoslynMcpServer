@@ -17,6 +17,10 @@ namespace RoslynMcp.Core.Refactoring.Signature;
 /// <summary>
 /// Changes a method's return type and updates return statements, overrides,
 /// and interface implementations when the conversion is safe.
+/// Optional <c>allFiles</c> walks every C# document (or the optional single
+/// <c>sourceFile</c>) and changes the return type of every eligible method
+/// whose current return type can safely become <c>newReturnType</c>, skipping
+/// ineligible methods rather than throwing.
 /// </summary>
 public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeReturnTypeParams>
 {
@@ -36,23 +40,8 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
     /// </summary>
     internal static void Validate(ChangeReturnTypeParams @params)
     {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-
-        if (string.IsNullOrWhiteSpace(@params.MethodName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
-
         if (string.IsNullOrWhiteSpace(@params.NewReturnType))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "newReturnType is required.");
-
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
         if (!IsValidReturnType(@params.NewReturnType))
         {
@@ -61,11 +50,50 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                 $"'{@params.NewReturnType}' is not a valid C# return type.");
         }
 
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.MethodName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with methodName, line, or column.");
+            }
+
+            // Optional sourceFile still must be an absolute .cs path when set
+            // (ChangeSignature allFiles / Copilot).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+
+        if (string.IsNullOrWhiteSpace(@params.MethodName))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
+
+        ValidateSourceFilePath(@params.SourceFile!);
+
+        if (!File.Exists(@params.SourceFile!))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
+    }
+
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
     }
 
     /// <inheritdoc />
@@ -74,7 +102,13 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         ChangeReturnTypeParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var sourceFile = @params.SourceFile!;
+        var methodName = @params.MethodName!;
+
+        var document = GetDocumentOrThrow(sourceFile);
         DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -82,7 +116,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var methodDecl = FindMethodHelpers.FindMethodDeclaration(root, @params.MethodName, @params.Line, @params.Column);
+        var methodDecl = FindMethodHelpers.FindMethodDeclaration(root, methodName, @params.Line, @params.Column);
         var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve method symbol.");
 
@@ -100,10 +134,13 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
 
         ValidateNotAsyncOrTaskLike(methodSymbol, newReturnType);
 
+        var solution = document.Project.Solution;
+
         var contractMethods = await GetRelatedMethodsAsync(
             methodSymbol,
             updateOverrides: true,
             updateImplementations: true,
+            solution,
             cancellationToken);
         ValidateUneditableContracts(contractMethods, newReturnType, semanticModel.Compilation);
 
@@ -111,6 +148,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                 methodSymbol,
                 @params.UpdateOverrides,
                 @params.UpdateImplementations,
+                solution,
                 cancellationToken))
             .Where(SignatureOverrideHelpers.HasSourceDeclaration)
             .ToList();
@@ -125,12 +163,13 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             relatedMethods,
             newReturnType,
             @params.ConvertReturnStatements,
+            solution,
             cancellationToken);
 
         foreach (var target in declarationTargets)
             DocumentEditableHelpers.ValidateDocumentIsEditable(target.Document, Context.Workspace);
 
-        await ValidateReferencesAsync(relatedMethods, newReturnType, cancellationToken);
+        await ValidateReferencesAsync(relatedMethods, newReturnType, solution, cancellationToken);
 
         var newSolution = await ApplyChangesAsync(
             document,
@@ -159,12 +198,320 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.MethodName,
+                Name = methodName,
                 FullyQualifiedName = methodSymbol.ToDisplayString(),
                 Kind = Contracts.Enums.SymbolKind.Method
             },
             declarationTargets.Sum(t => t.ReturnSpans.Count),
             0);
+    }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>ChangeSignatureOperation.ExecuteAllFilesAsync</c>)
+    /// and changes return types to <paramref name="params"/>.NewReturnType for
+    /// every eligible <see cref="MethodDeclarationSyntax"/>. Optional
+    /// <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
+    /// Linked documents that share a physical path are rewritten once and the
+    /// same text is applied to every sibling <see cref="DocumentId"/> via
+    /// <see cref="AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync"/>.
+    /// Methods that fail existing single-site safety checks (SameLocation,
+    /// async/Task-like, incompatible returns, uneditable contracts, overload
+    /// collisions, iterators, unsupported call sites), uneditable /
+    /// source-generated docs, and otherwise inapplicable methods are skipped
+    /// rather than failing the walk. Deterministic <c>SpanStart</c> order
+    /// within a file. When every file is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ChangeReturnTypeParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+
+        var changedCountByDoc = new Dictionary<DocumentId, int>();
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var primary = linkedDocuments.FirstOrDefault(d =>
+                d is not SourceGeneratedDocument &&
+                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+            if (primary == null)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(primary.Id);
+                if (currentDocument == null ||
+                    currentDocument is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                {
+                    break;
+                }
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var methodDecl in CollectMethods(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        updated = await TryChangeOneAsync(
+                            currentDocument,
+                            semanticModel,
+                            methodDecl,
+                            @params,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        // Skip ineligible methods rather than failing the walk.
+                        updated = null;
+                    }
+
+                    if (updated != null)
+                        break;
+                }
+
+                if (updated == null)
+                    break;
+
+                var beforeSolution = currentSolution;
+                currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                    beforeSolution,
+                    updated,
+                    Context.Workspace,
+                    cancellationToken);
+
+                changedCountByDoc[primary.Id] =
+                    changedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var changedCount = changedCountByDoc.GetValueOrDefault(document.Id);
+                if (changedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        changedCount = Math.Max(changedCount, changedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = changedCount > 0
+                        ? BuildAllFilesDescription(changedCount)
+                        : "Update related return type declarations",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that changed
+    /// <paramref name="changedCount"/> method return types.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int changedCount) =>
+        changedCount == 1
+            ? "Change return type"
+            : $"Change {changedCount} return types";
+
+    /// <summary>
+    /// Collects every <see cref="MethodDeclarationSyntax"/> in
+    /// <paramref name="root"/> in deterministic <c>SpanStart</c> then
+    /// span-length order.
+    /// </summary>
+    internal static IReadOnlyList<MethodDeclarationSyntax> CollectMethods(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .OrderBy(m => m.SpanStart)
+            .ThenBy(m => m.Span.Length)
+            .ToList();
+
+    private async Task<Solution?> TryChangeOneAsync(
+        Document document,
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl,
+        ChangeReturnTypeParams @params,
+        CancellationToken cancellationToken)
+    {
+        var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken);
+        if (methodSymbol == null)
+            return null;
+
+        if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        var newReturnType = ResolveReturnType(semanticModel, methodDecl, @params.NewReturnType);
+        if (newReturnType == null)
+            return null;
+
+        if (TypeEquivalenceHelpers.TypesEquivalent(methodSymbol.ReturnType, newReturnType))
+            return null;
+
+        ValidateNotAsyncOrTaskLike(methodSymbol, newReturnType);
+
+        // Use the document's solution (allFiles currentSolution), not Context.Solution,
+        // so DeclaringSyntaxReferences resolve after prior bulk rewrites (ChangeSignature peer).
+        var solution = document.Project.Solution;
+
+        var contractMethods = await GetRelatedMethodsAsync(
+            methodSymbol,
+            updateOverrides: true,
+            updateImplementations: true,
+            solution,
+            cancellationToken);
+        ValidateUneditableContracts(contractMethods, newReturnType, semanticModel.Compilation);
+
+        var relatedMethods = (await GetRelatedMethodsAsync(
+                methodSymbol,
+                @params.UpdateOverrides,
+                @params.UpdateImplementations,
+                solution,
+                cancellationToken))
+            .Where(SignatureOverrideHelpers.HasSourceDeclaration)
+            .ToList();
+
+        foreach (var related in relatedMethods)
+        {
+            ValidateNotAsyncOrTaskLike(related, newReturnType);
+            ValidateNoOverloadCollision(related, newReturnType);
+        }
+
+        var declarationTargets = await CollectDeclarationTargetsAsync(
+            relatedMethods,
+            newReturnType,
+            @params.ConvertReturnStatements,
+            solution,
+            cancellationToken);
+
+        foreach (var target in declarationTargets)
+        {
+            if (!DocumentEditableHelpers.IsDocumentEditable(target.Document, Context.Workspace))
+                return null;
+        }
+
+        await ValidateReferencesAsync(relatedMethods, newReturnType, solution, cancellationToken);
+
+        var beforeText = await document.GetTextAsync(cancellationToken);
+        var newSolution = await ApplyChangesAsync(
+            document,
+            declarationTargets,
+            cancellationToken);
+
+        var afterDocument = newSolution.GetDocument(document.Id);
+        if (afterDocument == null)
+            return null;
+
+        var afterText = await afterDocument.GetTextAsync(cancellationToken);
+        if (beforeText.ContentEquals(afterText))
+        {
+            // Declaring file unchanged but related declarations may have
+            // changed — keep the solution if any document differs.
+            var anyDiff = false;
+            foreach (var project in newSolution.Projects)
+            {
+                foreach (var doc in project.Documents)
+                {
+                    var originalDoc = document.Project.Solution.GetDocument(doc.Id);
+                    if (originalDoc == null)
+                        continue;
+                    var before = await originalDoc.GetTextAsync(cancellationToken);
+                    var after = await doc.GetTextAsync(cancellationToken);
+                    if (!before.ContentEquals(after))
+                    {
+                        anyDiff = true;
+                        break;
+                    }
+                }
+
+                if (anyDiff)
+                    break;
+            }
+
+            if (!anyDiff)
+                return null;
+        }
+
+        return newSolution;
     }
 
     internal static bool IsValidReturnType(string type)
@@ -270,6 +617,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         IMethodSymbol method,
         bool updateOverrides,
         bool updateImplementations,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         var results = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default) { method };
@@ -286,7 +634,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             foreach (var symbol in results.ToList())
             {
                 var overrides = await SymbolFinder.FindOverridesAsync(
-                    symbol, Context.Solution, cancellationToken: cancellationToken);
+                    symbol, solution, cancellationToken: cancellationToken);
                 foreach (var ov in overrides.OfType<IMethodSymbol>())
                     results.Add(ov);
             }
@@ -299,7 +647,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                 if (candidate.ContainingType.TypeKind == TypeKind.Interface)
                 {
                     var implementations = await SymbolFinder.FindImplementationsAsync(
-                        candidate, Context.Solution, cancellationToken: cancellationToken);
+                        candidate, solution, cancellationToken: cancellationToken);
                     foreach (var impl in implementations.OfType<IMethodSymbol>())
                         results.Add(impl);
                     continue;
@@ -319,7 +667,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                         results.Add(ifaceMethod);
                         var otherImpls = await SymbolFinder.FindImplementationsAsync(
                             ifaceMethod,
-                            Context.Solution,
+                            solution,
                             cancellationToken: cancellationToken);
                         foreach (var other in otherImpls.OfType<IMethodSymbol>())
                             results.Add(other);
@@ -391,6 +739,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         IReadOnlyList<IMethodSymbol> methods,
         ITypeSymbol newReturnType,
         bool convertReturnStatements,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         var targets = new List<DeclarationTarget>();
@@ -406,7 +755,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                         $"Method '{method.Name}' is an unsupported target for change_return_type.");
                 }
 
-                var document = Context.Solution.GetDocument(syntaxRef.SyntaxTree)
+                var document = solution.GetDocument(syntaxRef.SyntaxTree)
                     ?? throw new RefactoringException(
                         ErrorCodes.DocumentNotEditable,
                         $"Could not locate the document for method '{method.Name}'.");
@@ -644,11 +993,12 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
     private async Task ValidateReferencesAsync(
         IReadOnlyList<IMethodSymbol> methods,
         ITypeSymbol newReturnType,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         foreach (var method in methods)
         {
-            var references = await SymbolFinder.FindReferencesAsync(method, Context.Solution, cancellationToken);
+            var references = await SymbolFinder.FindReferencesAsync(method, solution, cancellationToken);
             foreach (var referenced in references)
             {
                 foreach (var location in referenced.Locations)
@@ -930,7 +1280,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         {
             pendingChanges.Add(new PendingChange
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = $"Change return type of '{@params.MethodName}' to '{@params.NewReturnType}'",
                 BeforeSnippet = null,

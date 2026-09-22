@@ -63,9 +63,46 @@ public class ChangeReturnTypeToolTests
         }
 
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("methodName", requiredFields);
         Assert.Contains("newReturnType", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+        Assert.DoesNotContain("methodName", requiredFields);
+        Assert.DoesNotContain("allFiles", requiredFields);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsAllFiles()
+    {
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_HasOptionalAllFiles()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var allFiles = doc.RootElement.GetProperty("properties").GetProperty("allFiles");
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("eligible method", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        // ThrowingWorkspaceProvider fails on CreateContext — proves args deserialize
+        // past schema-required fields (solutionPath + newReturnType only).
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true,
+                "newReturnType": "long"
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+        Assert.True(result.IsError);
     }
 
     [Fact]
@@ -78,6 +115,7 @@ public class ChangeReturnTypeToolTests
 
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.True(properties.TryGetProperty("methodName", out _));
         Assert.True(properties.TryGetProperty("newReturnType", out _));
         Assert.True(properties.TryGetProperty("line", out _));
@@ -87,6 +125,8 @@ public class ChangeReturnTypeToolTests
         Assert.True(properties.TryGetProperty("convertReturnStatements", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
         Assert.False(RequiredFieldsContains(doc, "column"));
+        Assert.False(RequiredFieldsContains(doc, "allFiles"));
+        Assert.False(RequiredFieldsContains(doc, "sourceFile"));
 
         var column = properties.GetProperty("column");
         Assert.Equal("integer", column.GetProperty("type").GetString());
