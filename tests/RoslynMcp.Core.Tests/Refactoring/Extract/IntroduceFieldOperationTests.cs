@@ -2020,7 +2020,7 @@ public class IntroduceFieldOperationTests
                 {
                     System.Action action = () =>
                     {
-                        static void F<T>()
+                        void F<T>()
                         {
                             _ = typeof(T);
                         }
@@ -2049,7 +2049,7 @@ public class IntroduceFieldOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("private System.Action action = () =>", updated, StringComparison.Ordinal);
-        Assert.Contains("static void F<T>()", updated, StringComparison.Ordinal);
+        Assert.Contains("void F<T>()", updated, StringComparison.Ordinal);
         Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("                    System.Action action = () =>", updated, StringComparison.Ordinal);
     }
@@ -2066,7 +2066,7 @@ public class IntroduceFieldOperationTests
                 {
                     System.Action action = () =>
                     {
-                        static void F<T>()
+                        void F<T>()
                         {
                             _ = typeof(T);
                         }
@@ -2095,7 +2095,7 @@ public class IntroduceFieldOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("private System.Action _action = () =>", updated, StringComparison.Ordinal);
-        Assert.Contains("static void F<T>()", updated, StringComparison.Ordinal);
+        Assert.Contains("void F<T>()", updated, StringComparison.Ordinal);
         Assert.Contains("return this._action;", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("                    System.Action action = () =>", updated, StringComparison.Ordinal);
     }

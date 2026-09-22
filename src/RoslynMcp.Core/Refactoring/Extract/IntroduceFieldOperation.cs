@@ -1299,6 +1299,15 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             if (symbol is ILocalSymbol or IParameterSymbol)
                 continue;
 
+            // A local function declared inside the initializer moves with it;
+            // it is not a containing-instance member even when non-static.
+            // Enclosing local functions are rejected by ValidateExpressionCaptures.
+            if (symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction } localFunction &&
+                IsDeclaredWithinNode(localFunction, initializer))
+            {
+                continue;
+            }
+
             // Limit to symbols that can actually represent instance members.
             // Type parameters (typeof(T)), query range variables, etc. are
             // IsStatic==false but are not containing-instance captures (Codex P2).
