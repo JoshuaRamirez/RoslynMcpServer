@@ -514,6 +514,71 @@ public class ExtractConstantOperationTests
         Assert.Empty(result.Changes!.FilesModified);
     }
 
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_ReplaceAll_SkipsIncompatibleContextualTypes()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public enum State { Off = 0, On = 1 }
+
+            public class Host
+            {
+                public State Run()
+                {
+                    State state = 0;
+                    int count = 0;
+                    return state;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("State state = _0;", updated, StringComparison.Ordinal);
+        Assert.Contains("int count = 0;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("int count = _0;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsDerivedNameEqualToContainingType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Foo
+            {
+                public string Run()
+                {
+                    return "foo";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
     [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_ReplaceAll_ReplacesMatchingLiteralsInType()
     {

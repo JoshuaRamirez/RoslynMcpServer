@@ -222,7 +222,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
         var updatedContainingType = newRoot.DescendantNodes()
             .OfType<TypeDeclarationSyntax>()
-            .First(t => t.Identifier.Text == containingType.Identifier.Text);
+            .First(t => t.SpanStart == containingType.SpanStart);
 
         var newContainingType = InsertConstantField(updatedContainingType, constField);
         newRoot = newRoot.ReplaceNode(updatedContainingType, newContainingType);
