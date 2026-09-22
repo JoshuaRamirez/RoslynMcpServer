@@ -46,6 +46,25 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     /// </summary>
     internal static void Validate(PushMembersDownParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.TypeName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue ||
+                @params.Members != null ||
+                @params.TargetDerivedTypes != null)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with typeName, line, column, members, or targetDerivedTypes.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -55,11 +74,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (@params.Members == null || @params.Members.Count == 0 || @params.Members.All(string.IsNullOrWhiteSpace))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "members is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        ValidateSourceFilePath(@params.SourceFile!);
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
@@ -67,8 +82,17 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!File.Exists(@params.SourceFile))
+        if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+    }
+
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
     }
 
     /// <inheritdoc />
@@ -77,7 +101,10 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         PushMembersDownParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -89,12 +116,12 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         // pick (enum and DelegateDeclarationSyntax do not participate).
         // Line set also includes a covering enum or delegate so it
         // reaches InvalidSymbolKind instead of retargeting a later class.
-        var found = FindTypeDeclaration(root, @params.TypeName, @params.Line, @params.Column);
+        var found = FindTypeDeclaration(root, @params.TypeName!, @params.Line, @params.Column);
         if (found == null)
         {
             throw new RefactoringException(
                 ErrorCodes.TypeNotFound,
-                $"Type '{@params.TypeName}' not found in file.");
+                $"Type '{@params.TypeName!}' not found in file.");
         }
 
         var sourceSymbol = semanticModel.GetDeclaredSymbol(found, cancellationToken) as INamedTypeSymbol;
@@ -108,7 +135,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 $"Type '{sourceSymbol.Name}' is not a supported target for push_members_down.");
         }
 
-        var members = FindMembersToPush(sourceDecl, @params.Members, semanticModel, cancellationToken);
+        var members = FindMembersToPush(sourceDecl, @params.Members!, semanticModel, cancellationToken);
         var targets = await GetDerivedTypes(sourceSymbol, @params.TargetDerivedTypes, cancellationToken);
 
         if (targets.Count == 0)
@@ -130,7 +157,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
 
         await ValidateNoBreakingReferencesAsync(
-            members, sourceSymbol, targets, leaveAbstract, cancellationToken);
+            members, sourceSymbol, targets, leaveAbstract, Context.Solution, cancellationToken);
 
         var pushedNames = members.Select(m => m.Name).ToList();
         var derivedUpdates = new List<DerivedUpdate>();
@@ -177,14 +204,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         // look up by file path and rematch by span (same as
         // pull_members_up / extract_base_class / implement_abstract).
         document = annotatedSolution.GetDocument(previousTree)
-            ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName);
+            ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName!);
         root = await document.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         sourceDecl = RecoverAnnotatedType(
             root,
             sourceTypeAnnotation,
             sourceDecl,
-            @params.TypeName);
+            @params.TypeName!);
 
         // Strip the per-execution annotation so it does not linger in the
         // workspace after commit.
@@ -219,6 +246,899 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             },
             0,
             0);
+    }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// helpers as <c>PullMembersUpOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ExtractBaseClassOperation.ExecuteAllFilesAsync</c>) and pushes every
+    /// pushable member from each eligible base type onto all direct derived
+    /// types (same as omitted <c>targetDerivedTypes</c>). Optional
+    /// <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
+    /// Linked documents that share a physical path are rewritten once and
+    /// sibling text is coalesced via
+    /// <see cref="AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync"/>.
+    /// Types with no derived targets, empty pushable member sets, unsupported
+    /// kinds, uneditable / source-generated docs, non-editable derived types,
+    /// and linked multi-views are skipped rather than failing the walk.
+    /// Members inserted onto a derived type by an earlier push in this walk
+    /// are tracked by cascade key (signature for methods/indexers, after
+    /// constructed-base type substitution) and skipped when that type is later
+    /// visited as a source, so they are not cascaded further down the hierarchy.
+    /// De-duplication is per declaration (<c>TypeWalkKey</c> + document + member
+    /// cascade keys), so partial types with pushable members in multiple files —
+    /// or multiple parts in one file — are all visited. Skipped declarations are
+    /// revisited in later passes once dependent parts unlock them. Each
+    /// site collects a type-wide member batch across partials so cyclic
+    /// cross-partial dependencies can move together. Linked
+    /// multi-view path counts come from the full solution (independent of
+    /// <c>sourceFile</c>); multi-view targets are skipped. Deterministic
+    /// <c>SpanStart</c> order within a file. When every file is a no-op,
+    /// succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        PushMembersDownParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        // Linked-path counts must cover the whole solution — not just the
+        // sourceFile-filtered walk — so DeclaringPathHasLinkedMultiView still
+        // sees multi-view derived targets outside the filtered source set.
+        var linkedPathCounts = BuildLinkedPathCounts(originalSolution);
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+        var pushedCountByDoc = new Dictionary<DocumentId, int>();
+        // Type-wide keys (type + cascade keys of the full partial batch).
+        // Claiming the whole type batch prevents a later partial visit from
+        // re-pushing the same members after a successful type-wide apply.
+        var processedDeclarations = new HashSet<string>(StringComparer.Ordinal);
+        // Cascade keys are signature-based (MemberCascadeKey), not bare names,
+        // so inserting Root.M(string) does not suppress Middle.M(int).
+        var insertedMembersByType = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+
+        // Revisit skipped declarations after later partial parts unlock them
+        // (e.g. field blocked by a method in another file that later moves).
+        bool madeProgress;
+        do
+        {
+            madeProgress = false;
+            foreach (var linkedDocuments in documentGroups)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // Linked multi-project views of the same path can diverge under
+                // preprocessor symbols; skip rather than coalescing a push that
+                // only one compilation can honor. Same contract as
+                // pull_members_up / extract_base_class allFiles.
+                if (linkedDocuments.Count > 1)
+                    continue;
+
+                var primary = linkedDocuments.FirstOrDefault(d =>
+                    d is not SourceGeneratedDocument &&
+                    DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+                if (primary == null)
+                    continue;
+
+                while (true)
+                {
+                    var currentDocument = currentSolution.GetDocument(primary.Id);
+                    if (currentDocument == null ||
+                        currentDocument is SourceGeneratedDocument ||
+                        !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                    {
+                        break;
+                    }
+
+                    var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                    var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                    if (root == null || semanticModel == null)
+                        break;
+
+                    Solution? updated = null;
+                    foreach (var typeNode in TypeDeclarationHelpers.CollectTypeDeclarations(root))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        if (typeNode is not TypeDeclarationSyntax typeDeclaration)
+                            continue;
+
+                        var sourceSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
+                        if (sourceSymbol == null)
+                            continue;
+
+                        var typeKey = TypeWalkKeyHelpers.TypeWalkKey(currentDocument.Project.Id, sourceSymbol);
+
+                        IReadOnlyList<INamedTypeSymbol> targets;
+                        try
+                        {
+                            targets = await GetDerivedTypes(
+                                sourceSymbol, targetNames: null, currentSolution, cancellationToken);
+                        }
+                        catch (RefactoringException)
+                        {
+                            continue;
+                        }
+
+                        if (targets.Count == 0)
+                            continue;
+
+                        // Skip when any derived target declares on a linked multi-view
+                        // path — coalescing would overwrite divergent siblings.
+                        if (targets.Any(t => DeclaringPathHasLinkedMultiView(t, currentSolution, linkedPathCounts)))
+                            continue;
+
+                        try
+                        {
+                            foreach (var target in targets)
+                                ValidateDerivedIsEditable(target);
+                        }
+                        catch (RefactoringException)
+                        {
+                            continue;
+                        }
+
+                        var leaveAbstract = @params.LeaveAbstract && sourceSymbol.TypeKind != TypeKind.Interface;
+
+                        try
+                        {
+                            // Type-wide batch: collect pushable members from every
+                            // partial declaration so cyclic cross-partial deps
+                            // (A↔B) validate and move together.
+                            var members = await CollectTypeWidePushableMembersAsync(
+                                sourceSymbol,
+                                targets,
+                                currentSolution,
+                                leaveAbstract,
+                                insertedMembersByType,
+                                typeKey,
+                                linkedPathCounts,
+                                cancellationToken);
+
+                            if (members.Count == 0)
+                                continue;
+
+                            var declarationKey = typeKey + "|typewide|" +
+                                string.Join("\0", members
+                                    .Select(m => MemberCascadeKey(m.Symbol))
+                                    .OrderBy(k => k, StringComparer.Ordinal));
+                            if (processedDeclarations.Contains(declarationKey))
+                                continue;
+
+                            ValidateMembersForPush(members, sourceSymbol, targets, leaveAbstract);
+                            if (leaveAbstract)
+                            {
+                                ValidateLeaveAbstractCoversConcreteDerived(sourceSymbol, targets, targets);
+                            }
+
+                            await ValidateNoBreakingReferencesAsync(
+                                members, sourceSymbol, targets, leaveAbstract, currentSolution, cancellationToken);
+
+                            var derivedUpdates = new List<DerivedUpdate>();
+                            foreach (var target in targets)
+                            {
+                                var original = await GetTypeDeclarationAsync(target, cancellationToken);
+                                var copies = new List<MemberDeclarationSyntax>();
+                                foreach (var member in members)
+                                {
+                                    var memberModel = await GetSemanticModelForSyntaxAsync(
+                                        currentSolution, member.Syntax, cancellationToken)
+                                        ?? semanticModel;
+                                    copies.Add(ConvertForDerived(
+                                        member, sourceSymbol, target, memberModel, leaveAbstract));
+                                }
+
+                                derivedUpdates.Add(new DerivedUpdate(
+                                    target, original, AddMembersToType(original, copies)));
+                            }
+
+                            // Rewrite every partial that owns some of the batch.
+                            var sourceUpdates = members
+                                .Select(m => m.Syntax.Ancestors().OfType<TypeDeclarationSyntax>().First())
+                                .Distinct()
+                                .Select(decl => (
+                                    decl,
+                                    BuildSourceReplacement(decl, members, sourceSymbol, leaveAbstract)))
+                                .ToList();
+
+                            updated = await ApplyChangesAsync(
+                                currentSolution,
+                                sourceUpdates,
+                                derivedUpdates,
+                                cancellationToken);
+
+                            if (updated == null)
+                                continue;
+
+                            // Record cascade keys inserted onto each derived target so a
+                            // later visit of that type does not cascade those overloads.
+                            foreach (var target in targets)
+                            {
+                                var targetProjectId = ResolveSymbolProjectId(currentSolution, target)
+                                    ?? currentDocument.Project.Id;
+                                var targetKey = TypeWalkKeyHelpers.TypeWalkKey(targetProjectId, target);
+                                if (!insertedMembersByType.TryGetValue(targetKey, out var insertedOnTarget))
+                                {
+                                    insertedOnTarget = new HashSet<string>(StringComparer.Ordinal);
+                                    insertedMembersByType[targetKey] = insertedOnTarget;
+                                }
+
+                                foreach (var member in members)
+                                {
+                                    // Record the signature as it will appear on the
+                                    // derived type after type-parameter substitution
+                                    // (Root<T>.M(T) → Middle:Root<int> records M(int)).
+                                    insertedOnTarget.Add(
+                                        MemberCascadeKeyForTarget(member.Symbol, sourceSymbol, target));
+                                }
+                            }
+
+                            processedDeclarations.Add(declarationKey);
+                            break;
+                        }
+                        catch (RefactoringException)
+                        {
+                            updated = null;
+                            continue;
+                        }
+                    }
+
+                    if (updated == null)
+                        break;
+
+                    var beforeSolution = currentSolution;
+                    currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                        beforeSolution,
+                        updated,
+                        Context.Workspace,
+                        cancellationToken);
+
+                    pushedCountByDoc[primary.Id] =
+                        pushedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+                    madeProgress = true;
+                }
+            }
+        } while (madeProgress);
+
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution)
+            .Concat(
+                currentSolution.Projects
+                    .SelectMany(p => p.Documents)
+                    .Where(d => d.FilePath != null &&
+                                d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
+                                originalSolution.GetDocument(d.Id) == null))
+            .GroupBy(d => d.Id)
+            .Select(g => g.First())
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (currentDocument == null || originalDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var pushedCount = pushedCountByDoc.GetValueOrDefault(document.Id);
+                if (pushedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        pushedCount = Math.Max(pushedCount, pushedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = pushedCount > 0
+                        ? BuildAllFilesDescription(pushedCount)
+                        : "Update push_members_down rewrites",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Resolves the <see cref="ProjectId"/> that owns
+    /// <paramref name="symbol"/>'s declaring syntax, when available.
+    /// </summary>
+    private static ProjectId? ResolveSymbolProjectId(Solution solution, ISymbol symbol)
+    {
+        foreach (var reference in symbol.DeclaringSyntaxReferences)
+        {
+            var document = solution.GetDocument(reference.SyntaxTree);
+            if (document != null)
+                return document.Project.Id;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Preview description for a file that pushed members from
+    /// <paramref name="pushedCount"/> base types.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int pushedCount) =>
+        pushedCount == 1
+            ? "Push members down"
+            : $"Push members down from {pushedCount} types";
+
+    /// <summary>
+    /// Collects every pushable member across all editable partial declarations
+    /// of <paramref name="sourceSymbol"/>, cascade-filtered against members
+    /// already inserted onto this type. Enables cyclic cross-partial
+    /// dependencies to validate and move as one batch.
+    /// </summary>
+    private async Task<List<PushableMember>> CollectTypeWidePushableMembersAsync(
+        INamedTypeSymbol sourceSymbol,
+        IReadOnlyList<INamedTypeSymbol> targets,
+        Solution solution,
+        bool leaveAbstract,
+        IReadOnlyDictionary<string, HashSet<string>> insertedMembersByType,
+        string typeKey,
+        IReadOnlyDictionary<string, int> linkedPathCounts,
+        CancellationToken cancellationToken)
+    {
+        var members = new List<PushableMember>();
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var syntaxRef in sourceSymbol.DeclaringSyntaxReferences)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var document = solution.GetDocument(syntaxRef.SyntaxTree);
+            if (document == null ||
+                document is SourceGeneratedDocument ||
+                !DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            {
+                continue;
+            }
+
+            // Skip linked multi-view declarations of the source itself.
+            if (document.FilePath != null)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
+                if (linkedPathCounts.TryGetValue(pathKey, out var viewCount) && viewCount > 1)
+                    continue;
+            }
+
+            var model = await document.GetSemanticModelAsync(cancellationToken);
+            if (model == null)
+                continue;
+
+            if (await syntaxRef.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax decl)
+                continue;
+
+            // Collect eligible declarations directly — do not round-trip through
+            // member names. Name-based FindMembersToPush would reselect every
+            // declaration sharing a kept name, including extern overloads that
+            // CollectPushableMembers intentionally skips.
+            foreach (var member in CollectPushableMembers(
+                         decl, model, leaveAbstract, targets, cancellationToken))
+            {
+                // Cascade keys alone collapse partial method/property/indexer
+                // definition + implementation pairs to one entry; keep both so
+                // the rewrite moves the matched pair together.
+                if (seenKeys.Add(MemberBatchIdentityKey(member.Symbol, member.Syntax)))
+                    members.Add(member);
+            }
+        }
+
+        if (insertedMembersByType.TryGetValue(typeKey, out var insertedHere) &&
+            insertedHere.Count > 0)
+        {
+            members = members
+                .Where(m => !insertedHere.Contains(MemberCascadeKey(m.Symbol)))
+                .ToList();
+        }
+
+        // Drop members that still reference skipped / non-moving members or
+        // nested types inaccessible from any target (fixed-point so cascading
+        // deps also drop).
+        return await FilterMembersDependingOnInaccessibleNonBatchAsync(
+            members, sourceSymbol, targets, solution, cancellationToken);
+    }
+
+    private static async Task<SemanticModel?> GetSemanticModelForSyntaxAsync(
+        Solution solution,
+        SyntaxNode syntax,
+        CancellationToken cancellationToken)
+    {
+        var document = solution.GetDocument(syntax.SyntaxTree)
+            ?? DocumentForTreeHelpers.GetDocumentByFilePath(solution, syntax.SyntaxTree);
+        if (document == null)
+            return null;
+
+        return await document.GetSemanticModelAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Automatic allFiles selection: returns each pushable declaration that
+    /// passes eligibility filters. Unlike name-then-<see cref="FindMembersToPush"/>,
+    /// this never re-expands a shared overload name onto skipped extern members.
+    /// </summary>
+    private static List<PushableMember> CollectPushableMembers(
+        TypeDeclarationSyntax typeDeclaration,
+        SemanticModel semanticModel,
+        bool leaveAbstract,
+        IReadOnlyList<INamedTypeSymbol> targets,
+        CancellationToken cancellationToken)
+    {
+        var source = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
+        var members = new List<PushableMember>();
+        foreach (var (name, symbol, syntax) in EnumerateDeclaredMembers(
+                     typeDeclaration, semanticModel, cancellationToken))
+        {
+            if (symbol == null || !IsSupportedMember(symbol))
+                continue;
+
+            // Extern/PInvoke methods stay bodyless; EnsureMethodBody would add a
+            // throwing body and produce invalid extern+body on the target.
+            if (symbol is IMethodSymbol { IsExtern: true })
+                continue;
+
+            // When leaveAbstract is set, skip members that cannot become abstract
+            // so ValidateMembersForPush does not discard the whole site.
+            if (leaveAbstract && !CanBeAbstract(symbol))
+                continue;
+
+            // Nested types are not pushable. Skip members that depend on a
+            // nested type of the source inaccessible from any target (private,
+            // or internal across assemblies, etc.).
+            if (source != null &&
+                MemberDependsOnInaccessibleNestedType(
+                    symbol, syntax, semanticModel, source, targets, cancellationToken))
+            {
+                continue;
+            }
+
+            // Match FindMembersToPush naming: indexers use the symbol metadata
+            // name (Item), not the EnumerateDeclaredMembers display form (this[]).
+            var memberName = symbol is IPropertySymbol { IsIndexer: true } indexer
+                ? indexer.Name
+                : name;
+            members.Add(new PushableMember(memberName, symbol, syntax));
+        }
+
+        return members;
+    }
+
+    /// <summary>
+    /// True when <paramref name="member"/>'s signature or body references a
+    /// nested type of <paramref name="source"/> that is inaccessible from any
+    /// <paramref name="targets"/> (private always; internal across assemblies).
+    /// Nested types are not pushable, so copying the member alone would leave
+    /// an inaccessible type name on that target.
+    /// </summary>
+    private static bool MemberDependsOnInaccessibleNestedType(
+        ISymbol member,
+        MemberDeclarationSyntax syntax,
+        SemanticModel model,
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets,
+        CancellationToken cancellationToken)
+    {
+        foreach (var type in EnumerateMemberSignatureTypes(member))
+        {
+            if (ReferencesInaccessibleNestedType(type, source, targets))
+                return true;
+        }
+
+        foreach (var node in syntax.DescendantNodesAndSelf())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (node is not TypeSyntax and not IdentifierNameSyntax and not GenericNameSyntax)
+                continue;
+
+            var bound = model.GetTypeInfo(node, cancellationToken).Type
+                ?? model.GetSymbolInfo(node, cancellationToken).Symbol as ITypeSymbol;
+            if (ReferencesInaccessibleNestedType(bound, source, targets))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<ITypeSymbol> EnumerateMemberSignatureTypes(ISymbol member)
+    {
+        switch (member)
+        {
+            case IMethodSymbol method:
+                yield return method.ReturnType;
+                foreach (var parameter in method.Parameters)
+                    yield return parameter.Type;
+                yield break;
+            case IPropertySymbol property:
+                yield return property.Type;
+                foreach (var parameter in property.Parameters)
+                    yield return parameter.Type;
+                yield break;
+            case IFieldSymbol field:
+                yield return field.Type;
+                yield break;
+            case IEventSymbol evt:
+                yield return evt.Type;
+                yield break;
+        }
+    }
+
+    private static bool ReferencesInaccessibleNestedType(
+        ITypeSymbol? type,
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets)
+    {
+        if (type == null || type.Kind == Microsoft.CodeAnalysis.SymbolKind.ErrorType)
+            return false;
+
+        switch (type)
+        {
+            case IArrayTypeSymbol array:
+                return ReferencesInaccessibleNestedType(array.ElementType, source, targets);
+            case IPointerTypeSymbol pointer:
+                return ReferencesInaccessibleNestedType(pointer.PointedAtType, source, targets);
+            case INamedTypeSymbol named:
+                if (IsInaccessibleNestedOf(named, source, targets))
+                    return true;
+                foreach (var arg in named.TypeArguments)
+                {
+                    if (ReferencesInaccessibleNestedType(arg, source, targets))
+                        return true;
+                }
+
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    private static bool IsInaccessibleNestedOf(
+        INamedTypeSymbol type,
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets)
+    {
+        for (var current = type; current != null; current = current.ContainingType)
+        {
+            if (current.ContainingType == null)
+                return false;
+
+            if (SymbolEqualityComparer.Default.Equals(current.ContainingType, source) ||
+                SymbolEqualityComparer.Default.Equals(
+                    current.ContainingType.OriginalDefinition, source.OriginalDefinition))
+            {
+                return targets.Any(t => !IsAccessibleFromTarget(current, t));
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Accessibility of a source member/nested type as seen from a derived
+    /// <paramref name="target"/> (same-assembly for internal / private
+    /// protected; protected+ always ok because targets derive from source).
+    /// </summary>
+    private static bool IsAccessibleFromTarget(ISymbol symbol, INamedTypeSymbol target)
+    {
+        switch (symbol.DeclaredAccessibility)
+        {
+            case Accessibility.Public:
+            case Accessibility.Protected:
+            case Accessibility.ProtectedOrInternal:
+                return true;
+            case Accessibility.Internal:
+            case Accessibility.ProtectedAndInternal:
+                return SymbolEqualityComparer.Default.Equals(
+                    symbol.ContainingAssembly, target.ContainingAssembly);
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Fixed-point filter: drop members whose copied bodies would reference
+    /// non-batch source members inaccessible from any target (e.g. leaveAbstract
+    /// skips private <c>_x</c> but keeps <c>P =&gt; _x</c>).
+    /// </summary>
+    private async Task<List<PushableMember>> FilterMembersDependingOnInaccessibleNonBatchAsync(
+        List<PushableMember> members,
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets,
+        Solution solution,
+        CancellationToken cancellationToken)
+    {
+        var remaining = members.ToList();
+        bool removed;
+        do
+        {
+            removed = false;
+            var batch = new HashSet<ISymbol>(
+                remaining.Select(m => m.Symbol.OriginalDefinition),
+                SymbolEqualityComparer.Default);
+
+            for (var i = remaining.Count - 1; i >= 0; i--)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var candidate = remaining[i];
+                var model = await GetSemanticModelForSyntaxAsync(
+                    solution, candidate.Syntax, cancellationToken);
+                if (model == null)
+                    continue;
+
+                if (MemberDependsOnInaccessibleNonBatchMember(
+                        candidate, batch, source, targets, model, cancellationToken))
+                {
+                    remaining.RemoveAt(i);
+                    removed = true;
+                }
+            }
+        } while (removed);
+
+        return remaining;
+    }
+
+    private static bool MemberDependsOnInaccessibleNonBatchMember(
+        PushableMember member,
+        HashSet<ISymbol> batchOriginals,
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets,
+        SemanticModel model,
+        CancellationToken cancellationToken)
+    {
+        foreach (var node in member.Syntax.DescendantNodesAndSelf())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var bound = model.GetSymbolInfo(node, cancellationToken).Symbol
+                ?? model.GetTypeInfo(node, cancellationToken).Type as ISymbol;
+            if (bound == null)
+                continue;
+
+            var referenced = bound.OriginalDefinition;
+            if (!IsDeclaredIn(referenced, source))
+                continue;
+
+            // The member's own declaration / nested types handled elsewhere.
+            if (SymbolEqualityComparer.Default.Equals(referenced, member.Symbol.OriginalDefinition))
+                continue;
+
+            // Nested types of source are never in the batch.
+            if (referenced is INamedTypeSymbol nested &&
+                IsInaccessibleNestedOf(nested, source, targets))
+            {
+                return true;
+            }
+
+            // Source member (field/method/property/event) not moving with us.
+            if (referenced is IFieldSymbol or IMethodSymbol or IPropertySymbol or IEventSymbol)
+            {
+                if (batchOriginals.Contains(referenced))
+                    continue;
+
+                if (targets.Any(t => !IsAccessibleFromTarget(referenced, t)))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Stable cascade-prevention key for a member. Methods and indexers include
+    /// their parameter signature so inserting one overload does not suppress
+    /// another with the same metadata name. Must omit the containing type —
+    /// after a push the member is redeclared on the derived type, and a
+    /// containing-type-qualified display string would not match the key
+    /// recorded at insertion time.
+    /// </summary>
+    private static readonly SymbolDisplayFormat CascadeKeyFormat = new(
+        memberOptions: SymbolDisplayMemberOptions.IncludeParameters
+            | SymbolDisplayMemberOptions.IncludeType,
+        parameterOptions: SymbolDisplayParameterOptions.IncludeType
+            | SymbolDisplayParameterOptions.IncludeParamsRefOut,
+        genericsOptions: SymbolDisplayGenericsOptions.IncludeTypeParameters);
+
+    internal static string MemberCascadeKey(ISymbol symbol) =>
+        symbol switch
+        {
+            IMethodSymbol method => method.ToDisplayString(CascadeKeyFormat),
+            IPropertySymbol { IsIndexer: true } indexer =>
+                indexer.ToDisplayString(CascadeKeyFormat),
+            _ => symbol.Name
+        };
+
+    /// <summary>
+    /// Collection-phase identity for type-wide batches. Same as
+    /// <see cref="MemberCascadeKey"/> except partial method / property /
+    /// indexer definition and implementation parts stay distinct (syntax span
+    /// identity) so both declarations enter the batch and move together.
+    /// </summary>
+    internal static string MemberBatchIdentityKey(ISymbol symbol, MemberDeclarationSyntax syntax)
+    {
+        var key = MemberCascadeKey(symbol);
+        if (TryGetPartialPartLabel(symbol, out var part))
+            return key + "|" + part + "|" + syntax.SpanStart;
+
+        return key;
+    }
+
+    /// <summary>
+    /// Returns a stable partial-part label (<c>partial-def</c> /
+    /// <c>partial-impl</c>) when <paramref name="symbol"/> is one half of a
+    /// partial method, property, or indexer pair.
+    /// </summary>
+    private static bool TryGetPartialPartLabel(ISymbol symbol, out string part)
+    {
+        switch (symbol)
+        {
+            case IMethodSymbol method when IsPartialMethodSymbol(method):
+                part = method.IsPartialDefinition ? "partial-def" : "partial-impl";
+                return true;
+            case IPropertySymbol property when IsPartialPropertySymbol(property):
+                part = property.IsPartialDefinition ? "partial-def" : "partial-impl";
+                return true;
+            default:
+                part = "";
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Cascade key for a member as it will appear on <paramref name="target"/>
+    /// after constructed-base type-parameter substitution. Falls back to
+    /// <see cref="MemberCascadeKey"/> when there is no generic substitution.
+    /// </summary>
+    internal static string MemberCascadeKeyForTarget(
+        ISymbol symbol,
+        INamedTypeSymbol source,
+        INamedTypeSymbol target)
+    {
+        var constructed = GetConstructedBase(source, target);
+        if (constructed == null || constructed.TypeArguments.Length == 0)
+            return MemberCascadeKey(symbol);
+
+        foreach (var candidate in constructed.GetMembers(symbol.Name))
+        {
+            if (SymbolEqualityComparer.Default.Equals(
+                    candidate.OriginalDefinition, symbol.OriginalDefinition))
+            {
+                return MemberCascadeKey(candidate);
+            }
+        }
+
+        return MemberCascadeKey(symbol);
+    }
+
+    /// <summary>
+    /// Path → linked-view count across the entire solution (not a filtered
+    /// sourceFile subset). Used so multi-view derived targets are still
+    /// detected when the walk is limited to one source path.
+    /// </summary>
+    internal static Dictionary<string, int> BuildLinkedPathCounts(Solution solution)
+    {
+        var groups = AllFilesDocumentHelpers.GroupByLinkedPath(
+            AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution));
+        return groups
+            .Where(g => g.Count > 0 && g[0].FilePath != null)
+            .GroupBy(g => PathResolver.GetPathComparisonKey(g[0].FilePath!), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Count, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// True when any declaring document of <paramref name="type"/> shares a
+    /// physical path with multiple linked workspace views.
+    /// </summary>
+    private static bool DeclaringPathHasLinkedMultiView(
+        INamedTypeSymbol type,
+        Solution solution,
+        IReadOnlyDictionary<string, int> linkedPathCounts)
+    {
+        foreach (var syntaxRef in type.DeclaringSyntaxReferences)
+        {
+            var document = solution.GetDocument(syntaxRef.SyntaxTree);
+            if (document?.FilePath == null)
+                continue;
+
+            var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
+            if (linkedPathCounts.TryGetValue(pathKey, out var count) && count > 1)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var exactMatches = documents
+            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
+            .ToList();
+        if (exactMatches.Count > 0)
+        {
+            var exactKeys = exactMatches
+                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+                .ToHashSet(StringComparer.Ordinal);
+            return documents
+                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
+                .ToList();
+        }
+
+        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
+        var distinctPaths = matchedDocuments
+            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return distinctPaths.Count switch
+        {
+            0 when !File.Exists(sourceFile) => throw new RefactoringException(
+                ErrorCodes.SourceFileNotFound,
+                $"Source file not found: {sourceFile}"),
+            0 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"File not found in workspace: {sourceFile}"),
+            > 1 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ => matchedDocuments
+        };
     }
 
     /// <summary>
@@ -718,6 +1638,145 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 }
             }
         }
+
+        ValidateNoPostSubstitutionCollisions(members, source, targets);
+    }
+
+    /// <summary>
+    /// Ensures converted copies do not collide with each other after
+    /// constructed-generic substitution under C# declaration identity
+    /// (name + arity + parameter types/by-ref mode; not return type or
+    /// <c>params</c>; ref/in/out share one by-ref mode).
+    /// E.g. <c>string M(T)</c> + <c>int M(U)</c> onto <c>Root&lt;int,int&gt;</c>,
+    /// or <c>M(params T[])</c> + <c>M(U[])</c>, both become duplicate
+    /// <c>M(int)</c>/<c>M(int[])</c> → CS0111. Existing target members are
+    /// already covered by <see cref="CanMoveMember"/>.
+    /// </summary>
+    private static void ValidateNoPostSubstitutionCollisions(
+        IReadOnlyList<PushableMember> members,
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets)
+    {
+        if (members.Count < 2)
+            return;
+
+        foreach (var target in targets)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var member in members)
+            {
+                var key = DeclarationCollisionKeyForTarget(member.Symbol, source, target);
+                // Partial definition + implementation share declaration identity
+                // but are one legal pair that must both land on the target.
+                if (TryGetPartialPartLabel(member.Symbol, out var part))
+                    key += "|" + part;
+
+                if (!seen.Add(key))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.ConflictsWithExistingMember,
+                        $"Pushing members to '{target.Name}' would create duplicate '{member.Name}' after generic substitution.");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// C# declaration-identity key after constructed-base substitution.
+    /// Methods: name + generic arity + parameter types with by-ref mode
+    /// (no return type, no <c>params</c> spelling). Indexers: same without
+    /// arity. Other members: metadata name.
+    /// </summary>
+    internal static string DeclarationCollisionKeyForTarget(
+        ISymbol symbol,
+        INamedTypeSymbol source,
+        INamedTypeSymbol target)
+    {
+        var effective = symbol;
+        var constructed = GetConstructedBase(source, target);
+        if (constructed != null && constructed.TypeArguments.Length > 0)
+        {
+            foreach (var candidate in constructed.GetMembers(symbol.Name))
+            {
+                if (SymbolEqualityComparer.Default.Equals(
+                        candidate.OriginalDefinition, symbol.OriginalDefinition))
+                {
+                    effective = candidate;
+                    break;
+                }
+            }
+        }
+
+        return DeclarationCollisionKey(effective);
+    }
+
+    private static string DeclarationCollisionKey(ISymbol symbol) => symbol switch
+    {
+        IMethodSymbol method =>
+            method.Name + "`" + method.TypeParameters.Length + "("
+                + string.Join(", ", method.Parameters.Select(ParameterCollisionKey)) + ")",
+        IPropertySymbol { IsIndexer: true } indexer =>
+            "this[" + string.Join(", ", indexer.Parameters.Select(ParameterCollisionKey)) + "]",
+        _ => symbol.Name
+    };
+
+    private static string ParameterCollisionKey(IParameterSymbol parameter)
+    {
+        // C# forbids overloads that differ only by ref/in/out (CS0663).
+        // Distinguish by-value vs by-ref; treat Ref/Out/In as one mode.
+        // The params modifier is not part of declaration identity.
+        var prefix = parameter.RefKind == RefKind.None ? string.Empty : "ref ";
+
+        return prefix + TypeCollisionKey(parameter.Type);
+    }
+
+    /// <summary>
+    /// C# declaration-signature type identity. <c>dynamic</c> is erased to
+    /// <c>object</c> (including inside arrays/generics) so
+    /// <c>M(dynamic)</c> and <c>M(object)</c> collide as CS0111.
+    /// </summary>
+    private static string TypeCollisionKey(ITypeSymbol type)
+    {
+        // dynamic and System.Object share declaration-signature identity.
+        if (type.TypeKind == TypeKind.Dynamic ||
+            type.SpecialType == SpecialType.System_Object)
+        {
+            return "object";
+        }
+
+        // Method type parameters are distinct symbols (X vs Y) but collide by
+        // ordinal in C# declaration identity — encode as #M{n}.
+        if (type is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } methodTp)
+            return "#M" + methodTp.Ordinal;
+
+        switch (type)
+        {
+            case IArrayTypeSymbol array:
+                var commas = array.Rank <= 1 ? string.Empty : new string(',', array.Rank - 1);
+                return TypeCollisionKey(array.ElementType) + "[" + commas + "]";
+            case IPointerTypeSymbol pointer:
+                return TypeCollisionKey(pointer.PointedAtType) + "*";
+            case INamedTypeSymbol { IsGenericType: true, IsUnboundGenericType: false } named
+                when named.TypeArguments.Length > 0:
+                // Nested generics under a generic outer (Outer<T>.A<U> vs
+                // Outer<T>.B<U>) must keep the nested name. Truncating at the
+                // outer's first '<' would collapse both to the same head.
+                if (named.ContainingType != null)
+                {
+                    var containing = TypeCollisionKey(named.ContainingType);
+                    var nestedArgs = string.Join(", ", named.TypeArguments.Select(TypeCollisionKey));
+                    return containing + "." + named.Name + "<" + nestedArgs + ">";
+                }
+
+                var definition = named.OriginalDefinition.ToDisplayString(
+                    SymbolDisplayFormat.FullyQualifiedFormat);
+                var typeArgStart = definition.IndexOf('<');
+                var head = typeArgStart >= 0 ? definition[..typeArgStart] : definition;
+                var args = string.Join(", ", named.TypeArguments.Select(TypeCollisionKey));
+                return head + "<" + args + ">";
+            default:
+                return type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        }
     }
 
     private static void ValidateLeaveAbstractCoversConcreteDerived(
@@ -744,6 +1803,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         INamedTypeSymbol source,
         IReadOnlyList<INamedTypeSymbol> targets,
         bool leaveAbstract,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         if (source.TypeKind == TypeKind.Interface)
@@ -751,14 +1811,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
         if (leaveAbstract)
         {
-            await ValidateEventsNotRaisedBySourceAsync(members, source, cancellationToken);
+            await ValidateEventsNotRaisedBySourceAsync(members, source, solution, cancellationToken);
             return;
         }
 
         foreach (var member in members)
         {
             var references = await SymbolFinder.FindReferencesAsync(
-                member.Symbol, Context.Solution, cancellationToken);
+                member.Symbol, solution, cancellationToken);
 
             foreach (var referenced in references)
             {
@@ -767,12 +1827,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                     if (location.IsImplicit || location.Location.SourceTree == null)
                         continue;
 
-                    if (member.Syntax.SyntaxTree == location.Location.SourceTree &&
-                        member.Syntax.Span.Contains(location.Location.SourceSpan))
-                    {
-                        continue;
-                    }
-
                     var document = location.Document;
                     var root = await document.GetSyntaxRootAsync(cancellationToken);
                     var model = await document.GetSemanticModelAsync(cancellationToken);
@@ -780,6 +1834,21 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                         continue;
 
                     var node = root.FindNode(location.Location.SourceSpan);
+
+                    // Batch-internal refs (field + getter) may move together, but
+                    // only when the receiver is implicit/this or already a type
+                    // that will receive the member. Explicitly base-typed
+                    // receivers (other.X) must still fail validation.
+                    if (IsReferenceInsidePushBatch(location.Location, members))
+                    {
+                        if (BatchInternalReferenceIsSafe(node, model, targets))
+                            continue;
+
+                        throw new RefactoringException(
+                            ErrorCodes.MemberRequiredByContract,
+                            $"Cannot push '{member.Name}': it is still referenced through '{source.Name}' or a type that will not receive the member.");
+                    }
+
                     var receiver = GetReceiverType(node, model);
                     if (WillHaveMemberAfterPush(receiver, targets))
                         continue;
@@ -789,7 +1858,171 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                         $"Cannot push '{member.Name}': it is still referenced through '{source.Name}' or a type that will not receive the member.");
                 }
             }
+
+            // SymbolFinder misses conditional indexer accesses (`other?[0]`).
+            // Scan batch syntax for ElementBindingExpression under ConditionalAccess.
+            await ValidateConditionalElementAccessesInBatchAsync(
+                member, members, targets, solution, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Finds conditional indexer usages (<c>receiver?[i]</c>) inside the push
+    /// batch that bind to <paramref name="member"/> — these are invisible to
+    /// <c>SymbolFinder.FindReferencesAsync</c> — and rejects unsafe
+    /// receivers the same way as ordinary element-access references.
+    /// </summary>
+    private async Task ValidateConditionalElementAccessesInBatchAsync(
+        PushableMember member,
+        IReadOnlyList<PushableMember> batch,
+        IReadOnlyList<INamedTypeSymbol> targets,
+        Solution solution,
+        CancellationToken cancellationToken)
+    {
+        if (member.Symbol is not IPropertySymbol { IsIndexer: true })
+            return;
+
+        foreach (var batchMember in batch)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var model = await GetSemanticModelForSyntaxAsync(
+                solution, batchMember.Syntax, cancellationToken);
+            if (model == null)
+                continue;
+
+            foreach (var conditional in batchMember.Syntax
+                         .DescendantNodesAndSelf()
+                         .OfType<ConditionalAccessExpressionSyntax>())
+            {
+                if (conditional.WhenNotNull is not ElementBindingExpressionSyntax binding)
+                    continue;
+
+                var bound = model.GetSymbolInfo(binding, cancellationToken).Symbol
+                    ?? model.GetSymbolInfo(conditional, cancellationToken).Symbol;
+                if (bound == null ||
+                    !SymbolEqualityComparer.Default.Equals(
+                        bound.OriginalDefinition, member.Symbol.OriginalDefinition))
+                {
+                    continue;
+                }
+
+                if (conditional.Expression is ThisExpressionSyntax)
+                    continue;
+
+                if (WillHaveMemberAfterPush(
+                        model.GetTypeInfo(conditional.Expression, cancellationToken).Type,
+                        targets))
+                {
+                    continue;
+                }
+
+                throw new RefactoringException(
+                    ErrorCodes.MemberRequiredByContract,
+                    $"Cannot push '{member.Name}': it is still referenced through a type that will not receive the member.");
+            }
+        }
+    }
+
+
+    /// <summary>
+    /// True when <paramref name="location"/> falls inside the syntax of any
+    /// member in the current push batch (candidate for co-moving with the
+    /// referenced member). Callers must still run
+    /// <see cref="BatchInternalReferenceIsSafe"/> so explicitly base-typed
+    /// receivers are not exempted.
+    /// </summary>
+    private static bool IsReferenceInsidePushBatch(
+        Location location,
+        IReadOnlyList<PushableMember> members)
+    {
+        if (location.SourceTree == null)
+            return false;
+
+        foreach (var batchMember in members)
+        {
+            if (batchMember.Syntax.SyntaxTree == location.SourceTree &&
+                batchMember.Syntax.Span.Contains(location.SourceSpan))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when a batch-internal reference is safe to move with the batch:
+    /// implicit <c>this</c>, explicit <c>this</c>, or a receiver that
+    /// <see cref="WillHaveMemberAfterPush"/>. Explicit receivers typed as the
+    /// source (e.g. <c>other.X</c> where <c>other</c> is the base) are not safe.
+    /// </summary>
+    private static bool BatchInternalReferenceIsSafe(
+        SyntaxNode node,
+        SemanticModel model,
+        IReadOnlyList<INamedTypeSymbol> targets)
+    {
+        var name = node as SimpleNameSyntax ??
+                   node.DescendantNodesAndSelf().OfType<SimpleNameSyntax>().FirstOrDefault();
+
+        if (name?.Parent is MemberAccessExpressionSyntax access && access.Name == name)
+        {
+            if (access.Expression is ThisExpressionSyntax)
+                return true;
+
+            return WillHaveMemberAfterPush(model.GetTypeInfo(access.Expression).Type, targets);
+        }
+
+        if (name?.Parent is MemberBindingExpressionSyntax &&
+            name.Parent.Parent is ConditionalAccessExpressionSyntax conditional)
+        {
+            return WillHaveMemberAfterPush(model.GetTypeInfo(conditional.Expression).Type, targets);
+        }
+
+        // Object / with / nested member-initializer names look like simple
+        // identifiers (`new Animal { X = 1 }`, `new Holder { Child = { X = 1 } }`)
+        // but bind to the initialized object's type, not implicit this.
+        if (name != null &&
+            TryGetObjectOrWithInitializerReceiver(name, model, out var initializerReceiver))
+        {
+            return WillHaveMemberAfterPush(initializerReceiver, targets);
+        }
+
+        // Indexer element-access (`other[0]`) and initializer implicit
+        // element-access (`new Animal { [0] = 1 }`) have no simple name
+        // binding to the indexer — resolve their receivers explicitly.
+        if (TryGetElementAccessReceiver(node, model, out var elementReceiver, out var isThisElement))
+        {
+            if (isThisElement)
+                return true;
+
+            return WillHaveMemberAfterPush(elementReceiver, targets);
+        }
+
+        // Property / recursive pattern designators (`other is { X: 1 }`) look
+        // like simple names but bind to the matched type, not implicit this.
+        // When the pattern is governed by `this` (`this is { X: 1 }`), the
+        // receiver becomes the derived target after the move — same as this.X.
+        if (name != null &&
+            TryGetPropertyOrRecursivePatternReceiver(
+                name, model, out var patternReceiver, out var isThisPattern))
+        {
+            if (isThisPattern)
+                return true;
+
+            return WillHaveMemberAfterPush(patternReceiver, targets);
+        }
+
+        // Attribute named arguments (`[Animal(X = 1)]`) bind to the attribute
+        // type, not implicit this on the containing member.
+        if (name != null &&
+            TryGetAttributeNamedArgumentReceiver(name, model, out var attributeReceiver))
+        {
+            return WillHaveMemberAfterPush(attributeReceiver, targets);
+        }
+
+        // Simple name / implicit this — moves with the containing batch member.
+        return true;
     }
 
     private static ITypeSymbol? GetReceiverType(SyntaxNode node, SemanticModel model)
@@ -806,7 +2039,364 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return model.GetTypeInfo(conditional.Expression).Type;
         }
 
+        if (name != null &&
+            TryGetObjectOrWithInitializerReceiver(name, model, out var initializerReceiver))
+        {
+            return initializerReceiver;
+        }
+
+        if (TryGetElementAccessReceiver(node, model, out var elementReceiver, out _))
+            return elementReceiver;
+
+        if (name != null &&
+            TryGetPropertyOrRecursivePatternReceiver(
+                name, model, out var patternReceiver, out _))
+        {
+            return patternReceiver;
+        }
+
+        if (name != null &&
+            TryGetAttributeNamedArgumentReceiver(name, model, out var attributeReceiver))
+        {
+            return attributeReceiver;
+        }
+
         return model.GetEnclosingSymbol(node.SpanStart)?.ContainingType;
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is an attribute named argument
+    /// (<c>[Animal(X = 1)]</c>). Sets <paramref name="attributeType"/> to the
+    /// attribute class the named property binds on.
+    /// </summary>
+    private static bool TryGetAttributeNamedArgumentReceiver(
+        SimpleNameSyntax name,
+        SemanticModel model,
+        out ITypeSymbol? attributeType)
+    {
+        attributeType = null;
+        if (name.Parent is not NameEqualsSyntax nameEquals ||
+            nameEquals.Parent is not AttributeArgumentSyntax ||
+            nameEquals.Name != name)
+        {
+            return false;
+        }
+
+        var attribute = name.Ancestors().OfType<AttributeSyntax>().FirstOrDefault();
+        if (attribute == null)
+            return false;
+
+        attributeType = model.GetTypeInfo(attribute).Type
+            ?? model.GetTypeInfo(attribute.Name).Type
+            ?? (model.GetSymbolInfo(attribute).Symbol as IMethodSymbol)?.ContainingType
+            ?? (model.GetSymbolInfo(attribute.Name).Symbol as IMethodSymbol)?.ContainingType
+            ?? model.GetSymbolInfo(attribute.Name).Symbol as ITypeSymbol;
+
+        return attributeType != null;
+    }
+
+    /// <summary>
+    /// True when <paramref name="node"/> is (or sits under) an
+    /// <see cref="ElementAccessExpressionSyntax"/> or initializer
+    /// <see cref="ImplicitElementAccessSyntax"/>. Sets
+    /// <paramref name="receiverType"/> to the indexed expression's type
+    /// (or the initializer object type for implicit access).
+    /// <paramref name="isThisReceiver"/> is true for <c>this[...]</c>.
+    /// </summary>
+    private static bool TryGetElementAccessReceiver(
+        SyntaxNode node,
+        SemanticModel model,
+        out ITypeSymbol? receiverType,
+        out bool isThisReceiver)
+    {
+        receiverType = null;
+        isThisReceiver = false;
+
+        // Walk the indexer binding spine (element access / binding / bracket
+        // list / implicit access). Stop at non-indexer ArgumentSyntax so
+        // identifiers used as ordinary call arguments are not misclassified;
+        // keep walking through bracketed indexer args (other[X] / other?[X]).
+        for (var current = node; current != null; current = current.Parent)
+        {
+            if (current is MemberDeclarationSyntax)
+                break;
+
+            if (current is ArgumentSyntax &&
+                current.Parent is not BracketedArgumentListSyntax)
+            {
+                break;
+            }
+
+            if (current is ElementAccessExpressionSyntax elementAccess)
+            {
+                if (elementAccess.Expression is ThisExpressionSyntax)
+                {
+                    isThisReceiver = true;
+                    receiverType = model.GetTypeInfo(elementAccess.Expression).Type;
+                    return true;
+                }
+
+                receiverType = model.GetTypeInfo(elementAccess.Expression).Type;
+                return receiverType != null;
+            }
+
+            // Conditional indexer: other?[0] → ElementBindingExpression under
+            // ConditionalAccessExpression (reference span may land on either).
+            ConditionalAccessExpressionSyntax? conditionalIndexer = current switch
+            {
+                ElementBindingExpressionSyntax binding
+                    when binding.Parent is ConditionalAccessExpressionSyntax c => c,
+                ConditionalAccessExpressionSyntax c
+                    when c.WhenNotNull is ElementBindingExpressionSyntax => c,
+                _ => null
+            };
+
+            if (conditionalIndexer != null)
+            {
+                if (conditionalIndexer.Expression is ThisExpressionSyntax)
+                {
+                    isThisReceiver = true;
+                    receiverType = model.GetTypeInfo(conditionalIndexer.Expression).Type;
+                    return true;
+                }
+
+                receiverType = model.GetTypeInfo(conditionalIndexer.Expression).Type;
+                return receiverType != null;
+            }
+
+            if (current is ImplicitElementAccessSyntax implicitAccess)
+            {
+                return TryGetImplicitElementAccessReceiver(implicitAccess, model, out receiverType);
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves the object / with / nested initializer that owns an
+    /// <see cref="ImplicitElementAccessSyntax"/> (<c>[0] = value</c>).
+    /// </summary>
+    private static bool TryGetImplicitElementAccessReceiver(
+        ImplicitElementAccessSyntax access,
+        SemanticModel model,
+        out ITypeSymbol? receiverType)
+    {
+        receiverType = null;
+
+        if (access.Parent is not AssignmentExpressionSyntax assignment ||
+            assignment.Left != access ||
+            assignment.Parent is not InitializerExpressionSyntax initializer)
+        {
+            return false;
+        }
+
+        switch (initializer.Parent)
+        {
+            case BaseObjectCreationExpressionSyntax creation:
+                receiverType = model.GetTypeInfo(creation).Type;
+                return receiverType != null;
+            case WithExpressionSyntax withExpression:
+                receiverType = model.GetTypeInfo(withExpression.Expression).Type;
+                return receiverType != null;
+            case AssignmentExpressionSyntax outer when outer.Right == initializer:
+                // Nested: Holder { Child = { [0] = 1 } } — receiver is Child's type.
+                var memberSymbol = model.GetSymbolInfo(outer.Left).Symbol;
+                receiverType = memberSymbol switch
+                {
+                    IFieldSymbol field => field.Type,
+                    IPropertySymbol property => property.Type,
+                    _ => model.GetTypeInfo(outer.Left).Type
+                };
+                return receiverType != null;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is a property/recursive-pattern
+    /// designator (e.g. <c>X</c> in <c>other is { X: 1 }</c> or nested
+    /// <c>Child: { X: 1 }</c>). Sets <paramref name="receiverType"/> to the
+    /// type the pattern matches against (is/switch expression type, explicit
+    /// pattern type, or outer subpattern member type).
+    /// <paramref name="isThisReceiver"/> is true when that input comes from a
+    /// governing <c>this</c> expression with no explicit pattern type (so after
+    /// a batch move <c>this</c> denotes the derived target).
+    /// </summary>
+    private static bool TryGetPropertyOrRecursivePatternReceiver(
+        SimpleNameSyntax name,
+        SemanticModel model,
+        out ITypeSymbol? receiverType,
+        out bool isThisReceiver)
+    {
+        receiverType = null;
+        isThisReceiver = false;
+
+        // Standard designator: { X: pattern }
+        if (name.Parent is NameColonSyntax nameColon &&
+            nameColon.Name == name &&
+            nameColon.Parent is SubpatternSyntax subpattern)
+        {
+            receiverType = GetPropertyPatternClauseInputType(
+                subpattern, model, out isThisReceiver);
+            return receiverType != null;
+        }
+
+        // Extended property pattern: { Child.X: pattern }
+        foreach (var colon in name.Ancestors().OfType<ExpressionColonSyntax>())
+        {
+            if (colon.Parent is not SubpatternSyntax extendedSubpattern)
+                continue;
+            if (!colon.Expression.Span.Contains(name.Span))
+                continue;
+
+            if (name.Parent is MemberAccessExpressionSyntax access && access.Name == name)
+            {
+                // Extended path binds to the left of `.X`, never bare this.
+                receiverType = model.GetTypeInfo(access.Expression).Type;
+                isThisReceiver = false;
+                return receiverType != null;
+            }
+
+            receiverType = GetPropertyPatternClauseInputType(
+                extendedSubpattern, model, out isThisReceiver);
+            return receiverType != null;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Input type for the <see cref="RecursivePatternSyntax"/> that owns
+    /// <paramref name="subpattern"/>'s property-pattern clause.
+    /// </summary>
+    private static ITypeSymbol? GetPropertyPatternClauseInputType(
+        SubpatternSyntax subpattern,
+        SemanticModel model,
+        out bool isThisReceiver)
+    {
+        isThisReceiver = false;
+        if (subpattern.Parent is not PropertyPatternClauseSyntax clause ||
+            clause.Parent is not RecursivePatternSyntax recursive)
+        {
+            return null;
+        }
+
+        return GetRecursivePatternInputType(recursive, model, out isThisReceiver);
+    }
+
+    /// <summary>
+    /// Type a recursive/property pattern matches against: explicit pattern
+    /// type, outer subpattern member type, or governing is/switch expression.
+    /// <paramref name="isThisReceiver"/> is true only when the type comes from
+    /// a bare governing <c>this</c> (no explicit pattern type, not nested).
+    /// </summary>
+    private static ITypeSymbol? GetRecursivePatternInputType(
+        RecursivePatternSyntax recursive,
+        SemanticModel model,
+        out bool isThisReceiver)
+    {
+        isThisReceiver = false;
+
+        if (recursive.Type != null)
+        {
+            var explicitType = model.GetTypeInfo(recursive.Type).Type;
+            if (explicitType != null)
+                return explicitType;
+        }
+
+        // Nested: parent Subpattern designator supplies the matched type
+        // (`other is { Child: { X: 1 } }` → X matches Child's type).
+        if (recursive.Parent is SubpatternSyntax nestedSubpattern)
+        {
+            if (nestedSubpattern.NameColon != null)
+            {
+                var member = model.GetSymbolInfo(nestedSubpattern.NameColon.Name).Symbol;
+                return MemberType(member) ?? model.GetTypeInfo(nestedSubpattern.NameColon.Name).Type;
+            }
+
+            if (nestedSubpattern.ExpressionColon?.Expression is { } designator)
+            {
+                var member = model.GetSymbolInfo(designator).Symbol;
+                return MemberType(member) ?? model.GetTypeInfo(designator).Type;
+            }
+        }
+
+        // Walk past pattern wrappers (parentheses, unary not, binary and/or).
+        PatternSyntax pattern = recursive;
+        while (pattern.Parent is PatternSyntax parentPattern)
+            pattern = parentPattern;
+
+        switch (pattern.Parent)
+        {
+            case IsPatternExpressionSyntax isPattern:
+                isThisReceiver = isPattern.Expression is ThisExpressionSyntax;
+                return model.GetTypeInfo(isPattern.Expression).Type;
+            case SwitchExpressionArmSyntax arm
+                when arm.Parent is SwitchExpressionSyntax switchExpression:
+                isThisReceiver = switchExpression.GoverningExpression is ThisExpressionSyntax;
+                return model.GetTypeInfo(switchExpression.GoverningExpression).Type;
+            case CasePatternSwitchLabelSyntax
+                when pattern.Parent.Parent is SwitchSectionSyntax &&
+                     pattern.Parent.Parent.Parent is SwitchStatementSyntax switchStatement:
+                isThisReceiver = switchStatement.Expression is ThisExpressionSyntax;
+                return model.GetTypeInfo(switchStatement.Expression).Type;
+            default:
+                return null;
+        }
+    }
+
+    private static ITypeSymbol? MemberType(ISymbol? symbol) => symbol switch
+    {
+        IFieldSymbol field => field.Type,
+        IPropertySymbol property => property.Type,
+        IEventSymbol evt => evt.Type,
+        _ => null
+    };
+
+    /// <summary>
+    /// True when <paramref name="name"/> is the left-hand member of an object,
+    /// <c>with</c>, or nested member initializer assignment. Sets
+    /// <paramref name="receiverType"/> to the type that owns the member
+    /// (creation type, with-source type, or nested member's type).
+    /// </summary>
+    private static bool TryGetObjectOrWithInitializerReceiver(
+        SimpleNameSyntax name,
+        SemanticModel model,
+        out ITypeSymbol? receiverType)
+    {
+        receiverType = null;
+
+        if (name.Parent is not AssignmentExpressionSyntax assignment ||
+            assignment.Left != name ||
+            assignment.Parent is not InitializerExpressionSyntax initializer)
+        {
+            return false;
+        }
+
+        switch (initializer.Parent)
+        {
+            case BaseObjectCreationExpressionSyntax creation:
+                receiverType = model.GetTypeInfo(creation).Type;
+                return receiverType != null;
+            case WithExpressionSyntax withExpression:
+                receiverType = model.GetTypeInfo(withExpression.Expression).Type;
+                return receiverType != null;
+            case AssignmentExpressionSyntax outer when outer.Right == initializer:
+                // Nested member initializer: `new Holder { Child = { X = 1 } }`.
+                // X is initialized on the type of Child, not on Holder / this.
+                var memberSymbol = model.GetSymbolInfo(outer.Left).Symbol;
+                receiverType = memberSymbol switch
+                {
+                    IFieldSymbol field => field.Type,
+                    IPropertySymbol property => property.Type,
+                    _ => model.GetTypeInfo(outer.Left).Type
+                };
+                return receiverType != null;
+            default:
+                return false;
+        }
     }
 
     private static bool WillHaveMemberAfterPush(ITypeSymbol? receiver, IReadOnlyList<INamedTypeSymbol> targets)
@@ -840,6 +2430,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     private async Task ValidateEventsNotRaisedBySourceAsync(
         IReadOnlyList<PushableMember> members,
         INamedTypeSymbol source,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         foreach (var member in members)
@@ -848,7 +2439,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 continue;
 
             var references = await SymbolFinder.FindReferencesAsync(
-                member.Symbol, Context.Solution, cancellationToken);
+                member.Symbol, solution, cancellationToken);
 
             foreach (var referenced in references)
             {
@@ -857,11 +2448,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                     if (location.IsImplicit || location.Location.SourceTree == null)
                         continue;
 
-                    if (member.Syntax.SyntaxTree == location.Location.SourceTree &&
-                        member.Syntax.Span.Contains(location.Location.SourceSpan))
-                    {
+                    // Raises inside any co-moving batch member are copied to
+                    // targets with the event override; only raises that remain
+                    // on the source (outside the batch) are illegal.
+                    if (IsReferenceInsidePushBatch(location.Location, members))
                         continue;
-                    }
 
                     var document = location.Document;
                     var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -948,13 +2539,15 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         whenNotNull is InvocationExpressionSyntax invocation && InvocationRaisesEvent(invocation);
 
     /// <summary>
-    /// For indexers, returns the member as constructed on <paramref name="target"/>'s
-    /// base / interface (so <c>this[T]</c> on <c>Box&lt;T&gt;</c> is <c>this[int]</c>
-    /// when the target is <c>Box&lt;int&gt;</c>). Other members are unchanged.
+    /// For methods and indexers, returns the member as constructed on
+    /// <paramref name="target"/>'s base / interface (so <c>M(T)</c> /
+    /// <c>this[T]</c> on <c>Root&lt;T&gt;</c> is <c>M(int)</c> /
+    /// <c>this[int]</c> when the target is <c>Root&lt;int&gt;</c>). Other
+    /// members are unchanged.
     /// </summary>
     private static ISymbol MemberAsSeenFromTarget(ISymbol member, INamedTypeSymbol source, INamedTypeSymbol target)
     {
-        if (member is not IPropertySymbol { IsIndexer: true })
+        if (member is not IMethodSymbol and not IPropertySymbol { IsIndexer: true })
             return member;
 
         var constructed = GetConstructedBase(source, target);
@@ -986,26 +2579,55 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     private static bool CanBeAbstract(ISymbol member) => member switch
     {
-        IMethodSymbol method => !method.IsStatic,
-        IPropertySymbol property => !property.IsStatic && (!property.IsIndexer || CanPushIndexerAsAbstract(property)),
+        // Partial methods cannot become abstract (abstract partial is illegal);
+        // skip them when leaveAbstract so both definition + implementation parts
+        // are not rewritten into invalid semicolon-only abstract partial decls.
+        // Explicit-interface methods (void IFoo.M) likewise cannot become
+        // abstract — same as property/event branches.
+        IMethodSymbol method =>
+            !method.IsStatic
+            && !IsPartialMethodSymbol(method)
+            && method.ExplicitInterfaceImplementations.Length == 0,
+        // Explicit-interface properties (int IFoo.P) cannot become abstract —
+        // same as events/indexers (illegal explicit-interface + abstract).
+        // Partial properties/indexers also cannot become abstract partial.
+        // Private accessors likewise cannot become abstract (CS0442) — same
+        // gate for ordinary properties as for indexers.
+        IPropertySymbol property =>
+            !property.IsStatic
+            && property.ExplicitInterfaceImplementations.Length == 0
+            && !IsPartialPropertySymbol(property)
+            && CanPushPropertyAsAbstract(property),
         IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
         _ => false
     };
 
-    private static bool CanPushIndexerAsAbstract(IPropertySymbol indexer)
-    {
-        if (indexer.IsStatic || indexer.ExplicitInterfaceImplementations.Length > 0)
-            return false;
+    private static bool IsPartialMethodSymbol(IMethodSymbol method) =>
+        method.IsPartialDefinition ||
+        method.PartialDefinitionPart != null ||
+        method.PartialImplementationPart != null;
 
-        // A wholly private indexer is lifted to protected; implicit
+    private static bool IsPartialPropertySymbol(IPropertySymbol property) =>
+        property.IsPartialDefinition ||
+        property.PartialDefinitionPart != null ||
+        property.PartialImplementationPart != null;
+
+    /// <summary>
+    /// True when a property/indexer can become abstract: wholly private is
+    /// lifted to protected, but an explicit private accessor on a more
+    /// visible member cannot become abstract (CS0442 / CS0621).
+    /// </summary>
+    private static bool CanPushPropertyAsAbstract(IPropertySymbol property)
+    {
+        // A wholly private property/indexer is lifted to protected; implicit
         // accessors follow. An explicit private accessor on a more
-        // visible indexer cannot become abstract (CS0621) and cannot
+        // visible member cannot become abstract (CS0442/CS0621) and cannot
         // stay on the override if the base drops it (CS0546).
-        if (indexer.DeclaredAccessibility == Accessibility.Private)
+        if (property.DeclaredAccessibility == Accessibility.Private)
             return true;
 
-        return indexer.GetMethod?.DeclaredAccessibility != Accessibility.Private
-            && indexer.SetMethod?.DeclaredAccessibility != Accessibility.Private;
+        return property.GetMethod?.DeclaredAccessibility != Accessibility.Private
+            && property.SetMethod?.DeclaredAccessibility != Accessibility.Private;
     }
 
     private static bool IsRequiredByAbstractBase(ISymbol member)
@@ -1345,6 +2967,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         return property
             .WithModifiers(ToAbstractModifiers(property.Modifiers))
             .WithExpressionBody(null)
+            .WithInitializer(null)
             .WithSemicolonToken(default)
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
             .NormalizeWhitespace();
@@ -1435,6 +3058,15 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (method.Body != null || method.ExpressionBody != null)
             return method;
 
+        // Partial method declarations must stay semicolon-only; synthesizing a
+        // body would turn the defining declaration into a second implementation.
+        if (method.Modifiers.Any(SyntaxKind.PartialKeyword))
+            return method;
+
+        // Extern/PInvoke methods must stay bodyless (CS0179 if a body is added).
+        if (method.Modifiers.Any(SyntaxKind.ExternKeyword))
+            return method;
+
         return method
             .WithSemicolonToken(default)
             .WithBody(CreateNotImplementedBlock());
@@ -1448,6 +3080,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     private static IndexerDeclarationSyntax EnsureIndexerBodies(IndexerDeclarationSyntax indexer)
     {
         if (indexer.ExpressionBody != null || indexer.AccessorList == null)
+            return indexer;
+
+        // Partial indexer definitions must keep semicolon-only accessors;
+        // synthesizing bodies would turn the defining half into an implementation.
+        if (indexer.Modifiers.Any(SyntaxKind.PartialKeyword))
             return indexer;
 
         var changed = false;
@@ -1540,7 +3177,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 SyntaxKind.OverrideKeyword,
                 SyntaxKind.SealedKeyword,
                 SyntaxKind.AbstractKeyword,
-                SyntaxKind.NewKeyword)
+                SyntaxKind.NewKeyword,
+                SyntaxKind.AsyncKeyword)
             .ToList();
 
         if (!AccessibilityModifiers.HasAccessibility(tokens))
@@ -1695,7 +3333,39 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             .WithLeadingTrivia(SyntaxFactory.ElasticCarriageReturnLineFeed)
             .WithTrailingTrivia(SyntaxFactory.ElasticCarriageReturnLineFeed));
 
-        return typeDecl.WithMembers(typeDecl.Members.AddRange(formatted));
+        var updated = typeDecl.WithMembers(typeDecl.Members.AddRange(formatted));
+        // Partial methods/properties/indexers are only legal on partial types.
+        if (members.Any(IsPartialMemberSyntax))
+            updated = EnsurePartialTypeModifier(updated);
+
+        return updated;
+    }
+
+    private static bool IsPartialMemberSyntax(MemberDeclarationSyntax member) =>
+        member.Modifiers.Any(SyntaxKind.PartialKeyword);
+
+    private static TypeDeclarationSyntax EnsurePartialTypeModifier(TypeDeclarationSyntax typeDecl)
+    {
+        if (typeDecl.Modifiers.Any(SyntaxKind.PartialKeyword))
+            return typeDecl;
+
+        var partial = SyntaxFactory.Token(SyntaxKind.PartialKeyword)
+            .WithTrailingTrivia(SyntaxFactory.Space);
+
+        // Prefer `public partial class` over `public class partial`.
+        for (var i = typeDecl.Modifiers.Count - 1; i >= 0; i--)
+        {
+            if (typeDecl.Modifiers[i].Kind() is SyntaxKind.PublicKeyword
+                or SyntaxKind.PrivateKeyword
+                or SyntaxKind.ProtectedKeyword
+                or SyntaxKind.InternalKeyword
+                or SyntaxKind.FileKeyword)
+            {
+                return typeDecl.WithModifiers(typeDecl.Modifiers.Insert(i + 1, partial));
+            }
+        }
+
+        return typeDecl.WithModifiers(typeDecl.Modifiers.Insert(0, partial));
     }
 
     private static async Task<TypeDeclarationSyntax> GetTypeDeclarationAsync(
@@ -1728,15 +3398,29 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         IReadOnlyList<DerivedUpdate> derivedUpdates,
         CancellationToken cancellationToken)
     {
-        var replacements = new List<(SyntaxTree Tree, SyntaxNode Original, SyntaxNode Replacement)>
-        {
-            (sourceDecl.SyntaxTree, sourceDecl, newSource)
-        };
+        return await ApplyChangesAsync(
+            sourceDocument.Project.Solution,
+            [(sourceDecl, newSource)],
+            derivedUpdates,
+            cancellationToken);
+    }
+
+    private async Task<Solution> ApplyChangesAsync(
+        Solution solution,
+        IReadOnlyList<(TypeDeclarationSyntax Original, TypeDeclarationSyntax Replacement)> sourceUpdates,
+        IReadOnlyList<DerivedUpdate> derivedUpdates,
+        CancellationToken cancellationToken)
+    {
+        var replacements = new List<(SyntaxTree Tree, SyntaxNode Original, SyntaxNode Replacement)>();
+        foreach (var (original, replacement) in sourceUpdates)
+            replacements.Add((original.SyntaxTree, original, replacement));
 
         foreach (var update in derivedUpdates)
             replacements.Add((update.Original.SyntaxTree, update.Original, update.Updated));
 
-        var solution = sourceDocument.Project.Solution;
+        var sourceOriginals = sourceUpdates
+            .Select(update => (SyntaxNode)update.Original)
+            .ToHashSet();
 
         foreach (var group in replacements.GroupBy(replacement => replacement.Tree))
         {
@@ -1767,7 +3451,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             var newRoot = currentRoot.ReplaceNodes(map.Keys, (original, rewritten) =>
             {
                 var replacement = map[original];
-                if (original != sourceDecl)
+                if (!sourceOriginals.Contains(original))
                     return replacement;
 
                 if (rewritten == original)
@@ -1776,7 +3460,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 return MergeEnclosedDerivedUpdates(
                     (TypeDeclarationSyntax)replacement,
                     (TypeDeclarationSyntax)rewritten,
-                    sourceDecl,
+                    (TypeDeclarationSyntax)original,
                     map);
             });
             solution = document.WithSyntaxRoot(newRoot).Project.Solution;
@@ -1799,13 +3483,13 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         {
             new()
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = source.TypeKind == TypeKind.Interface
-                    ? $"Keep {memberList} on {@params.TypeName}"
+                    ? $"Keep {memberList} on {@params.TypeName!}"
                     : @params.LeaveAbstract
-                        ? $"Leave {memberList} as abstract on {@params.TypeName}"
-                        : $"Remove {memberList} from {@params.TypeName}",
+                        ? $"Leave {memberList} as abstract on {@params.TypeName!}"
+                        : $"Remove {memberList} from {@params.TypeName!}",
                 BeforeSnippet = originalSource.Identifier.Text,
                 AfterSnippet = updatedSource.NormalizeWhitespace().ToFullString()
             }
@@ -1814,7 +3498,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         foreach (var update in derivedUpdates)
         {
             var location = update.Type.Locations.FirstOrDefault(l => l.IsInSource);
-            var file = location?.SourceTree?.FilePath ?? @params.SourceFile;
+            var file = location?.SourceTree?.FilePath ?? @params.SourceFile!;
             pendingChanges.Add(new PendingChange
             {
                 File = file,

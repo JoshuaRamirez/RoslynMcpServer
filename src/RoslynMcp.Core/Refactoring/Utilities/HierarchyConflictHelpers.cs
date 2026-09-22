@@ -43,7 +43,9 @@ internal static class HierarchyConflictHelpers
 
     /// <summary>
     /// True when two methods share parameter count, type-parameter count,
-    /// parameter types, and <see cref="RefKind"/>.
+    /// parameter types, and by-ref mode. C# forbids overloads that differ
+    /// only by <c>ref</c>/<c>in</c>/<c>out</c> (CS0663), so those RefKinds
+    /// collapse to one by-reference mode; by-value stays distinct.
     /// </summary>
     internal static bool SignaturesMatch(IMethodSymbol left, IMethodSymbol right)
     {
@@ -55,9 +57,13 @@ internal static class HierarchyConflictHelpers
 
         for (var i = 0; i < left.Parameters.Length; i++)
         {
-            if (!SymbolEqualityComparer.Default.Equals(left.Parameters[i].Type, right.Parameters[i].Type))
+            // Method type parameters are distinct symbols across declarations
+            // (M<T>(T) vs M<U>(U)); compare structurally by ordinal so CS0111
+            // pairs collide — same as ParameterTypeMatchHelpers.
+            if (!ParameterTypeMatchHelpers.ParameterTypesMatch(
+                    left.Parameters[i].Type, right.Parameters[i].Type))
                 return false;
-            if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
+            if (!SameDeclarationRefMode(left.Parameters[i].RefKind, right.Parameters[i].RefKind))
                 return false;
         }
 
@@ -66,7 +72,8 @@ internal static class HierarchyConflictHelpers
 
     /// <summary>
     /// True when two indexers share parameter count, parameter types, and
-    /// <see cref="RefKind"/>.
+    /// by-ref mode (<c>ref</c>/<c>in</c>/<c>out</c> collapse; see
+    /// <see cref="SignaturesMatch"/>).
     /// </summary>
     internal static bool IndexerSignaturesMatch(IPropertySymbol left, IPropertySymbol right)
     {
@@ -75,12 +82,21 @@ internal static class HierarchyConflictHelpers
 
         for (var i = 0; i < left.Parameters.Length; i++)
         {
-            if (!SymbolEqualityComparer.Default.Equals(left.Parameters[i].Type, right.Parameters[i].Type))
+            if (!ParameterTypeMatchHelpers.ParameterTypesMatch(
+                    left.Parameters[i].Type, right.Parameters[i].Type))
                 return false;
-            if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
+            if (!SameDeclarationRefMode(left.Parameters[i].RefKind, right.Parameters[i].RefKind))
                 return false;
         }
 
         return true;
     }
+
+    /// <summary>
+    /// Declaration-signature by-ref identity: by-value vs by-ref. All non-
+    /// <see cref="RefKind.None"/> kinds (<c>ref</c>/<c>in</c>/<c>out</c>/
+    /// <c>ref readonly</c>) share one mode so CS0663 pairs collide.
+    /// </summary>
+    private static bool SameDeclarationRefMode(RefKind left, RefKind right) =>
+        (left == RefKind.None) == (right == RefKind.None);
 }

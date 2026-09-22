@@ -35,6 +35,7 @@ public class PushMembersDownToolTests
         Assert.Contains("line", _tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("column", _tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("FirstOrDefault", _tool.Description);
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -65,9 +66,58 @@ public class PushMembersDownToolTests
         }
 
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("typeName", requiredFields);
-        Assert.Contains("members", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+        Assert.DoesNotContain("typeName", requiredFields);
+        Assert.DoesNotContain("members", requiredFields);
+    }
+
+    [Fact]
+    public void GetDefinition_HasOneOfSingleSiteAndAllFilesBranches()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var branches = doc.RootElement.GetProperty("oneOf");
+        Assert.Equal(2, branches.GetArrayLength());
+
+        static List<string> ReadStrings(JsonElement el)
+        {
+            var list = new List<string>();
+            foreach (var item in el.EnumerateArray())
+                list.Add(item.GetString()!);
+            return list;
+        }
+
+        var singleSiteRequired = ReadStrings(branches[0].GetProperty("required"));
+        Assert.Contains("solutionPath", singleSiteRequired);
+        Assert.Contains("sourceFile", singleSiteRequired);
+        Assert.Contains("typeName", singleSiteRequired);
+        Assert.Contains("members", singleSiteRequired);
+
+        var allFilesRequired = ReadStrings(branches[1].GetProperty("required"));
+        Assert.Contains("solutionPath", allFilesRequired);
+        Assert.Contains("allFiles", allFilesRequired);
+        Assert.DoesNotContain("sourceFile", allFilesRequired);
+        Assert.DoesNotContain("typeName", allFilesRequired);
+        Assert.DoesNotContain("members", allFilesRequired);
+        Assert.Equal(
+            JsonValueKind.True,
+            branches[1].GetProperty("properties").GetProperty("allFiles").GetProperty("const").ValueKind);
+    }
+
+    [Fact]
+    public void GetDefinition_HasOptionalAllFiles()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("allFiles", out var allFiles));
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("typeName", description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -85,6 +135,7 @@ public class PushMembersDownToolTests
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("members", out _));
         Assert.True(properties.TryGetProperty("targetDerivedTypes", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.True(properties.TryGetProperty("leaveAbstract", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
 
@@ -217,6 +268,23 @@ public class PushMembersDownToolTests
         Assert.True(result.IsError);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        // ThrowingWorkspaceProvider rejects workspace creation; args including allFiles parsed.
+        Assert.DoesNotContain("Arguments required", GetResultText(result), StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region Helper Methods
@@ -227,4 +295,5 @@ public class PushMembersDownToolTests
     }
 
     #endregion
+
 }
