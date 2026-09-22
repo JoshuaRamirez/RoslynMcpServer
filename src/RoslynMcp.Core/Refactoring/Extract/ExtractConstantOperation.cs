@@ -975,10 +975,12 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
     /// <summary>
     /// True when declaring a new const named <paramref name="bareName"/> on
     /// <paramref name="containingType"/> would hide an inherited/enclosing/imported member
-    /// and rebind at least one existing use of that name inside the type — including
-    /// other partial declarations (Codex P1). Hiding with no prior uses remains
-    /// allowed. Stable qualified accesses (<c>base.</c>, <c>Base.</c>, or a receiver
-    /// whose static type is a base/enclosing owner) are ignored (Codex P2).
+    /// (including imported types, namespaces, and aliases) and rebind at least one
+    /// existing use of that name inside the type — including other partial
+    /// declarations (Codex P1). Hiding with no prior uses remains allowed. Stable
+    /// qualified accesses (<c>base.</c>, <c>Base.</c>, a receiver whose static type
+    /// is a base/enclosing owner, or <c>Lib.Foo</c>-style right-hand names) are
+    /// ignored (Codex P2).
     /// </summary>
     private static bool WouldRebindExistingUsesOfInheritedName(
         SemanticModel semanticModel,
@@ -998,8 +1000,16 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         var hideTargets = new List<ISymbol>();
         foreach (var symbol in semanticModel.LookupSymbols(lookupPos, name: bareName))
         {
+            // Imported/global type, namespace, or alias: ContainingType is null, but a
+            // new member still shadows simple-name uses (Foo.Value → field.Value)
+            // (Codex P1).
             if (symbol.ContainingType == null)
+            {
+                if (IsImportedTypeNamespaceOrAliasHideTarget(symbol, containingTypeSymbol))
+                    AddHideTarget(hideTargets, symbol);
                 continue;
+            }
+
             if (SymbolEqualityComparer.Default.Equals(symbol.ContainingType, containingTypeSymbol))
                 continue;
             // Nested-within still shadows via WouldBeShadowedAtSite. Include
@@ -1008,7 +1018,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             // C._42 silently rebinds Existing (Codex P1).
             if (IsNamedTypeNestedWithin(symbol.ContainingType, containingTypeSymbol))
                 continue;
-            hideTargets.Add(symbol);
+            AddHideTarget(hideTargets, symbol);
         }
 
         if (hideTargets.Count == 0)
@@ -1034,13 +1044,28 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
                 var info = model.GetSymbolInfo(id, cancellationToken);
                 var bound = info.Symbol ?? info.CandidateSymbols.FirstOrDefault();
-                if (bound == null)
+                var alias = model.GetAliasInfo(id, cancellationToken);
+                if (bound == null && alias == null)
                     continue;
 
                 foreach (var hide in hideTargets)
                 {
-                    if (SymbolEqualityComparer.Default.Equals(bound, hide) ||
-                        SymbolEqualityComparer.Default.Equals(bound.OriginalDefinition, hide.OriginalDefinition))
+                    // Lib.Foo / ns.Type: right-hand name selected through a receiver
+                    // is not rebound by introducing a member on containingType.
+                    if (IsTypeNamespaceOrAliasSymbol(hide) && IsRightHandOfDottedName(id))
+                        continue;
+
+                    if (bound != null &&
+                        (SymbolEqualityComparer.Default.Equals(bound, hide) ||
+                         SymbolEqualityComparer.Default.Equals(bound.OriginalDefinition, hide.OriginalDefinition)))
+                    {
+                        return true;
+                    }
+
+                    if (alias != null &&
+                        (SymbolEqualityComparer.Default.Equals(alias, hide) ||
+                         (hide is IAliasSymbol hideAlias &&
+                          SymbolEqualityComparer.Default.Equals(alias, hideAlias))))
                     {
                         return true;
                     }
@@ -1049,6 +1074,70 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// True for top-level (no <see cref="ISymbol.ContainingType"/>) namespace, type,
+    /// or alias symbols that a new member would hide — excluding the extraction
+    /// target type itself.
+    /// </summary>
+    private static bool IsImportedTypeNamespaceOrAliasHideTarget(
+        ISymbol symbol,
+        INamedTypeSymbol containingTypeSymbol)
+    {
+        if (symbol is INamespaceSymbol)
+            return true;
+
+        if (symbol is IAliasSymbol)
+            return true;
+
+        if (symbol is ITypeSymbol type)
+        {
+            return !SymbolEqualityComparer.Default.Equals(type, containingTypeSymbol);
+        }
+
+        return false;
+    }
+
+    private static bool IsTypeNamespaceOrAliasSymbol(ISymbol symbol) =>
+        symbol is INamespaceSymbol or ITypeSymbol or IAliasSymbol;
+
+    /// <summary>
+    /// True when <paramref name="id"/> is the right-hand name of a dotted form
+    /// (<c>expr.Name</c>, <c>Ns.Type</c>, <c>expr?.Name</c>, <c>global::Name</c>).
+    /// </summary>
+    private static bool IsRightHandOfDottedName(SimpleNameSyntax id)
+    {
+        if (id.Parent is MemberAccessExpressionSyntax memberAccess &&
+            ReferenceEquals(memberAccess.Name, id))
+        {
+            return true;
+        }
+
+        if (id.Parent is MemberBindingExpressionSyntax)
+            return true;
+
+        if (id.Parent is QualifiedNameSyntax qualified &&
+            ReferenceEquals(qualified.Right, id))
+        {
+            return true;
+        }
+
+        if (id.Parent is AliasQualifiedNameSyntax aliasQualified &&
+            ReferenceEquals(aliasQualified.Name, id))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void AddHideTarget(List<ISymbol> hideTargets, ISymbol symbol)
+    {
+        hideTargets.Add(symbol);
+        // Alias lookups often bind uses to the target type/namespace — include both.
+        if (symbol is IAliasSymbol { Target: { } target })
+            hideTargets.Add(target);
     }
 
     /// <summary>

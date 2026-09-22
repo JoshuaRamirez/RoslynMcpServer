@@ -1134,6 +1134,98 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsHideWhenImportedTypeNameWouldRebind()
+    {
+        // using Lib imports type Foo; Existing => Foo.Value binds through that type.
+        // Literal "foo" derives const name Foo — inserting C.Foo would rebind Foo.Value
+        // (Codex P1).
+        const string source = """
+            using Lib;
+
+            namespace TestApp;
+
+            public class C
+            {
+                public int Existing => Foo.Value;
+
+                public string Run() => "foo";
+            }
+            """;
+
+        const string lib = """
+            namespace Lib;
+
+            public static class Foo
+            {
+                public const int Value = 7;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            new Dictionary<string, string>
+            {
+                ["FileC.cs"] = source,
+                ["Lib.cs"] = lib
+            });
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsHideWhenImportedTypeNameWouldRebind()
+    {
+        // using Lib; + existing Foo.Value; extracting "foo" → const Foo rebinds
+        // Foo.Value through the field and can fail to compile (Codex P1).
+        const string lib = """
+            namespace Lib;
+
+            public class Foo
+            {
+                public static int Value = 1;
+            }
+            """;
+        const string source = """
+            using Lib;
+
+            namespace TestApp;
+
+            public class C
+            {
+                public int Existing => Foo.Value;
+
+                public string Run() => "foo";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Lib.cs", lib),
+            ("C.cs", source));
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var beforeLib = await File.ReadAllTextAsync(workspace.SourcePaths["Lib.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["C.cs"]);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeLib, await File.ReadAllTextAsync(workspace.SourcePaths["Lib.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["C.cs"]));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_Protected_AllowsProtectedEnumFromBaseType()
     {
         const string source = """
