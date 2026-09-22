@@ -1129,16 +1129,23 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             if (!SymbolEqualityComparer.Default.Equals(current, typeContainer))
                 continue;
 
-            // Only private / protected-family *effective* nested containers keep
-            // the member domain within typeContainer's protected domain.
-            // Declared internal/protected-internal can still narrow safely under
-            // a protected outer container, but assembly-visible effective
-            // access would reintroduce CS0052 for protected nested enum types.
-            var effectiveMemberAccessibility =
-                ContextValidTypeHelpers.GetEffectiveAccessibility(memberContainer);
-            return effectiveMemberAccessibility is Accessibility.Private
-                or Accessibility.Protected
-                or Accessibility.ProtectedAndInternal;
+            // Every containing type from memberContainer up to typeContainer must
+            // keep the access domain within typeContainer's protected-family
+            // domain. A private effective type seals access immediately;
+            // protected/private-protected preserve the domain; public/internal/
+            // protected-internal leak it (e.g. public Mid { protected Inner }).
+            for (var nested = memberContainer; nested != null && !SymbolEqualityComparer.Default.Equals(nested, typeContainer); nested = nested.ContainingType)
+            {
+                var effectiveNestedAccessibility = ContextValidTypeHelpers.GetEffectiveAccessibility(nested);
+                if (effectiveNestedAccessibility == Accessibility.Private)
+                    return true;
+                if (effectiveNestedAccessibility is Accessibility.Protected or Accessibility.ProtectedAndInternal)
+                    continue;
+
+                return false;
+            }
+
+            return true;
         }
 
         return false;

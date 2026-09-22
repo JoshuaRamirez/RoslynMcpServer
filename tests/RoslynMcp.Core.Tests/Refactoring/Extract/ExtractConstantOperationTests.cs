@@ -893,6 +893,51 @@ public class ExtractConstantOperationTests
         Assert.DoesNotContain("State value = 0;", updated, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("public")]
+    [InlineData("internal")]
+    [InlineData("protected internal")]
+    public async Task ExtractConstant_AllFilesTrue_Protected_SkipsProtectedEnumWhenIntermediateContainerLeaksDomain(
+        string intermediateAccessibility)
+    {
+        const string sourceTemplate = """
+            namespace TestApp;
+
+            public class Outer
+            {
+                protected enum State { Off = 0, On = 1 }
+
+                {{ACCESSIBILITY}} class Mid
+                {
+                    protected class Inner
+                    {
+                        private State Run()
+                        {
+                            State value = 0;
+                            return value;
+                        }
+                    }
+                }
+            }
+            """;
+
+        var source = sourceTemplate.Replace("{{ACCESSIBILITY}}", intermediateAccessibility, StringComparison.Ordinal);
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            Visibility = "protected"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
     [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_SemicolonRecord_PreservesLeadingTriviaOnSemicolon()
     {
