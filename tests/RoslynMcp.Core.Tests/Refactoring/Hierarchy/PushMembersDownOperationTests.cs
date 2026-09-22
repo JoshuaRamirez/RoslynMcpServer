@@ -4753,6 +4753,93 @@ public class PushMembersDownOperationTests
         Assert.DoesNotContain("M(ref", ExtractTypeBody(leaf, "Leaf"));
     }
 
+    private const string ExplicitBaseTypedReceiverFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int X;
+
+            public int Get(Animal other)
+            {
+                return other.X;
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsExplicitBaseTypedReceiverInBatch()
+    {
+        // Pushing X + Get together would leave Get(Animal other) => other.X on Dog
+        // while X is removed from Animal — uncompilable. Explicit base-typed
+        // receivers must fail validation even inside the push batch.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", ExplicitBaseTypedReceiverFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        Assert.Contains("X", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("Get", ExtractTypeBody(text, "Animal"));
+        Assert.DoesNotContain("X", ExtractTypeBody(text, "Dog"));
+        Assert.DoesNotContain("Get", ExtractTypeBody(text, "Dog"));
+    }
+
+    private const string CyclicCrossPartialPartA = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            public int A => B;
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    private const string CyclicCrossPartialPartB = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            public int B => A;
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_PushesCyclicCrossPartialDependencies()
+    {
+        // A refs B and B refs A across partials. Declaration-local batches each
+        // fail validation; a type-wide batch must accept the cycle and move both.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("AnimalA.cs", CyclicCrossPartialPartA),
+            ("AnimalB.cs", CyclicCrossPartialPartB));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var animalA = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalA.cs"]);
+        var animalB = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalB.cs"]);
+        Assert.DoesNotContain("A =>", ExtractTypeBody(animalA, "Animal"));
+        Assert.DoesNotContain("B =>", ExtractTypeBody(animalB, "Animal"));
+        Assert.Contains("A =>", ExtractTypeBody(animalA, "Dog"));
+        Assert.Contains("B =>", ExtractTypeBody(animalA, "Dog"));
+    }
+
     #endregion
 
     #region Helpers

@@ -268,7 +268,9 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     /// De-duplication is per declaration (<c>TypeWalkKey</c> + document + member
     /// cascade keys), so partial types with pushable members in multiple files —
     /// or multiple parts in one file — are all visited. Skipped declarations are
-    /// revisited in later passes once dependent parts unlock them. Linked
+    /// revisited in later passes once dependent parts unlock them. Each
+    /// site collects a type-wide member batch across partials so cyclic
+    /// cross-partial dependencies can move together. Linked
     /// multi-view path counts come from the full solution (independent of
     /// <c>sourceFile</c>); multi-view targets are skipped. Deterministic
     /// <c>SpanStart</c> order within a file. When every file is a no-op,
@@ -292,10 +294,9 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
         var pushedCountByDoc = new Dictionary<DocumentId, int>();
-        // Per-declaration keys (type + document + cascade keys of members
-        // pushed from that part). Partials in the same file with different
-        // members each get their own key; leaveAbstract revisits of the same
-        // part reuse the fingerprint and stay claimed.
+        // Type-wide keys (type + cascade keys of the full partial batch).
+        // Claiming the whole type batch prevents a later partial visit from
+        // re-pushing the same members after a successful type-wide apply.
         var processedDeclarations = new HashSet<string>(StringComparer.Ordinal);
         // Cascade keys are signature-based (MemberCascadeKey), not bare names,
         // so inserting Root.M(string) does not suppress Middle.M(int).
@@ -383,29 +384,25 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                         }
 
                         var leaveAbstract = @params.LeaveAbstract && sourceSymbol.TypeKind != TypeKind.Interface;
-                        var memberNames = CollectPushableMemberNames(
-                            typeDeclaration, semanticModel, leaveAbstract, cancellationToken);
-
-                        if (memberNames.Count == 0)
-                            continue;
 
                         try
                         {
-                            var members = FindMembersToPush(
-                                typeDeclaration, memberNames, semanticModel, cancellationToken);
-                            // Cascade filter by signature so overloads stay independent.
-                            if (insertedMembersByType.TryGetValue(typeKey, out var insertedHere) &&
-                                insertedHere.Count > 0)
-                            {
-                                members = members
-                                    .Where(m => !insertedHere.Contains(MemberCascadeKey(m.Symbol)))
-                                    .ToList();
-                            }
+                            // Type-wide batch: collect pushable members from every
+                            // partial declaration so cyclic cross-partial deps
+                            // (A↔B) validate and move together.
+                            var members = await CollectTypeWidePushableMembersAsync(
+                                sourceSymbol,
+                                currentSolution,
+                                leaveAbstract,
+                                insertedMembersByType,
+                                typeKey,
+                                linkedPathCounts,
+                                cancellationToken);
 
                             if (members.Count == 0)
                                 continue;
 
-                            var declarationKey = typeKey + "|" + currentDocument.Id.Id + "|" +
+                            var declarationKey = typeKey + "|typewide|" +
                                 string.Join("\0", members
                                     .Select(m => MemberCascadeKey(m.Symbol))
                                     .OrderBy(k => k, StringComparer.Ordinal));
@@ -425,20 +422,32 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                             foreach (var target in targets)
                             {
                                 var original = await GetTypeDeclarationAsync(target, cancellationToken);
-                                var copies = members
-                                    .Select(member => ConvertForDerived(
-                                        member, sourceSymbol, target, semanticModel, leaveAbstract))
-                                    .ToList();
-                                derivedUpdates.Add(new DerivedUpdate(target, original, AddMembersToType(original, copies)));
+                                var copies = new List<MemberDeclarationSyntax>();
+                                foreach (var member in members)
+                                {
+                                    var memberModel = await GetSemanticModelForSyntaxAsync(
+                                        currentSolution, member.Syntax, cancellationToken)
+                                        ?? semanticModel;
+                                    copies.Add(ConvertForDerived(
+                                        member, sourceSymbol, target, memberModel, leaveAbstract));
+                                }
+
+                                derivedUpdates.Add(new DerivedUpdate(
+                                    target, original, AddMembersToType(original, copies)));
                             }
 
-                            var sourceReplacement = BuildSourceReplacement(
-                                typeDeclaration, members, sourceSymbol, leaveAbstract);
+                            // Rewrite every partial that owns some of the batch.
+                            var sourceUpdates = members
+                                .Select(m => m.Syntax.Ancestors().OfType<TypeDeclarationSyntax>().First())
+                                .Distinct()
+                                .Select(decl => (
+                                    decl,
+                                    BuildSourceReplacement(decl, members, sourceSymbol, leaveAbstract)))
+                                .ToList();
 
                             updated = await ApplyChangesAsync(
-                                currentDocument,
-                                typeDeclaration,
-                                sourceReplacement,
+                                currentSolution,
+                                sourceUpdates,
                                 derivedUpdates,
                                 cancellationToken);
 
@@ -612,6 +621,86 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         pushedCount == 1
             ? "Push members down"
             : $"Push members down from {pushedCount} types";
+
+    /// <summary>
+    /// Collects every pushable member across all editable partial declarations
+    /// of <paramref name="sourceSymbol"/>, cascade-filtered against members
+    /// already inserted onto this type. Enables cyclic cross-partial
+    /// dependencies to validate and move as one batch.
+    /// </summary>
+    private async Task<List<PushableMember>> CollectTypeWidePushableMembersAsync(
+        INamedTypeSymbol sourceSymbol,
+        Solution solution,
+        bool leaveAbstract,
+        IReadOnlyDictionary<string, HashSet<string>> insertedMembersByType,
+        string typeKey,
+        IReadOnlyDictionary<string, int> linkedPathCounts,
+        CancellationToken cancellationToken)
+    {
+        var members = new List<PushableMember>();
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var syntaxRef in sourceSymbol.DeclaringSyntaxReferences)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var document = solution.GetDocument(syntaxRef.SyntaxTree);
+            if (document == null ||
+                document is SourceGeneratedDocument ||
+                !DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            {
+                continue;
+            }
+
+            // Skip linked multi-view declarations of the source itself.
+            if (document.FilePath != null)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
+                if (linkedPathCounts.TryGetValue(pathKey, out var viewCount) && viewCount > 1)
+                    continue;
+            }
+
+            var model = await document.GetSemanticModelAsync(cancellationToken);
+            if (model == null)
+                continue;
+
+            if (await syntaxRef.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax decl)
+                continue;
+
+            var names = CollectPushableMemberNames(decl, model, leaveAbstract, cancellationToken);
+            if (names.Count == 0)
+                continue;
+
+            foreach (var member in FindMembersToPush(decl, names, model, cancellationToken))
+            {
+                if (seenKeys.Add(MemberCascadeKey(member.Symbol)))
+                    members.Add(member);
+            }
+        }
+
+        if (insertedMembersByType.TryGetValue(typeKey, out var insertedHere) &&
+            insertedHere.Count > 0)
+        {
+            members = members
+                .Where(m => !insertedHere.Contains(MemberCascadeKey(m.Symbol)))
+                .ToList();
+        }
+
+        return members;
+    }
+
+    private static async Task<SemanticModel?> GetSemanticModelForSyntaxAsync(
+        Solution solution,
+        SyntaxNode syntax,
+        CancellationToken cancellationToken)
+    {
+        var document = solution.GetDocument(syntax.SyntaxTree)
+            ?? DocumentForTreeHelpers.GetDocumentByFilePath(solution, syntax.SyntaxTree);
+        if (document == null)
+            return null;
+
+        return await document.GetSemanticModelAsync(cancellationToken);
+    }
 
     private static List<string> CollectPushableMemberNames(
         TypeDeclarationSyntax typeDeclaration,
@@ -1308,12 +1397,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                     if (location.IsImplicit || location.Location.SourceTree == null)
                         continue;
 
-                    // Exempt references that live inside any member in this
-                    // push batch (same-declaration deps like field + getter),
-                    // not only the referenced member's own syntax span.
-                    if (IsReferenceInsidePushBatch(location.Location, members))
-                        continue;
-
                     var document = location.Document;
                     var root = await document.GetSyntaxRootAsync(cancellationToken);
                     var model = await document.GetSemanticModelAsync(cancellationToken);
@@ -1321,6 +1404,21 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                         continue;
 
                     var node = root.FindNode(location.Location.SourceSpan);
+
+                    // Batch-internal refs (field + getter) may move together, but
+                    // only when the receiver is implicit/this or already a type
+                    // that will receive the member. Explicitly base-typed
+                    // receivers (other.X) must still fail validation.
+                    if (IsReferenceInsidePushBatch(location.Location, members))
+                    {
+                        if (BatchInternalReferenceIsSafe(node, model, targets))
+                            continue;
+
+                        throw new RefactoringException(
+                            ErrorCodes.MemberRequiredByContract,
+                            $"Cannot push '{member.Name}': it is still referenced through '{source.Name}' or a type that will not receive the member.");
+                    }
+
                     var receiver = GetReceiverType(node, model);
                     if (WillHaveMemberAfterPush(receiver, targets))
                         continue;
@@ -1336,8 +1434,10 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     /// <summary>
     /// True when <paramref name="location"/> falls inside the syntax of any
-    /// member in the current push batch (so interdependent members can move
-    /// together without being treated as remaining base references).
+    /// member in the current push batch (candidate for co-moving with the
+    /// referenced member). Callers must still run
+    /// <see cref="BatchInternalReferenceIsSafe"/> so explicitly base-typed
+    /// receivers are not exempted.
     /// </summary>
     private static bool IsReferenceInsidePushBatch(
         Location location,
@@ -1356,6 +1456,38 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// True when a batch-internal reference is safe to move with the batch:
+    /// implicit <c>this</c>, explicit <c>this</c>, or a receiver that
+    /// <see cref="WillHaveMemberAfterPush"/>. Explicit receivers typed as the
+    /// source (e.g. <c>other.X</c> where <c>other</c> is the base) are not safe.
+    /// </summary>
+    private static bool BatchInternalReferenceIsSafe(
+        SyntaxNode node,
+        SemanticModel model,
+        IReadOnlyList<INamedTypeSymbol> targets)
+    {
+        var name = node as SimpleNameSyntax ??
+                   node.DescendantNodesAndSelf().OfType<SimpleNameSyntax>().FirstOrDefault();
+
+        if (name?.Parent is MemberAccessExpressionSyntax access && access.Name == name)
+        {
+            if (access.Expression is ThisExpressionSyntax)
+                return true;
+
+            return WillHaveMemberAfterPush(model.GetTypeInfo(access.Expression).Type, targets);
+        }
+
+        if (name?.Parent is MemberBindingExpressionSyntax &&
+            name.Parent.Parent is ConditionalAccessExpressionSyntax conditional)
+        {
+            return WillHaveMemberAfterPush(model.GetTypeInfo(conditional.Expression).Type, targets);
+        }
+
+        // Simple name / implicit this — moves with the containing batch member.
+        return true;
     }
 
     private static ITypeSymbol? GetReceiverType(SyntaxNode node, SemanticModel model)
@@ -2295,15 +2427,29 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         IReadOnlyList<DerivedUpdate> derivedUpdates,
         CancellationToken cancellationToken)
     {
-        var replacements = new List<(SyntaxTree Tree, SyntaxNode Original, SyntaxNode Replacement)>
-        {
-            (sourceDecl.SyntaxTree, sourceDecl, newSource)
-        };
+        return await ApplyChangesAsync(
+            sourceDocument.Project.Solution,
+            [(sourceDecl, newSource)],
+            derivedUpdates,
+            cancellationToken);
+    }
+
+    private async Task<Solution> ApplyChangesAsync(
+        Solution solution,
+        IReadOnlyList<(TypeDeclarationSyntax Original, TypeDeclarationSyntax Replacement)> sourceUpdates,
+        IReadOnlyList<DerivedUpdate> derivedUpdates,
+        CancellationToken cancellationToken)
+    {
+        var replacements = new List<(SyntaxTree Tree, SyntaxNode Original, SyntaxNode Replacement)>();
+        foreach (var (original, replacement) in sourceUpdates)
+            replacements.Add((original.SyntaxTree, original, replacement));
 
         foreach (var update in derivedUpdates)
             replacements.Add((update.Original.SyntaxTree, update.Original, update.Updated));
 
-        var solution = sourceDocument.Project.Solution;
+        var sourceOriginals = sourceUpdates
+            .Select(update => (SyntaxNode)update.Original)
+            .ToHashSet();
 
         foreach (var group in replacements.GroupBy(replacement => replacement.Tree))
         {
@@ -2334,7 +2480,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             var newRoot = currentRoot.ReplaceNodes(map.Keys, (original, rewritten) =>
             {
                 var replacement = map[original];
-                if (original != sourceDecl)
+                if (!sourceOriginals.Contains(original))
                     return replacement;
 
                 if (rewritten == original)
@@ -2343,7 +2489,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 return MergeEnclosedDerivedUpdates(
                     (TypeDeclarationSyntax)replacement,
                     (TypeDeclarationSyntax)rewritten,
-                    sourceDecl,
+                    (TypeDeclarationSyntax)original,
                     map);
             });
             solution = document.WithSyntaxRoot(newRoot).Project.Solution;
