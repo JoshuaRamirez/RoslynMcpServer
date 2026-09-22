@@ -323,6 +323,67 @@ public class ExtractConstantOperationTests
         Assert.Empty(result.Changes!.FilesModified);
     }
 
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsPropertyNameCollision()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public string Name { get; set; }
+
+                public string Run()
+                {
+                    return "name";
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsParameterShadowing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public int Run(int _42)
+                {
+                    return 42;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
     [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_ReplaceAll_ReplacesMatchingLiteralsInType()
     {

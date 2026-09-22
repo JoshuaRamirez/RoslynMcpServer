@@ -621,17 +621,16 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (containingType == null)
             return null;
 
-        var existingMember = containingType.Members
-            .OfType<FieldDeclarationSyntax>()
-            .SelectMany(f => f.Declaration.Variables)
-            .FirstOrDefault(v =>
-                string.Equals(
-                    SyntaxIdentifierValidation.NormalizeIdentifier(v.Identifier.Text),
-                    SyntaxIdentifierValidation.NormalizeIdentifier(constantName),
-                    StringComparison.Ordinal));
-
-        if (existingMember != null)
+        var bareName = SyntaxIdentifierValidation.NormalizeIdentifier(constantName);
+        var containingTypeSymbol = semanticModel.GetDeclaredSymbol(containingType, cancellationToken) as INamedTypeSymbol;
+        if (containingTypeSymbol != null &&
+            containingTypeSymbol.GetMembers(bareName).Length > 0)
+        {
+            // Skip when any member (field/property/method/nested type/event, including
+            // other partial declarations) already uses this name — syntax-only field
+            // checks miss non-field members and cross-partial collisions (Codex P1).
             return null;
+        }
 
         List<LiteralExpressionSyntax> literalsToReplace;
         if (bulkParams.ReplaceAll)
@@ -641,6 +640,15 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         else
         {
             literalsToReplace = new List<LiteralExpressionSyntax> { literal };
+        }
+
+        // Skip when an unqualified identifier would bind to a local/parameter
+        // (or other non-type-member) at any replacement site instead of the new
+        // constant (Codex P1).
+        foreach (var site in literalsToReplace)
+        {
+            if (WouldBeShadowedAtSite(semanticModel, site.SpanStart, bareName))
+                return null;
         }
 
         var constField = CreateConstantField(
@@ -732,6 +740,19 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
         return SyntaxIdentifierValidation.IsValidIdentifier(name) ? name : null;
     }
+
+
+    /// <summary>
+    /// True when <paramref name="bareName"/> already binds in scope at
+    /// <paramref name="position"/> to a local, parameter, or range variable
+    /// that would shadow an unqualified constant reference after rewrite.
+    /// </summary>
+    private static bool WouldBeShadowedAtSite(
+        SemanticModel semanticModel,
+        int position,
+        string bareName) =>
+        semanticModel.LookupSymbols(position, name: bareName)
+            .Any(symbol => symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol);
 
     private static LiteralExpressionSyntax? FindLiteralExpression(SyntaxNode node, TextSpan span)
     {
