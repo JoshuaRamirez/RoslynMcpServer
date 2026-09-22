@@ -1182,6 +1182,7 @@ public class HelpGeneratorTests
 
         Assert.Contains("change-return-type", help);
         Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("smallest method", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("start-line", tool.Description, StringComparison.OrdinalIgnoreCase);
 
@@ -1193,17 +1194,22 @@ public class HelpGeneratorTests
         var requiredSection = help[requiredIdx..optionalIdx];
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
-        Assert.Contains("--method-name", requiredSection);
+        // newReturnType stays required; sourceFile/methodName become optional with allFiles.
         Assert.Contains("--new-return-type", requiredSection);
+        Assert.DoesNotContain("--source-file", requiredSection);
+        Assert.DoesNotContain("--method-name", requiredSection);
         Assert.DoesNotContain("--column", requiredSection);
         Assert.DoesNotContain("--line", requiredSection);
         Assert.DoesNotContain("--preview", requiredSection);
+        Assert.DoesNotContain("--all-files", requiredSection);
 
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--method-name", optionalSection);
         Assert.Contains("--line", optionalSection);
         Assert.Contains("--column", optionalSection);
         Assert.Contains("--preview", optionalSection);
         Assert.Contains("--convert-return-statements", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
     }
 
     [Fact]
