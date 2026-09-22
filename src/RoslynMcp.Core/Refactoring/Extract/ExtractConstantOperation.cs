@@ -181,6 +181,27 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             throw new RefactoringException(ErrorCodes.TypeNotFound, "Literal must be inside a type declaration.");
         }
 
+        if (containingType is InterfaceDeclarationSyntax)
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidTargetType,
+                "Cannot extract a constant into an interface.");
+        }
+
+        if (IsSpecialMinValueUnaryOperand(literal))
+        {
+            throw new RefactoringException(
+                ErrorCodes.NotCompileTimeConstant,
+                "Cannot extract the operand of a special minimum-value unary expression (-2147483648 / -9223372036854775808); extract the full expression or choose another literal.");
+        }
+
+        if (IsConstantTypeLessAccessibleThanVisibility(constantType, @params.Visibility))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidVisibility,
+                $"Constant type '{constantType.ToDisplayString()}' is less accessible than requested visibility '{@params.Visibility}'.");
+        }
+
         var existingMember = containingType.Members
             .OfType<FieldDeclarationSyntax>()
             .SelectMany(f => f.Declaration.Variables)
@@ -196,7 +217,19 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         List<LiteralExpressionSyntax> literalsToReplace;
         if (@params.ReplaceAll)
         {
-            literalsToReplace = FindMatchingLiterals(containingType, literal, constantType, semanticModel, cancellationToken);
+            var containingTypeSymbol = semanticModel.GetDeclaredSymbol(containingType, cancellationToken) as INamedTypeSymbol;
+            literalsToReplace = FindMatchingLiterals(containingType, literal, constantType, semanticModel, cancellationToken)
+                .Where(site => !WouldBeShadowedAtSite(
+                    semanticModel,
+                    site.SpanStart,
+                    constantName,
+                    containingTypeSymbol))
+                .ToList();
+            if (literalsToReplace.Count == 0)
+                literalsToReplace = new List<LiteralExpressionSyntax> { literal };
+            else if (!literalsToReplace.Contains(literal) &&
+                     !WouldBeShadowedAtSite(semanticModel, literal.SpanStart, constantName, containingTypeSymbol))
+                literalsToReplace.Insert(0, literal);
         }
         else
         {
