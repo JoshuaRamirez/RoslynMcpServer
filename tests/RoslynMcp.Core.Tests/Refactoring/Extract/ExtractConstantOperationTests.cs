@@ -121,6 +121,37 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_SingleSite_DefaultVisibility_OnInterface_ThrowsInvalidVisibility()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IHost
+            {
+                int Run() => 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var span = FindSpan(source, "42");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractConstantParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                ConstantName = "Default"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.Equal(NormalizeNewlines(source), NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath)));
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_OmittedAllFiles_KeepsSingleSiteExtract()
     {
         const string source = """

@@ -710,12 +710,6 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (containingType == null)
             return null;
 
-        if (containingType is InterfaceDeclarationSyntax &&
-            !string.Equals(bulkParams.Visibility, "public", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
         if (literal.Ancestors().OfType<EnumDeclarationSyntax>().Any())
             return null;
 
@@ -835,14 +829,18 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
     /// <summary>
     /// True when <paramref name="visibility"/> cannot be applied to
-    /// <paramref name="containingType"/> (static classes / structs reject
-    /// protected-family members) — bulk must skip those sites (Codex P2).
+    /// <paramref name="containingType"/> (interfaces require public const;
+    /// static classes / structs reject protected-family members) — bulk must
+    /// skip those sites (Codex P2).
     /// </summary>
     internal static bool IsVisibilityIncompatibleWithContainingType(
         string visibility,
         TypeDeclarationSyntax containingType)
     {
         var normalized = visibility.ToLowerInvariant();
+        if (containingType is InterfaceDeclarationSyntax)
+            return normalized != "public";
+
         var needsInheritance =
             normalized is "protected" or "protected internal" or "private protected";
         if (!needsInheritance)
