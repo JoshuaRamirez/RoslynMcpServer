@@ -828,6 +828,56 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsHideWhenOtherPartialHasRebindingUse()
+    {
+        // Existing use of inherited _42 lives on another partial declaration than
+        // the extract site — must still refuse hide (Codex P1).
+        const string partA = """
+            namespace TestApp;
+
+            public class Base
+            {
+                protected const int _42 = 7;
+            }
+
+            public partial class D : Base
+            {
+                public int Existing => _42;
+            }
+            """;
+        const string partB = """
+            namespace TestApp;
+
+            public partial class D
+            {
+                public int Run()
+                {
+                    return 42;
+                }
+
+                public int Value = 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("PartA.cs", partA),
+            ("PartB.cs", partB));
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["PartA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["PartB.cs"]);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["PartA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["PartB.cs"]));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_SkipsHideWhenInheritedMethodCallWouldRebind()
     {
         // Existing _42() call would break / rebind if we introduce const _42 (Codex P1).
@@ -901,6 +951,43 @@ public class ExtractConstantOperationTests
         Assert.Contains("const int _42", updated, StringComparison.Ordinal);
         Assert.Contains("return _42;", updated, StringComparison.Ordinal);
         Assert.Contains("base._42", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_AllowsHideWhenOnlyTypeQualifiedAccessUsesInheritedName()
+    {
+        // Base._42 keeps selecting the inherited member after hide — safe to
+        // introduce Derived._42 (Codex P2).
+        const string source = """
+            namespace TestApp;
+
+            public class Base
+            {
+                public const int _42 = 7;
+            }
+
+            public class Derived : Base
+            {
+                public int Existing => Base._42;
+
+                public int Run() => 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("const int _42", updated, StringComparison.Ordinal);
+        Assert.Contains("=> _42;", updated, StringComparison.Ordinal);
+        Assert.Contains("Base._42", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("Existing => _42", updated, StringComparison.Ordinal);
     }
 
     [SkippableFact]
@@ -1677,6 +1764,72 @@ public class ExtractConstantOperationTests
         Assert.DoesNotContain("[Obsolete(Hi)]", updated, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_ReplaceAll_SkipsAttributeLiteralsMatchingSeed()
+    {
+        // Non-attribute seed "hi" must not rewrite the type-level attribute (Codex P1).
+        const string source = """
+            using System;
+
+            [Obsolete("hi")]
+            public class Host
+            {
+                public string M() => "hi";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("[Obsolete(\"hi\")]", updated, StringComparison.Ordinal);
+        Assert.Contains("const string Hi", updated, StringComparison.Ordinal);
+        Assert.Contains("=> Hi;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("[Obsolete(Hi)]", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_ReplaceAll_DoesNotRewriteAttributeLiterals()
+    {
+        // replaceAll must not rewrite attribute arguments even when text/type match
+        // the method-body seed (Codex P1). Prefer extracting the method site.
+        const string source = """
+            using System;
+
+            namespace TestApp;
+
+            [Obsolete("hi")]
+            public class AttributeHost
+            {
+                public string Run() => "hi";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, "AttributeHost.cs");
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        System.IO.File.WriteAllText("/tmp/attr-replaceall-out.cs", updated);
+        Assert.Contains("[Obsolete(\"hi\")]", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("[Obsolete(Hi)]", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("[Obsolete(_hi)]", updated, StringComparison.Ordinal);
+        Assert.Contains("const string Hi", updated, StringComparison.Ordinal);
+        Assert.Contains("=> Hi;", updated, StringComparison.Ordinal);
+    }
 
     [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_LinkedDocument_SkipsWhenSiblingCannotHonor()

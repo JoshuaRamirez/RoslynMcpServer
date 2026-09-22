@@ -977,9 +977,10 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
     /// <summary>
     /// True when declaring a new const named <paramref name="bareName"/> on
     /// <paramref name="containingType"/> would hide an inherited/enclosing member
-    /// and rebind at least one existing use of that name inside the type (Codex P1).
-    /// Hiding with no prior uses remains allowed. Explicit <c>base.</c> accesses are
-    /// ignored because they keep binding to the base member after the hide.
+    /// and rebind at least one existing use of that name inside the type — including
+    /// other partial declarations (Codex P1). Hiding with no prior uses remains
+    /// allowed. Stable qualified accesses (<c>base.</c>, <c>Base.</c>, or a receiver
+    /// whose static type is a base/enclosing owner) are ignored (Codex P2).
     /// </summary>
     private static bool WouldRebindExistingUsesOfInheritedName(
         SemanticModel semanticModel,
@@ -1013,38 +1014,109 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (hideTargets.Count == 0)
             return false;
 
-        foreach (var id in containingType.DescendantNodes().OfType<IdentifierNameSyntax>())
+        // Scan every partial declaration — a hide on one part rebinds uses in all
+        // parts (Codex P1).
+        foreach (var (decl, model) in EnumerateTypeDeclarationModels(
+                     containingTypeSymbol, containingType, semanticModel, cancellationToken))
         {
-            if (!string.Equals(id.Identifier.ValueText, bareName, StringComparison.Ordinal))
-                continue;
-
-            // base._42 keeps binding to the base member after a Derived hide.
-            if (id.Parent is MemberAccessExpressionSyntax
-                {
-                    Expression: BaseExpressionSyntax,
-                    Name: var memberName
-                } &&
-                ReferenceEquals(memberName, id))
+            foreach (var id in decl.DescendantNodes().OfType<IdentifierNameSyntax>())
             {
-                continue;
-            }
+                if (!string.Equals(id.Identifier.ValueText, bareName, StringComparison.Ordinal))
+                    continue;
 
-            var info = semanticModel.GetSymbolInfo(id, cancellationToken);
-            var bound = info.Symbol ?? info.CandidateSymbols.FirstOrDefault();
-            if (bound == null)
-                continue;
-
-            foreach (var hide in hideTargets)
-            {
-                if (SymbolEqualityComparer.Default.Equals(bound, hide) ||
-                    SymbolEqualityComparer.Default.Equals(bound.OriginalDefinition, hide.OriginalDefinition))
+                // base._42 / Base._42 (and other receivers whose static type is a
+                // base/enclosing owner) keep binding after a Derived hide (Codex P2).
+                if (IsStableQualifiedInheritedAccess(
+                        model, id, containingTypeSymbol, cancellationToken))
                 {
-                    return true;
+                    continue;
+                }
+
+                var info = model.GetSymbolInfo(id, cancellationToken);
+                var bound = info.Symbol ?? info.CandidateSymbols.FirstOrDefault();
+                if (bound == null)
+                    continue;
+
+                foreach (var hide in hideTargets)
+                {
+                    if (SymbolEqualityComparer.Default.Equals(bound, hide) ||
+                        SymbolEqualityComparer.Default.Equals(bound.OriginalDefinition, hide.OriginalDefinition))
+                    {
+                        return true;
+                    }
                 }
             }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Yields each partial <see cref="TypeDeclarationSyntax"/> of
+    /// <paramref name="containingTypeSymbol"/> paired with a semantic model for
+    /// that tree. Falls back to <paramref name="fallbackDeclaration"/> when the
+    /// symbol has no declaring references.
+    /// </summary>
+    private static IEnumerable<(TypeDeclarationSyntax Declaration, SemanticModel Model)> EnumerateTypeDeclarationModels(
+        INamedTypeSymbol containingTypeSymbol,
+        TypeDeclarationSyntax fallbackDeclaration,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var yielded = false;
+        foreach (var reference in containingTypeSymbol.DeclaringSyntaxReferences)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (reference.GetSyntax(cancellationToken) is not TypeDeclarationSyntax decl)
+                continue;
+
+            var model = ReferenceEquals(reference.SyntaxTree, semanticModel.SyntaxTree)
+                ? semanticModel
+                : semanticModel.Compilation.GetSemanticModel(reference.SyntaxTree);
+            yielded = true;
+            yield return (decl, model);
+        }
+
+        if (!yielded)
+            yield return (fallbackDeclaration, semanticModel);
+    }
+
+    /// <summary>
+    /// True for member accesses whose receiver will keep selecting the inherited
+    /// member after <paramref name="containingTypeSymbol"/> hides the name —
+    /// <c>base.Name</c>, <c>Base.Name</c>, or an expression whose static type is a
+    /// base/enclosing owner (Codex P2).
+    /// </summary>
+    private static bool IsStableQualifiedInheritedAccess(
+        SemanticModel semanticModel,
+        IdentifierNameSyntax id,
+        INamedTypeSymbol containingTypeSymbol,
+        CancellationToken cancellationToken)
+    {
+        if (id.Parent is not MemberAccessExpressionSyntax
+            {
+                Expression: var receiver,
+                Name: var memberName
+            } ||
+            !ReferenceEquals(memberName, id))
+        {
+            return false;
+        }
+
+        if (receiver is BaseExpressionSyntax)
+            return true;
+
+        // Prefer the bound type symbol for type-qualified access (Base._42).
+        var receiverSymbol = semanticModel.GetSymbolInfo(receiver, cancellationToken).Symbol;
+        ITypeSymbol? receiverType = receiverSymbol as ITypeSymbol
+            ?? semanticModel.GetTypeInfo(receiver, cancellationToken).Type;
+        if (receiverType is not INamedTypeSymbol namedReceiver)
+            return false;
+
+        if (SymbolEqualityComparer.Default.Equals(namedReceiver, containingTypeSymbol))
+            return false;
+
+        return IsBaseOrEnclosingTypeOf(namedReceiver, containingTypeSymbol);
     }
 
     /// <summary>
@@ -1442,6 +1514,12 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                 // already declare the derived name, and replaceAll must stay in the
                 // containing type that receives the new constant.
                 if (lit.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault() != containingType)
+                    return false;
+
+                // Collection excludes attribute seeds; replaceAll must too — a
+                // type-level attribute is outside the new member's simple-name
+                // scope and would not compile (Codex P1).
+                if (lit.Ancestors().OfType<AttributeSyntax>().Any())
                     return false;
 
                 // Skip special min-value unary operands even when text/type match
