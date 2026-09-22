@@ -1219,14 +1219,11 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             if (symbol is ILocalSymbol or IParameterSymbol)
                 continue;
 
-            if (symbol is not ISymbol
-                {
-                    IsStatic: false,
-                    Kind: not Microsoft.CodeAnalysis.SymbolKind.Namespace and not Microsoft.CodeAnalysis.SymbolKind.NamedType
-                })
-            {
+            // Limit to symbols that can actually represent instance members.
+            // Type parameters (typeof(T)), query range variables, etc. are
+            // IsStatic==false but are not containing-instance captures (Codex P2).
+            if (!CouldBeContainingInstanceMember(symbol))
                 continue;
-            }
 
             // Only reject members accessed via implicit this, this, or base —
             // not instance members of other objects (e.g. DateTime.Now.Day).
@@ -1248,9 +1245,26 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
     }
 
     /// <summary>
+    /// True for non-static method / property / field / event symbols (including
+    /// local functions). Excludes type parameters, range variables, namespaces,
+    /// and named types that are not containing-instance members.
+    /// </summary>
+    private static bool CouldBeContainingInstanceMember(ISymbol symbol)
+    {
+        if (symbol.IsStatic)
+            return false;
+
+        return symbol.Kind is Microsoft.CodeAnalysis.SymbolKind.Method
+            or Microsoft.CodeAnalysis.SymbolKind.Property
+            or Microsoft.CodeAnalysis.SymbolKind.Field
+            or Microsoft.CodeAnalysis.SymbolKind.Event;
+    }
+
+    /// <summary>
     /// True when <paramref name="name"/> refers to a member of the containing
     /// instance (implicit receiver, <c>this</c>, or <c>base</c>), rather than
-    /// an explicit other-object receiver, object/with-initializer member designator, or nameof argument.
+    /// an explicit other-object receiver, object/with-initializer or property-pattern
+    /// member designator, or nameof argument.
     /// </summary>
     private static bool IsAccessedViaContainingInstance(
         SimpleNameSyntax name,
@@ -1258,6 +1272,8 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         CancellationToken cancellationToken)
     {
         // nameof(...) is unevaluated / compile-time — never captures the instance.
+        // Uses Identifier.Text (not ValueText) so escaped @nameof(...) method
+        // calls are not treated as the nameof operator (Codex P2).
         if (IsInsideNameofArgument(name))
             return false;
 
@@ -1278,24 +1294,33 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         if (IsObjectOrWithInitializerMemberDesignator(name))
             return false;
 
+        // Property-pattern designators (e.g. is { Value: 1 }) likewise bind to
+        // instance members without reading the containing instance (Codex P2).
+        if (IsPropertyPatternMemberDesignator(name))
+            return false;
+
         // nameof(...) references are compile-time only and do not capture instance state.
         if (MethodSymbolHelpers.IsInNameof(name))
             return false;
 
         // Bare simple name / invocation target → implicit this (or static, already filtered).
+        // Includes inaccessible local functions referenced by bare name.
         return true;
     }
 
     /// <summary>
-    /// True when <paramref name="node"/> occurs inside a <c>nameof(...)</c> argument.
+    /// True when <paramref name="node"/> occurs inside a real <c>nameof(...)</c>
+    /// operator argument. Uses <see cref="SyntaxToken.Text"/> so an escaped
+    /// <c>@nameof(...)</c> method call is not treated as unevaluated.
     /// </summary>
     private static bool IsInsideNameofArgument(SyntaxNode node)
     {
         foreach (var ancestor in node.Ancestors())
         {
+            // Text == "nameof" excludes verbatim @nameof (ValueText is still "nameof").
             if (ancestor is InvocationExpressionSyntax
                 {
-                    Expression: IdentifierNameSyntax { Identifier.ValueText: "nameof" }
+                    Expression: IdentifierNameSyntax { Identifier.Text: "nameof" }
                 })
             {
                 return true;
@@ -1317,6 +1342,15 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         return assignment.Parent is InitializerExpressionSyntax initializer &&
                (initializer.IsKind(SyntaxKind.ObjectInitializerExpression) ||
                 initializer.IsKind(SyntaxKind.WithInitializerExpression));
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is a property (or named) subpattern
+    /// designator, e.g. <c>Value</c> in <c>is { Value: 1 }</c>.
+    /// </summary>
+    private static bool IsPropertyPatternMemberDesignator(SimpleNameSyntax name)
+    {
+        return name.Parent is NameColonSyntax { Parent: SubpatternSyntax };
     }
 
     private static bool IsContainingInstanceReceiver(
@@ -1354,10 +1388,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         if (symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol)
             return false;
 
-        if (symbol is ISymbol { IsStatic: false, Kind: not Microsoft.CodeAnalysis.SymbolKind.Namespace and not Microsoft.CodeAnalysis.SymbolKind.NamedType })
-            return true;
-
-        return false;
+        return CouldBeContainingInstanceMember(symbol);
     }
 
     private static void ValidateStaticUsage(SyntaxNode node, bool isStaticField)
