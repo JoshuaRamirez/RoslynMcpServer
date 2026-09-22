@@ -6316,6 +6316,182 @@ public class PushMembersDownOperationTests
         Assert.Contains("override", dog);
     }
 
+    private const string PostSubMethodTypeParamCollisionFile = """
+        namespace TestApp;
+
+        public class Root<T, U>
+        {
+            public void M<X>(T value, X item)
+            {
+            }
+
+            public void M<Y>(U value, Y item)
+            {
+            }
+        }
+
+        public class Middle : Root<int, int>
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsMethodTypeParamOrdinalCollisions()
+    {
+        // M<X>(T,X) + M<Y>(U,Y) onto Root<int,int> both become M<?>(int, ?) —
+        // method type params must collide by ordinal (CS0111).
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Root.cs", PostSubMethodTypeParamCollisionFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        Assert.Contains("M<X>", ExtractTypeBody(text, "Root"));
+        Assert.Contains("M<Y>", ExtractTypeBody(text, "Root"));
+        Assert.DoesNotContain("void M<", ExtractTypeBody(text, "Middle"));
+    }
+
+    private const string PrivateNestedTypeDependencyFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            private class Helper
+            {
+            }
+
+            private Helper Create()
+            {
+                return new Helper();
+            }
+
+            public virtual int Speak()
+            {
+                return 1;
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_SkipsMembersDependingOnPrivateNestedTypes()
+    {
+        // Create() returns private nested Helper — not pushable; skip Create,
+        // still push Speak.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", PrivateNestedTypeDependencyFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("Helper Create", animal);
+        Assert.Contains("class Helper", animal);
+        Assert.DoesNotContain("Helper", dog);
+        Assert.DoesNotContain("Create", dog);
+        Assert.Contains("Speak", dog);
+    }
+
+    private const string AttributeNamedArgReceiverFile = """
+        namespace TestApp;
+
+        public class AnimalAttribute : System.Attribute
+        {
+            public int X { get; set; }
+
+            [Animal(X = 1)]
+            public void Tagged()
+            {
+            }
+        }
+
+        public class DogAttribute : AnimalAttribute
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsAttributeNamedArgumentReceiverInBatch()
+    {
+        // [Animal(X = 1)] binds X to AnimalAttribute, not implicit this — after
+        // pushing X+Tagged the attribute would be invalid.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AttributeNamedArgReceiverFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        var animal = ExtractTypeBody(text, "AnimalAttribute");
+        var dog = ExtractTypeBody(text, "DogAttribute");
+        Assert.Contains("X", animal);
+        Assert.Contains("Tagged", animal);
+        Assert.DoesNotContain("X", dog);
+        Assert.DoesNotContain("Tagged", dog);
+    }
+
+    private const string LeaveAbstractEventRaiseInBatchFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public event System.Action? E;
+
+            public virtual void Raise()
+            {
+                E?.Invoke();
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_LeaveAbstractAllowsEventRaiseInCoMovingMember()
+    {
+        // leaveAbstract: E + Raise() co-move; Raise's E?.Invoke is copied to
+        // Dog override and must not reject the batch.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", LeaveAbstractEventRaiseInBatchFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("abstract", animal);
+        Assert.Contains("event", animal);
+        Assert.Contains("Raise", dog);
+        Assert.Contains("override", dog);
+        Assert.Contains("E?.Invoke", NormalizeNewlines(dog));
+    }
+
     private const string NestedGenericSiblingParamFile = """
         namespace TestApp;
 

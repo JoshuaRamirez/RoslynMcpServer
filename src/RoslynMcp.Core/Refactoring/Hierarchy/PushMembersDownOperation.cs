@@ -717,6 +717,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         bool leaveAbstract,
         CancellationToken cancellationToken)
     {
+        var source = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
         var members = new List<PushableMember>();
         foreach (var (name, symbol, syntax) in EnumerateDeclaredMembers(
                      typeDeclaration, semanticModel, cancellationToken))
@@ -734,6 +735,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             if (leaveAbstract && !CanBeAbstract(symbol))
                 continue;
 
+            // Nested types are not pushable. Skip members that depend on a
+            // private nested type of the source — derived targets cannot see it.
+            if (source != null &&
+                MemberDependsOnPrivateNestedType(symbol, syntax, semanticModel, source, cancellationToken))
+            {
+                continue;
+            }
+
             // Match FindMembersToPush naming: indexers use the symbol metadata
             // name (Item), not the EnumerateDeclaredMembers display form (this[]).
             var memberName = symbol is IPropertySymbol { IsIndexer: true } indexer
@@ -743,6 +752,107 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
 
         return members;
+    }
+
+    /// <summary>
+    /// True when <paramref name="member"/>'s signature or body references a
+    /// <c>private</c> nested type of <paramref name="source"/>. Those nested
+    /// types are not in the pushable set, so copying the member alone leaves
+    /// an inaccessible type name on the derived target.
+    /// </summary>
+    private static bool MemberDependsOnPrivateNestedType(
+        ISymbol member,
+        MemberDeclarationSyntax syntax,
+        SemanticModel model,
+        INamedTypeSymbol source,
+        CancellationToken cancellationToken)
+    {
+        foreach (var type in EnumerateMemberSignatureTypes(member))
+        {
+            if (ReferencesPrivateNestedType(type, source))
+                return true;
+        }
+
+        foreach (var node in syntax.DescendantNodesAndSelf())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (node is not TypeSyntax and not IdentifierNameSyntax and not GenericNameSyntax)
+                continue;
+
+            var bound = model.GetTypeInfo(node, cancellationToken).Type
+                ?? model.GetSymbolInfo(node, cancellationToken).Symbol as ITypeSymbol;
+            if (ReferencesPrivateNestedType(bound, source))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<ITypeSymbol> EnumerateMemberSignatureTypes(ISymbol member)
+    {
+        switch (member)
+        {
+            case IMethodSymbol method:
+                yield return method.ReturnType;
+                foreach (var parameter in method.Parameters)
+                    yield return parameter.Type;
+                yield break;
+            case IPropertySymbol property:
+                yield return property.Type;
+                foreach (var parameter in property.Parameters)
+                    yield return parameter.Type;
+                yield break;
+            case IFieldSymbol field:
+                yield return field.Type;
+                yield break;
+            case IEventSymbol evt:
+                yield return evt.Type;
+                yield break;
+        }
+    }
+
+    private static bool ReferencesPrivateNestedType(ITypeSymbol? type, INamedTypeSymbol source)
+    {
+        if (type == null || type.Kind == Microsoft.CodeAnalysis.SymbolKind.ErrorType)
+            return false;
+
+        switch (type)
+        {
+            case IArrayTypeSymbol array:
+                return ReferencesPrivateNestedType(array.ElementType, source);
+            case IPointerTypeSymbol pointer:
+                return ReferencesPrivateNestedType(pointer.PointedAtType, source);
+            case INamedTypeSymbol named:
+                if (IsPrivateNestedOf(named, source))
+                    return true;
+                foreach (var arg in named.TypeArguments)
+                {
+                    if (ReferencesPrivateNestedType(arg, source))
+                        return true;
+                }
+
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    private static bool IsPrivateNestedOf(INamedTypeSymbol type, INamedTypeSymbol source)
+    {
+        for (var current = type; current != null; current = current.ContainingType)
+        {
+            if (current.ContainingType == null)
+                return false;
+
+            if (SymbolEqualityComparer.Default.Equals(current.ContainingType, source) ||
+                SymbolEqualityComparer.Default.Equals(
+                    current.ContainingType.OriginalDefinition, source.OriginalDefinition))
+            {
+                return current.DeclaredAccessibility == Accessibility.Private;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -1508,6 +1618,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return "object";
         }
 
+        // Method type parameters are distinct symbols (X vs Y) but collide by
+        // ordinal in C# declaration identity — encode as #M{n}.
+        if (type is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } methodTp)
+            return "#M" + methodTp.Ordinal;
+
         switch (type)
         {
             case IArrayTypeSymbol array:
@@ -1772,6 +1887,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return WillHaveMemberAfterPush(patternReceiver, targets);
         }
 
+        // Attribute named arguments (`[Animal(X = 1)]`) bind to the attribute
+        // type, not implicit this on the containing member.
+        if (name != null &&
+            TryGetAttributeNamedArgumentReceiver(name, model, out var attributeReceiver))
+        {
+            return WillHaveMemberAfterPush(attributeReceiver, targets);
+        }
+
         // Simple name / implicit this — moves with the containing batch member.
         return true;
     }
@@ -1806,7 +1929,44 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return patternReceiver;
         }
 
+        if (name != null &&
+            TryGetAttributeNamedArgumentReceiver(name, model, out var attributeReceiver))
+        {
+            return attributeReceiver;
+        }
+
         return model.GetEnclosingSymbol(node.SpanStart)?.ContainingType;
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is an attribute named argument
+    /// (<c>[Animal(X = 1)]</c>). Sets <paramref name="attributeType"/> to the
+    /// attribute class the named property binds on.
+    /// </summary>
+    private static bool TryGetAttributeNamedArgumentReceiver(
+        SimpleNameSyntax name,
+        SemanticModel model,
+        out ITypeSymbol? attributeType)
+    {
+        attributeType = null;
+        if (name.Parent is not NameEqualsSyntax nameEquals ||
+            nameEquals.Parent is not AttributeArgumentSyntax ||
+            nameEquals.Name != name)
+        {
+            return false;
+        }
+
+        var attribute = name.Ancestors().OfType<AttributeSyntax>().FirstOrDefault();
+        if (attribute == null)
+            return false;
+
+        attributeType = model.GetTypeInfo(attribute).Type
+            ?? model.GetTypeInfo(attribute.Name).Type
+            ?? (model.GetSymbolInfo(attribute).Symbol as IMethodSymbol)?.ContainingType
+            ?? (model.GetSymbolInfo(attribute.Name).Symbol as IMethodSymbol)?.ContainingType
+            ?? model.GetSymbolInfo(attribute.Name).Symbol as ITypeSymbol;
+
+        return attributeType != null;
     }
 
     /// <summary>
@@ -2162,11 +2322,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                     if (location.IsImplicit || location.Location.SourceTree == null)
                         continue;
 
-                    if (member.Syntax.SyntaxTree == location.Location.SourceTree &&
-                        member.Syntax.Span.Contains(location.Location.SourceSpan))
-                    {
+                    // Raises inside any co-moving batch member are copied to
+                    // targets with the event override; only raises that remain
+                    // on the source (outside the batch) are illegal.
+                    if (IsReferenceInsidePushBatch(location.Location, members))
                         continue;
-                    }
 
                     var document = location.Document;
                     var root = await document.GetSyntaxRootAsync(cancellationToken);
