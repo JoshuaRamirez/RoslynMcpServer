@@ -87,6 +87,40 @@ public class ExtractConstantOperationTests
         """;
 
     [SkippableFact]
+    public async Task ExtractConstant_SingleSite_Public_ExtractsFromInterfaceDefaultMember()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IHost
+            {
+                int Run() => 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var span = FindSpan(source, "42");
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            ConstantName = "Default",
+            Visibility = "public"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public const int Default = 42;", updated, StringComparison.Ordinal);
+        Assert.Contains("int Run() => Default;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("int Run() => 42;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_OmittedAllFiles_KeepsSingleSiteExtract()
     {
         const string source = """

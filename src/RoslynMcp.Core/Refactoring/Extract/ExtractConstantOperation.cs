@@ -181,13 +181,10 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             throw new RefactoringException(ErrorCodes.TypeNotFound, "Literal must be inside a type declaration.");
         }
 
-        if (containingType is InterfaceDeclarationSyntax)
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidTargetType,
-                "Cannot extract a constant into an interface.");
-        }
-
+        // Interfaces remain valid single-site targets (public const is legal in
+        // default interface members). Bulk allFiles still skips interfaces via
+        // CollectEligibleLiterals / TryExtractOne — that skip must not regress
+        // omitted/false behavior (Codex P2).
         if (IsSpecialMinValueUnaryOperand(literal))
         {
             throw new RefactoringException(
