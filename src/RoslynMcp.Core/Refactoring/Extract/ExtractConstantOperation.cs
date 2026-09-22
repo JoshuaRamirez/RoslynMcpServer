@@ -552,8 +552,9 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
     /// <summary>
     /// Collects every <see cref="LiteralExpressionSyntax"/> in
     /// <paramref name="root"/> that is a compile-time constant inside a type
-    /// declaration and is not already the initializer of a <c>const</c> field.
-    /// Deterministic <c>SpanStart</c> then span-length order.
+    /// declaration, outside attribute arguments, and not already the initializer
+    /// of a <c>const</c> field. Deterministic <c>SpanStart</c> then
+    /// span-length order.
     /// </summary>
     internal static IReadOnlyList<LiteralExpressionSyntax> CollectEligibleLiterals(
         SyntaxNode root,
@@ -564,6 +565,9 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             .Where(literal =>
             {
                 if (literal.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault() == null)
+                    return false;
+
+                if (literal.Ancestors().OfType<AttributeSyntax>().Any())
                     return false;
 
                 // Already part of a const field — do not re-extract.

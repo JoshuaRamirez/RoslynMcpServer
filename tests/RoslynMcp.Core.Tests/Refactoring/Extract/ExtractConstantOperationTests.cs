@@ -73,6 +73,19 @@ public class ExtractConstantOperationTests
         }
         """;
 
+    private const string TypeAttributeLiteralFile = """
+        using System;
+
+        [Obsolete("hi")]
+        public class AttributeHost
+        {
+            public int Run()
+            {
+                return 42;
+            }
+        }
+        """;
+
     [SkippableFact]
     public async Task ExtractConstant_OmittedAllFiles_KeepsSingleSiteExtract()
     {
@@ -341,6 +354,26 @@ public class ExtractConstantOperationTests
         Assert.DoesNotContain("return 7 + 7;", updated, StringComparison.Ordinal);
         // Only one const field for the value when replaceAll collapses matches.
         Assert.Equal(1, CountOccurrences(updated, "const int _7"));
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsAttributeLiterals()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("AttributeHost.cs", TypeAttributeLiteralFile));
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["AttributeHost.cs"]));
+        Assert.Contains("[Obsolete(\"hi\")]", updated, StringComparison.Ordinal);
+        Assert.Contains("const int _42", updated, StringComparison.Ordinal);
+        Assert.Contains("return _42;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("[Obsolete(Hi)]", updated, StringComparison.Ordinal);
     }
 
     #region Helpers
