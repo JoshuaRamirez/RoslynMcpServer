@@ -2701,6 +2701,137 @@ public class IntroduceFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task IntroduceField_StaticField_ImplicitInstanceGenericCall_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Get<T>() => 1;
+
+                public static int Capture()
+                {
+                    int n = new Calculator().Get<int>();
+                    return n;
+                }
+
+                public int CaptureInstance()
+                {
+                    int n = Get<int>();
+                    return n;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "n = Get<int>()");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new IntroduceFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                FieldName = "_n",
+                IsStatic = true
+            }));
+
+        Assert.Equal(ErrorCodes.ExpressionNotFieldInitializable, ex.ErrorCode);
+        var unchanged = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("int n = Get<int>();", unchanged, StringComparison.Ordinal);
+        Assert.DoesNotContain("private static int _n", unchanged, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_StaticField_PromotesExplicitReceiverGenericCall()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Helper
+            {
+                public int Get<T>() => 1;
+            }
+
+            public static class Calculator
+            {
+                public static int Capture()
+                {
+                    int n = new Helper().Get<int>();
+                    return n;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "n = new Helper().Get<int>()");
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            FieldName = "_n",
+            IsStatic = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private static int _n = new Helper().Get<int>();", updated, StringComparison.Ordinal);
+        Assert.Contains("return Calculator._n;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_PromotesStaticLocalsWithExplicitReceiverGenericCall()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Helper
+            {
+                public int Get<T>() => 1;
+            }
+
+            public static class Calculator
+            {
+                public static int Capture()
+                {
+                    int n = new Helper().Get<int>();
+                    return n;
+                }
+
+                public static int Clean()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true,
+            IsStatic = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private static int n = new Helper().Get<int>();", updated, StringComparison.Ordinal);
+        Assert.Contains("private static int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("                    int n = new Helper().Get<int>();", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task IntroduceField_LocalWithNameofThis_Throws()
     {
         const string source = """

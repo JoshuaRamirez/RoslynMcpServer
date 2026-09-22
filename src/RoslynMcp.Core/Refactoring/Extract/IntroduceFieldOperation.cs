@@ -1247,7 +1247,12 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
                     $"Expression captures local function '{localFunction.Name}'.");
             }
 
-            if (isStaticField && symbol is ISymbol { IsStatic: false, Kind: not Microsoft.CodeAnalysis.SymbolKind.Namespace and not Microsoft.CodeAnalysis.SymbolKind.NamedType })
+            // Static field initializers may call instance members on an explicit
+            // other-object receiver (e.g. new Helper().Get<int>()). Only reject
+            // containing-instance access (Codex P2 on #1316).
+            if (isStaticField &&
+                symbol is ISymbol { IsStatic: false, Kind: not Microsoft.CodeAnalysis.SymbolKind.Namespace and not Microsoft.CodeAnalysis.SymbolKind.NamedType } &&
+                IsAccessedViaContainingInstance(ident, expression, semanticModel, cancellationToken))
             {
                 throw new RefactoringException(
                     ErrorCodes.ExpressionNotFieldInitializable,
