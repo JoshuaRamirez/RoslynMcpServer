@@ -1,12 +1,13 @@
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Extract;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring;
 
 /// <summary>
-/// Tests for ExtractConstantParams validation (mirrors ExtractConstantOperation.ValidateParams rules for end bounds).
+/// Tests for ExtractConstantParams validation via ExtractConstantOperation.Validate.
 /// </summary>
 public class ExtractConstantParamsValidationTests
 {
@@ -16,126 +17,241 @@ public class ExtractConstantParamsValidationTests
             : $"/test/file{extension}";
 
     [Fact]
-    public void ValidateParams_InvalidEndLine_ThrowsException()
+    public void Validate_AllFilesTrue_WithoutSourceFileOrConstantName_DoesNotThrow()
     {
-        var @params = new ExtractConstantParams
+        ExtractConstantOperation.Validate(new ExtractConstantParams
         {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 1,
-            StartColumn = 1,
-            EndLine = 0,
-            EndColumn = 10,
-            ConstantName = "ExtractedConstant"
-        };
-
-        var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
-
-        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+            AllFiles = true
+        });
     }
 
     [Fact]
-    public void ValidateParams_InvalidEndColumn_ThrowsException()
+    public void Validate_AllFilesTrue_WithConstantName_Throws()
     {
-        var @params = new ExtractConstantParams
-        {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 1,
-            StartColumn = 1,
-            EndLine = 5,
-            EndColumn = 0,
-            ConstantName = "ExtractedConstant"
-        };
-
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractConstantOperation.Validate(new ExtractConstantParams
+            {
+                AllFiles = true,
+                ConstantName = "MaxRetries"
+            }));
 
-        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("constantName", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void ValidateParams_SelectionEndBeforeStart_ThrowsException()
+    public void Validate_AllFilesTrue_WithStartLine_Throws()
     {
-        var @params = new ExtractConstantParams
-        {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 5,
-            StartColumn = 1,
-            EndLine = 3,
-            EndColumn = 10,
-            ConstantName = "ExtractedConstant"
-        };
-
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractConstantOperation.Validate(new ExtractConstantParams
+            {
+                AllFiles = true,
+                StartLine = 1
+            }));
 
-        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("startLine", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void ValidateParams_SameLineExclusiveEndEqualStart_ThrowsException()
+    public void Validate_AllFilesTrue_WithSpan_Throws()
     {
-        var @params = new ExtractConstantParams
-        {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 5,
-            StartColumn = 10,
-            EndLine = 5,
-            EndColumn = 10,
-            ConstantName = "ExtractedConstant"
-        };
-
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractConstantOperation.Validate(new ExtractConstantParams
+            {
+                AllFiles = true,
+                StartLine = 1,
+                StartColumn = 1,
+                EndLine = 1,
+                EndColumn = 2
+            }));
 
-        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
     [Fact]
-    public void ValidateParams_SameLineColumnEndBeforeStart_ThrowsException()
+    public void Validate_AllFilesTrue_RelativeSourceFile_Throws()
     {
-        var @params = new ExtractConstantParams
-        {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 5,
-            StartColumn = 10,
-            EndLine = 5,
-            EndColumn = 5,
-            ConstantName = "ExtractedConstant"
-        };
-
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractConstantOperation.Validate(new ExtractConstantParams
+            {
+                AllFiles = true,
+                SourceFile = "Types.cs"
+            }));
 
-        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
     }
 
-    /// <summary>
-    /// Mimics ExtractConstantOperation.ValidateParams line/column/selection rules (before File.Exists),
-    /// matching ExtractMethodParamsValidationTests so invalid ends are asserted without a real file.
-    /// </summary>
-    private static void ThrowIfInvalidParams(ExtractConstantParams @params)
+    [Fact]
+    public void Validate_AllFilesTrue_MissingSourceFile_Throws()
     {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractConstantOperation.Validate(new ExtractConstantParams
+            {
+                AllFiles = true,
+                SourceFile = AbsoluteTestPath()
+            }));
 
-        if (string.IsNullOrWhiteSpace(@params.ConstantName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "constantName is required.");
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
 
-        if (!Path.IsPathRooted(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutStartLine_Throws()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractConstantAllFilesFalse.cs");
+        File.WriteAllText(file, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractConstantOperation.Validate(new ExtractConstantParams
+                {
+                    AllFiles = false,
+                    SourceFile = file,
+                    ConstantName = "MaxRetries",
+                    StartColumn = 1,
+                    EndLine = 1,
+                    EndColumn = 2
+                }));
 
-        if (@params.StartLine < 1 || @params.EndLine < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line numbers must be >= 1.");
+            Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+            Assert.Contains("startLine", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
 
-        if (@params.StartColumn < 1 || @params.EndColumn < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column numbers must be >= 1.");
+    [Fact]
+    public void Validate_InvalidEndLine_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractConstantInvalidEnd.cs");
+        File.WriteAllText(file, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractConstantOperation.Validate(new ExtractConstantParams
+                {
+                    SourceFile = file,
+                    StartLine = 1,
+                    StartColumn = 1,
+                    EndLine = 0,
+                    EndColumn = 10,
+                    ConstantName = "ExtractedConstant"
+                }));
 
-        if (@params.StartLine > @params.EndLine ||
-            (@params.StartLine == @params.EndLine && @params.StartColumn >= @params.EndColumn))
-            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "Selection start must be before end.");
+            Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
 
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+    [Fact]
+    public void Validate_InvalidEndColumn_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractConstantInvalidEndCol.cs");
+        File.WriteAllText(file, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractConstantOperation.Validate(new ExtractConstantParams
+                {
+                    SourceFile = file,
+                    StartLine = 1,
+                    StartColumn = 1,
+                    EndLine = 5,
+                    EndColumn = 0,
+                    ConstantName = "ExtractedConstant"
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void Validate_SelectionEndBeforeStart_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractConstantBadRange.cs");
+        File.WriteAllText(file, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractConstantOperation.Validate(new ExtractConstantParams
+                {
+                    SourceFile = file,
+                    StartLine = 5,
+                    StartColumn = 1,
+                    EndLine = 3,
+                    EndColumn = 10,
+                    ConstantName = "ExtractedConstant"
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void Validate_SameLineExclusiveEndEqualStart_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractConstantEqualEnd.cs");
+        File.WriteAllText(file, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractConstantOperation.Validate(new ExtractConstantParams
+                {
+                    SourceFile = file,
+                    StartLine = 5,
+                    StartColumn = 10,
+                    EndLine = 5,
+                    EndColumn = 10,
+                    ConstantName = "ExtractedConstant"
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Extract constant", ExtractConstantOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Extract 2 constants", ExtractConstantOperation.BuildAllFilesDescription(2));
+    }
+
+    [Theory]
+    [InlineData("42", "_42")]
+    [InlineData("hello world", "HelloWorld")]
+    [InlineData("true", "True")]
+    [InlineData("hi", "Hi")]
+    public void DeriveConstantNameFromLiteral_SanitizesValueText(string valueText, string expected)
+    {
+        var literal = valueText switch
+        {
+            "true" => Microsoft.CodeAnalysis.CSharp.SyntaxFactory.LiteralExpression(
+                Microsoft.CodeAnalysis.CSharp.SyntaxKind.TrueLiteralExpression),
+            "42" => Microsoft.CodeAnalysis.CSharp.SyntaxFactory.LiteralExpression(
+                Microsoft.CodeAnalysis.CSharp.SyntaxKind.NumericLiteralExpression,
+                Microsoft.CodeAnalysis.CSharp.SyntaxFactory.Literal(42)),
+            _ => Microsoft.CodeAnalysis.CSharp.SyntaxFactory.LiteralExpression(
+                Microsoft.CodeAnalysis.CSharp.SyntaxKind.StringLiteralExpression,
+                Microsoft.CodeAnalysis.CSharp.SyntaxFactory.Literal(valueText))
+        };
+
+        Assert.Equal(expected, ExtractConstantOperation.DeriveConstantNameFromLiteral(literal));
     }
 }
