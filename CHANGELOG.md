@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+- Extracted shared `AllFilesDocumentHelpers.EnumerateCsharpDocuments` + `GroupByLinkedPath` + `CoalesceLinkedDocumentTextAsync` and replaced identical allFiles copies across IntroduceField / ExtractConstant / IntroduceParameter / InlineMethod / ChangeSignature (Enumerate+GroupBy also on InlineVariable / ConvertToBlockBody) (#1358)
+
 ## [0.6.4] - 2026-09-22
 
 ### Changed
