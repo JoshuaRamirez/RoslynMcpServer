@@ -1489,6 +1489,16 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 return TypeCollisionKey(pointer.PointedAtType) + "*";
             case INamedTypeSymbol { IsGenericType: true, IsUnboundGenericType: false } named
                 when named.TypeArguments.Length > 0:
+                // Nested generics under a generic outer (Outer<T>.A<U> vs
+                // Outer<T>.B<U>) must keep the nested name. Truncating at the
+                // outer's first '<' would collapse both to the same head.
+                if (named.ContainingType != null)
+                {
+                    var containing = TypeCollisionKey(named.ContainingType);
+                    var nestedArgs = string.Join(", ", named.TypeArguments.Select(TypeCollisionKey));
+                    return containing + "." + named.Name + "<" + nestedArgs + ">";
+                }
+
                 var definition = named.OriginalDefinition.ToDisplayString(
                     SymbolDisplayFormat.FullyQualifiedFormat);
                 var typeArgStart = definition.IndexOf('<');
@@ -2259,7 +2269,12 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         // skip them when leaveAbstract so both definition + implementation parts
         // are not rewritten into invalid semicolon-only abstract partial decls.
         IMethodSymbol method => !method.IsStatic && !IsPartialMethodSymbol(method),
-        IPropertySymbol property => !property.IsStatic && (!property.IsIndexer || CanPushIndexerAsAbstract(property)),
+        // Explicit-interface properties (int IFoo.P) cannot become abstract —
+        // same as events/indexers (illegal explicit-interface + abstract).
+        IPropertySymbol property =>
+            !property.IsStatic
+            && property.ExplicitInterfaceImplementations.Length == 0
+            && (!property.IsIndexer || CanPushIndexerAsAbstract(property)),
         IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
         _ => false
     };

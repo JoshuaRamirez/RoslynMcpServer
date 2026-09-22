@@ -3863,6 +3863,44 @@ public class PushMembersDownOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_ExplicitInterfaceProperty_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IFoo
+            {
+                int P { get; }
+            }
+
+            public class Animal : IFoo
+            {
+                int IFoo.P => 1;
+            }
+
+            public class Dog : Animal
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["P"],
+                LeaveAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     #endregion
 
     #region allFiles
@@ -4052,6 +4090,51 @@ public class PushMembersDownOperationTests
         var key1 = PushMembersDownOperation.DeclarationCollisionKeyForTarget(
             methods[1], rootType, middleType);
         Assert.Equal(key0, key1);
+    }
+
+    [Fact]
+    public void DeclarationCollisionKey_PreservesNestedGenericSiblingIdentity()
+    {
+        // Outer<int>.A<string> vs Outer<int>.B<string> must remain distinct;
+        // truncating at the outer first '<' would falsely collide both.
+        var tree = CSharpSyntaxTree.ParseText("""
+            class Outer<T>
+            {
+                public class A<U> { }
+                public class B<U> { }
+            }
+
+            class Root<T, U>
+            {
+                public int M(T value) { return 0; }
+                public int M(U value) { return 1; }
+            }
+
+            class Middle : Root<Outer<int>.A<string>, Outer<int>.B<string>>
+            {
+            }
+            """);
+        var compilation = CSharpCompilation.Create(
+            "NestedGenericCollisionKeyTest",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var rootType = model.GetDeclaredSymbol(
+            tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+                .First(c => c.Identifier.Text == "Root"))!;
+        var middleType = model.GetDeclaredSymbol(
+            tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+                .First(c => c.Identifier.Text == "Middle"))!;
+        var methods = rootType.GetMembers("M").OfType<IMethodSymbol>().ToList();
+        Assert.Equal(2, methods.Count);
+
+        var key0 = PushMembersDownOperation.DeclarationCollisionKeyForTarget(
+            methods[0], rootType, middleType);
+        var key1 = PushMembersDownOperation.DeclarationCollisionKeyForTarget(
+            methods[1], rootType, middleType);
+        Assert.NotEqual(key0, key1);
+        Assert.Contains(".A<", key0, StringComparison.Ordinal);
+        Assert.Contains(".B<", key1, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -5579,6 +5662,121 @@ public class PushMembersDownOperationTests
         Assert.Contains("X", ExtractTypeBody(text, "Dog"));
         Assert.Contains("Matches", ExtractTypeBody(text, "Dog"));
         Assert.Contains("this is { X: 1 }", ExtractTypeBody(text, "Dog"));
+    }
+
+    private const string LeaveAbstractExplicitInterfacePropertyIface = """
+        namespace TestApp;
+
+        public interface IFoo
+        {
+            int P { get; }
+        }
+        """;
+
+    private const string LeaveAbstractExplicitInterfacePropertyFile = """
+        namespace TestApp;
+
+        public class Animal : IFoo
+        {
+            int IFoo.P => 1;
+
+            public virtual int Speak()
+            {
+                return 1;
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_LeaveAbstractSkipsExplicitInterfaceProperty()
+    {
+        // leaveAbstract must not rewrite `int IFoo.P` into illegal
+        // explicit-interface + abstract. Skip it; still abstract Speak.
+        // Keep IFoo in another file + sourceFile filter so allFiles does not
+        // also push the interface member onto Animal.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("IFoo.cs", LeaveAbstractExplicitInterfacePropertyIface),
+            ("Animal.cs", LeaveAbstractExplicitInterfacePropertyFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            LeaveAbstract = true,
+            SourceFile = workspace.SourcePaths["Animal.cs"]
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("IFoo.P", animal);
+        Assert.DoesNotContain("abstract int IFoo", NormalizeNewlines(text));
+        Assert.DoesNotContain("abstract IFoo", NormalizeNewlines(text));
+        Assert.Contains("abstract", animal);
+        Assert.Contains("Speak", animal);
+        Assert.Contains("Speak", dog);
+        Assert.Contains("override", dog);
+        Assert.DoesNotContain("IFoo.P", dog);
+    }
+
+    private const string NestedGenericSiblingParamFile = """
+        namespace TestApp;
+
+        public class Outer<T>
+        {
+            public class A<U>
+            {
+            }
+
+            public class B<U>
+            {
+            }
+        }
+
+        public class Root<T, U>
+        {
+            public int M(T value)
+            {
+                return 0;
+            }
+
+            public int M(U value)
+            {
+                return 1;
+            }
+        }
+
+        public class Middle : Root<Outer<int>.A<string>, Outer<int>.B<string>>
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_PushesDistinctNestedGenericSiblingParameters()
+    {
+        // M(T)+M(U) onto Outer<int>.A<string> / Outer<int>.B<string> must not
+        // false-collide when collision keys truncate at the outer first '<'.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Root.cs", NestedGenericSiblingParamFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        Assert.DoesNotContain("M(", ExtractTypeBody(text, "Root"));
+        var middle = ExtractTypeBody(text, "Middle");
+        Assert.Contains("Outer<int>.A<string>", middle);
+        Assert.Contains("Outer<int>.B<string>", middle);
+        Assert.Equal(2, CountOccurrences(middle, "public int M("));
     }
 
     #endregion
