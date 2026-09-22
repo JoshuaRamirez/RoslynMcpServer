@@ -4642,6 +4642,117 @@ public class PushMembersDownOperationTests
         Assert.DoesNotContain("Count", ExtractTypeBody(text, "Dog"));
     }
 
+    [Fact]
+    public void MemberCascadeKey_DistinguishesRefVersusValueOverloads()
+    {
+        var tree = CSharpSyntaxTree.ParseText("""
+            class Root
+            {
+                public void M(ref int i) { }
+                public void M(int i) { }
+            }
+            """);
+        var compilation = CSharpCompilation.Create(
+            "CascadeKeyRefTest",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var methods = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().ToList();
+        var refKey = PushMembersDownOperation.MemberCascadeKey(model.GetDeclaredSymbol(methods[0])!);
+        var valueKey = PushMembersDownOperation.MemberCascadeKey(model.GetDeclaredSymbol(methods[1])!);
+        Assert.NotEqual(refKey, valueKey);
+        Assert.Contains("ref", refKey, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private const string SameDeclarationDependentFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            private int _x;
+
+            public int Get()
+            {
+                return _x;
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_PushesInterdependentMembersInSameDeclaration()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", SameDeclarationDependentFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        Assert.DoesNotContain("_x", ExtractTypeBody(text, "Animal"));
+        Assert.DoesNotContain("Get", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("_x", ExtractTypeBody(text, "Dog"));
+        Assert.Contains("Get", ExtractTypeBody(text, "Dog"));
+    }
+
+    private const string RefCascadeRootFile = """
+        namespace TestApp;
+
+        public class Root
+        {
+            public int M(ref int i)
+            {
+                return i;
+            }
+        }
+
+        public class Middle : Root
+        {
+            public int M(int i)
+            {
+                return i;
+            }
+        }
+        """;
+
+    private const string RefCascadeLeafFile = """
+        namespace TestApp;
+
+        public class Leaf : Middle
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_CascadeKeepsRefVersusValueOverloads()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Leaf.cs", RefCascadeLeafFile),
+            ("Root.cs", RefCascadeRootFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var root = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        var leaf = await File.ReadAllTextAsync(workspace.SourcePaths["Leaf.cs"]);
+        Assert.DoesNotContain("M(ref", ExtractTypeBody(root, "Root"));
+        Assert.Contains("M(ref", ExtractTypeBody(root, "Middle"));
+        Assert.DoesNotContain("M(int", ExtractTypeBody(root, "Middle"));
+        Assert.Contains("M(int", ExtractTypeBody(leaf, "Leaf"));
+        Assert.DoesNotContain("M(ref", ExtractTypeBody(leaf, "Leaf"));
+    }
+
     #endregion
 
     #region Helpers

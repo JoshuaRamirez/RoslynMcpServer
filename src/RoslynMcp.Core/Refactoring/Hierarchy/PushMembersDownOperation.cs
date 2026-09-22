@@ -648,7 +648,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     private static readonly SymbolDisplayFormat CascadeKeyFormat = new(
         memberOptions: SymbolDisplayMemberOptions.IncludeParameters
             | SymbolDisplayMemberOptions.IncludeType,
-        parameterOptions: SymbolDisplayParameterOptions.IncludeType,
+        parameterOptions: SymbolDisplayParameterOptions.IncludeType
+            | SymbolDisplayParameterOptions.IncludeParamsRefOut,
         genericsOptions: SymbolDisplayGenericsOptions.IncludeTypeParameters);
 
     internal static string MemberCascadeKey(ISymbol symbol) =>
@@ -1307,11 +1308,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                     if (location.IsImplicit || location.Location.SourceTree == null)
                         continue;
 
-                    if (member.Syntax.SyntaxTree == location.Location.SourceTree &&
-                        member.Syntax.Span.Contains(location.Location.SourceSpan))
-                    {
+                    // Exempt references that live inside any member in this
+                    // push batch (same-declaration deps like field + getter),
+                    // not only the referenced member's own syntax span.
+                    if (IsReferenceInsidePushBatch(location.Location, members))
                         continue;
-                    }
 
                     var document = location.Document;
                     var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -1330,6 +1331,31 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 }
             }
         }
+    }
+
+
+    /// <summary>
+    /// True when <paramref name="location"/> falls inside the syntax of any
+    /// member in the current push batch (so interdependent members can move
+    /// together without being treated as remaining base references).
+    /// </summary>
+    private static bool IsReferenceInsidePushBatch(
+        Location location,
+        IReadOnlyList<PushableMember> members)
+    {
+        if (location.SourceTree == null)
+            return false;
+
+        foreach (var batchMember in members)
+        {
+            if (batchMember.Syntax.SyntaxTree == location.SourceTree &&
+                batchMember.Syntax.Span.Contains(location.SourceSpan))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static ITypeSymbol? GetReceiverType(SyntaxNode node, SemanticModel model)
