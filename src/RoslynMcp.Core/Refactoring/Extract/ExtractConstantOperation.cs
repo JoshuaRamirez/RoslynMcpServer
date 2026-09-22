@@ -1006,7 +1006,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (memberAccessibility is Accessibility.Private or Accessibility.NotApplicable)
             return false;
 
-        return !TypeIsAtLeastAsAccessibleAs(constantType, memberAccessibility);
+        return !TypeIsAtLeastAsAccessibleAs(constantType, memberAccessibility, containingTypeSymbol);
     }
 
     /// <summary>
@@ -1036,13 +1036,16 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         };
     }
 
-    private static bool TypeIsAtLeastAsAccessibleAs(ITypeSymbol type, Accessibility required)
+    private static bool TypeIsAtLeastAsAccessibleAs(
+        ITypeSymbol type,
+        Accessibility required,
+        INamedTypeSymbol? memberContainingType)
     {
         if (type is IArrayTypeSymbol array)
-            return TypeIsAtLeastAsAccessibleAs(array.ElementType, required);
+            return TypeIsAtLeastAsAccessibleAs(array.ElementType, required, memberContainingType);
 
         if (type is IPointerTypeSymbol pointer)
-            return TypeIsAtLeastAsAccessibleAs(pointer.PointedAtType, required);
+            return TypeIsAtLeastAsAccessibleAs(pointer.PointedAtType, required, memberContainingType);
 
         if (type is INamedTypeSymbol named)
         {
@@ -1050,14 +1053,45 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             if (!IsAtLeastAsAccessible(effective, required))
                 return false;
 
+            // Equal protected-family Accessibility values are not enough — a
+            // protected enum on Outer is not safe for protected const on a
+            // sibling/public nested Inner (CS0052). Conservatively require the
+            // type to be nested within the member's containing type (Codex P2).
+            if (IsProtectedFamily(required) && IsProtectedFamily(effective) &&
+                memberContainingType != null &&
+                !IsNamedTypeNestedWithin(named, memberContainingType))
+            {
+                return false;
+            }
+
             foreach (var argument in named.TypeArguments)
             {
-                if (!TypeIsAtLeastAsAccessibleAs(argument, required))
+                if (!TypeIsAtLeastAsAccessibleAs(argument, required, memberContainingType))
                     return false;
             }
         }
 
         return true;
+    }
+
+    private static bool IsProtectedFamily(Accessibility accessibility) =>
+        accessibility is Accessibility.Protected
+            or Accessibility.ProtectedOrInternal
+            or Accessibility.ProtectedAndInternal;
+
+    /// <summary>
+    /// True when <paramref name="type"/> is <paramref name="container"/> or is
+    /// nested (directly or indirectly) inside it.
+    /// </summary>
+    private static bool IsNamedTypeNestedWithin(INamedTypeSymbol type, INamedTypeSymbol container)
+    {
+        for (var current = type; current != null; current = current.ContainingType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(current, container))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -1372,7 +1406,10 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (typeDeclaration is RecordDeclarationSyntax record)
         {
             var semicolon = record.SemicolonToken;
+            // Preserve semicolon leading trivia (comments/directives) on the
+            // close brace before discarding the semicolon token (Codex P2).
             var close = SyntaxFactory.Token(SyntaxKind.CloseBraceToken)
+                .WithLeadingTrivia(semicolon.LeadingTrivia)
                 .WithTrailingTrivia(semicolon.TrailingTrivia);
             return record
                 .WithSemicolonToken(default)

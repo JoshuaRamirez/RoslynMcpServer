@@ -660,6 +660,69 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_Protected_SkipsProtectedEnumOnSiblingNestedType()
+    {
+        // Outer.State is protected; Inner is a public nested type — protected const
+        // State on Inner expands the accessibility domain beyond Outer (CS0052).
+        const string source = """
+            namespace TestApp;
+
+            public class Outer
+            {
+                protected enum State { Off = 0, On = 1 }
+
+                public class Inner
+                {
+                    private State Run()
+                    {
+                        State value = 0;
+                        return value;
+                    }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            Visibility = "protected"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SemicolonRecord_PreservesLeadingTriviaOnSemicolon()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record R(int X = 42)
+                // keep this
+                ;
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("keep this", updated, StringComparison.Ordinal);
+        Assert.Contains("const int _42", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_SemicolonRecord_AddsBracesAndConstant()
     {
         const string source = """
