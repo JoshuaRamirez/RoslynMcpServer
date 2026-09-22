@@ -1128,9 +1128,16 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             if (!SymbolEqualityComparer.Default.Equals(current, typeContainer))
                 continue;
 
-            // Public nested types can be subclassed outside typeContainer,
-            // expanding the protected member domain beyond the type's domain.
-            return memberContainer.DeclaredAccessibility is not Accessibility.Public;
+            // Only private / protected-family *effective* nested containers keep
+            // the member domain within typeContainer's protected domain.
+            // Declared internal/protected-internal can still narrow safely under
+            // a protected outer container, but assembly-visible effective
+            // access would reintroduce CS0052 for protected nested enum types.
+            var effectiveMemberAccessibility =
+                ContextValidTypeHelpers.GetEffectiveAccessibility(memberContainer);
+            return effectiveMemberAccessibility is Accessibility.Private
+                or Accessibility.Protected
+                or Accessibility.ProtectedAndInternal;
         }
 
         return false;

@@ -769,6 +769,92 @@ public class ExtractConstantOperationTests
         Assert.Empty(result.Changes!.FilesModified);
     }
 
+    [Theory]
+    [InlineData("internal")]
+    [InlineData("protected internal")]
+    public async Task ExtractConstant_AllFilesTrue_Protected_SkipsProtectedEnumOnAssemblyVisibleNestedType(
+        string nestedAccessibility)
+    {
+        const string sourceTemplate = """
+            namespace TestApp;
+
+            public class Outer
+            {
+                protected enum State { Off = 0, On = 1 }
+
+                {{ACCESSIBILITY}} class Inner
+                {
+                    private State Run()
+                    {
+                        State value = 0;
+                        return value;
+                    }
+                }
+            }
+            """;
+
+        var source = sourceTemplate.Replace("{{ACCESSIBILITY}}", nestedAccessibility, StringComparison.Ordinal);
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            Visibility = "protected"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [Theory]
+    [InlineData("internal")]
+    [InlineData("protected internal")]
+    public async Task ExtractConstant_AllFilesTrue_Protected_AllowsProtectedEnumOnEffectivelyProtectedNestedType(
+        string nestedAccessibility)
+    {
+        const string sourceTemplate = """
+            namespace TestApp;
+
+            public class Outer
+            {
+                protected enum State { Off = 0, On = 1 }
+
+                protected class Mid
+                {
+                    {{ACCESSIBILITY}} class Inner
+                    {
+                        private State Run()
+                        {
+                            State value = 0;
+                            return value;
+                        }
+                    }
+                }
+            }
+            """;
+
+        var source = sourceTemplate.Replace("{{ACCESSIBILITY}}", nestedAccessibility, StringComparison.Ordinal);
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            Visibility = "protected"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("protected const State _0 = 0;", updated, StringComparison.Ordinal);
+        Assert.Contains("State value = _0;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("State value = 0;", updated, StringComparison.Ordinal);
+    }
+
     [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_SemicolonRecord_PreservesLeadingTriviaOnSemicolon()
     {
