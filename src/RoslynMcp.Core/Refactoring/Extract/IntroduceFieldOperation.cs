@@ -1324,8 +1324,12 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             }
         }
 
-        if (initializer.DescendantNodesAndSelf().OfType<ThisExpressionSyntax>().Any(n => !IsInsideNameofArgument(n)) ||
-            initializer.DescendantNodesAndSelf().OfType<BaseExpressionSyntax>().Any(n => !IsInsideNameofArgument(n)))
+        // Explicit this/base are illegal in field initializers even when nested
+        // in nameof(...) (nameof(this.Value) / nameof(base.Value)). Bare
+        // nameof(Value) remains allowed via the name-scan nameof exemption
+        // (Codex P1 on #1316).
+        if (initializer.DescendantNodesAndSelf().OfType<ThisExpressionSyntax>().Any() ||
+            initializer.DescendantNodesAndSelf().OfType<BaseExpressionSyntax>().Any())
         {
             throw new RefactoringException(
                 ErrorCodes.ExpressionNotFieldInitializable,

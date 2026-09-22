@@ -2615,6 +2615,127 @@ public class IntroduceFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task IntroduceField_LocalWithNameofThis_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Value { get; set; }
+
+                public string CaptureNameofThis()
+                {
+                    string name = nameof(this.Value);
+                    return name;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "name = nameof(this.Value)");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new IntroduceFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                FieldName = "_name"
+            }));
+
+        Assert.Equal(ErrorCodes.ExpressionNotFieldInitializable, ex.ErrorCode);
+        var unchanged = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("string name = nameof(this.Value);", unchanged, StringComparison.Ordinal);
+        Assert.DoesNotContain("private string _name", unchanged, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_SkipsLocalsWithNameofThis()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int Value { get; set; }
+
+                public string CaptureNameofThis()
+                {
+                    string name = nameof(this.Value);
+                    return name;
+                }
+
+                public int Clean()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("string name = nameof(this.Value);", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private string name = nameof(this.Value);", updated, StringComparison.Ordinal);
+        Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return this.total;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_LocalWithNameofBase_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class BaseCalculator
+            {
+                public int Value { get; set; }
+            }
+
+            public class Calculator : BaseCalculator
+            {
+                public string CaptureNameofBase()
+                {
+                    string name = nameof(base.Value);
+                    return name;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "name = nameof(base.Value)");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new IntroduceFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                FieldName = "_name"
+            }));
+
+        Assert.Equal(ErrorCodes.ExpressionNotFieldInitializable, ex.ErrorCode);
+        var unchanged = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("string name = nameof(base.Value);", unchanged, StringComparison.Ordinal);
+        Assert.DoesNotContain("private string _name", unchanged, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task IntroduceField_LocalWithEscapedNameofThis_Throws()
     {
         const string source = """
