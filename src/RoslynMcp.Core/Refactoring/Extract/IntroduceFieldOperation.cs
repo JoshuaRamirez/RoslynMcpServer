@@ -529,6 +529,12 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         if (ContainsMethodTypeParameter(local.Type))
             return null;
 
+        // Same for method type parameters referenced only in the initializer
+        // (e.g. typeof(T) when the local is System.Type) — Codex P1 on #1316.
+        if (declarator.Initializer?.Value is { } initExpr &&
+            ReferencesMethodTypeParameter(initExpr, semanticModel, cancellationToken))
+            return null;
+
         // Readonly fields cannot be mutated outside a constructor; skip locals
         // written after initialization (assignment, ++/--, ref/out) when the
         // bulk walk propagates isReadonly (Codex P1 on PR #1308).
@@ -651,6 +657,16 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             initializer = declarator.Initializer?.Value;
             fieldType = local.Type;
             ValidateFieldType(fieldType);
+
+            // Initializer may reference method type parameters even when the
+            // declared type does not (e.g. System.Type type = typeof(T) in M<T>).
+            if (initializer != null &&
+                ReferencesMethodTypeParameter(initializer, semanticModel, cancellationToken))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.InvalidTargetType,
+                    "Cannot introduce a field whose initializer references a method type parameter.");
+            }
 
             if (initializer != null)
                 ValidateExpressionCaptures(initializer, semanticModel, local, @params.IsStatic, cancellationToken);
@@ -1086,6 +1102,27 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
     }
 
     /// <summary>
+    /// True when <paramref name="node"/> references a method type parameter
+    /// (e.g. <c>typeof(T)</c> inside <c>void M&lt;T&gt;()</c>), including nested
+    /// in constructed type names. Class type parameters return false.
+    /// </summary>
+    private static bool ReferencesMethodTypeParameter(
+        SyntaxNode node,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        foreach (var ident in node.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+        {
+            var symbol = semanticModel.GetSymbolInfo(ident, cancellationToken).Symbol
+                ?? semanticModel.GetTypeInfo(ident, cancellationToken).Type;
+            if (symbol is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method })
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// True when any post-declaration use writes the local (assignment,
     /// increment/decrement, or ref/out argument / ref expression).
     /// </summary>
@@ -1277,6 +1314,15 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         if (IsInsideNameofArgument(name))
             return false;
 
+        // Object/with-initializer and property-pattern designators first —
+        // extended patterns like is { Child.Value: 1 } are MemberAccess shaped
+        // but are not containing-instance reads (Codex P2).
+        if (IsObjectOrWithInitializerMemberDesignator(name))
+            return false;
+
+        if (IsPropertyPatternMemberDesignator(name))
+            return false;
+
         if (name.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == name)
         {
             return IsContainingInstanceReceiver(memberAccess.Expression, semanticModel, cancellationToken);
@@ -1288,16 +1334,6 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             return conditional != null &&
                 IsContainingInstanceReceiver(conditional.Expression, semanticModel, cancellationToken);
         }
-
-        // Object/with-initializer member designators (e.g. new Widget { Value = 1 })
-        // bind to instance members but are not reads of the containing instance.
-        if (IsObjectOrWithInitializerMemberDesignator(name))
-            return false;
-
-        // Property-pattern designators (e.g. is { Value: 1 }) likewise bind to
-        // instance members without reading the containing instance (Codex P2).
-        if (IsPropertyPatternMemberDesignator(name))
-            return false;
 
         // nameof(...) references are compile-time only and do not capture instance state.
         if (MethodSymbolHelpers.IsInNameof(name))
@@ -1350,7 +1386,22 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
     /// </summary>
     private static bool IsPropertyPatternMemberDesignator(SimpleNameSyntax name)
     {
-        return name.Parent is NameColonSyntax { Parent: SubpatternSyntax };
+        if (name.Parent is NameColonSyntax { Parent: SubpatternSyntax })
+            return true;
+
+        // Extended property patterns (e.g. is { Child.Value: 1 }) use
+        // ExpressionColonSyntax with a member-access designator (Codex P2).
+        // Only the left-hand designator is exempt — not names inside the nested pattern.
+        foreach (var colon in name.Ancestors().OfType<ExpressionColonSyntax>())
+        {
+            if (colon.Parent is not SubpatternSyntax)
+                continue;
+
+            if (colon.Expression.Span.Contains(name.Span))
+                return true;
+        }
+
+        return false;
     }
 
     private static bool IsContainingInstanceReceiver(

@@ -1898,6 +1898,81 @@ public class IntroduceFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_SkipsLocalsWithTypeofMethodTypeParameter()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public System.Type CaptureMethodType<T>()
+                {
+                    System.Type type = typeof(T);
+                    return type;
+                }
+
+                public int Clean()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return this.total;", updated, StringComparison.Ordinal);
+        Assert.Contains("System.Type type = typeof(T);", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private System.Type type = typeof(T);", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_LocalWithTypeofMethodTypeParameter_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public System.Type CaptureMethodType<T>()
+                {
+                    System.Type type = typeof(T);
+                    return type;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "type = typeof(T)");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new IntroduceFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                FieldName = "_type"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidTargetType, ex.ErrorCode);
+        var unchanged = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("System.Type type = typeof(T);", unchanged, StringComparison.Ordinal);
+        Assert.DoesNotContain("private System.Type _type", unchanged, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task IntroduceField_AllFilesTrue_PromotesLocalsWithPropertyPattern()
     {
         const string source = """
@@ -1983,6 +2058,97 @@ public class IntroduceFieldOperationTests
         Assert.Contains("is { Value: 1 }", updated, StringComparison.Ordinal);
         Assert.Contains("return this._matches;", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("bool matches = new Widget()", updated, StringComparison.Ordinal);
+    }
+
+
+    [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_PromotesLocalsWithExtendedPropertyPattern()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Node
+            {
+                public Node Child { get; set; } = null!;
+                public int Value { get; set; }
+            }
+
+            public class Calculator
+            {
+                public bool Match()
+                {
+                    bool matches = new Node() is { Child.Value: 1 };
+                    return matches;
+                }
+
+                public int Clean()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private bool matches = new Node()", updated, StringComparison.Ordinal);
+        Assert.Contains("is { Child.Value: 1 }", updated, StringComparison.Ordinal);
+        Assert.Contains("return this.matches;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("                    bool matches = new Node()", updated, StringComparison.Ordinal);
+        Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return this.total;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_LocalWithExtendedPropertyPattern_Promotes()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Node
+            {
+                public Node Child { get; set; } = null!;
+                public int Value { get; set; }
+            }
+
+            public class Calculator
+            {
+                public bool Match()
+                {
+                    bool matches = new Node() is { Child.Value: 1 };
+                    return matches;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "matches = new Node() is { Child.Value: 1 }");
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            FieldName = "_matches"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private bool _matches = new Node()", updated, StringComparison.Ordinal);
+        Assert.Contains("is { Child.Value: 1 }", updated, StringComparison.Ordinal);
+        Assert.Contains("return this._matches;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("bool matches = new Node()", updated, StringComparison.Ordinal);
     }
 
     [SkippableFact]
