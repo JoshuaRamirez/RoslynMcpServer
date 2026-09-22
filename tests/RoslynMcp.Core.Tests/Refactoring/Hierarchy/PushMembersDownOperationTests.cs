@@ -5626,6 +5626,152 @@ public class PushMembersDownOperationTests
         Assert.DoesNotContain("abstract partial", NormalizeNewlines(animalA + animalB));
     }
 
+
+    private const string PartialPropertyPairPartA = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            public partial int Age { get; }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    private const string PartialPropertyPairPartB = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            public partial int Age => 42;
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_PushesPartialPropertyDefinitionAndImplementationTogether()
+    {
+        // Defining + implementing partial property declarations share a cascade
+        // key but must both enter the batch and move together (same as methods).
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("AnimalA.cs", PartialPropertyPairPartA),
+            ("AnimalB.cs", PartialPropertyPairPartB));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var animalA = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalA.cs"]);
+        var animalB = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalB.cs"]);
+        Assert.DoesNotContain("Age", ExtractTypeBody(animalA, "Animal"));
+        Assert.DoesNotContain("Age", ExtractTypeBody(animalB, "Animal"));
+        var dog = ExtractTypeBody(animalA, "Dog");
+        Assert.Contains("partial class Dog", NormalizeNewlines(animalA));
+        Assert.Equal(2, CountOccurrences(dog, "partial int Age"));
+        Assert.Contains("partial int Age { get; }", NormalizeNewlines(dog));
+        Assert.Contains("=> 42", dog);
+        Assert.DoesNotContain("NotImplementedException", dog);
+    }
+
+    private const string PartialIndexerPairPartA = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            public partial int this[int i] { get; }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    private const string PartialIndexerPairPartB = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            public partial int this[int i] => i;
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_PushesPartialIndexerDefinitionAndImplementationTogether()
+    {
+        // Partial indexer definition + implementation must both enter the batch
+        // and move together; definition accessors stay semicolon-only.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("AnimalA.cs", PartialIndexerPairPartA),
+            ("AnimalB.cs", PartialIndexerPairPartB));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var animalA = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalA.cs"]);
+        var animalB = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalB.cs"]);
+        Assert.DoesNotContain("this[", ExtractTypeBody(animalA, "Animal"));
+        Assert.DoesNotContain("this[", ExtractTypeBody(animalB, "Animal"));
+        Assert.Contains("partial class Dog", NormalizeNewlines(animalA));
+        var dog = ExtractTypeBody(animalA, "Dog");
+        Assert.Equal(2, CountOccurrences(dog, "partial int this[int i]"));
+        Assert.Contains("{ get; }", dog);
+        Assert.Contains("=> i", dog);
+        Assert.DoesNotContain("NotImplementedException", dog);
+    }
+
+    private const string ExternMethodBulkFile = """
+        namespace TestApp;
+
+        using System.Runtime.InteropServices;
+
+        public class Animal
+        {
+            [DllImport("user32.dll")]
+            public static extern int MessageBeep(uint uType);
+
+            public int Speak()
+            {
+                return 1;
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_SkipsExternMethods()
+    {
+        // Extern/PInvoke methods must not enter automatic bulk selection —
+        // EnsureMethodBody would add a throwing body and produce invalid
+        // extern+body. Ordinary Speak still pushes.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", ExternMethodBulkFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        Assert.Contains("extern int MessageBeep", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("DllImport", ExtractTypeBody(text, "Animal"));
+        Assert.DoesNotContain("Speak", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("Speak", ExtractTypeBody(text, "Dog"));
+        Assert.DoesNotContain("MessageBeep", ExtractTypeBody(text, "Dog"));
+    }
+
     private const string ThisGovernedPropertyPatternFile = """
         namespace TestApp;
 

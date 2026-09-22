@@ -673,9 +673,9 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
             foreach (var member in FindMembersToPush(decl, names, model, cancellationToken))
             {
-                // Cascade keys alone collapse partial method definition +
-                // implementation pairs to one entry; keep both so the rewrite
-                // moves the matched pair together.
+                // Cascade keys alone collapse partial method/property/indexer
+                // definition + implementation pairs to one entry; keep both so
+                // the rewrite moves the matched pair together.
                 if (seenKeys.Add(MemberBatchIdentityKey(member.Symbol, member.Syntax)))
                     members.Add(member);
             }
@@ -718,6 +718,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             if (symbol == null || !IsSupportedMember(symbol))
                 continue;
 
+            // Extern/PInvoke methods stay bodyless; EnsureMethodBody would add a
+            // throwing body and produce invalid extern+body on the target.
+            if (symbol is IMethodSymbol { IsExtern: true })
+                continue;
+
             // When leaveAbstract is set, skip members that cannot become abstract
             // so ValidateMembersForPush does not discard the whole site.
             if (leaveAbstract && !CanBeAbstract(symbol))
@@ -755,23 +760,38 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     /// <summary>
     /// Collection-phase identity for type-wide batches. Same as
-    /// <see cref="MemberCascadeKey"/> except partial method definition and
-    /// implementation parts stay distinct (syntax span identity) so both
-    /// declarations enter the batch and move together.
+    /// <see cref="MemberCascadeKey"/> except partial method / property /
+    /// indexer definition and implementation parts stay distinct (syntax span
+    /// identity) so both declarations enter the batch and move together.
     /// </summary>
     internal static string MemberBatchIdentityKey(ISymbol symbol, MemberDeclarationSyntax syntax)
     {
         var key = MemberCascadeKey(symbol);
-        if (symbol is IMethodSymbol method &&
-            (method.IsPartialDefinition ||
-             method.PartialDefinitionPart != null ||
-             method.PartialImplementationPart != null))
-        {
-            var part = method.IsPartialDefinition ? "partial-def" : "partial-impl";
+        if (TryGetPartialPartLabel(symbol, out var part))
             return key + "|" + part + "|" + syntax.SpanStart;
-        }
 
         return key;
+    }
+
+    /// <summary>
+    /// Returns a stable partial-part label (<c>partial-def</c> /
+    /// <c>partial-impl</c>) when <paramref name="symbol"/> is one half of a
+    /// partial method, property, or indexer pair.
+    /// </summary>
+    private static bool TryGetPartialPartLabel(ISymbol symbol, out string part)
+    {
+        switch (symbol)
+        {
+            case IMethodSymbol method when IsPartialMethodSymbol(method):
+                part = method.IsPartialDefinition ? "partial-def" : "partial-impl";
+                return true;
+            case IPropertySymbol property when IsPartialPropertySymbol(property):
+                part = property.IsPartialDefinition ? "partial-def" : "partial-impl";
+                return true;
+            default:
+                part = "";
+                return false;
+        }
     }
 
     /// <summary>
@@ -1400,12 +1420,9 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             {
                 var key = DeclarationCollisionKeyForTarget(member.Symbol, source, target);
                 // Partial definition + implementation share declaration identity
-                // but are one legal method pair that must both land on the target.
-                if (member.Symbol is IMethodSymbol method &&
-                    (method.IsPartialDefinition || method.PartialDefinitionPart != null))
-                {
-                    key += method.IsPartialDefinition ? "|partial-def" : "|partial-impl";
-                }
+                // but are one legal pair that must both land on the target.
+                if (TryGetPartialPartLabel(member.Symbol, out var part))
+                    key += "|" + part;
 
                 if (!seen.Add(key))
                 {
@@ -2284,6 +2301,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         method.PartialDefinitionPart != null ||
         method.PartialImplementationPart != null;
 
+    private static bool IsPartialPropertySymbol(IPropertySymbol property) =>
+        property.IsPartialDefinition ||
+        property.PartialDefinitionPart != null ||
+        property.PartialImplementationPart != null;
+
     private static bool CanPushIndexerAsAbstract(IPropertySymbol indexer)
     {
         if (indexer.IsStatic || indexer.ExplicitInterfaceImplementations.Length > 0)
@@ -2732,6 +2754,10 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (method.Modifiers.Any(SyntaxKind.PartialKeyword))
             return method;
 
+        // Extern/PInvoke methods must stay bodyless (CS0179 if a body is added).
+        if (method.Modifiers.Any(SyntaxKind.ExternKeyword))
+            return method;
+
         return method
             .WithSemicolonToken(default)
             .WithBody(CreateNotImplementedBlock());
@@ -2745,6 +2771,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     private static IndexerDeclarationSyntax EnsureIndexerBodies(IndexerDeclarationSyntax indexer)
     {
         if (indexer.ExpressionBody != null || indexer.AccessorList == null)
+            return indexer;
+
+        // Partial indexer definitions must keep semicolon-only accessors;
+        // synthesizing bodies would turn the defining half into an implementation.
+        if (indexer.Modifiers.Any(SyntaxKind.PartialKeyword))
             return indexer;
 
         var changed = false;
@@ -2994,16 +3025,15 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             .WithTrailingTrivia(SyntaxFactory.ElasticCarriageReturnLineFeed));
 
         var updated = typeDecl.WithMembers(typeDecl.Members.AddRange(formatted));
-        // Partial methods are only legal on partial types.
-        if (members.Any(IsPartialMethodSyntax))
+        // Partial methods/properties/indexers are only legal on partial types.
+        if (members.Any(IsPartialMemberSyntax))
             updated = EnsurePartialTypeModifier(updated);
 
         return updated;
     }
 
-    private static bool IsPartialMethodSyntax(MemberDeclarationSyntax member) =>
-        member is MethodDeclarationSyntax method &&
-        method.Modifiers.Any(SyntaxKind.PartialKeyword);
+    private static bool IsPartialMemberSyntax(MemberDeclarationSyntax member) =>
+        member.Modifiers.Any(SyntaxKind.PartialKeyword);
 
     private static TypeDeclarationSyntax EnsurePartialTypeModifier(TypeDeclarationSyntax typeDecl)
     {
