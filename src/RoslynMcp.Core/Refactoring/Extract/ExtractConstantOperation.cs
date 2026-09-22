@@ -1019,7 +1019,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         foreach (var (decl, model) in EnumerateTypeDeclarationModels(
                      containingTypeSymbol, containingType, semanticModel, cancellationToken))
         {
-            foreach (var id in decl.DescendantNodes().OfType<IdentifierNameSyntax>())
+            foreach (var id in decl.DescendantNodes().OfType<SimpleNameSyntax>())
             {
                 if (!string.Equals(id.Identifier.ValueText, bareName, StringComparison.Ordinal))
                     continue;
@@ -1089,7 +1089,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
     /// </summary>
     private static bool IsStableQualifiedInheritedAccess(
         SemanticModel semanticModel,
-        IdentifierNameSyntax id,
+        SimpleNameSyntax id,
         INamedTypeSymbol containingTypeSymbol,
         CancellationToken cancellationToken)
     {

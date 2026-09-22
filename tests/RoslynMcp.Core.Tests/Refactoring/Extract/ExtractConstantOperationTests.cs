@@ -916,6 +916,44 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsHideWhenInheritedGenericMethodCallWouldRebind()
+    {
+        // Existing _42<int>() call must also block hide; GenericNameSyntax was
+        // previously missed by the inherited-use scan (Codex P1).
+        const string source = """
+            namespace TestApp;
+
+            public class Base
+            {
+                protected int _42<T>() => nameof(T).Length;
+            }
+
+            public class Derived : Base
+            {
+                public int Existing() => _42<int>();
+
+                public int Run()
+                {
+                    return 42;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_AllowsHideWhenOnlyBaseAccessUsesInheritedName()
     {
         // Explicit base._42 keeps binding after hide — safe to introduce Derived._42.
@@ -951,6 +989,43 @@ public class ExtractConstantOperationTests
         Assert.Contains("const int _42", updated, StringComparison.Ordinal);
         Assert.Contains("return _42;", updated, StringComparison.Ordinal);
         Assert.Contains("base._42", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_AllowsHideWhenOnlyTypeQualifiedGenericAccessUsesInheritedName()
+    {
+        // Base._42<int>() keeps selecting the inherited member after hide — safe to
+        // introduce Derived._42 (Codex P2).
+        const string source = """
+            namespace TestApp;
+
+            public class Base
+            {
+                public int _42<T>() => nameof(T).Length;
+            }
+
+            public class Derived : Base
+            {
+                public int Existing() => Base._42<int>();
+
+                public int Run() => 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("const int _42", updated, StringComparison.Ordinal);
+        Assert.Contains("=> _42;", updated, StringComparison.Ordinal);
+        Assert.Contains("Base._42<int>()", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("Existing() => _42", updated, StringComparison.Ordinal);
     }
 
     [SkippableFact]
