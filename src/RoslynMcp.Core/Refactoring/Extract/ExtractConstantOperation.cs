@@ -1050,10 +1050,14 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
                 foreach (var hide in hideTargets)
                 {
-                    // Lib.Foo / ns.Type: right-hand name selected through a receiver
-                    // is not rebound by introducing a member on containingType.
-                    if (IsTypeNamespaceOrAliasSymbol(hide) && IsRightHandOfDottedName(id))
+                    // Imported type/namespace/alias names only rebind when used as an
+                    // expression receiver (Foo.Value / Foo.Method()), not in pure type
+                    // syntax like Foo x / new Foo() / typeof(Foo) (Codex P2).
+                    if (IsTypeNamespaceOrAliasSymbol(hide) &&
+                        !CanImportedTypeNamespaceOrAliasUseBeShadowedByMember(id))
+                    {
                         continue;
+                    }
 
                     if (bound != null &&
                         (SymbolEqualityComparer.Default.Equals(bound, hide) ||
@@ -1103,30 +1107,40 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         symbol is INamespaceSymbol or ITypeSymbol or IAliasSymbol;
 
     /// <summary>
-    /// True when <paramref name="id"/> is the right-hand name of a dotted form
-    /// (<c>expr.Name</c>, <c>Ns.Type</c>, <c>expr?.Name</c>, <c>global::Name</c>).
+    /// True when an imported namespace/type/alias simple name can be shadowed by a
+    /// newly introduced member on the containing type — i.e. the name is used as
+    /// the receiver of a member access (<c>Foo.Value</c>, <c>Foo.Method()</c>), not
+    /// only in type syntax (<c>Foo x</c>, <c>new Foo()</c>, <c>typeof(Foo)</c>).
     /// </summary>
-    private static bool IsRightHandOfDottedName(SimpleNameSyntax id)
+    private static bool CanImportedTypeNamespaceOrAliasUseBeShadowedByMember(SimpleNameSyntax id)
     {
         if (id.Parent is MemberAccessExpressionSyntax memberAccess &&
-            ReferenceEquals(memberAccess.Name, id))
+            ReferenceEquals(memberAccess.Expression, id))
         {
             return true;
         }
 
+        // Lib.Foo / ns.Type / global::Foo on the right-hand side are namespace/type
+        // qualification sites, not value-rebind hazards.
+        if (id.Parent is MemberAccessExpressionSyntax nameAccess &&
+            ReferenceEquals(nameAccess.Name, id))
+        {
+            return false;
+        }
+
         if (id.Parent is MemberBindingExpressionSyntax)
-            return true;
+            return false;
 
         if (id.Parent is QualifiedNameSyntax qualified &&
             ReferenceEquals(qualified.Right, id))
         {
-            return true;
+            return false;
         }
 
         if (id.Parent is AliasQualifiedNameSyntax aliasQualified &&
             ReferenceEquals(aliasQualified.Name, id))
         {
-            return true;
+            return false;
         }
 
         return false;

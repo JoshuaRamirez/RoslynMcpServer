@@ -1175,17 +1175,9 @@ public class ExtractConstantOperationTests
     [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_SkipsHideWhenImportedTypeNameWouldRebind()
     {
-        // using Lib; + existing Foo.Value; extracting "foo" → const Foo rebinds
-        // Foo.Value through the field and can fail to compile (Codex P1).
-        // Lib has no LiteralExpressionSyntax so AllFiles cannot extract there.
-        const string lib = """
-            namespace Lib;
-
-            public class Foo
-            {
-                public static int Value => nameof(Foo).Length;
-            }
-            """;
+        // using Lib imports type Foo; Existing => Foo.Value binds through that type.
+        // Literal "foo" derives const name Foo — inserting C.Foo would rebind Foo.Value
+        // (Codex P1).
         const string source = """
             using Lib;
 
@@ -1199,12 +1191,62 @@ public class ExtractConstantOperationTests
             }
             """;
 
+        const string lib = """
+            namespace Lib;
+
+            public static class Foo
+            {
+                public const int Value = 7;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", source),
+            ("Lib.cs", lib));
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_AllowsImportedTypeNameInTypeOnlyContexts()
+    {
+        // Imported type names used only in type syntax (return type / object creation)
+        // are not shadowed by a new member named Foo, so extraction should proceed.
+        const string lib = """
+            namespace Lib;
+
+            public class Foo
+            {
+            }
+            """;
+        const string source = """
+            using Lib;
+
+            namespace TestApp;
+
+            public class C
+            {
+                public Foo Existing() => new Foo();
+
+                public string Run() => "foo";
+            }
+            """;
+
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
             ("Lib.cs", lib),
             ("C.cs", source));
         var operation = new ExtractConstantOperation(workspace.Context);
         var beforeLib = await File.ReadAllTextAsync(workspace.SourcePaths["Lib.cs"]);
-        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["C.cs"]);
 
         var result = await operation.ExecuteAsync(new ExtractConstantParams
         {
@@ -1213,8 +1255,11 @@ public class ExtractConstantOperationTests
 
         Assert.True(result.Success);
         Assert.Equal(beforeLib, await File.ReadAllTextAsync(workspace.SourcePaths["Lib.cs"]));
-        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["C.cs"]));
-        Assert.Empty(result.Changes!.FilesModified);
+        var updatedC = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["C.cs"]));
+        Assert.Contains("const string Foo = \"foo\";", updatedC, StringComparison.Ordinal);
+        Assert.Contains("public Foo Existing() => new Foo();", updatedC, StringComparison.Ordinal);
+        Assert.Contains("public string Run() => Foo;", updatedC, StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
     }
 
     [SkippableFact]
