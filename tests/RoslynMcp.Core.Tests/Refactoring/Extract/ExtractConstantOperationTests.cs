@@ -413,13 +413,13 @@ public class ExtractConstantOperationTests
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
         Assert.Contains("const", updated, StringComparison.Ordinal);
-        Assert.Contains("State _0", updated, StringComparison.Ordinal);
+        Assert.Contains("const State _0", updated, StringComparison.Ordinal);
         Assert.Contains("State value = _0;", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("const int _0", updated, StringComparison.Ordinal);
     }
 
     [SkippableFact]
-    public async Task ExtractConstant_AllFilesTrue_UsesNullableEnumConvertedTypeForZeroLiteral()
+    public async Task ExtractConstant_AllFilesTrue_UsesEnumConvertedTypeForNullableZeroLiteral()
     {
         const string source = """
             namespace TestApp;
@@ -446,7 +446,7 @@ public class ExtractConstantOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("State _0", updated, StringComparison.Ordinal);
+        Assert.Contains("const State _0", updated, StringComparison.Ordinal);
         Assert.Contains("State? value = _0;", updated, StringComparison.Ordinal);
         Assert.DoesNotContain("const int _0", updated, StringComparison.Ordinal);
     }
