@@ -192,6 +192,22 @@ public class ContextValidTypeHelpersTests
         Assert.Equal(Accessibility.Public, ContextValidTypeHelpers.GetEffectiveAccessibility(top));
     }
 
+    [Fact]
+    public void GetEffectiveAccessibility_InternalInProtected_IsPrivateProtected()
+    {
+        var compilation = CreateCompilation("""
+            public class Outer
+            {
+                protected class Middle
+                {
+                    internal class Inner { }
+                }
+            }
+            """);
+        var inner = compilation.GetTypeByMetadataName("Outer+Middle+Inner")!;
+        Assert.Equal(Accessibility.ProtectedAndInternal, ContextValidTypeHelpers.GetEffectiveAccessibility(inner));
+    }
+
     private static (SemanticModel Model, int Position, ITypeSymbol Type) BuildAtMarker(
         string source,
         string marker,

@@ -102,15 +102,55 @@ internal static class ContextValidTypeHelpers
     }
 
     /// <summary>
-    /// Declared accessibility of <paramref name="symbol"/> min'd with each
-    /// containing type. Same body as the two Convert copies.
+    /// Declared accessibility of <paramref name="symbol"/> intersected with each
+    /// containing type so protected/internal combinations collapse to
+    /// <see cref="Accessibility.ProtectedAndInternal"/> instead of an ordinal
+    /// minimum. Same body as the two Convert copies.
     /// </summary>
     internal static Accessibility GetEffectiveAccessibility(ISymbol symbol)
     {
         var current = symbol.DeclaredAccessibility;
         for (var container = symbol.ContainingType; container != null; container = container.ContainingType)
-            current = AccessibilityRankHelpers.MinAccessibility(current, container.DeclaredAccessibility);
+            current = IntersectAccessibility(current, container.DeclaredAccessibility);
 
         return current;
+    }
+
+    private static Accessibility IntersectAccessibility(Accessibility left, Accessibility right)
+    {
+        if (left == right)
+            return left;
+
+        if (left == Accessibility.NotApplicable)
+            return right;
+
+        if (right == Accessibility.NotApplicable)
+            return left;
+
+        if (left == Accessibility.Private || right == Accessibility.Private)
+            return Accessibility.Private;
+
+        if (left == Accessibility.Public)
+            return right;
+
+        if (right == Accessibility.Public)
+            return left;
+
+        if (left == Accessibility.ProtectedOrInternal)
+            return right;
+
+        if (right == Accessibility.ProtectedOrInternal)
+            return left;
+
+        if ((left == Accessibility.Protected && right == Accessibility.Internal) ||
+            (left == Accessibility.Internal && right == Accessibility.Protected))
+        {
+            return Accessibility.ProtectedAndInternal;
+        }
+
+        if (left == Accessibility.ProtectedAndInternal || right == Accessibility.ProtectedAndInternal)
+            return Accessibility.ProtectedAndInternal;
+
+        return Accessibility.Private;
     }
 }

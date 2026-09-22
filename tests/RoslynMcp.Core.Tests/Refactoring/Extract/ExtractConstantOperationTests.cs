@@ -747,6 +747,42 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_Protected_SkipsPrivateProtectedEffectiveEnumType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Outer
+            {
+                protected class Host
+                {
+                    internal enum State { Off = 0, On = 1 }
+
+                    private State Run()
+                    {
+                        State value = 0;
+                        return value;
+                    }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            Visibility = "protected"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_SkipsIntMinValueUnaryOperand()
     {
         // Digit separators must still be detected (Token.Text alone misses them).
