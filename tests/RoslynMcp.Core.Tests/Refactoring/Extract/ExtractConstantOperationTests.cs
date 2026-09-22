@@ -551,6 +551,53 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SameNamedTypes_InsertsIntoCorrectDeclaration()
+    {
+        // Top-level Host and Outer.Host share an identifier; replace must insert
+        // the const into Outer.Host (span identity), not the unrelated top-level Host.
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public int Unrelated() => 1;
+            }
+
+            public class Outer
+            {
+                public class Host
+                {
+                    public int Run()
+                    {
+                        return 42;
+                    }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return _42;", updated, StringComparison.Ordinal);
+        // Nested Host has the constant; top-level Host does not.
+        Assert.Contains("public class Outer", updated, StringComparison.Ordinal);
+        var outerHostIdx = updated.IndexOf("public class Outer", StringComparison.Ordinal);
+        var nestedHostIdx = updated.IndexOf("public class Host", outerHostIdx, StringComparison.Ordinal);
+        var constIdx = updated.IndexOf("const int _42", StringComparison.Ordinal);
+        Assert.True(constIdx > nestedHostIdx, "const should be inside Outer.Host");
+        var topHostIdx = updated.IndexOf("public class Host", StringComparison.Ordinal);
+        Assert.True(topHostIdx >= 0 && topHostIdx < outerHostIdx);
+        Assert.True(constIdx > outerHostIdx);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_SkipsDerivedNameEqualToContainingType()
     {
         const string source = """
