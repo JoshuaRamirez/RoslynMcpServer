@@ -916,9 +916,10 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
     /// <summary>
     /// True when <paramref name="bareName"/> already binds in scope at
     /// <paramref name="position"/> to a local, parameter, range variable, local
-    /// function, type parameter, or a member declared on a type other than
-    /// <paramref name="targetContainingType"/> (nested-type fields/consts) that
-    /// would capture an unqualified constant reference after rewrite (Codex P1).
+    /// function, type parameter, or a member declared on a type nested within
+    /// <paramref name="targetContainingType"/> that would still capture an
+    /// unqualified constant reference after the target declares the constant.
+    /// Inherited base members are not shadows — the new const hides them (Codex P2).
     /// </summary>
     private static bool WouldBeShadowedAtSite(
         SemanticModel semanticModel,
@@ -937,9 +938,14 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             if (symbol is ITypeParameterSymbol)
                 return true;
 
+            // Inherited base members are fine — a new const on the target type
+            // hides them. Only nested-type members (declared on a type nested
+            // inside the extraction target) still capture an unqualified name
+            // (Codex P2).
             if (symbol.ContainingType != null &&
                 targetContainingType != null &&
-                !SymbolEqualityComparer.Default.Equals(symbol.ContainingType, targetContainingType))
+                !SymbolEqualityComparer.Default.Equals(symbol.ContainingType, targetContainingType) &&
+                IsNamedTypeNestedWithin(symbol.ContainingType, targetContainingType))
             {
                 return true;
             }
@@ -1055,11 +1061,11 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
             // Equal protected-family Accessibility values are not enough — a
             // protected enum on Outer is not safe for protected const on a
-            // sibling/public nested Inner (CS0052). Conservatively require the
-            // type to be nested within the member's containing type (Codex P2).
+            // public nested Inner (CS0052), but is safe when the member type
+            // derives from the enum's declaring type (Codex P2).
             if (IsProtectedFamily(required) && IsProtectedFamily(effective) &&
                 memberContainingType != null &&
-                !IsNamedTypeNestedWithin(named, memberContainingType))
+                !IsProtectedTypeAccessibleFromMemberContainer(named, memberContainingType))
             {
                 return false;
             }
@@ -1089,6 +1095,42 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         {
             if (SymbolEqualityComparer.Default.Equals(current, container))
                 return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Protected-family type accessibility for a protected-family member:
+    /// allow when the type is nested in the member container, the member
+    /// container derives from the type's declaring type, or the member
+    /// container is a non-public nested type under the type's declaring type.
+    /// </summary>
+    private static bool IsProtectedTypeAccessibleFromMemberContainer(
+        INamedTypeSymbol type,
+        INamedTypeSymbol memberContainer)
+    {
+        if (IsNamedTypeNestedWithin(type, memberContainer))
+            return true;
+
+        var typeContainer = type.ContainingType;
+        if (typeContainer == null)
+            return true;
+
+        for (var current = memberContainer; current != null; current = current.BaseType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(current, typeContainer))
+                return true;
+        }
+
+        for (var current = memberContainer; current != null; current = current.ContainingType)
+        {
+            if (!SymbolEqualityComparer.Default.Equals(current, typeContainer))
+                continue;
+
+            // Public nested types can be subclassed outside typeContainer,
+            // expanding the protected member domain beyond the type's domain.
+            return memberContainer.DeclaredAccessibility is not Accessibility.Public;
         }
 
         return false;

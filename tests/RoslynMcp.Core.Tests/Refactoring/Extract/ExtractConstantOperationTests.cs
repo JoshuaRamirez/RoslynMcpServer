@@ -660,6 +660,78 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_AllowsHidingInheritedMemberName()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Base
+            {
+                protected const int _42 = 7;
+            }
+
+            public class Derived : Base
+            {
+                public int Run()
+                {
+                    return 42;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("class Derived", updated, StringComparison.Ordinal);
+        Assert.Contains("const int _42", updated, StringComparison.Ordinal);
+        Assert.Contains("return _42;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_Protected_AllowsProtectedEnumFromBaseType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Base
+            {
+                protected enum State { Off = 0, On = 1 }
+            }
+
+            public class Host : Base
+            {
+                public State Run()
+                {
+                    State value = 0;
+                    return value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            Visibility = "protected"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("_0 = 0;", updated, StringComparison.Ordinal);
+        Assert.Contains("State value = _0;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("State value = 0;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_Protected_SkipsProtectedEnumOnSiblingNestedType()
     {
         // Outer.State is protected; Inner is a public nested type — protected const
