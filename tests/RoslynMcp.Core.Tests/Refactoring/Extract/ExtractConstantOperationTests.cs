@@ -729,6 +729,44 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsHidingInheritedWhenExistingUsesWouldRebind()
+    {
+        // Derived already uses unqualified _42 (binds to Base._42=7). Hiding with
+        // a new Derived._42=42 would silently change Existing (Codex P1).
+        const string source = """
+            namespace TestApp;
+
+            public class Base
+            {
+                protected const int _42 = 7;
+            }
+
+            public class Derived : Base
+            {
+                public int Existing => _42;
+
+                public int Run()
+                {
+                    return 42;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_Protected_AllowsProtectedEnumFromBaseType()
     {
         const string source = """

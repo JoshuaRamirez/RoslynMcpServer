@@ -221,6 +221,14 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                 $"Constant name '{constantName}' would be shadowed at the extraction site.");
         }
 
+        if (WouldRebindExistingUsesOfInheritedName(
+                semanticModel, containingType, bareName, containingTypeSymbolForShadow, cancellationToken))
+        {
+            throw new RefactoringException(
+                ErrorCodes.NameCollision,
+                $"Constant name '{constantName}' would hide an inherited member and rebind existing uses.");
+        }
+
         List<LiteralExpressionSyntax> literalsToReplace;
         if (@params.ReplaceAll)
         {
@@ -736,6 +744,13 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             return null;
         }
 
+        if (!canReuseReplaceAllConstant &&
+            WouldRebindExistingUsesOfInheritedName(
+                semanticModel, containingType, bareName, containingTypeSymbol, cancellationToken))
+        {
+            return null;
+        }
+
         List<LiteralExpressionSyntax> candidates;
         if (bulkParams.ReplaceAll)
         {
@@ -916,7 +931,9 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
     /// function, type parameter, or a member declared on a type nested within
     /// <paramref name="targetContainingType"/> that would still capture an
     /// unqualified constant reference after the target declares the constant.
-    /// Inherited base members are not shadows — the new const hides them (Codex P2).
+    /// Inherited base members alone are not shadows (the new const can hide them);
+    /// use <see cref="WouldRebindExistingUsesOfInheritedName"/> to refuse hide when
+    /// existing uses in the type would change binding (Codex P1).
     /// </summary>
     private static bool WouldBeShadowedAtSite(
         SemanticModel semanticModel,
@@ -945,6 +962,67 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                 IsNamedTypeNestedWithin(symbol.ContainingType, targetContainingType))
             {
                 return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when declaring a new const named <paramref name="bareName"/> on
+    /// <paramref name="containingType"/> would hide an inherited/enclosing member
+    /// and rebind at least one existing unqualified use of that name inside the
+    /// type (Codex P1). Hiding with no prior uses remains allowed.
+    /// </summary>
+    private static bool WouldRebindExistingUsesOfInheritedName(
+        SemanticModel semanticModel,
+        TypeDeclarationSyntax containingType,
+        string bareName,
+        INamedTypeSymbol? containingTypeSymbol,
+        CancellationToken cancellationToken)
+    {
+        if (containingTypeSymbol == null || string.IsNullOrEmpty(bareName))
+            return false;
+
+        // Lookup at the type body to find inherited/enclosing same-name members.
+        var lookupPos = containingType.OpenBraceToken.SpanStart;
+        if (lookupPos <= 0)
+            lookupPos = containingType.SpanStart;
+
+        var hideTargets = new List<ISymbol>();
+        foreach (var symbol in semanticModel.LookupSymbols(lookupPos, name: bareName))
+        {
+            if (symbol.ContainingType == null)
+                continue;
+            if (SymbolEqualityComparer.Default.Equals(symbol.ContainingType, containingTypeSymbol))
+                continue;
+            // Nested-within still shadows via WouldBeShadowedAtSite; here we care
+            // about inherited bases / enclosing types the new const would hide.
+            if (IsNamedTypeNestedWithin(symbol.ContainingType, containingTypeSymbol))
+                continue;
+            hideTargets.Add(symbol);
+        }
+
+        if (hideTargets.Count == 0)
+            return false;
+
+        foreach (var id in containingType.DescendantNodes().OfType<IdentifierNameSyntax>())
+        {
+            if (!string.Equals(id.Identifier.ValueText, bareName, StringComparison.Ordinal))
+                continue;
+
+            var bound = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol
+                ?? semanticModel.GetSymbolInfo(id, cancellationToken).CandidateSymbols.FirstOrDefault();
+            if (bound == null)
+                continue;
+
+            foreach (var hide in hideTargets)
+            {
+                if (SymbolEqualityComparer.Default.Equals(bound, hide) ||
+                    SymbolEqualityComparer.Default.Equals(bound.OriginalDefinition, hide.OriginalDefinition))
+                {
+                    return true;
+                }
             }
         }
 
