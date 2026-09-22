@@ -3340,7 +3340,7 @@ public class ExtractBaseClassOperationTests
         """;
 
 
-    
+
     private static bool PathEquals(string left, string right) =>
         string.Equals(
             Path.GetFullPath(left),
