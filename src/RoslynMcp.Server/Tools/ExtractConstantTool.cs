@@ -90,7 +90,7 @@ public sealed class ExtractConstantTool : IToolHandler
             visibility = new
             {
                 type = "string",
-                @enum = new[] { "private", "protected", "internal", "public" },
+                @enum = new[] { "private", "protected", "internal", "public", "protected internal", "private protected" },
                 description = "Visibility of the constant. Valid with allFiles.",
                 @default = "private"
             },

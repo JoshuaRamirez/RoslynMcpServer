@@ -128,6 +128,8 @@ public class ExtractConstantToolTests
         Assert.Contains("protected", values);
         Assert.Contains("internal", values);
         Assert.Contains("public", values);
+        Assert.Contains("protected internal", values);
+        Assert.Contains("private protected", values);
         Assert.Equal("private", visibility.GetProperty("default").GetString());
     }
 
