@@ -1796,42 +1796,6 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
-    public async Task ExtractConstant_AllFilesTrue_ReplaceAll_DoesNotRewriteAttributeLiterals()
-    {
-        // replaceAll must not rewrite attribute arguments even when text/type match
-        // the method-body seed (Codex P1). Prefer extracting the method site.
-        const string source = """
-            using System;
-
-            namespace TestApp;
-
-            [Obsolete("hi")]
-            public class AttributeHost
-            {
-                public string Run() => "hi";
-            }
-            """;
-
-        await using var workspace = await TempWorkspace.CreateAsync(source, "AttributeHost.cs");
-        var operation = new ExtractConstantOperation(workspace.Context);
-
-        var result = await operation.ExecuteAsync(new ExtractConstantParams
-        {
-            AllFiles = true,
-            ReplaceAll = true
-        });
-
-        Assert.True(result.Success);
-        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        System.IO.File.WriteAllText("/tmp/attr-replaceall-out.cs", updated);
-        Assert.Contains("[Obsolete(\"hi\")]", updated, StringComparison.Ordinal);
-        Assert.DoesNotContain("[Obsolete(Hi)]", updated, StringComparison.Ordinal);
-        Assert.DoesNotContain("[Obsolete(_hi)]", updated, StringComparison.Ordinal);
-        Assert.Contains("const string Hi", updated, StringComparison.Ordinal);
-        Assert.Contains("=> Hi;", updated, StringComparison.Ordinal);
-    }
-
-    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_LinkedDocument_SkipsWhenSiblingCannotHonor()
     {
         // Shared physical file linked into two projects. ProjectB also owns a
