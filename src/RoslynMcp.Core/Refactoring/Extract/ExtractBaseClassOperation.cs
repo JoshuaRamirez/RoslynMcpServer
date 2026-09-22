@@ -31,6 +31,11 @@ namespace RoslynMcp.Core.Refactoring.Extract;
 /// After the extract (and when adding <c>: BaseClassName</c> to the
 /// derived type), the selected declaration is recovered by a
 /// per-execution syntax annotation (stripped before commit).
+/// Optional <c>allFiles</c> walks every C# document (or the optional
+/// single <c>sourceFile</c>) and extracts a <c>{TypeName}Base</c> base
+/// class for every eligible non-static class with extractable members
+/// into a sibling <c>{TypeName}Base.cs</c>, skipping ineligible sites
+/// rather than throwing.
 /// </summary>
 public sealed class ExtractBaseClassOperation : RefactoringOperationBase<ExtractBaseClassParams>
 {
@@ -50,6 +55,26 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
     /// </summary>
     internal static void Validate(ExtractBaseClassParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.TypeName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue ||
+                !string.IsNullOrWhiteSpace(@params.BaseClassName) ||
+                @params.Members != null ||
+                !string.IsNullOrWhiteSpace(@params.TargetFile))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with typeName, line, column, baseClassName, members, or targetFile.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -62,11 +87,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         if (@params.Members == null || @params.Members.Count == 0)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "members is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        ValidateSourceFilePath(@params.SourceFile!);
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
@@ -74,10 +95,10 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!File.Exists(@params.SourceFile))
+        if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (!IdentifierValidation.IsValidIdentifier(@params.BaseClassName))
+        if (!IdentifierValidation.IsValidIdentifier(@params.BaseClassName!))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid base class name: {@params.BaseClassName}");
 
         if (@params.TargetFile != null)
@@ -90,13 +111,25 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         }
     }
 
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+    }
+
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
         ExtractBaseClassParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -111,7 +144,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         // do not participate). Line set also includes a covering enum,
         // struct, interface, or delegate so it reaches InvalidSymbolKind
         // instead of retargeting a later class.
-        var found = FindTypeDeclaration(root, @params.TypeName, @params.Line, @params.Column);
+        var found = FindTypeDeclaration(root, @params.TypeName!, @params.Line, @params.Column);
 
         if (found == null)
         {
@@ -145,7 +178,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
         // Check if base class name already exists
         var existingType = await TypeResolver.FindTypeByNameAsync(
-            $"{typeSymbol.ContainingNamespace}.{@params.BaseClassName}",
+            $"{typeSymbol.ContainingNamespace}.{@params.BaseClassName!}",
             cancellationToken);
 
         if (existingType != null)
@@ -158,7 +191,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         // Find members to extract
         var (membersToExtract, extractedSymbols) = FindMembersToExtract(
             typeDeclaration,
-            @params.Members,
+            @params.Members!,
             semanticModel,
             @params.MakeAbstract);
 
@@ -167,7 +200,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
         // Generate base class
         var baseClass = GenerateBaseClass(
-            @params.BaseClassName,
+            @params.BaseClassName!,
             membersToExtract,
             @params.MakeAbstract);
 
@@ -177,7 +210,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         // Explicit targetFile always wins. separateFile=true with no targetFile
         // writes {BaseClassName}.cs next to the source.
         var targetFile = ResolveTargetFile(@params);
-        var isNewFile = targetFile != @params.SourceFile;
+        var isNewFile = targetFile != @params.SourceFile!;
 
         if (isNewFile && typeSymbol.ContainingType != null)
         {
@@ -228,18 +261,18 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         // look up by file path and rematch by span (same as
         // implement_abstract #226).
         document = annotatedSolution.GetDocument(previousTree)
-            ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName);
+            ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName!);
         root = await document.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         typeDeclaration = RecoverAnnotatedClass(
             root,
             targetTypeAnnotation,
             typeDeclaration,
-            @params.TypeName);
+            @params.TypeName!);
 
         // Apply changes
         Solution newSolution;
-        if (targetFile != @params.SourceFile)
+        if (targetFile != @params.SourceFile!)
         {
             // Create new file with base class
             newSolution = await CreateBaseClassInNewFileAsync(
@@ -267,7 +300,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         // to an earlier same-named type after the rewrite. After insert,
         // spans have shifted, so do not rematch by SpanStart.
         var updatedDoc = newSolution.GetDocument(document.Id)
-            ?? DocumentForTreeHelpers.GetDocumentForTree(newSolution, root.SyntaxTree, @params.TypeName);
+            ?? DocumentForTreeHelpers.GetDocumentForTree(newSolution, root.SyntaxTree, @params.TypeName!);
         var updatedRoot = await updatedDoc.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         var updatedTypeDecl = updatedRoot.GetAnnotatedNodes(targetTypeAnnotation)
@@ -278,7 +311,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 $"Class '{@params.TypeName}' not found in file.");
 
         // Add base class to type
-        var baseType = SyntaxFactory.SimpleBaseType(SyntaxFactory.ParseTypeName(@params.BaseClassName));
+        var baseType = SyntaxFactory.SimpleBaseType(SyntaxFactory.ParseTypeName(@params.BaseClassName!));
 
         ClassDeclarationSyntax newTypeDecl;
         if (updatedTypeDecl.BaseList == null)
@@ -299,7 +332,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         // event fields drop only the selected declarators. Indexers
         // match by parameter-list signature so Item / this[] /
         // this[int i] all drop the selected indexer only.
-        var memberNames = @params.Members.ToHashSet();
+        var memberNames = @params.Members!.ToHashSet();
         foreach (var extracted in membersToExtract)
         {
             if (extracted is IndexerDeclarationSyntax indexer)
@@ -343,15 +376,646 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.BaseClassName,
+                Name = @params.BaseClassName!,
                 FullyQualifiedName = string.IsNullOrEmpty(namespaceName)
-                    ? @params.BaseClassName
+                    ? @params.BaseClassName!
                     : $"{namespaceName}.{@params.BaseClassName}",
                 Kind = Contracts.Enums.SymbolKind.Class
             },
             0,
             0);
     }
+
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// helpers as <c>ExtractInterfaceOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ExtractConstantOperation.ExecuteAllFilesAsync</c>) and extracts a
+    /// <c>{TypeName}Base</c> base class for every eligible non-static class
+    /// with extractable members into a sibling <c>{TypeName}Base.cs</c>.
+    /// Optional <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
+    /// Linked documents that share a physical path are rewritten once and
+    /// sibling text is coalesced via
+    /// <see cref="AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync"/>.
+    /// Static types, unsupported kinds, types with no extractable members,
+    /// types that already have a non-Object base, generics, nested types,
+    /// name collisions, occupied sibling destinations, uneditable /
+    /// source-generated docs, and otherwise ineligible targets are skipped
+    /// rather than failing the walk. Deterministic <c>SpanStart</c> order
+    /// within a file. When every file is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ExtractBaseClassParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+        var extractedCountByDoc = new Dictionary<DocumentId, int>();
+        var processedTypes = new HashSet<string>(StringComparer.Ordinal);
+        var claimedDestinations = new HashSet<string>(StringComparer.Ordinal);
+        var claimedBaseClasses = new HashSet<string>(StringComparer.Ordinal);
+        var pendingProjectUpdates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Linked multi-project views of the same path can diverge under
+            // preprocessor symbols; skip rather than coalescing a base-class
+            // rewrite that only one compilation can honor (Copilot / #1366).
+            if (linkedDocuments.Count > 1)
+                continue;
+
+            var primary = linkedDocuments.FirstOrDefault(d =>
+                d is not SourceGeneratedDocument &&
+                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+            if (primary == null)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(primary.Id);
+                if (currentDocument == null ||
+                    currentDocument is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                {
+                    break;
+                }
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var typeNode in TypeDeclarationHelpers.CollectTypeDeclarations(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    // ExtractBaseClass only supports ClassDeclarationSyntax.
+                    if (typeNode is not ClassDeclarationSyntax typeDeclaration)
+                        continue;
+
+                    var typeSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
+                    // Skip static, generic ({Name}Base would omit type params), and nested
+                    // types (separate-file extract unsupported).
+                    if (typeSymbol == null ||
+                        typeSymbol.IsStatic ||
+                        typeSymbol.IsGenericType ||
+                        typeSymbol.ContainingType != null)
+                    {
+                        continue;
+                    }
+
+                    // Skip types that already have a non-Object base.
+                    if (typeSymbol.BaseType != null &&
+                        typeSymbol.BaseType.SpecialType != SpecialType.System_Object)
+                    {
+                        continue;
+                    }
+
+                    var typeKey = TypeWalkKeyHelpers.TypeWalkKey(currentDocument.Project.Id, typeSymbol);
+                    if (!processedTypes.Add(typeKey))
+                        continue;
+
+                    var baseClassName = DeriveBaseClassName(typeSymbol.Name);
+                    if (!IdentifierValidation.IsValidIdentifier(baseClassName))
+                        continue;
+
+                    var baseClassKey = BuildBaseClassKey(typeSymbol, baseClassName);
+                    if (!claimedBaseClasses.Add(baseClassKey))
+                        continue;
+
+                    if (await TypeExistsInSolutionAsync(currentSolution, typeSymbol, baseClassName, cancellationToken))
+                    {
+                        claimedBaseClasses.Remove(baseClassKey);
+                        continue;
+                    }
+
+                    var memberNames = CollectExtractableMemberNames(typeDeclaration, semanticModel);
+                    if (memberNames.Count == 0)
+                    {
+                        claimedBaseClasses.Remove(baseClassKey);
+                        continue;
+                    }
+
+                    var sourceFile = currentDocument.FilePath;
+                    if (string.IsNullOrWhiteSpace(sourceFile))
+                    {
+                        claimedBaseClasses.Remove(baseClassKey);
+                        continue;
+                    }
+
+                    var siteParams = new ExtractBaseClassParams
+                    {
+                        SourceFile = sourceFile,
+                        TypeName = typeSymbol.Name,
+                        BaseClassName = baseClassName,
+                        Members = memberNames,
+                        SeparateFile = true,
+                        MakeAbstract = @params.MakeAbstract,
+                        Preview = false,
+                        AllFiles = true
+                    };
+
+                    string targetFile;
+                    try
+                    {
+                        targetFile = ResolveTargetFile(siteParams);
+                        ThrowIfSiblingTargetExists(siteParams, targetFile);
+                    }
+                    catch (RefactoringException)
+                    {
+                        claimedBaseClasses.Remove(baseClassKey);
+                        continue;
+                    }
+
+                    var destinationKey = PathResolver.GetPathComparisonKey(targetFile);
+                    if (!claimedDestinations.Add(destinationKey))
+                    {
+                        claimedBaseClasses.Remove(baseClassKey);
+                        continue;
+                    }
+
+                    if (File.Exists(targetFile))
+                    {
+                        claimedDestinations.Remove(destinationKey);
+                        claimedBaseClasses.Remove(baseClassKey);
+                        continue;
+                    }
+
+                    string? projectPathForCompile = null;
+                    string? updatedProjectText = null;
+                    try
+                    {
+                        (projectPathForCompile, updatedProjectText) =
+                            TryPrepareExplicitCompileItemUpdate(currentDocument.Project, targetFile);
+                    }
+                    catch (RefactoringException)
+                    {
+                        claimedDestinations.Remove(destinationKey);
+                        claimedBaseClasses.Remove(baseClassKey);
+                        continue;
+                    }
+
+                    try
+                    {
+                        updated = await TryExtractOneAsync(
+                            currentDocument,
+                            root,
+                            typeDeclaration,
+                            typeSymbol,
+                            siteParams,
+                            memberNames,
+                            targetFile,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        claimedDestinations.Remove(destinationKey);
+                        claimedBaseClasses.Remove(baseClassKey);
+                        updated = null;
+                    }
+
+                    if (updated == null)
+                    {
+                        claimedDestinations.Remove(destinationKey);
+                        claimedBaseClasses.Remove(baseClassKey);
+                        continue;
+                    }
+
+                    if (updatedProjectText != null && !string.IsNullOrWhiteSpace(projectPathForCompile))
+                        pendingProjectUpdates[projectPathForCompile!] = updatedProjectText;
+
+                    break;
+                }
+
+                if (updated == null)
+                    break;
+
+                var beforeSolution = currentSolution;
+                currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                    beforeSolution,
+                    updated,
+                    Context.Workspace,
+                    cancellationToken);
+
+                extractedCountByDoc[primary.Id] =
+                    extractedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution)
+            .Concat(
+                currentSolution.Projects
+                    .SelectMany(p => p.Documents)
+                    .Where(d => d.FilePath != null &&
+                                d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
+                                originalSolution.GetDocument(d.Id) == null))
+            .GroupBy(d => d.Id)
+            .Select(g => g.First())
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (currentDocument == null)
+                continue;
+
+            if (originalDocument == null)
+            {
+                // Newly created base class file.
+                if (@params.Preview)
+                {
+                    var pathKey = PathResolver.GetPathComparisonKey(currentDocument.FilePath!);
+                    if (!previewedPaths.Add(pathKey))
+                        continue;
+
+                    var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                    if (currentRoot == null)
+                        continue;
+
+                    allPendingChanges.Add(new PendingChange
+                    {
+                        File = currentDocument.FilePath!,
+                        ChangeType = ChangeKind.Create,
+                        Description = "Extract base class",
+                        BeforeSnippet = "// (new file)",
+                        AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim()
+                    });
+                }
+                else
+                {
+                    anyChanged = true;
+                }
+
+                continue;
+            }
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var extractedCount = extractedCountByDoc.GetValueOrDefault(document.Id);
+                if (extractedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        extractedCount = Math.Max(extractedCount, extractedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = extractedCount > 0
+                        ? BuildAllFilesDescription(extractedCount)
+                        : "Update extract_base_class rewrites",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            var filesModified = commitResult.FilesModified.ToList();
+            foreach (var (projectPath, projectText) in pendingProjectUpdates
+                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                File.WriteAllText(projectPath, projectText);
+                if (!filesModified.Contains(projectPath, StringComparer.OrdinalIgnoreCase))
+                    filesModified.Add(projectPath);
+            }
+
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = filesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Namespace-qualified base-class key used to claim bulk destinations
+    /// across the walk (avoids relying on <c>TypeResolver</c> bound to the
+    /// original <c>Context.Solution</c>).
+    /// </summary>
+    internal static string BuildBaseClassKey(INamedTypeSymbol typeSymbol, string baseClassName)
+    {
+        if (typeSymbol.ContainingNamespace == null || typeSymbol.ContainingNamespace.IsGlobalNamespace)
+            return baseClassName;
+
+        return typeSymbol.ContainingNamespace.ToDisplayString() + "." + baseClassName;
+    }
+
+    private static async Task<bool> TypeExistsInSolutionAsync(
+        Solution solution,
+        INamedTypeSymbol sourceType,
+        string typeName,
+        CancellationToken cancellationToken)
+    {
+        var wantedKey = BuildBaseClassKey(sourceType, typeName);
+        foreach (var project in solution.Projects)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var compilation = await project.GetCompilationAsync(cancellationToken);
+            if (compilation == null)
+                continue;
+
+            var existing = compilation.GetTypeByMetadataName(wantedKey);
+            if (existing != null)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static (string? ProjectPath, string? UpdatedText) TryPrepareExplicitCompileItemUpdate(
+        Project project,
+        string targetFile)
+    {
+        var projectPath = project.FilePath;
+        if (string.IsNullOrWhiteSpace(projectPath) || !File.Exists(projectPath))
+            return (null, null);
+
+        var projectDirectory = Path.GetDirectoryName(projectPath);
+        if (string.IsNullOrEmpty(projectDirectory))
+            return (null, null);
+
+        var original = File.ReadAllText(projectPath);
+        var updated = AddExplicitCompileItemIfNeeded(original, projectDirectory, targetFile);
+        if (string.Equals(original, updated, StringComparison.Ordinal))
+            return (projectPath, null);
+
+        if (new FileInfo(projectPath).IsReadOnly)
+        {
+            throw new RefactoringException(
+                ErrorCodes.DocumentNotEditable,
+                $"Project '{project.Name}' is not editable.");
+        }
+
+        return (projectPath, updated);
+    }
+
+    private async Task<Solution?> TryExtractOneAsync(
+        Document document,
+        SyntaxNode root,
+        ClassDeclarationSyntax typeDeclaration,
+        INamedTypeSymbol typeSymbol,
+        ExtractBaseClassParams @params,
+        IReadOnlyList<string> memberNames,
+        string targetFile,
+        CancellationToken cancellationToken)
+    {
+        var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+        if (semanticModel == null)
+            return null;
+
+        var (membersToExtract, extractedSymbols) = FindMembersToExtract(
+            typeDeclaration,
+            memberNames,
+            semanticModel,
+            @params.MakeAbstract);
+
+        if (membersToExtract.Count == 0)
+            return null;
+
+        if (@params.MakeAbstract)
+            ValidateAbstractMembers(extractedSymbols);
+
+        var baseClass = GenerateBaseClass(
+            @params.BaseClassName!,
+            membersToExtract,
+            @params.MakeAbstract);
+
+        var namespaceName = typeSymbol.ContainingNamespace?.ToDisplayString();
+
+        var targetTypeAnnotation = new SyntaxAnnotation("extract-base-class-target-type");
+        var previousTree = root.SyntaxTree;
+        root = root.ReplaceNode(
+            typeDeclaration,
+            typeDeclaration.WithAdditionalAnnotations(targetTypeAnnotation));
+        document = document.WithSyntaxRoot(root);
+        var annotatedSolution = document.Project.Solution;
+        document = annotatedSolution.GetDocument(previousTree)
+            ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName!);
+        root = await document.GetSyntaxRootAsync(cancellationToken)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+        typeDeclaration = RecoverAnnotatedClass(
+            root,
+            targetTypeAnnotation,
+            typeDeclaration,
+            @params.TypeName!);
+
+        Solution newSolution;
+        if (targetFile != @params.SourceFile!)
+        {
+            newSolution = await CreateBaseClassInNewFileAsync(
+                document.Project.Solution,
+                document.Project,
+                targetFile,
+                baseClass,
+                namespaceName,
+                root,
+                cancellationToken);
+        }
+        else
+        {
+            newSolution = AddBaseClassToSameFile(
+                document,
+                root,
+                typeDeclaration,
+                baseClass);
+        }
+
+        var updatedDoc = newSolution.GetDocument(document.Id)
+            ?? DocumentForTreeHelpers.GetDocumentForTree(newSolution, root.SyntaxTree, @params.TypeName!);
+        var updatedRoot = await updatedDoc.GetSyntaxRootAsync(cancellationToken)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+        var updatedTypeDecl = updatedRoot.GetAnnotatedNodes(targetTypeAnnotation)
+            .OfType<ClassDeclarationSyntax>()
+            .FirstOrDefault()
+            ?? throw new RefactoringException(
+                ErrorCodes.TypeNotFound,
+                $"Class '{@params.TypeName}' not found in file.");
+
+        var baseType = SyntaxFactory.SimpleBaseType(SyntaxFactory.ParseTypeName(@params.BaseClassName!));
+
+        ClassDeclarationSyntax newTypeDecl;
+        if (updatedTypeDecl.BaseList == null)
+        {
+            newTypeDecl = updatedTypeDecl.WithBaseList(
+                SyntaxFactory.BaseList(SyntaxFactory.SingletonSeparatedList<BaseTypeSyntax>(baseType)));
+        }
+        else
+        {
+            var newBaseList = SyntaxFactory.BaseList(
+                SyntaxFactory.SeparatedList(
+                    new[] { baseType }.Concat(updatedTypeDecl.BaseList.Types)));
+            newTypeDecl = updatedTypeDecl.WithBaseList(newBaseList);
+        }
+
+        var removalNames = memberNames.ToHashSet();
+        foreach (var extracted in membersToExtract)
+        {
+            if (extracted is IndexerDeclarationSyntax indexer)
+                removalNames.Add(GetIndexerRemovalKey(indexer));
+        }
+
+        var newMembers = RebuildDerivedMembers(
+            newTypeDecl.Members,
+            removalNames,
+            @params.MakeAbstract,
+            extractedSymbols,
+            typeSymbol);
+
+        newTypeDecl = newTypeDecl.WithMembers(SyntaxFactory.List(newMembers));
+        newTypeDecl = (ClassDeclarationSyntax)newTypeDecl.WithoutAnnotations(targetTypeAnnotation);
+
+        updatedRoot = updatedRoot.ReplaceNode(updatedTypeDecl, newTypeDecl);
+        return updatedDoc.WithSyntaxRoot(updatedRoot).Project.Solution;
+    }
+
+    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var exactMatches = documents
+            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
+            .ToList();
+        if (exactMatches.Count > 0)
+        {
+            var exactKeys = exactMatches
+                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+                .ToHashSet(StringComparer.Ordinal);
+            return documents
+                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
+                .ToList();
+        }
+
+        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
+        var distinctPaths = matchedDocuments
+            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return distinctPaths.Count switch
+        {
+            0 when !File.Exists(sourceFile) => throw new RefactoringException(
+                ErrorCodes.SourceFileNotFound,
+                $"Source file not found: {sourceFile}"),
+            0 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"File not found in workspace: {sourceFile}"),
+            > 1 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ => matchedDocuments
+        };
+    }
+
+    /// <summary>
+    /// Collects every member name that single-site
+    /// <see cref="FindMembersToExtract"/> would accept when the members
+    /// list covers the type's extractable set (methods, properties,
+    /// fields, events, non-explicit indexers). Explicit-interface indexers
+    /// are omitted (same as single-site skip).
+    /// </summary>
+    internal static IReadOnlyList<string> CollectExtractableMemberNames(
+        ClassDeclarationSyntax typeDeclaration,
+        SemanticModel semanticModel)
+    {
+        var names = new List<string>();
+        foreach (var member in typeDeclaration.Members)
+        {
+            if (member is EventFieldDeclarationSyntax eventField)
+            {
+                foreach (var variable in eventField.Declaration.Variables)
+                    names.Add(variable.Identifier.Text);
+                continue;
+            }
+
+            if (member is IndexerDeclarationSyntax indexerDecl
+                && semanticModel.GetDeclaredSymbol(indexerDecl) is IPropertySymbol { IsIndexer: true } indexer)
+            {
+                if (indexer.ExplicitInterfaceImplementations.Length > 0
+                    || indexerDecl.ExplicitInterfaceSpecifier != null)
+                {
+                    continue;
+                }
+
+                names.Add("this[]");
+                continue;
+            }
+
+            var name = GetMemberName(member);
+            if (name != null)
+                names.Add(name);
+        }
+
+        return names;
+    }
+
+    /// <summary>
+    /// Derives the bulk base-class name <c>{TypeName}Base</c>.
+    /// </summary>
+    internal static string DeriveBaseClassName(string typeName) => typeName + "Base";
+
+    /// <summary>
+    /// Preview description for a file that extracted
+    /// <paramref name="extractedCount"/> base classes.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int extractedCount) =>
+        extractedCount == 1
+            ? "Extract base class"
+            : $"Extract {extractedCount} base classes";
 
     private static (List<MemberDeclarationSyntax> Members, Dictionary<string, ISymbol> Symbols) FindMembersToExtract(
         ClassDeclarationSyntax typeDeclaration,
@@ -785,12 +1449,13 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
     private static string ResolveTargetFile(ExtractBaseClassParams @params)
     {
         if (!string.IsNullOrWhiteSpace(@params.TargetFile))
-            return @params.TargetFile;
+            return @params.TargetFile!;
 
-        if (!@params.SeparateFile)
-            return @params.SourceFile;
+        // allFiles always uses a sibling {TypeName}Base.cs (SeparateFile forced).
+        if (!@params.SeparateFile && !@params.AllFiles)
+            return @params.SourceFile!;
 
-        var directory = Path.GetDirectoryName(@params.SourceFile);
+        var directory = Path.GetDirectoryName(@params.SourceFile!);
         if (string.IsNullOrEmpty(directory))
         {
             throw new RefactoringException(
@@ -798,7 +1463,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 "sourceFile must have a parent directory.");
         }
 
-        return PathResolver.Combine(directory, @params.BaseClassName + ".cs");
+        return PathResolver.Combine(directory, @params.BaseClassName! + ".cs");
     }
 
     private static void ThrowIfSiblingTargetExists(ExtractBaseClassParams @params, string targetFile)
@@ -1009,7 +1674,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             members.Where(m => m is not FieldDeclarationSyntax).SelectMany(GetExtractedMemberNames));
         var baseClassCode = baseClass.NormalizeWhitespace().ToFullString();
 
-        var isNewFile = targetFile != @params.SourceFile;
+        var isNewFile = targetFile != @params.SourceFile!;
         var extractDescription = @params.MakeAbstract && abstractNames.Length > 0
             ? $"Extract abstract base class {@params.BaseClassName} with abstract members: {abstractNames}"
             : $"Extract base class {@params.BaseClassName} with members: {memberNames}";
@@ -1029,7 +1694,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             },
             new()
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = derivedDescription,
                 BeforeSnippet = $"class {@params.TypeName}",
