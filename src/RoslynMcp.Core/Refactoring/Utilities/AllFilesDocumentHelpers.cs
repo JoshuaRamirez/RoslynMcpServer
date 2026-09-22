@@ -6,8 +6,8 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// <summary>
 /// Shared allFiles document enumerate / linked-path group / linked-text
 /// coalesce walk used by IntroduceField / ExtractConstant /
-/// IntroduceParameter / InlineMethod / ChangeSignature (and Enumerate /
-/// GroupBy peers). Same bodies as the identical copies on those operations.
+/// IntroduceParameter / InlineMethod / ChangeSignature / ExtractInterface
+/// (and Enumerate / GroupBy peers). Same bodies as the identical copies on those operations.
 /// Named AllFilesDocumentHelpers (not DocumentSourceFileFilter) because this
 /// cluster is the walk + linked-sibling coalesce used together by those
 /// operations; sourceFile filtering stays on DocumentSourceFileFilter.

@@ -15,7 +15,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Extract;
 
 /// <summary>
 /// Operation-level tests for <see cref="ExtractInterfaceOperation"/>, including optional
-/// <c>line</c>, <c>column</c>, <c>separateFile</c>, <c>targetFile</c>, and <c>addInterfaceToType</c>.
+/// <c>line</c>, <c>column</c>, <c>separateFile</c>, <c>targetFile</c>, <c>addInterfaceToType</c>,
+/// and <c>allFiles</c>.
 /// </summary>
 public class ExtractInterfaceOperationTests
 {
@@ -1655,6 +1656,318 @@ public class ExtractInterfaceOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    #region allFiles
+
+    private const string EligibleFileA = """
+        namespace TestApp;
+
+        public class FileA
+        {
+            public int Add(int a, int b) => a + b;
+        }
+        """;
+
+    private const string EligibleFileB = """
+        namespace TestApp;
+
+        public class FileB
+        {
+            public string Name { get; set; }
+        }
+        """;
+
+    private const string IneligibleStaticFile = """
+        namespace TestApp;
+
+        public static class FileC
+        {
+            public static int Add(int a, int b) => a + b;
+        }
+        """;
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrTypeName_DoesNotThrow()
+    {
+        ExtractInterfaceOperation.Validate(new ExtractInterfaceParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractInterfaceOperation.Validate(new ExtractInterfaceParams
+            {
+                AllFiles = true,
+                TypeName = "FileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithInterfaceName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractInterfaceOperation.Validate(new ExtractInterfaceParams
+            {
+                AllFiles = true,
+                InterfaceName = "IFileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractInterfaceOperation.Validate(new ExtractInterfaceParams
+            {
+                AllFiles = true,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_RelativeSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractInterfaceOperation.Validate(new ExtractInterfaceParams
+            {
+                AllFiles = true,
+                SourceFile = "relative.cs"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractInterfaceOperation.Validate(new ExtractInterfaceParams
+            {
+                AllFiles = false,
+                TypeName = "FileA",
+                InterfaceName = "IFileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Extract interface", ExtractInterfaceOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Extract 2 interfaces", ExtractInterfaceOperation.BuildAllFilesDescription(2));
+    }
+
+    [Fact]
+    public void DeriveInterfaceName_PrefixesI()
+    {
+        Assert.Equal("IFileA", ExtractInterfaceOperation.DeriveInterfaceName("FileA"));
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_OmittedAllFiles_KeepsSingleSiteExtract()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(CalculatorSource);
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Calculator",
+            InterfaceName = "ICalculator",
+            SeparateFile = true
+        });
+
+        Assert.True(result.Success);
+        var sibling = Path.Combine(workspace.DirectoryPath, "ICalculator.cs");
+        Assert.True(File.Exists(sibling));
+        var source = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("ICalculator", source, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_AllFilesTrue_ExtractsEligibleTypesAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleStaticFile));
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        AssertImplementsInterface(updatedA, "FileA", "IFileA");
+        AssertImplementsInterface(updatedB, "FileB", "IFileB");
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "IFileA.cs")));
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "IFileB.cs")));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "IFileC.cs")));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.True(result.Changes!.FilesCreated.Count >= 2);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_AllFilesTrue_WithoutSourceFileOrTypeName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Changes!.FilesCreated.Count >= 2);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractInterfaceParams
+            {
+                AllFiles = false,
+                TypeName = "FileA",
+                InterfaceName = "IFileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_AllFilesTrue_WithTypeName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractInterfaceParams
+            {
+                AllFiles = true,
+                TypeName = "FileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_AllFilesTrue_WithInterfaceName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractInterfaceParams
+            {
+                AllFiles = true,
+                InterfaceName = "IFileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleStaticFile));
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.True(result.PendingChanges!.Count >= 2);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "IFileA.cs")));
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", IneligibleStaticFile));
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Empty(result.Changes.FilesCreated);
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "IFileC.cs")));
+    }
+
+    [SkippableFact]
+    public async Task ExtractInterface_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ExtractInterfaceOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new ExtractInterfaceParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "IFileA.cs")));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "IFileB.cs")));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+    }
+
+    #endregion
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            StringComparison.OrdinalIgnoreCase);
+
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
 
@@ -1761,9 +2074,13 @@ public class ExtractInterfaceOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Calculator.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Calculator.cs") =>
+            CreateWithFilesAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1771,33 +2088,48 @@ public class ExtractInterfaceOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            string? firstSource = null;
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+                firstSource ??= sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = firstSource!,
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }

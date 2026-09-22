@@ -26,6 +26,11 @@ namespace RoslynMcp.Core.Refactoring.Extract;
 /// After same-file extract and/or <c>addInterfaceToType</c> rewrites the
 /// source document, the selected declaration is recovered by a
 /// per-execution syntax annotation (stripped before commit).
+/// Optional <c>allFiles</c> walks every C# document (or the optional
+/// single <c>sourceFile</c>) and extracts an <c>I{TypeName}</c> interface
+/// for every eligible non-static class/struct/record with extractable
+/// public members into a sibling <c>I{TypeName}.cs</c>, skipping
+/// ineligible sites rather than throwing.
 /// </summary>
 public sealed class ExtractInterfaceOperation : RefactoringOperationBase<ExtractInterfaceParams>
 {
@@ -45,6 +50,26 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
     /// </summary>
     internal static void Validate(ExtractInterfaceParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.TypeName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue ||
+                !string.IsNullOrWhiteSpace(@params.InterfaceName) ||
+                (@params.Members != null && @params.Members.Count > 0) ||
+                !string.IsNullOrWhiteSpace(@params.TargetFile))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with typeName, line, column, interfaceName, members, or targetFile.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -54,11 +79,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         if (string.IsNullOrWhiteSpace(@params.InterfaceName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "interfaceName is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        ValidateSourceFilePath(@params.SourceFile!);
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
@@ -66,10 +87,10 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!File.Exists(@params.SourceFile))
+        if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (!IdentifierValidation.IsValidIdentifier(@params.InterfaceName))
+        if (!IdentifierValidation.IsValidIdentifier(@params.InterfaceName!))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid interface name: {@params.InterfaceName}");
 
         if (@params.TargetFile != null)
@@ -82,13 +103,25 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         }
     }
 
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+    }
+
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
         ExtractInterfaceParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -102,7 +135,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         // pick (enum and DelegateDeclarationSyntax do not participate).
         // Line set also includes a covering enum or delegate so it
         // reaches InvalidSymbolKind instead of retargeting a later class.
-        var found = FindTypeDeclaration(root, @params.TypeName, @params.Line, @params.Column);
+        var found = FindTypeDeclaration(root, @params.TypeName!, @params.Line, @params.Column);
 
         if (found == null)
         {
@@ -135,7 +168,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
 
         // Check if interface name already exists
         var existingInterface = await TypeResolver.FindTypeByNameAsync(
-            $"{typeSymbol.ContainingNamespace}.{@params.InterfaceName}",
+            $"{typeSymbol.ContainingNamespace}.{@params.InterfaceName!}",
             cancellationToken);
 
         if (existingInterface != null)
@@ -158,7 +191,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
 
         // Generate interface declaration
         var interfaceDecl = SyntaxGenerationHelper.CreateInterfaceDeclaration(
-            @params.InterfaceName,
+            @params.InterfaceName!,
             membersToExtract);
 
         // Get namespace
@@ -180,7 +213,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         // can still carry it, so a later extract on another type would
         // recover the stale node via FirstOrDefault.
         SyntaxAnnotation? targetTypeAnnotation = null;
-        var willRewriteSource = targetFile == @params.SourceFile || @params.AddInterfaceToType;
+        var willRewriteSource = targetFile == @params.SourceFile! || @params.AddInterfaceToType;
         if (willRewriteSource)
         {
             // Annotate before the rewrite. Same-file extract inserts the
@@ -202,7 +235,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
 
         // Apply changes
         Solution newSolution;
-        if (targetFile != @params.SourceFile)
+        if (targetFile != @params.SourceFile!)
         {
             // Create new file with interface
             newSolution = await CreateInterfaceInNewFileAsync(
@@ -234,8 +267,8 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
                     newSolution,
                     updatedDoc,
                     targetTypeAnnotation!,
-                    @params.TypeName,
-                    @params.InterfaceName,
+                    @params.TypeName!,
+                    @params.InterfaceName!,
                     cancellationToken);
             }
         }
@@ -261,14 +294,422 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.InterfaceName,
+                Name = @params.InterfaceName!,
                 FullyQualifiedName = string.IsNullOrEmpty(namespaceName)
-                    ? @params.InterfaceName
+                    ? @params.InterfaceName!
                     : $"{namespaceName}.{@params.InterfaceName}",
                 Kind = Contracts.Enums.SymbolKind.Interface
             },
             0,
             0);
+    }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// helpers as <c>ExtractConstantOperation.ExecuteAllFilesAsync</c> /
+    /// <c>IntroduceFieldOperation.ExecuteAllFilesAsync</c>) and extracts an
+    /// <c>I{TypeName}</c> interface for every eligible non-static
+    /// class/struct/record with extractable public members into a sibling
+    /// <c>I{TypeName}.cs</c>. Optional <c>sourceFile</c> limits via
+    /// <see cref="DocumentSourceFileFilter"/>. Linked documents that share a
+    /// physical path are rewritten once and sibling text is coalesced via
+    /// <see cref="AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync"/>.
+    /// Static types, interfaces, enums, types with no extractable members,
+    /// name collisions, occupied sibling destinations, uneditable /
+    /// source-generated docs, and otherwise ineligible targets are skipped
+    /// rather than failing the walk. Deterministic <c>SpanStart</c> order
+    /// within a file. When every file is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ExtractInterfaceParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+        var extractedCountByDoc = new Dictionary<DocumentId, int>();
+        var processedTypes = new HashSet<string>(StringComparer.Ordinal);
+        var claimedDestinations = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var primary = linkedDocuments.FirstOrDefault(d =>
+                d is not SourceGeneratedDocument &&
+                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+            if (primary == null)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(primary.Id);
+                if (currentDocument == null ||
+                    currentDocument is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                {
+                    break;
+                }
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var typeDeclaration in TypeDeclarationHelpers.CollectTypeDeclarations(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    // Interfaces themselves are not extract-interface sources.
+                    if (typeDeclaration is InterfaceDeclarationSyntax)
+                        continue;
+
+                    var typeSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
+                    if (typeSymbol == null || typeSymbol.IsStatic)
+                        continue;
+
+                    var typeKey = TypeWalkKeyHelpers.TypeWalkKey(currentDocument.Project.Id, typeSymbol);
+                    if (!processedTypes.Add(typeKey))
+                        continue;
+
+                    var interfaceName = DeriveInterfaceName(typeSymbol.Name);
+                    if (!IdentifierValidation.IsValidIdentifier(interfaceName))
+                        continue;
+
+                    var sourceFile = currentDocument.FilePath;
+                    if (string.IsNullOrWhiteSpace(sourceFile))
+                        continue;
+
+                    var siteParams = new ExtractInterfaceParams
+                    {
+                        SourceFile = sourceFile,
+                        TypeName = typeSymbol.Name,
+                        InterfaceName = interfaceName,
+                        SeparateFile = true,
+                        AddInterfaceToType = @params.AddInterfaceToType,
+                        Preview = false,
+                        AllFiles = true
+                    };
+
+                    string targetFile;
+                    try
+                    {
+                        targetFile = ResolveTargetFile(siteParams);
+                        ThrowIfSiblingTargetExists(siteParams, targetFile);
+                    }
+                    catch (RefactoringException)
+                    {
+                        continue;
+                    }
+
+                    var destinationKey = PathResolver.GetPathComparisonKey(targetFile);
+                    if (!claimedDestinations.Add(destinationKey))
+                        continue;
+
+                    if (File.Exists(targetFile))
+                    {
+                        claimedDestinations.Remove(destinationKey);
+                        continue;
+                    }
+
+                    try
+                    {
+                        updated = await TryExtractOneAsync(
+                            currentDocument,
+                            root,
+                            typeDeclaration,
+                            typeSymbol,
+                            siteParams,
+                            targetFile,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        claimedDestinations.Remove(destinationKey);
+                        updated = null;
+                    }
+
+                    if (updated == null)
+                    {
+                        claimedDestinations.Remove(destinationKey);
+                        continue;
+                    }
+
+                    break;
+                }
+
+                if (updated == null)
+                    break;
+
+                var beforeSolution = currentSolution;
+                currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                    beforeSolution,
+                    updated,
+                    Context.Workspace,
+                    cancellationToken);
+
+                extractedCountByDoc[primary.Id] =
+                    extractedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution)
+            .Concat(
+                currentSolution.Projects
+                    .SelectMany(p => p.Documents)
+                    .Where(d => d.FilePath != null &&
+                                d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
+                                originalSolution.GetDocument(d.Id) == null))
+            .GroupBy(d => d.Id)
+            .Select(g => g.First())
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (currentDocument == null)
+                continue;
+
+            if (originalDocument == null)
+            {
+                // Newly created interface file.
+                if (@params.Preview)
+                {
+                    var pathKey = PathResolver.GetPathComparisonKey(currentDocument.FilePath!);
+                    if (!previewedPaths.Add(pathKey))
+                        continue;
+
+                    var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                    if (currentRoot == null)
+                        continue;
+
+                    allPendingChanges.Add(new PendingChange
+                    {
+                        File = currentDocument.FilePath!,
+                        ChangeType = ChangeKind.Create,
+                        Description = "Extract interface",
+                        BeforeSnippet = "// (new file)",
+                        AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim()
+                    });
+                }
+                else
+                {
+                    anyChanged = true;
+                }
+
+                continue;
+            }
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var extractedCount = extractedCountByDoc.GetValueOrDefault(document.Id);
+                if (extractedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        extractedCount = Math.Max(extractedCount, extractedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = extractedCount > 0
+                        ? BuildAllFilesDescription(extractedCount)
+                        : "Update extract_interface rewrites",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    private async Task<Solution?> TryExtractOneAsync(
+        Document document,
+        SyntaxNode root,
+        TypeDeclarationSyntax typeDeclaration,
+        INamedTypeSymbol typeSymbol,
+        ExtractInterfaceParams @params,
+        string targetFile,
+        CancellationToken cancellationToken)
+    {
+        var existingInterface = await TypeResolver.FindTypeByNameAsync(
+            $"{typeSymbol.ContainingNamespace}.{@params.InterfaceName}",
+            cancellationToken);
+        if (existingInterface != null)
+            return null;
+
+        var allExtractable = MemberAnalyzer.GetExtractableMembers(typeSymbol).ToList();
+        if (allExtractable.Count == 0)
+            return null;
+
+        var interfaceDecl = SyntaxGenerationHelper.CreateInterfaceDeclaration(
+            @params.InterfaceName!,
+            allExtractable);
+
+        var namespaceName = typeSymbol.ContainingNamespace?.ToDisplayString();
+
+        SyntaxAnnotation? targetTypeAnnotation = null;
+        var willRewriteSource = targetFile == @params.SourceFile || @params.AddInterfaceToType;
+        var workingDocument = document;
+        var workingRoot = root;
+        var workingType = typeDeclaration;
+
+        if (willRewriteSource)
+        {
+            targetTypeAnnotation = new SyntaxAnnotation("extract-interface-target-type");
+            workingRoot = workingRoot.ReplaceNode(
+                workingType,
+                workingType.WithAdditionalAnnotations(targetTypeAnnotation));
+            workingDocument = workingDocument.WithSyntaxRoot(workingRoot);
+            workingType = workingRoot.GetAnnotatedNodes(targetTypeAnnotation)
+                .OfType<TypeDeclarationSyntax>()
+                .FirstOrDefault()
+                ?? throw new RefactoringException(
+                    ErrorCodes.TypeNotFound,
+                    $"Type '{@params.TypeName}' not found in file.");
+        }
+
+        Solution newSolution;
+        if (targetFile != @params.SourceFile)
+        {
+            newSolution = await CreateInterfaceInNewFileAsync(
+                workingDocument.Project.Solution,
+                workingDocument.Project,
+                targetFile,
+                interfaceDecl,
+                namespaceName,
+                workingRoot,
+                cancellationToken);
+        }
+        else
+        {
+            newSolution = AddInterfaceToSameFile(
+                workingDocument,
+                workingRoot,
+                workingType,
+                interfaceDecl);
+        }
+
+        if (@params.AddInterfaceToType)
+        {
+            var updatedDoc = newSolution.GetDocument(workingDocument.Id);
+            if (updatedDoc != null)
+            {
+                newSolution = await AddInterfaceToBaseListAsync(
+                    newSolution,
+                    updatedDoc,
+                    targetTypeAnnotation!,
+                    @params.TypeName!,
+                    @params.InterfaceName!,
+                    cancellationToken);
+            }
+        }
+        else if (targetTypeAnnotation != null)
+        {
+            newSolution = await StripTargetTypeAnnotationAsync(
+                newSolution,
+                workingDocument.Id,
+                targetTypeAnnotation,
+                cancellationToken);
+        }
+
+        return newSolution;
+    }
+
+    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var exactMatches = documents
+            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
+            .ToList();
+        if (exactMatches.Count > 0)
+        {
+            var exactKeys = exactMatches
+                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+                .ToHashSet(StringComparer.Ordinal);
+            return documents
+                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
+                .ToList();
+        }
+
+        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
+        var distinctPaths = matchedDocuments
+            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return distinctPaths.Count switch
+        {
+            0 when !File.Exists(sourceFile) => throw new RefactoringException(
+                ErrorCodes.SourceFileNotFound,
+                $"Source file not found: {sourceFile}"),
+            0 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"File not found in workspace: {sourceFile}"),
+            > 1 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ => matchedDocuments
+        };
     }
 
     private static List<ISymbol> FilterMembers(
@@ -434,12 +875,13 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
     private static string ResolveTargetFile(ExtractInterfaceParams @params)
     {
         if (!string.IsNullOrWhiteSpace(@params.TargetFile))
-            return @params.TargetFile;
+            return @params.TargetFile!;
 
-        if (!@params.SeparateFile)
-            return @params.SourceFile;
+        // allFiles always uses a sibling I{TypeName}.cs (SeparateFile forced).
+        if (!@params.SeparateFile && !@params.AllFiles)
+            return @params.SourceFile!;
 
-        var directory = Path.GetDirectoryName(@params.SourceFile);
+        var directory = Path.GetDirectoryName(@params.SourceFile!);
         if (string.IsNullOrEmpty(directory))
         {
             throw new RefactoringException(
@@ -447,8 +889,22 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
                 "sourceFile must have a parent directory.");
         }
 
-        return PathResolver.Combine(directory, @params.InterfaceName + ".cs");
+        return PathResolver.Combine(directory, @params.InterfaceName! + ".cs");
     }
+
+    /// <summary>
+    /// Derives the bulk interface name <c>I{TypeName}</c>.
+    /// </summary>
+    internal static string DeriveInterfaceName(string typeName) => "I" + typeName;
+
+    /// <summary>
+    /// Preview description for a file that extracted
+    /// <paramref name="extractedCount"/> interfaces.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int extractedCount) =>
+        extractedCount == 1
+            ? "Extract interface"
+            : $"Extract {extractedCount} interfaces";
 
     private static void ThrowIfSiblingTargetExists(ExtractInterfaceParams @params, string targetFile)
     {
@@ -475,7 +931,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         var memberNames = string.Join(", ", members.Select(m => m.Name));
         var interfaceCode = interfaceDecl.NormalizeWhitespace().ToFullString();
 
-        var isNewFile = targetFile != @params.SourceFile;
+        var isNewFile = targetFile != @params.SourceFile!;
 
         var pendingChanges = new List<PendingChange>
         {
@@ -483,7 +939,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
             {
                 File = targetFile,
                 ChangeType = isNewFile ? ChangeKind.Create : ChangeKind.Modify,
-                Description = $"Extract interface {@params.InterfaceName} with members: {memberNames}",
+                Description = $"Extract interface {@params.InterfaceName!} with members: {memberNames}",
                 BeforeSnippet = isNewFile ? "// (new file)" : $"// Before type '{@params.TypeName}'",
                 AfterSnippet = interfaceCode
             }
@@ -493,7 +949,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         {
             pendingChanges.Add(new PendingChange
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = $"Add {@params.InterfaceName} to base list of {@params.TypeName}",
                 BeforeSnippet = $"class {@params.TypeName}",
