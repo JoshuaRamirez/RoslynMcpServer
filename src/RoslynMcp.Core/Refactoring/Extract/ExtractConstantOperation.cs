@@ -1104,7 +1104,8 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
     /// Protected-family type accessibility for a protected-family member:
     /// allow when the type is nested in the member container, the member
     /// container derives from the type's declaring type, or the member
-    /// container is a non-public nested type under the type's declaring type.
+    /// container is nested under the type's declaring type with effective
+    /// accessibility private / protected / private-protected (not assembly-visible).
     /// </summary>
     private static bool IsProtectedTypeAccessibleFromMemberContainer(
         INamedTypeSymbol type,

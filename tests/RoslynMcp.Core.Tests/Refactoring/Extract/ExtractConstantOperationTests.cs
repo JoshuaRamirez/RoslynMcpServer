@@ -769,6 +769,44 @@ public class ExtractConstantOperationTests
         Assert.Empty(result.Changes!.FilesModified);
     }
 
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_Protected_AllowsProtectedEnumOnPrivateNestedType()
+    {
+        // Private nested Inner cannot escape Outer, so protected const State is CS0052-safe.
+        const string source = """
+            namespace TestApp;
+
+            public class Outer
+            {
+                protected enum State { Off = 0, On = 1 }
+
+                private class Inner
+                {
+                    private State Run()
+                    {
+                        State value = 0;
+                        return value;
+                    }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            Visibility = "protected"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("protected const State _0 = 0;", updated, StringComparison.Ordinal);
+        Assert.Contains("State value = _0;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("State value = 0;", updated, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("internal")]
     [InlineData("protected internal")]
