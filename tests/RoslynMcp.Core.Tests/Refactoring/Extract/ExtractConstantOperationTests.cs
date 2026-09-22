@@ -836,6 +836,52 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_ReplaceAll_ReusesIntroducedConstantAcrossPartialFiles()
+    {
+        const string partA = """
+            namespace TestApp;
+
+            public partial class Host
+            {
+                public int Run()
+                {
+                    return 7;
+                }
+            }
+            """;
+        const string partB = """
+            namespace TestApp;
+
+            public partial class Host
+            {
+                public int Sum()
+                {
+                    return 7 + 7;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("PartA.cs", partA),
+            ("PartB.cs", partB));
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["PartA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["PartB.cs"]));
+        Assert.Contains("const int _7", updatedA, StringComparison.Ordinal);
+        Assert.Contains("return _7;", updatedA, StringComparison.Ordinal);
+        Assert.Contains("return _7 + _7;", updatedB, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(updatedA + updatedB, "const int _7"));
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_SkipsAttributeLiterals()
     {
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(

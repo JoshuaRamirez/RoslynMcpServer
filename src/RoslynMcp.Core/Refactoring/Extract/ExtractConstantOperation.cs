@@ -331,6 +331,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             .ToList();
 
         var extractedCountByDoc = new Dictionary<DocumentId, int>();
+        var replaceAllIntroducedConstants = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var linkedDocuments in documentGroups)
         {
@@ -358,9 +359,13 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                     break;
 
                 Solution? updated = null;
+                string? updatedExtractedConstantKey = null;
                 foreach (var literal in CollectEligibleLiterals(root, semanticModel, cancellationToken))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    var extractedConstantKey = @params.ReplaceAll
+                        ? TryCreateExtractedConstantKey(semanticModel, literal, cancellationToken)
+                        : null;
 
                     try
                     {
@@ -370,6 +375,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                             semanticModel,
                             literal,
                             @params,
+                            replaceAllIntroducedConstants,
                             cancellationToken);
                     }
                     catch (RefactoringException)
@@ -383,6 +389,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                             currentDocument,
                             literal,
                             @params,
+                            replaceAllIntroducedConstants,
                             currentSolution,
                             updated,
                             cancellationToken))
@@ -395,11 +402,19 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                     }
 
                     if (updated != null)
+                    {
+                        updatedExtractedConstantKey = extractedConstantKey;
                         break;
+                    }
                 }
 
                 if (updated == null)
                     break;
+
+                if (updatedExtractedConstantKey != null)
+                {
+                    replaceAllIntroducedConstants.Add(updatedExtractedConstantKey);
+                }
 
                 var beforeSolution = currentSolution;
                 currentSolution = updated;
@@ -664,6 +679,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         SemanticModel semanticModel,
         LiteralExpressionSyntax literal,
         ExtractConstantParams bulkParams,
+        ISet<string> replaceAllIntroducedConstants,
         CancellationToken cancellationToken)
     {
         if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
@@ -700,7 +716,16 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
         var bareName = SyntaxIdentifierValidation.NormalizeIdentifier(constantName);
         var containingTypeSymbol = semanticModel.GetDeclaredSymbol(containingType, cancellationToken) as INamedTypeSymbol;
+        var canReuseReplaceAllConstant =
+            bulkParams.ReplaceAll &&
+            CanReuseReplaceAllConstant(
+                replaceAllIntroducedConstants,
+                containingTypeSymbol,
+                bareName,
+                constantType,
+                constantValue.Value);
         if (containingTypeSymbol != null &&
+            !canReuseReplaceAllConstant &&
             (containingTypeSymbol.GetMembers(bareName).Length > 0 ||
              string.Equals(containingTypeSymbol.Name, bareName, StringComparison.Ordinal)))
         {
@@ -743,6 +768,9 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         var newRoot = root.ReplaceNodes(
             literalsToReplace,
             (original, rewritten) => constantRef.WithTriviaFrom(original));
+
+        if (canReuseReplaceAllConstant)
+            return document.WithSyntaxRoot(newRoot).Project.Solution;
 
         // Rematch by span-start identity only — name fallback can pick an
         // unrelated same-named type declaration (Codex P1).
@@ -985,6 +1013,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         Document primary,
         LiteralExpressionSyntax primaryLiteral,
         ExtractConstantParams bulkParams,
+        ISet<string> replaceAllIntroducedConstants,
         Solution beforeSolution,
         Solution afterPrimary,
         CancellationToken cancellationToken)
@@ -1031,6 +1060,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                     model,
                     rematched,
                     bulkParams,
+                    replaceAllIntroducedConstants,
                     cancellationToken);
             }
             catch (RefactoringException)
@@ -1050,6 +1080,65 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         }
 
         return true;
+    }
+
+    private static bool CanReuseReplaceAllConstant(
+        ISet<string> replaceAllIntroducedConstants,
+        INamedTypeSymbol? containingTypeSymbol,
+        string bareName,
+        ITypeSymbol constantType,
+        object? constantValue)
+    {
+        if (containingTypeSymbol == null)
+            return false;
+
+        var extractedConstantKey = CreateExtractedConstantKey(containingTypeSymbol, bareName);
+        if (extractedConstantKey == null ||
+            !replaceAllIntroducedConstants.Contains(extractedConstantKey))
+        {
+            return false;
+        }
+
+        var members = containingTypeSymbol.GetMembers(bareName);
+        if (members.Length != 1 || members[0] is not IFieldSymbol { IsConst: true, HasConstantValue: true } field)
+            return false;
+
+        return SymbolEqualityComparer.Default.Equals(field.Type, constantType) &&
+               Equals(field.ConstantValue, constantValue);
+    }
+
+    private static string? TryCreateExtractedConstantKey(
+        SemanticModel semanticModel,
+        LiteralExpressionSyntax literal,
+        CancellationToken cancellationToken)
+    {
+        var constantName = DeriveConstantNameFromLiteral(literal);
+        if (constantName == null)
+            return null;
+
+        var containingType = literal.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
+        if (containingType == null)
+            return null;
+
+        var containingTypeSymbol = semanticModel.GetDeclaredSymbol(containingType, cancellationToken) as INamedTypeSymbol;
+        return containingTypeSymbol == null
+            ? null
+            : CreateExtractedConstantKey(containingTypeSymbol, SyntaxIdentifierValidation.NormalizeIdentifier(constantName));
+    }
+
+    private static string? CreateExtractedConstantKey(INamedTypeSymbol containingTypeSymbol, string bareName)
+    {
+        var locations = containingTypeSymbol.DeclaringSyntaxReferences
+            .Select(reference => reference.SyntaxTree.FilePath is { Length: > 0 } path
+                ? $"{PathResolver.GetPathComparisonKey(path)}:{reference.Span.Start}"
+                : null)
+            .Where(part => part != null)
+            .OrderBy(part => part, StringComparer.Ordinal)
+            .ToList();
+        if (locations.Count == 0)
+            return null;
+
+        return string.Join("|", locations) + "::" + bareName;
     }
 
     private static LiteralExpressionSyntax? FindLiteralExpression(SyntaxNode node, TextSpan span)
