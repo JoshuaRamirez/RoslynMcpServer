@@ -392,6 +392,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                             // (A↔B) validate and move together.
                             var members = await CollectTypeWidePushableMembersAsync(
                                 sourceSymbol,
+                                targets,
                                 currentSolution,
                                 leaveAbstract,
                                 insertedMembersByType,
@@ -630,6 +631,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     /// </summary>
     private async Task<List<PushableMember>> CollectTypeWidePushableMembersAsync(
         INamedTypeSymbol sourceSymbol,
+        IReadOnlyList<INamedTypeSymbol> targets,
         Solution solution,
         bool leaveAbstract,
         IReadOnlyDictionary<string, HashSet<string>> insertedMembersByType,
@@ -672,7 +674,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             // declaration sharing a kept name, including extern overloads that
             // CollectPushableMembers intentionally skips.
             foreach (var member in CollectPushableMembers(
-                         decl, model, leaveAbstract, cancellationToken))
+                         decl, model, leaveAbstract, targets, cancellationToken))
             {
                 // Cascade keys alone collapse partial method/property/indexer
                 // definition + implementation pairs to one entry; keep both so
@@ -690,7 +692,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .ToList();
         }
 
-        return members;
+        // Drop members that still reference skipped / non-moving members or
+        // nested types inaccessible from any target (fixed-point so cascading
+        // deps also drop).
+        return await FilterMembersDependingOnInaccessibleNonBatchAsync(
+            members, sourceSymbol, targets, solution, cancellationToken);
     }
 
     private static async Task<SemanticModel?> GetSemanticModelForSyntaxAsync(
@@ -715,6 +721,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         TypeDeclarationSyntax typeDeclaration,
         SemanticModel semanticModel,
         bool leaveAbstract,
+        IReadOnlyList<INamedTypeSymbol> targets,
         CancellationToken cancellationToken)
     {
         var source = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
@@ -736,9 +743,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 continue;
 
             // Nested types are not pushable. Skip members that depend on a
-            // private nested type of the source — derived targets cannot see it.
+            // nested type of the source inaccessible from any target (private,
+            // or internal across assemblies, etc.).
             if (source != null &&
-                MemberDependsOnPrivateNestedType(symbol, syntax, semanticModel, source, cancellationToken))
+                MemberDependsOnInaccessibleNestedType(
+                    symbol, syntax, semanticModel, source, targets, cancellationToken))
             {
                 continue;
             }
@@ -756,20 +765,22 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     /// <summary>
     /// True when <paramref name="member"/>'s signature or body references a
-    /// <c>private</c> nested type of <paramref name="source"/>. Those nested
-    /// types are not in the pushable set, so copying the member alone leaves
-    /// an inaccessible type name on the derived target.
+    /// nested type of <paramref name="source"/> that is inaccessible from any
+    /// <paramref name="targets"/> (private always; internal across assemblies).
+    /// Nested types are not pushable, so copying the member alone would leave
+    /// an inaccessible type name on that target.
     /// </summary>
-    private static bool MemberDependsOnPrivateNestedType(
+    private static bool MemberDependsOnInaccessibleNestedType(
         ISymbol member,
         MemberDeclarationSyntax syntax,
         SemanticModel model,
         INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets,
         CancellationToken cancellationToken)
     {
         foreach (var type in EnumerateMemberSignatureTypes(member))
         {
-            if (ReferencesPrivateNestedType(type, source))
+            if (ReferencesInaccessibleNestedType(type, source, targets))
                 return true;
         }
 
@@ -781,7 +792,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
             var bound = model.GetTypeInfo(node, cancellationToken).Type
                 ?? model.GetSymbolInfo(node, cancellationToken).Symbol as ITypeSymbol;
-            if (ReferencesPrivateNestedType(bound, source))
+            if (ReferencesInaccessibleNestedType(bound, source, targets))
                 return true;
         }
 
@@ -811,7 +822,10 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
     }
 
-    private static bool ReferencesPrivateNestedType(ITypeSymbol? type, INamedTypeSymbol source)
+    private static bool ReferencesInaccessibleNestedType(
+        ITypeSymbol? type,
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets)
     {
         if (type == null || type.Kind == Microsoft.CodeAnalysis.SymbolKind.ErrorType)
             return false;
@@ -819,15 +833,15 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         switch (type)
         {
             case IArrayTypeSymbol array:
-                return ReferencesPrivateNestedType(array.ElementType, source);
+                return ReferencesInaccessibleNestedType(array.ElementType, source, targets);
             case IPointerTypeSymbol pointer:
-                return ReferencesPrivateNestedType(pointer.PointedAtType, source);
+                return ReferencesInaccessibleNestedType(pointer.PointedAtType, source, targets);
             case INamedTypeSymbol named:
-                if (IsPrivateNestedOf(named, source))
+                if (IsInaccessibleNestedOf(named, source, targets))
                     return true;
                 foreach (var arg in named.TypeArguments)
                 {
-                    if (ReferencesPrivateNestedType(arg, source))
+                    if (ReferencesInaccessibleNestedType(arg, source, targets))
                         return true;
                 }
 
@@ -837,7 +851,10 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
     }
 
-    private static bool IsPrivateNestedOf(INamedTypeSymbol type, INamedTypeSymbol source)
+    private static bool IsInaccessibleNestedOf(
+        INamedTypeSymbol type,
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets)
     {
         for (var current = type; current != null; current = current.ContainingType)
         {
@@ -848,7 +865,116 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 SymbolEqualityComparer.Default.Equals(
                     current.ContainingType.OriginalDefinition, source.OriginalDefinition))
             {
-                return current.DeclaredAccessibility == Accessibility.Private;
+                return targets.Any(t => !IsAccessibleFromTarget(current, t));
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Accessibility of a source member/nested type as seen from a derived
+    /// <paramref name="target"/> (same-assembly for internal / private
+    /// protected; protected+ always ok because targets derive from source).
+    /// </summary>
+    private static bool IsAccessibleFromTarget(ISymbol symbol, INamedTypeSymbol target)
+    {
+        switch (symbol.DeclaredAccessibility)
+        {
+            case Accessibility.Public:
+            case Accessibility.Protected:
+            case Accessibility.ProtectedOrInternal:
+                return true;
+            case Accessibility.Internal:
+            case Accessibility.ProtectedAndInternal:
+                return SymbolEqualityComparer.Default.Equals(
+                    symbol.ContainingAssembly, target.ContainingAssembly);
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Fixed-point filter: drop members whose copied bodies would reference
+    /// non-batch source members inaccessible from any target (e.g. leaveAbstract
+    /// skips private <c>_x</c> but keeps <c>P =&gt; _x</c>).
+    /// </summary>
+    private async Task<List<PushableMember>> FilterMembersDependingOnInaccessibleNonBatchAsync(
+        List<PushableMember> members,
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets,
+        Solution solution,
+        CancellationToken cancellationToken)
+    {
+        var remaining = members.ToList();
+        bool removed;
+        do
+        {
+            removed = false;
+            var batch = new HashSet<ISymbol>(
+                remaining.Select(m => m.Symbol.OriginalDefinition),
+                SymbolEqualityComparer.Default);
+
+            for (var i = remaining.Count - 1; i >= 0; i--)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var candidate = remaining[i];
+                var model = await GetSemanticModelForSyntaxAsync(
+                    solution, candidate.Syntax, cancellationToken);
+                if (model == null)
+                    continue;
+
+                if (MemberDependsOnInaccessibleNonBatchMember(
+                        candidate, batch, source, targets, model, cancellationToken))
+                {
+                    remaining.RemoveAt(i);
+                    removed = true;
+                }
+            }
+        } while (removed);
+
+        return remaining;
+    }
+
+    private static bool MemberDependsOnInaccessibleNonBatchMember(
+        PushableMember member,
+        HashSet<ISymbol> batchOriginals,
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets,
+        SemanticModel model,
+        CancellationToken cancellationToken)
+    {
+        foreach (var node in member.Syntax.DescendantNodesAndSelf())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var bound = model.GetSymbolInfo(node, cancellationToken).Symbol
+                ?? model.GetTypeInfo(node, cancellationToken).Type as ISymbol;
+            if (bound == null)
+                continue;
+
+            var referenced = bound.OriginalDefinition;
+            if (!IsDeclaredIn(referenced, source))
+                continue;
+
+            // The member's own declaration / nested types handled elsewhere.
+            if (SymbolEqualityComparer.Default.Equals(referenced, member.Symbol.OriginalDefinition))
+                continue;
+
+            // Nested types of source are never in the batch.
+            if (referenced is INamedTypeSymbol nested &&
+                IsInaccessibleNestedOf(nested, source, targets))
+            {
+                return true;
+            }
+
+            // Source member (field/method/property/event) not moving with us.
+            if (referenced is IFieldSymbol or IMethodSymbol or IPropertySymbol or IEventSymbol)
+            {
+                if (batchOriginals.Contains(referenced))
+                    continue;
+
+                if (targets.Any(t => !IsAccessibleFromTarget(referenced, t)))
+                    return true;
             }
         }
 

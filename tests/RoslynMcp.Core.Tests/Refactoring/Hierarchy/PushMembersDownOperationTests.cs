@@ -6492,6 +6492,101 @@ public class PushMembersDownOperationTests
         Assert.Contains("E?.Invoke", NormalizeNewlines(dog));
     }
 
+    private const string LeaveAbstractDependsOnSkippedPrivateFieldFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            private int _x;
+
+            public int Age => _x;
+
+            public virtual int Speak()
+            {
+                return 1;
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_LeaveAbstractSkipsPropertyDependingOnSkippedPrivateField()
+    {
+        // leaveAbstract skips private _x; Age => _x must also be skipped so
+        // Dog does not get override Age => _x with inaccessible _x.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", LeaveAbstractDependsOnSkippedPrivateFieldFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("_x", animal);
+        Assert.Contains("Age", animal);
+        Assert.DoesNotContain("Age", dog);
+        Assert.Contains("Speak", dog);
+        Assert.Contains("override", dog);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_SkipsInternalNestedDepsAcrossAssemblies()
+    {
+        // Animal in Lib, Dog in App: Create() returns internal Helper —
+        // inaccessible in App; skip Create, still push Speak.
+        await using var workspace = await TempWorkspace.CreateReferencedLibraryAsync(
+            """
+            namespace TestLib;
+
+            public class Animal
+            {
+                internal class Helper
+                {
+                }
+
+                internal Helper Create()
+                {
+                    return new Helper();
+                }
+
+                public virtual int Speak()
+                {
+                    return 1;
+                }
+            }
+            """,
+            """
+            namespace TestApp;
+
+            public class Dog : TestLib.Animal
+            {
+            }
+            """);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var libText = await File.ReadAllTextAsync(workspace.LibraryPath);
+        var appText = await File.ReadAllTextAsync(workspace.DerivedPath);
+        Assert.Contains("Helper Create", ExtractTypeBody(libText, "Animal"));
+        Assert.Contains("Speak", ExtractTypeBody(appText, "Dog"));
+        Assert.DoesNotContain("Helper", ExtractTypeBody(appText, "Dog"));
+        Assert.DoesNotContain("Create", ExtractTypeBody(appText, "Dog"));
+    }
+
     private const string NestedGenericSiblingParamFile = """
         namespace TestApp;
 
