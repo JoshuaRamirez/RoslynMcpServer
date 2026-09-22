@@ -59,13 +59,31 @@ public class HierarchyConflictHelpersTests
     }
 
     [Fact]
-    public void SignaturesMatch_False_OnRefKindMismatch()
+    public void SignaturesMatch_True_WhenRefInOutDiffer()
     {
+        // CS0663: ref/in/out alone do not distinguish overloads — collide.
         var compilation = Compile("""
             class C
             {
                 public void M(ref int x) { }
                 public void N(out int x) { x = 0; }
+            }
+            """);
+        var type = compilation.GetTypeByMetadataName("C")!;
+        var m = type.GetMembers("M").OfType<IMethodSymbol>().Single();
+        var n = type.GetMembers("N").OfType<IMethodSymbol>().Single();
+
+        Assert.True(HierarchyConflictHelpers.SignaturesMatch(m, n));
+    }
+
+    [Fact]
+    public void SignaturesMatch_False_OnByValueVsByRefMismatch()
+    {
+        var compilation = Compile("""
+            class C
+            {
+                public void M(int x) { }
+                public void N(ref int x) { }
             }
             """);
         var type = compilation.GetTypeByMetadataName("C")!;
@@ -177,6 +195,26 @@ public class HierarchyConflictHelpersTests
         var member = compilation.GetTypeByMetadataName("Derived")!.GetMembers("M").OfType<IMethodSymbol>().Single();
 
         Assert.False(HierarchyConflictHelpers.HasConflict(target, member));
+    }
+
+    [Fact]
+    public void HasConflict_True_WhenExistingDiffersOnlyByRefInOut()
+    {
+        // Target already has M(out int); pushing M(ref int) would CS0663.
+        var compilation = Compile("""
+            class Target
+            {
+                public void M(out int x) { x = 0; }
+            }
+            class Source
+            {
+                public void M(ref int x) { }
+            }
+            """);
+        var target = compilation.GetTypeByMetadataName("Target")!;
+        var member = compilation.GetTypeByMetadataName("Source")!.GetMembers("M").OfType<IMethodSymbol>().Single();
+
+        Assert.True(HierarchyConflictHelpers.HasConflict(target, member));
     }
 
     [Fact]

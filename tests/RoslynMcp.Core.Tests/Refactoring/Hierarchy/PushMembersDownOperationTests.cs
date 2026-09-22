@@ -5917,6 +5917,227 @@ public class PushMembersDownOperationTests
         Assert.DoesNotContain("IFoo.P", dog);
     }
 
+    private const string LeaveAbstractExplicitInterfaceMethodIface = """
+        namespace TestApp;
+
+        public interface IFoo
+        {
+            void M();
+        }
+        """;
+
+    private const string LeaveAbstractExplicitInterfaceMethodFile = """
+        namespace TestApp;
+
+        public class Animal : IFoo
+        {
+            void IFoo.M()
+            {
+            }
+
+            public virtual int Speak()
+            {
+                return 1;
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_LeaveAbstractSkipsExplicitInterfaceMethod()
+    {
+        // leaveAbstract must not rewrite `void IFoo.M()` into illegal
+        // explicit-interface + abstract. Skip it; still abstract Speak.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("IFoo.cs", LeaveAbstractExplicitInterfaceMethodIface),
+            ("Animal.cs", LeaveAbstractExplicitInterfaceMethodFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            LeaveAbstract = true,
+            SourceFile = workspace.SourcePaths["Animal.cs"]
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("IFoo.M", animal);
+        Assert.DoesNotContain("abstract void IFoo", NormalizeNewlines(text));
+        Assert.DoesNotContain("abstract IFoo", NormalizeNewlines(text));
+        Assert.Contains("abstract", animal);
+        Assert.Contains("Speak", animal);
+        Assert.Contains("Speak", dog);
+        Assert.Contains("override", dog);
+        Assert.DoesNotContain("IFoo.M", dog);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_LeaveAbstractSkipsPartialProperties()
+    {
+        // leaveAbstract must not rewrite partial property def/impl into
+        // invalid `abstract partial` (same as partial methods).
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("AnimalA.cs", PartialPropertyPairPartA),
+            ("AnimalB.cs", PartialPropertyPairPartB));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var animalA = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalA.cs"]);
+        var animalB = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalB.cs"]);
+        Assert.Contains("partial int Age", ExtractTypeBody(animalA, "Animal"));
+        Assert.Contains("partial int Age", ExtractTypeBody(animalB, "Animal"));
+        Assert.DoesNotContain("abstract", ExtractTypeBody(animalA, "Animal"));
+        Assert.DoesNotContain("Age", ExtractTypeBody(animalA, "Dog"));
+        Assert.DoesNotContain("abstract partial", NormalizeNewlines(animalA + animalB));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_LeaveAbstractSkipsPartialIndexers()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("AnimalA.cs", PartialIndexerPairPartA),
+            ("AnimalB.cs", PartialIndexerPairPartB));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var animalA = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalA.cs"]);
+        var animalB = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalB.cs"]);
+        Assert.Contains("partial int this[", ExtractTypeBody(animalA, "Animal"));
+        Assert.Contains("partial int this[", ExtractTypeBody(animalB, "Animal"));
+        Assert.DoesNotContain("abstract", ExtractTypeBody(animalA, "Animal"));
+        Assert.DoesNotContain("this[", ExtractTypeBody(animalA, "Dog"));
+        Assert.DoesNotContain("abstract partial", NormalizeNewlines(animalA + animalB));
+    }
+
+    private const string TargetExistingRefOutConflictFile = """
+        namespace TestApp;
+
+        public class Root
+        {
+            public void M(ref int value)
+            {
+            }
+
+            public virtual int Speak()
+            {
+                return 1;
+            }
+        }
+
+        public class Middle : Root
+        {
+            public void M(out int value)
+            {
+                value = 0;
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_TargetExistingRefOutConflict_Throws()
+    {
+        // Middle already declares M(out int); pushing Root.M(ref int) would
+        // CS0663. CanMoveMember / HasConflict must collapse ref/in/out.
+        await using var workspace = await TempWorkspace.CreateAsync(TargetExistingRefOutConflictFile);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Root",
+                Members = ["M"]
+            }));
+
+        Assert.Equal(ErrorCodes.ConflictsWithExistingMember, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsTargetExistingRefOutConflict()
+    {
+        // allFiles: skip pushing M(ref) onto Middle that already has M(out);
+        // Speak may still move when selected without the colliding member.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Root.cs", TargetExistingRefOutConflictFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        // Whole Root batch fails ValidateMembersForPush when M conflicts, so
+        // both M and Speak stay on Root (same as other target-conflict skips).
+        Assert.Contains("ref int", ExtractTypeBody(text, "Root"));
+        Assert.Contains("Speak", ExtractTypeBody(text, "Root"));
+        Assert.Contains("out int", ExtractTypeBody(text, "Middle"));
+        Assert.Equal(1, CountOccurrences(ExtractTypeBody(text, "Middle"), "void M("));
+        Assert.DoesNotContain("ref int", ExtractTypeBody(text, "Middle"));
+    }
+
+    private const string TargetExistingRefOutAfterSubstitutionFile = """
+        namespace TestApp;
+
+        public class Root<T>
+        {
+            public void M(ref T value)
+            {
+            }
+        }
+
+        public class Middle : Root<int>
+        {
+            public void M(out int value)
+            {
+                value = 0;
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsTargetRefOutAfterSubstitution()
+    {
+        // Root<T>.M(ref T) closes to M(ref int) on Middle : Root<int>, which
+        // already has M(out int) — CS0663 after substitution.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Root.cs", TargetExistingRefOutAfterSubstitutionFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        Assert.Contains("ref T", ExtractTypeBody(text, "Root"));
+        Assert.Contains("out int", ExtractTypeBody(text, "Middle"));
+        Assert.Equal(1, CountOccurrences(ExtractTypeBody(text, "Middle"), "void M("));
+        Assert.DoesNotContain("ref int", ExtractTypeBody(text, "Middle"));
+    }
+
     private const string NestedGenericSiblingParamFile = """
         namespace TestApp;
 

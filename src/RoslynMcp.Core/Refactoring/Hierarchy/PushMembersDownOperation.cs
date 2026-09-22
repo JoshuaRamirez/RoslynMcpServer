@@ -2296,12 +2296,19 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         // Partial methods cannot become abstract (abstract partial is illegal);
         // skip them when leaveAbstract so both definition + implementation parts
         // are not rewritten into invalid semicolon-only abstract partial decls.
-        IMethodSymbol method => !method.IsStatic && !IsPartialMethodSymbol(method),
+        // Explicit-interface methods (void IFoo.M) likewise cannot become
+        // abstract — same as property/event branches.
+        IMethodSymbol method =>
+            !method.IsStatic
+            && !IsPartialMethodSymbol(method)
+            && method.ExplicitInterfaceImplementations.Length == 0,
         // Explicit-interface properties (int IFoo.P) cannot become abstract —
         // same as events/indexers (illegal explicit-interface + abstract).
+        // Partial properties/indexers also cannot become abstract partial.
         IPropertySymbol property =>
             !property.IsStatic
             && property.ExplicitInterfaceImplementations.Length == 0
+            && !IsPartialPropertySymbol(property)
             && (!property.IsIndexer || CanPushIndexerAsAbstract(property)),
         IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
         _ => false
