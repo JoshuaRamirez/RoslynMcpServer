@@ -917,6 +917,102 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_ReplaceAll_PartialTypes_StableReuseKeyAcrossEarlierInsertions()
+    {
+        // A.cs extracts B._2 first. B.cs then extracts into partial A (before
+        // partial B); that insertion must not shift B's reuse key so the later
+        // B literal is left unreplaced under replaceAll (Codex P2).
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("A.cs", """
+                namespace TestApp;
+
+                public partial class B
+                {
+                    public int FromB() => 2;
+                }
+                """),
+            ("B.cs", """
+                namespace TestApp;
+
+                public partial class A
+                {
+                    public int FromA() => 9;
+                }
+
+                public partial class B
+                {
+                    public int OtherB() => 2;
+                }
+                """));
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var a = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["A.cs"]));
+        var b = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["B.cs"]));
+        Assert.Contains("const int _2", a, StringComparison.Ordinal);
+        Assert.Contains("const int _9", b, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(a + b, "const int _2"));
+        Assert.DoesNotContain("=> 2;", a, StringComparison.Ordinal);
+        Assert.DoesNotContain("=> 2;", b, StringComparison.Ordinal);
+        Assert.Contains("=> _2;", b, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_UsesContextValidOrGlobalEnumTypeName()
+    {
+        // Local type External shadows the External namespace segment — ordinary
+        // ToDisplayString() would emit External.State which binds to the local
+        // type. Prefer alias / context-valid spelling, else global::.
+        const string source = """
+            namespace External
+            {
+                public enum State { Off = 0, On = 1 }
+            }
+
+            namespace TestApp
+            {
+                using S = global::External.State;
+
+                public class External
+                {
+                }
+
+                public class Host
+                {
+                    public S Run()
+                    {
+                        S value = 0;
+                        return value;
+                    }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("S value = _0;", updated, StringComparison.Ordinal);
+        Assert.True(
+            updated.Contains("const S _0", StringComparison.Ordinal) ||
+            updated.Contains("const global::External.State _0", StringComparison.Ordinal),
+            $"Expected alias or global:: enum type, got:\n{updated}");
+        Assert.DoesNotContain("const External.State", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_SkipsAttributeLiterals()
     {
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(

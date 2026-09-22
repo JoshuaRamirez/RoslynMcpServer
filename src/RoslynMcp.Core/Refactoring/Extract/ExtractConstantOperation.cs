@@ -245,7 +245,9 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             constantName,
             @params.Visibility,
             constantType,
-            literal);
+            literal,
+            semanticModel,
+            containingType.SpanStart);
 
         if (@params.Preview)
         {
@@ -761,7 +763,9 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             constantName,
             bulkParams.Visibility,
             constantType,
-            literal);
+            literal,
+            semanticModel,
+            containingType.SpanStart);
 
         var constantRef = SyntaxFactory.IdentifierName(SyntaxFactory.Identifier(constantName));
 
@@ -1159,17 +1163,26 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
     private static string? CreateExtractedConstantKey(INamedTypeSymbol containingTypeSymbol, string bareName)
     {
-        var locations = containingTypeSymbol.DeclaringSyntaxReferences
-            .Select(reference => reference.SyntaxTree.FilePath is { Length: > 0 } path
-                ? $"{PathResolver.GetPathComparisonKey(path)}:{reference.Span.Start}"
-                : null)
-            .Where(part => part != null)
-            .OrderBy(part => part, StringComparer.Ordinal)
-            .ToList();
-        if (locations.Count == 0)
+        // Prefer stable symbol identity over declaring Span.Start — inserting a
+        // field into an earlier type in the same file shifts later partial
+        // declaration offsets and would otherwise invalidate replaceAll reuse
+        // keys mid-walk (Codex P2).
+        var typeKey = containingTypeSymbol.OriginalDefinition
+            .ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        if (string.IsNullOrWhiteSpace(typeKey))
             return null;
 
-        return string.Join("|", locations) + "::" + bareName;
+        if (containingTypeSymbol.IsFileLocal)
+        {
+            var declaringFile = containingTypeSymbol.DeclaringSyntaxReferences
+                .Select(reference => reference.SyntaxTree.FilePath)
+                .FirstOrDefault(path => !string.IsNullOrWhiteSpace(path));
+            typeKey = string.IsNullOrWhiteSpace(declaringFile)
+                ? typeKey + "\0file"
+                : typeKey + "\0file\0" + PathResolver.GetPathComparisonKey(declaringFile);
+        }
+
+        return typeKey + "::" + bareName;
     }
 
     private static LiteralExpressionSyntax? FindLiteralExpression(SyntaxNode node, TextSpan span)
@@ -1224,7 +1237,9 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         string name,
         string visibility,
         ITypeSymbol type,
-        LiteralExpressionSyntax initializer)
+        LiteralExpressionSyntax initializer,
+        SemanticModel semanticModel,
+        int insertionPosition)
     {
         var modifiers = new List<SyntaxToken>();
 
@@ -1254,14 +1269,36 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
         modifiers.Add(SyntaxFactory.Token(SyntaxKind.ConstKeyword));
 
+        var typeName = FormatConstantTypeName(type, semanticModel, insertionPosition);
         return SyntaxFactory.FieldDeclaration(
             SyntaxFactory.VariableDeclaration(
-                SyntaxFactory.ParseTypeName(type.ToDisplayString()).WithTrailingTrivia(SyntaxFactory.Space))
+                SyntaxFactory.ParseTypeName(typeName).WithTrailingTrivia(SyntaxFactory.Space))
                 .WithVariables(SyntaxFactory.SingletonSeparatedList(
                     SyntaxFactory.VariableDeclarator(SyntaxFactory.Identifier(name))
                         .WithInitializer(SyntaxFactory.EqualsValueClause(initializer)))))
             .WithModifiers(SyntaxFactory.TokenList(modifiers))
             .NormalizeWhitespace();
+    }
+
+    /// <summary>
+    /// Context-valid type spelling for the inserted const field. When a
+    /// namespace segment of the ordinary display is shadowed at the insertion
+    /// site (e.g. local type <c>External</c> vs <c>global::External.State</c>),
+    /// fall back to a <c>global::</c>-qualified display (Codex P2).
+    /// </summary>
+    private static string FormatConstantTypeName(
+        ITypeSymbol type,
+        SemanticModel semanticModel,
+        int insertionPosition)
+    {
+        var display = ContextValidTypeHelpers.ToContextValidTypeName(type, semanticModel, insertionPosition);
+        if (!NamespaceEqualityHelpers.TypeNameBindsToDifferentType(
+                display, type, semanticModel, insertionPosition))
+        {
+            return display;
+        }
+
+        return type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
     }
 
     private static TypeDeclarationSyntax InsertConstantField(
