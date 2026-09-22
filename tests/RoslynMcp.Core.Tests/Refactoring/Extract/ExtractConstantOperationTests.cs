@@ -385,6 +385,136 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_UsesEnumConvertedTypeForZeroLiteral()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public enum State { Off = 0, On = 1 }
+
+            public class Host
+            {
+                public State Run()
+                {
+                    State value = 0;
+                    return value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("const", updated, StringComparison.Ordinal);
+        Assert.Contains("State _0", updated, StringComparison.Ordinal);
+        Assert.Contains("State value = _0;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("const int _0", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_ReplaceAll_DoesNotRewriteNestedTypeLiterals()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Outer
+            {
+                public int Run()
+                {
+                    return 42;
+                }
+
+                public class Nested
+                {
+                    private const int _42 = 7;
+
+                    public int Run()
+                    {
+                        return 42;
+                    }
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("const int _42 = 42", updated, StringComparison.Ordinal);
+        // Nested keeps its own const and its literal 42 (collision skip or untouched).
+        Assert.Contains("private const int _42 = 7;", updated, StringComparison.Ordinal);
+        Assert.Contains("return _42;", updated, StringComparison.Ordinal);
+        Assert.True(CountOccurrences(updated, "return 42;") >= 1);
+    }
+
+    [Fact]
+    public void IsVisibilityIncompatible_ProtectedOnStaticClass_True()
+    {
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText("""
+            static class Host { public static int Run() => 1; }
+            """);
+        var type = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ClassDeclarationSyntax>().Single();
+        Assert.True(ExtractConstantOperation.IsVisibilityIncompatibleWithContainingType("protected", type));
+        Assert.False(ExtractConstantOperation.IsVisibilityIncompatibleWithContainingType("private", type));
+    }
+
+    [Fact]
+    public void IsVisibilityIncompatible_ProtectedOnStruct_True()
+    {
+        var tree = Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText("""
+            struct Point { public int Run() => 1; }
+            """);
+        var type = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.StructDeclarationSyntax>().Single();
+        Assert.True(ExtractConstantOperation.IsVisibilityIncompatibleWithContainingType("protected", type));
+        Assert.True(ExtractConstantOperation.IsVisibilityIncompatibleWithContainingType("protected internal", type));
+        Assert.False(ExtractConstantOperation.IsVisibilityIncompatibleWithContainingType("public", type));
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_Protected_SkipsStaticClassLiterals()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public static class Host
+            {
+                public static int Run()
+                {
+                    return 42;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            Visibility = "protected"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_ReplaceAll_ReplacesMatchingLiteralsInType()
     {
         const string source = """

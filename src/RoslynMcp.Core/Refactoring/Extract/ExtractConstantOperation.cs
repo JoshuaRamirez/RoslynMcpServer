@@ -169,7 +169,8 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         }
 
         var typeInfo = semanticModel.GetTypeInfo(literal, cancellationToken);
-        if (typeInfo.Type == null)
+        var constantType = ResolveConstantType(typeInfo);
+        if (constantType == null)
         {
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not determine expression type.");
         }
@@ -205,7 +206,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         var constField = CreateConstantField(
             constantName,
             @params.Visibility,
-            typeInfo.Type,
+            constantType,
             literal);
 
         if (@params.Preview)
@@ -588,7 +589,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                     return false;
 
                 var typeInfo = semanticModel.GetTypeInfo(literal, cancellationToken);
-                return typeInfo.Type != null;
+                return ResolveConstantType(typeInfo) != null;
             })
             .OrderBy(literal => literal.SpanStart)
             .ThenBy(literal => literal.Span.Length)
@@ -614,11 +615,15 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             return null;
 
         var typeInfo = semanticModel.GetTypeInfo(literal, cancellationToken);
-        if (typeInfo.Type == null)
+        var constantType = ResolveConstantType(typeInfo);
+        if (constantType == null)
             return null;
 
         var containingType = literal.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
         if (containingType == null)
+            return null;
+
+        if (IsVisibilityIncompatibleWithContainingType(bulkParams.Visibility, containingType))
             return null;
 
         var bareName = SyntaxIdentifierValidation.NormalizeIdentifier(constantName);
@@ -654,7 +659,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         var constField = CreateConstantField(
             constantName,
             bulkParams.Visibility,
-            typeInfo.Type,
+            constantType,
             literal);
 
         var constantRef = SyntaxFactory.IdentifierName(SyntaxFactory.Identifier(constantName));
@@ -675,6 +680,51 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         newRoot = newRoot.ReplaceNode(updatedContainingType, newContainingType);
 
         return document.WithSyntaxRoot(newRoot).Project.Solution;
+    }
+
+    /// <summary>
+    /// Prefers <see cref="TypeInfo.ConvertedType"/> when the literal is
+    /// contextually converted to an enum (e.g. <c>State value = 0</c>) so the
+    /// extracted constant keeps enum type rather than <c>int</c> (Codex P1).
+    /// </summary>
+    private static ITypeSymbol? ResolveConstantType(TypeInfo typeInfo)
+    {
+        if (typeInfo.ConvertedType is { TypeKind: TypeKind.Enum } converted)
+            return converted;
+        return typeInfo.Type;
+    }
+
+    /// <summary>
+    /// True when <paramref name="visibility"/> cannot be applied to
+    /// <paramref name="containingType"/> (static classes / structs reject
+    /// protected-family members) — bulk must skip those sites (Codex P2).
+    /// </summary>
+    internal static bool IsVisibilityIncompatibleWithContainingType(
+        string visibility,
+        TypeDeclarationSyntax containingType)
+    {
+        var normalized = visibility.ToLowerInvariant();
+        var needsInheritance =
+            normalized is "protected" or "protected internal" or "private protected";
+        if (!needsInheritance)
+            return false;
+
+        if (containingType is ClassDeclarationSyntax { Modifiers: var classMods } &&
+            classMods.Any(SyntaxKind.StaticKeyword))
+        {
+            return true;
+        }
+
+        if (containingType is StructDeclarationSyntax)
+            return true;
+
+        if (containingType is RecordDeclarationSyntax record &&
+            record.ClassOrStructKeyword.IsKind(SyntaxKind.StructKeyword))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -776,6 +826,12 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             .OfType<LiteralExpressionSyntax>()
             .Where(lit =>
             {
+                // Do not rewrite nested type bodies (Codex P1) — a nested type may
+                // already declare the derived name, and replaceAll must stay in the
+                // containing type that receives the new constant.
+                if (lit.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault() != containingType)
+                    return false;
+
                 if (lit.Kind() != originalLiteral.Kind()) return false;
                 return lit.Token.ValueText == originalLiteral.Token.ValueText;
             })
