@@ -56,7 +56,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
                 @params.Line.HasValue ||
                 @params.Column.HasValue ||
                 !string.IsNullOrWhiteSpace(@params.InterfaceName) ||
-                (@params.Members != null && @params.Members.Count > 0) ||
+                @params.Members != null ||
                 !string.IsNullOrWhiteSpace(@params.TargetFile))
             {
                 throw new RefactoringException(
@@ -168,7 +168,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
 
         // Check if interface name already exists
         var existingInterface = await TypeResolver.FindTypeByNameAsync(
-            $"{typeSymbol.ContainingNamespace}.{@params.InterfaceName!}",
+            BuildInterfaceKey(typeSymbol, @params.InterfaceName!),
             cancellationToken);
 
         if (existingInterface != null)
@@ -336,10 +336,18 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         var extractedCountByDoc = new Dictionary<DocumentId, int>();
         var processedTypes = new HashSet<string>(StringComparer.Ordinal);
         var claimedDestinations = new HashSet<string>(StringComparer.Ordinal);
+        var claimedInterfaces = new HashSet<string>(StringComparer.Ordinal);
+        var pendingProjectUpdates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var linkedDocuments in documentGroups)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Linked multi-project views of the same path can diverge under
+            // preprocessor symbols; skip rather than coalescing an interface
+            // rewrite that only one compilation can honor (Copilot).
+            if (linkedDocuments.Count > 1)
+                continue;
 
             var primary = linkedDocuments.FirstOrDefault(d =>
                 d is not SourceGeneratedDocument &&
@@ -372,8 +380,15 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
                         continue;
 
                     var typeSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
-                    if (typeSymbol == null || typeSymbol.IsStatic)
+                    // Skip static, generic (I{Name} would omit type params), and nested
+                    // types (separate-file extract unsupported, same as extract_base_class).
+                    if (typeSymbol == null ||
+                        typeSymbol.IsStatic ||
+                        typeSymbol.IsGenericType ||
+                        typeSymbol.ContainingType != null)
+                    {
                         continue;
+                    }
 
                     var typeKey = TypeWalkKeyHelpers.TypeWalkKey(currentDocument.Project.Id, typeSymbol);
                     if (!processedTypes.Add(typeKey))
@@ -383,9 +398,22 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
                     if (!IdentifierValidation.IsValidIdentifier(interfaceName))
                         continue;
 
+                    var interfaceKey = BuildInterfaceKey(typeSymbol, interfaceName);
+                    if (!claimedInterfaces.Add(interfaceKey))
+                        continue;
+
+                    if (await InterfaceExistsInSolutionAsync(currentSolution, typeSymbol, interfaceName, cancellationToken))
+                    {
+                        claimedInterfaces.Remove(interfaceKey);
+                        continue;
+                    }
+
                     var sourceFile = currentDocument.FilePath;
                     if (string.IsNullOrWhiteSpace(sourceFile))
+                    {
+                        claimedInterfaces.Remove(interfaceKey);
                         continue;
+                    }
 
                     var siteParams = new ExtractInterfaceParams
                     {
@@ -406,16 +434,35 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
                     }
                     catch (RefactoringException)
                     {
+                        claimedInterfaces.Remove(interfaceKey);
                         continue;
                     }
 
                     var destinationKey = PathResolver.GetPathComparisonKey(targetFile);
                     if (!claimedDestinations.Add(destinationKey))
+                    {
+                        claimedInterfaces.Remove(interfaceKey);
                         continue;
+                    }
 
                     if (File.Exists(targetFile))
                     {
                         claimedDestinations.Remove(destinationKey);
+                        claimedInterfaces.Remove(interfaceKey);
+                        continue;
+                    }
+
+                    string? projectPathForCompile = null;
+                    string? updatedProjectText = null;
+                    try
+                    {
+                        (projectPathForCompile, updatedProjectText) =
+                            TryPrepareExplicitCompileItemUpdate(currentDocument.Project, targetFile);
+                    }
+                    catch (RefactoringException)
+                    {
+                        claimedDestinations.Remove(destinationKey);
+                        claimedInterfaces.Remove(interfaceKey);
                         continue;
                     }
 
@@ -433,14 +480,19 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
                     catch (RefactoringException)
                     {
                         claimedDestinations.Remove(destinationKey);
+                        claimedInterfaces.Remove(interfaceKey);
                         updated = null;
                     }
 
                     if (updated == null)
                     {
                         claimedDestinations.Remove(destinationKey);
+                        claimedInterfaces.Remove(interfaceKey);
                         continue;
                     }
+
+                    if (updatedProjectText != null && !string.IsNullOrWhiteSpace(projectPathForCompile))
+                        pendingProjectUpdates[projectPathForCompile!] = updatedProjectText;
 
                     break;
                 }
@@ -568,10 +620,19 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         if (anyChanged)
         {
             var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            var filesModified = commitResult.FilesModified.ToList();
+            foreach (var (projectPath, projectText) in pendingProjectUpdates
+                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                File.WriteAllText(projectPath, projectText);
+                if (!filesModified.Contains(projectPath, StringComparer.OrdinalIgnoreCase))
+                    filesModified.Add(projectPath);
+            }
+
             return RefactoringResult.Succeeded(operationId,
                 new FileChanges
                 {
-                    FilesModified = commitResult.FilesModified,
+                    FilesModified = filesModified,
                     FilesCreated = commitResult.FilesCreated,
                     FilesDeleted = commitResult.FilesDeleted
                 },
@@ -583,6 +644,69 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
             null, 0, 0);
     }
 
+    /// <summary>
+    /// Namespace-qualified interface key used to claim bulk destinations
+    /// across the walk (avoids relying on <c>TypeResolver</c> bound to the
+    /// original <c>Context.Solution</c>).
+    /// </summary>
+    internal static string BuildInterfaceKey(INamedTypeSymbol typeSymbol, string interfaceName)
+    {
+        if (typeSymbol.ContainingNamespace == null || typeSymbol.ContainingNamespace.IsGlobalNamespace)
+            return interfaceName;
+
+        return typeSymbol.ContainingNamespace.ToDisplayString() + "." + interfaceName;
+    }
+
+    private static async Task<bool> InterfaceExistsInSolutionAsync(
+        Solution solution,
+        INamedTypeSymbol sourceType,
+        string interfaceName,
+        CancellationToken cancellationToken)
+    {
+        var wantedKey = BuildInterfaceKey(sourceType, interfaceName);
+        foreach (var project in solution.Projects)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var compilation = await project.GetCompilationAsync(cancellationToken);
+            if (compilation == null)
+                continue;
+
+            var existing = compilation.GetTypeByMetadataName(wantedKey);
+            if (existing != null)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static (string? ProjectPath, string? UpdatedText) TryPrepareExplicitCompileItemUpdate(
+        Project project,
+        string targetFile)
+    {
+        var projectPath = project.FilePath;
+        if (string.IsNullOrWhiteSpace(projectPath) || !File.Exists(projectPath))
+            return (null, null);
+
+        var projectDirectory = Path.GetDirectoryName(projectPath);
+        if (string.IsNullOrEmpty(projectDirectory))
+            return (null, null);
+
+        var original = File.ReadAllText(projectPath);
+        var updated = ExtractBaseClassOperation.AddExplicitCompileItemIfNeeded(
+            original, projectDirectory, targetFile);
+        if (string.Equals(original, updated, StringComparison.Ordinal))
+            return (projectPath, null);
+
+        if (new FileInfo(projectPath).IsReadOnly)
+        {
+            throw new RefactoringException(
+                ErrorCodes.DocumentNotEditable,
+                $"Project '{project.Name}' is not editable.");
+        }
+
+        return (projectPath, updated);
+    }
+
     private async Task<Solution?> TryExtractOneAsync(
         Document document,
         SyntaxNode root,
@@ -592,12 +716,6 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         string targetFile,
         CancellationToken cancellationToken)
     {
-        var existingInterface = await TypeResolver.FindTypeByNameAsync(
-            $"{typeSymbol.ContainingNamespace}.{@params.InterfaceName}",
-            cancellationToken);
-        if (existingInterface != null)
-            return null;
-
         var allExtractable = MemberAnalyzer.GetExtractableMembers(typeSymbol).ToList();
         if (allExtractable.Count == 0)
             return null;

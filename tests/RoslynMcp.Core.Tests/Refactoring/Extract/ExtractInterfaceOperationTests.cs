@@ -1735,6 +1735,37 @@ public class ExtractInterfaceOperationTests
     }
 
     [Fact]
+    public void Validate_AllFilesTrue_WithEmptyMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractInterfaceOperation.Validate(new ExtractInterfaceParams
+            {
+                AllFiles = true,
+                Members = Array.Empty<string>()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void BuildInterfaceKey_GlobalAndNamespaced()
+    {
+        const string source = """
+            namespace TestApp;
+            public class FileA { public int X { get; set; } }
+            """;
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+            "KeyTest",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var type = tree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>().First();
+        var symbol = (INamedTypeSymbol)model.GetDeclaredSymbol(type)!;
+        Assert.Equal("TestApp.IFileA", ExtractInterfaceOperation.BuildInterfaceKey(symbol, "IFileA"));
+    }
+
+    [Fact]
     public void Validate_AllFilesTrue_RelativeSourceFile_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
