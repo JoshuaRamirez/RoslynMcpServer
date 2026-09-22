@@ -240,6 +240,11 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
     /// target, sealed class bases, non-editable / external bases, empty
     /// pullable member sets, unsupported kinds, uneditable / source-generated
     /// docs, and linked multi-views are skipped rather than failing the walk.
+    /// Members inserted onto a base by an earlier pull in this walk are
+    /// tracked and skipped when that base is later visited, so they are not
+    /// cascaded further up the hierarchy (Codex P1 on #1380). De-duplication
+    /// is per declaration (<c>TypeWalkKey</c> + document), so partial types
+    /// with pullable members in multiple files are all visited (Codex P2).
     /// Deterministic <c>SpanStart</c> order within a file. When every file is
     /// a no-op, succeeds with empty changes.
     /// </summary>
@@ -257,7 +262,12 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
         var pulledCountByDoc = new Dictionary<DocumentId, int>();
-        var processedTypes = new HashSet<string>(StringComparer.Ordinal);
+        // Per-declaration keys (type + document), not type-wide: partials that
+        // declare pullable members in multiple files must each be visited
+        // (Codex P2 on #1380). Claim after success so a no-member partial does
+        // not block another partial of the same type.
+        var processedDeclarations = new HashSet<string>(StringComparer.Ordinal);
+        var insertedMembersByType = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
 
         foreach (var linkedDocuments in documentGroups)
         {
@@ -304,9 +314,8 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                         continue;
 
                     var typeKey = TypeWalkKeyHelpers.TypeWalkKey(currentDocument.Project.Id, typeSymbol);
-                    // Delay claim until a successful pull so a partial with no
-                    // pullable members does not block a later partial that has them.
-                    if (processedTypes.Contains(typeKey))
+                    var declarationKey = typeKey + "|" + currentDocument.Id.Id;
+                    if (processedDeclarations.Contains(declarationKey))
                         continue;
 
                     if (!TryGetDefaultTarget(typeSymbol, out var target))
@@ -314,6 +323,16 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
 
                     var memberNames = CollectPullableMemberNames(
                         typeDeclaration, semanticModel, target, @params.MakeAbstract, cancellationToken);
+                    // Skip members this walk already inserted onto this type
+                    // (cascade prevention — Codex P1 on #1380).
+                    if (insertedMembersByType.TryGetValue(typeKey, out var insertedHere) &&
+                        insertedHere.Count > 0)
+                    {
+                        memberNames = memberNames
+                            .Where(name => !insertedHere.Contains(name))
+                            .ToList();
+                    }
+
                     if (memberNames.Count == 0)
                         continue;
 
@@ -351,7 +370,21 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                     if (updated == null)
                         continue;
 
-                    processedTypes.Add(typeKey);
+                    // Record names inserted onto the target so a later visit
+                    // of that base does not cascade them further.
+                    var targetProjectId = ResolveSymbolProjectId(currentSolution, target)
+                        ?? currentDocument.Project.Id;
+                    var targetKey = TypeWalkKeyHelpers.TypeWalkKey(targetProjectId, target);
+                    if (!insertedMembersByType.TryGetValue(targetKey, out var insertedOnTarget))
+                    {
+                        insertedOnTarget = new HashSet<string>(StringComparer.Ordinal);
+                        insertedMembersByType[targetKey] = insertedOnTarget;
+                    }
+
+                    foreach (var name in memberNames)
+                        insertedOnTarget.Add(name);
+
+                    processedDeclarations.Add(declarationKey);
                     break;
                 }
 
@@ -461,6 +494,22 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         return RefactoringResult.Succeeded(operationId,
             new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
             null, 0, 0);
+    }
+
+    /// <summary>
+    /// Resolves the <see cref="ProjectId"/> that owns
+    /// <paramref name="symbol"/>'s declaring syntax, when available.
+    /// </summary>
+    private static ProjectId? ResolveSymbolProjectId(Solution solution, ISymbol symbol)
+    {
+        foreach (var reference in symbol.DeclaringSyntaxReferences)
+        {
+            var document = solution.GetDocument(reference.SyntaxTree);
+            if (document != null)
+                return document.Project.Id;
+        }
+
+        return null;
     }
 
     /// <summary>

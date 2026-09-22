@@ -3963,6 +3963,100 @@ public class PullMembersUpOperationTests
         Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
     }
 
+    private const string CascadeDerivedFile = """
+        namespace TestApp;
+
+        public class Derived : Middle
+        {
+            public int Cascaded()
+            {
+                return 1;
+            }
+        }
+        """;
+
+    private const string CascadeMiddleFile = """
+        namespace TestApp;
+
+        public class Root
+        {
+        }
+
+        public class Middle : Root
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PullMembersUp_AllFilesTrue_DoesNotCascadeThroughMiddleBase()
+    {
+        // Derived.cs sorts before Middle.cs. Without original-membership,
+        // Cascaded would land on Root after Middle is processed.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Derived.cs", CascadeDerivedFile),
+            ("Middle.cs", CascadeMiddleFile));
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var derived = await File.ReadAllTextAsync(workspace.SourcePaths["Derived.cs"]);
+        var middle = await File.ReadAllTextAsync(workspace.SourcePaths["Middle.cs"]);
+        Assert.DoesNotContain("Cascaded", ExtractTypeBody(derived, "Derived"));
+        Assert.Contains("Cascaded", ExtractTypeBody(middle, "Middle"));
+        Assert.DoesNotContain("Cascaded", ExtractTypeBody(middle, "Root"));
+    }
+
+    private const string PartialDerivedPartA = """
+        namespace TestApp;
+
+        public class Animal
+        {
+        }
+
+        public partial class Dog : Animal
+        {
+            public int Speak()
+            {
+                return 1;
+            }
+        }
+        """;
+
+    private const string PartialDerivedPartB = """
+        namespace TestApp;
+
+        public partial class Dog
+        {
+            public string Name { get; set; }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PullMembersUp_AllFilesTrue_PullsMembersFromEveryPartialDeclaration()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("DogA.cs", PartialDerivedPartA),
+            ("DogB.cs", PartialDerivedPartB));
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var animal = await File.ReadAllTextAsync(workspace.SourcePaths["DogA.cs"]);
+        var dogB = await File.ReadAllTextAsync(workspace.SourcePaths["DogB.cs"]);
+        Assert.Contains("Speak", ExtractTypeBody(animal, "Animal"));
+        Assert.Contains("Name", ExtractTypeBody(animal, "Animal"));
+        Assert.DoesNotContain("Speak", ExtractTypeBody(animal, "Dog"));
+        Assert.DoesNotContain("Name", ExtractTypeBody(dogB, "Dog"));
+    }
+
     #endregion
 
 
