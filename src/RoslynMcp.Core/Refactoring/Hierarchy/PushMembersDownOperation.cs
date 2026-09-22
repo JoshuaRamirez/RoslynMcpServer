@@ -667,11 +667,12 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             if (await syntaxRef.GetSyntaxAsync(cancellationToken) is not TypeDeclarationSyntax decl)
                 continue;
 
-            var names = CollectPushableMemberNames(decl, model, leaveAbstract, cancellationToken);
-            if (names.Count == 0)
-                continue;
-
-            foreach (var member in FindMembersToPush(decl, names, model, cancellationToken))
+            // Collect eligible declarations directly — do not round-trip through
+            // member names. Name-based FindMembersToPush would reselect every
+            // declaration sharing a kept name, including extern overloads that
+            // CollectPushableMembers intentionally skips.
+            foreach (var member in CollectPushableMembers(
+                         decl, model, leaveAbstract, cancellationToken))
             {
                 // Cascade keys alone collapse partial method/property/indexer
                 // definition + implementation pairs to one entry; keep both so
@@ -705,14 +706,19 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         return await document.GetSemanticModelAsync(cancellationToken);
     }
 
-    private static List<string> CollectPushableMemberNames(
+    /// <summary>
+    /// Automatic allFiles selection: returns each pushable declaration that
+    /// passes eligibility filters. Unlike name-then-<see cref="FindMembersToPush"/>,
+    /// this never re-expands a shared overload name onto skipped extern members.
+    /// </summary>
+    private static List<PushableMember> CollectPushableMembers(
         TypeDeclarationSyntax typeDeclaration,
         SemanticModel semanticModel,
         bool leaveAbstract,
         CancellationToken cancellationToken)
     {
-        var names = new List<string>();
-        foreach (var (name, symbol, _) in EnumerateDeclaredMembers(
+        var members = new List<PushableMember>();
+        foreach (var (name, symbol, syntax) in EnumerateDeclaredMembers(
                      typeDeclaration, semanticModel, cancellationToken))
         {
             if (symbol == null || !IsSupportedMember(symbol))
@@ -728,10 +734,15 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             if (leaveAbstract && !CanBeAbstract(symbol))
                 continue;
 
-            names.Add(name);
+            // Match FindMembersToPush naming: indexers use the symbol metadata
+            // name (Item), not the EnumerateDeclaredMembers display form (this[]).
+            var memberName = symbol is IPropertySymbol { IsIndexer: true } indexer
+                ? indexer.Name
+                : name;
+            members.Add(new PushableMember(memberName, symbol, syntax));
         }
 
-        return names;
+        return members;
     }
 
     /// <summary>

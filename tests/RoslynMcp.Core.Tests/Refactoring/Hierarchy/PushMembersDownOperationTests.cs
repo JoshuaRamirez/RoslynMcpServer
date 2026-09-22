@@ -5772,6 +5772,53 @@ public class PushMembersDownOperationTests
         Assert.DoesNotContain("MessageBeep", ExtractTypeBody(text, "Dog"));
     }
 
+    private const string ExternOverloadSameNameBulkFile = """
+        namespace TestApp;
+
+        using System.Runtime.InteropServices;
+
+        public class Animal
+        {
+            public int M()
+            {
+                return 1;
+            }
+
+            [DllImport("user32.dll")]
+            public static extern int M(int code);
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_SkipsExternOverloadSharingOrdinaryName()
+    {
+        // Ordinary M() and extern M(int) share the name M. allFiles must collect
+        // eligible declarations directly so the extern overload is never selected.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", ExternOverloadSameNameBulkFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("extern int M", animal);
+        Assert.Contains("DllImport", animal);
+        Assert.DoesNotContain("return 1", animal);
+        Assert.Contains("int M()", dog);
+        Assert.DoesNotContain("extern", dog);
+        Assert.DoesNotContain("DllImport", dog);
+    }
+
     private const string ThisGovernedPropertyPatternFile = """
         namespace TestApp;
 
