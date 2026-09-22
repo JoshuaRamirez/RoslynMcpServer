@@ -403,6 +403,7 @@ public class HelpGeneratorTests
         Assert.Contains("--preview", optionalSection);
     }
 
+    [Fact]
     public void GenerateToolHelp_PushMembersDown_ShowsLine()
     {
         var registry = ToolRegistry.BuildDefault();
