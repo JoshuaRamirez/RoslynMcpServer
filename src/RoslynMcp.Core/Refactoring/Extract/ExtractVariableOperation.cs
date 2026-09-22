@@ -45,7 +45,7 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
                 @params.StartColumn.HasValue ||
                 @params.EndLine.HasValue ||
                 @params.EndColumn.HasValue ||
-                !string.IsNullOrWhiteSpace(@params.VariableName))
+                @params.VariableName is not null)
             {
                 throw new RefactoringException(
                     ErrorCodes.MissingRequiredParam,
@@ -458,7 +458,7 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
     {
         var kindCandidates = root.DescendantNodes()
             .OfType<ExpressionSyntax>()
-            .Select(Unwrap)
+            .Where(expr => expr is not ParenthesizedExpressionSyntax)
             .Where(IsEligibleExpressionKind)
             .Distinct()
             .ToList();
@@ -466,12 +466,30 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         var kindSet = new HashSet<ExpressionSyntax>(kindCandidates);
 
         return kindCandidates
-            .Where(expr => !expr.Ancestors().OfType<ExpressionSyntax>().Select(Unwrap).Any(kindSet.Contains))
+            .Where(expr => !HasEligibleAncestor(expr, kindSet))
             .Where(expr => IsStructurallyEligible(expr))
             .Where(expr => IsSemanticallyEligible(expr, semanticModel, cancellationToken))
             .OrderBy(expr => expr.SpanStart)
             .ThenBy(expr => expr.Span.Length)
             .ToList();
+    }
+
+    /// <summary>
+    /// True when an ancestor expression (skipping parentheses) is itself an
+    /// eligible kind candidate — used to keep only outermost sites.
+    /// </summary>
+    private static bool HasEligibleAncestor(ExpressionSyntax expression, HashSet<ExpressionSyntax> kindSet)
+    {
+        foreach (var ancestor in expression.Ancestors().OfType<ExpressionSyntax>())
+        {
+            if (ancestor is ParenthesizedExpressionSyntax)
+                continue;
+
+            if (kindSet.Contains(ancestor))
+                return true;
+        }
+
+        return false;
     }
 
     private static bool IsEligibleExpressionKind(ExpressionSyntax expression)
@@ -488,8 +506,13 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             case CastExpressionSyntax:
             case InterpolatedStringExpressionSyntax:
             case SwitchExpressionSyntax:
-            case IsPatternExpressionSyntax:
                 return true;
+            case IsPatternExpressionSyntax pattern:
+                // Declaration patterns introduce scoped variables that must not
+                // be hoisted (Copilot P1).
+                return !pattern.Pattern.DescendantNodesAndSelf()
+                    .OfType<VariableDesignationSyntax>()
+                    .Any();
             case BinaryExpressionSyntax binary:
                 return !binary.IsKind(SyntaxKind.SimpleAssignmentExpression) &&
                        !binary.IsKind(SyntaxKind.AddAssignmentExpression) &&
@@ -539,7 +562,97 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             return false;
         }
 
+        // Skip sites whose evaluation scope is not the nearest block statement
+        // (loop condition/increment, expression-bodied lambda/local function,
+        // query clauses) — hoisting would change semantics (Codex/Copilot P1).
+        if (CrossesExecutionBoundary(expression))
+            return false;
+
+        // Element / member access used as assignment / increment / ref target
+        // must not be extracted as a value (Codex P1).
+        if (IsWriteTarget(expression))
+            return false;
+
         return true;
+    }
+
+    private static bool CrossesExecutionBoundary(ExpressionSyntax expression)
+    {
+        // Expression-bodied lambda / local function / anonymous method.
+        if (expression.Ancestors().Any(a =>
+                a is SimpleLambdaExpressionSyntax or
+                    ParenthesizedLambdaExpressionSyntax or
+                    AnonymousMethodExpressionSyntax or
+                    QueryClauseSyntax or
+                    QueryBodySyntax))
+        {
+            return true;
+        }
+
+        // Expression-bodied member (=>) without a block.
+        if (expression.Ancestors().OfType<ArrowExpressionClauseSyntax>().Any())
+            return true;
+
+        // Loop / if / switch conditions and for-incrementors evaluate in a
+        // different control-flow site than the nearest block body.
+        foreach (var ancestor in expression.Ancestors())
+        {
+            switch (ancestor)
+            {
+                case WhileStatementSyntax whileStmt
+                    when whileStmt.Condition == expression || whileStmt.Condition.Contains(expression):
+                case DoStatementSyntax doStmt
+                    when doStmt.Condition == expression || doStmt.Condition.Contains(expression):
+                case IfStatementSyntax ifStmt
+                    when ifStmt.Condition == expression || ifStmt.Condition.Contains(expression):
+                case ForStatementSyntax forStmt
+                    when (forStmt.Condition != null &&
+                          (forStmt.Condition == expression || forStmt.Condition.Contains(expression))) ||
+                         forStmt.Incrementors.Any(inc => inc == expression || inc.Contains(expression)) ||
+                         forStmt.Initializers.Any(init => init == expression || init.Contains(expression)):
+                case ForEachStatementSyntax forEach
+                    when forEach.Expression == expression || forEach.Expression.Contains(expression):
+                case ForEachVariableStatementSyntax forEachVar
+                    when forEachVar.Expression == expression || forEachVar.Expression.Contains(expression):
+                case SwitchStatementSyntax switchStmt
+                    when switchStmt.Expression == expression || switchStmt.Expression.Contains(expression):
+                case LockStatementSyntax lockStmt
+                    when lockStmt.Expression == expression || lockStmt.Expression.Contains(expression):
+                case UsingStatementSyntax usingStmt
+                    when usingStmt.Expression != null &&
+                         (usingStmt.Expression == expression || usingStmt.Expression.Contains(expression)):
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsWriteTarget(ExpressionSyntax expression)
+    {
+        var current = (SyntaxNode)expression;
+        while (current.Parent is ParenthesizedExpressionSyntax paren)
+            current = paren;
+
+        return current.Parent switch
+        {
+            AssignmentExpressionSyntax assignment when assignment.Left == current => true,
+            PrefixUnaryExpressionSyntax prefix
+                when (prefix.IsKind(SyntaxKind.PreIncrementExpression) ||
+                      prefix.IsKind(SyntaxKind.PreDecrementExpression)) &&
+                     prefix.Operand == current => true,
+            PostfixUnaryExpressionSyntax postfix
+                when (postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
+                      postfix.IsKind(SyntaxKind.PostDecrementExpression)) &&
+                     postfix.Operand == current => true,
+            ArgumentSyntax argument
+                when argument.Expression == current &&
+                     (argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword) ||
+                      argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword) ||
+                      argument.RefKindKeyword.IsKind(SyntaxKind.InKeyword)) => true,
+            RefExpressionSyntax => true,
+            _ => false
+        };
     }
 
     private static bool IsSemanticallyEligible(
@@ -623,18 +736,11 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         }
 
         var containingBlock = containingStatement.Parent as BlockSyntax;
-        if (containingBlock != null)
+        if (NameCollidesInScope(semanticModel, expression, variableName, cancellationToken))
         {
-            var existingVar = containingBlock.DescendantNodes()
-                .OfType<VariableDeclaratorSyntax>()
-                .FirstOrDefault(v => v.Identifier.Text == variableName);
-
-            if (existingVar != null && existingVar.SpanStart < expression.SpanStart)
-            {
-                throw new RefactoringException(
-                    ErrorCodes.NameCollision,
-                    $"Variable '{variableName}' already exists in scope.");
-            }
+            throw new RefactoringException(
+                ErrorCodes.NameCollision,
+                $"Variable '{variableName}' already exists in scope.");
         }
 
         if (replaceAll && HasSideEffects(expression, semanticModel, cancellationToken))
@@ -648,8 +754,21 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             ? FindEquivalentExpressions(expression, semanticModel, cancellationToken)
             : new List<ExpressionSyntax> { expression };
 
+        // Implicit `new()` cannot be the initializer of a `var` local (no
+        // target type). Prefer the explicit converted/type display, or skip
+        // when the type cannot be spelled (Copilot P1).
         TypeSyntax typeSyntax;
-        if (useVar || typeInfo.Type.IsAnonymousType)
+        var isImplicitCreation = expression is ImplicitObjectCreationExpressionSyntax ||
+                                 Unwrap(expression) is ImplicitObjectCreationExpressionSyntax;
+        if (isImplicitCreation)
+        {
+            var explicitType = typeInfo.ConvertedType ?? typeInfo.Type;
+            if (explicitType == null || explicitType.IsAnonymousType)
+                return null;
+
+            typeSyntax = SyntaxFactory.ParseTypeName(explicitType.ToDisplayString());
+        }
+        else if (useVar || typeInfo.Type.IsAnonymousType)
         {
             typeSyntax = SyntaxFactory.IdentifierName("var");
         }
@@ -693,27 +812,51 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         {
             InvocationExpressionSyntax invocation => PreferInvokedName(invocation),
             ObjectCreationExpressionSyntax creation => PreferTypeName(creation.Type),
-            ImplicitObjectCreationExpressionSyntax => "created",
-            ElementAccessExpressionSyntax access => PreferInvokedNameFromExpression(access.Expression) ?? "element",
-            AwaitExpressionSyntax awaitExpr =>
-                DeriveVariableNameFromExpression(awaitExpr.Expression) is { } inner
-                    ? inner
-                    : "awaited",
-            CastExpressionSyntax cast => PreferTypeName(cast.Type) ?? "cast",
-            InterpolatedStringExpressionSyntax => "text",
-            SwitchExpressionSyntax => "result",
-            IsPatternExpressionSyntax => "matched",
+            ImplicitObjectCreationExpressionSyntax => PreferTypeNameFromSemanticFallback(expression),
+            ElementAccessExpressionSyntax access => PreferInvokedNameFromExpression(access.Expression),
+            AwaitExpressionSyntax awaitExpr => PreferInvokedNameFromExpression(awaitExpr.Expression)
+                ?? PreferTypeNameFromSemanticFallback(awaitExpr.Expression),
+            CastExpressionSyntax cast => PreferTypeName(cast.Type),
             BinaryExpressionSyntax binary when binary.IsKind(SyntaxKind.AsExpression) =>
-                PreferTypeName(binary.Right as TypeSyntax) ?? "asValue",
-            BinaryExpressionSyntax => "value",
-            ConditionalExpressionSyntax => "result",
+                PreferTypeName(binary.Right as TypeSyntax),
             _ => null
         };
 
-        if (seed == null)
-            seed = SanitizeIdentifierSeed(expression.ToString());
+        // Fall back to sanitized expression text (documented allFiles contract)
+        // rather than fixed labels that collide across unrelated sites (Copilot).
+        seed ??= SanitizeIdentifierSeed(expression.ToString());
 
         return FinalizeVariableName(seed);
+    }
+
+    private static string? PreferTypeNameFromSemanticFallback(ExpressionSyntax expression) =>
+        SanitizeIdentifierSeed(expression.ToString());
+
+    /// <summary>
+    /// True when <paramref name="variableName"/> already binds in scope at the
+    /// expression (locals, parameters, range variables, local functions) —
+    /// bulk cannot pick a safer name so these sites are skipped (Codex/Copilot P1).
+    /// </summary>
+    private static bool NameCollidesInScope(
+        SemanticModel semanticModel,
+        ExpressionSyntax expression,
+        string variableName,
+        CancellationToken cancellationToken)
+    {
+        var bareName = SyntaxIdentifierValidation.NormalizeIdentifier(variableName);
+        var symbols = semanticModel.LookupSymbols(expression.SpanStart, name: bareName);
+        foreach (var symbol in symbols)
+        {
+            if (symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol or IMethodSymbol
+                {
+                    MethodKind: MethodKind.LocalFunction
+                })
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string? PreferInvokedName(InvocationExpressionSyntax invocation) =>

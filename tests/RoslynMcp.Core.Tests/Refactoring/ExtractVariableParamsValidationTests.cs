@@ -25,6 +25,20 @@ public class ExtractVariableParamsValidationTests
         });
     }
 
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithEmptyVariableName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractVariableOperation.Validate(new ExtractVariableParams
+            {
+                AllFiles = true,
+                VariableName = ""
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
     [Fact]
     public void Validate_AllFilesTrue_WithVariableName_Throws()
     {

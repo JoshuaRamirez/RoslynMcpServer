@@ -110,8 +110,9 @@ public class ExtractVariableAllFilesOperationTests
         var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
         Assert.Contains("var getAnswer = GetAnswer();", updatedA, StringComparison.Ordinal);
         Assert.Contains("return getAnswer;", updatedA, StringComparison.Ordinal);
-        Assert.Contains("var text = $\"hello\";", updatedB, StringComparison.Ordinal);
-        Assert.Contains("return text;", updatedB, StringComparison.Ordinal);
+        Assert.Contains("var hello = $\"hello\";", updatedB, StringComparison.Ordinal);
+        Assert.Contains("return hello;", updatedB, StringComparison.Ordinal);
+        
         Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
         Assert.True(result.Changes!.FilesModified.Count >= 2);
         Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
@@ -267,8 +268,10 @@ public class ExtractVariableAllFilesOperationTests
 
         Assert.True(result.Success);
         var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Contains("var value = GetAnswer() + getAnswer;", updated, StringComparison.Ordinal);
-        Assert.Contains("return value;", updated, StringComparison.Ordinal);
+        // Outermost is the binary; name from sanitized expression text.
+        // Nested GetAnswer() is not extracted separately (outermost-only).
+        Assert.Contains("var getAnswerGetAnswer = GetAnswer() + getAnswer;", updated, StringComparison.Ordinal);
+        Assert.Contains("return getAnswerGetAnswer;", updated, StringComparison.Ordinal);
         Assert.NotEqual(before, updated);
     }
 
