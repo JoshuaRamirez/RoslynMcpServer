@@ -52,7 +52,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 @params.Line.HasValue ||
                 @params.Column.HasValue ||
                 @params.Members != null ||
-                (@params.TargetDerivedTypes != null && @params.TargetDerivedTypes.Count > 0))
+                @params.TargetDerivedTypes != null)
             {
                 throw new RefactoringException(
                     ErrorCodes.MissingRequiredParam,
@@ -262,12 +262,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     /// kinds, uneditable / source-generated docs, non-editable derived types,
     /// and linked multi-views are skipped rather than failing the walk.
     /// Members inserted onto a derived type by an earlier push in this walk
-    /// are tracked and skipped when that type is later visited as a source,
-    /// so they are not cascaded further down the hierarchy. De-duplication
-    /// is per declaration (<c>TypeWalkKey</c> + document), so partial types
-    /// with pushable members in multiple files are all visited.
-    /// Deterministic <c>SpanStart</c> order within a file. When every file is
-    /// a no-op, succeeds with empty changes.
+    /// are tracked by cascade key (signature for methods/indexers) and skipped
+    /// when that type is later visited as a source, so they are not cascaded
+    /// further down the hierarchy. De-duplication is per declaration
+    /// (<c>TypeWalkKey</c> + document + member cascade keys), so partial types
+    /// with pushable members in multiple files — or multiple parts in one file —
+    /// are all visited. Linked multi-view targets are skipped. Deterministic
+    /// <c>SpanStart</c> order within a file. When every file is a no-op,
+    /// succeeds with empty changes.
     /// </summary>
     private async Task<RefactoringResult> ExecuteAllFilesAsync(
         Guid operationId,
@@ -282,12 +284,21 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+        // Path → linked-view count from the original solution. Used to skip
+        // sites whose derived targets live on multi-view linked paths so
+        // CoalesceLinkedDocumentTextAsync cannot overwrite a divergent sibling.
+        var linkedPathCounts = documentGroups
+            .Where(g => g.Count > 0 && g[0].FilePath != null)
+            .GroupBy(g => PathResolver.GetPathComparisonKey(g[0].FilePath!), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Count, StringComparer.Ordinal);
         var pushedCountByDoc = new Dictionary<DocumentId, int>();
-        // Per-declaration keys (type + document), not type-wide: partials that
-        // declare pushable members in multiple files must each be visited.
-        // Claim after success so a no-member partial does not block another
-        // partial of the same type.
+        // Per-declaration keys (type + document + cascade keys of members
+        // pushed from that part). Partials in the same file with different
+        // members each get their own key; leaveAbstract revisits of the same
+        // part reuse the fingerprint and stay claimed.
         var processedDeclarations = new HashSet<string>(StringComparer.Ordinal);
+        // Cascade keys are signature-based (MemberCascadeKey), not bare names,
+        // so inserting Root.M(string) does not suppress Middle.M(int).
         var insertedMembersByType = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
 
         foreach (var linkedDocuments in documentGroups)
@@ -335,9 +346,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                         continue;
 
                     var typeKey = TypeWalkKeyHelpers.TypeWalkKey(currentDocument.Project.Id, sourceSymbol);
-                    var declarationKey = typeKey + "|" + currentDocument.Id.Id;
-                    if (processedDeclarations.Contains(declarationKey))
-                        continue;
 
                     IReadOnlyList<INamedTypeSymbol> targets;
                     try
@@ -353,6 +361,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                     if (targets.Count == 0)
                         continue;
 
+                    // Skip when any derived target declares on a linked multi-view
+                    // path — coalescing would overwrite divergent siblings.
+                    if (targets.Any(t => DeclaringPathHasLinkedMultiView(t, currentSolution, linkedPathCounts)))
+                        continue;
+
                     try
                     {
                         foreach (var target in targets)
@@ -365,16 +378,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
                     var leaveAbstract = @params.LeaveAbstract && sourceSymbol.TypeKind != TypeKind.Interface;
                     var memberNames = CollectPushableMemberNames(
-                        typeDeclaration, semanticModel, cancellationToken);
-                    // Skip members this walk already inserted onto this type
-                    // (cascade prevention).
-                    if (insertedMembersByType.TryGetValue(typeKey, out var insertedHere) &&
-                        insertedHere.Count > 0)
-                    {
-                        memberNames = memberNames
-                            .Where(name => !insertedHere.Contains(name))
-                            .ToList();
-                    }
+                        typeDeclaration, semanticModel, leaveAbstract, cancellationToken);
 
                     if (memberNames.Count == 0)
                         continue;
@@ -383,7 +387,23 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                     {
                         var members = FindMembersToPush(
                             typeDeclaration, memberNames, semanticModel, cancellationToken);
+                        // Cascade filter by signature so overloads stay independent.
+                        if (insertedMembersByType.TryGetValue(typeKey, out var insertedHere) &&
+                            insertedHere.Count > 0)
+                        {
+                            members = members
+                                .Where(m => !insertedHere.Contains(MemberCascadeKey(m.Symbol)))
+                                .ToList();
+                        }
+
                         if (members.Count == 0)
+                            continue;
+
+                        var declarationKey = typeKey + "|" + currentDocument.Id.Id + "|" +
+                            string.Join("\0", members
+                                .Select(m => MemberCascadeKey(m.Symbol))
+                                .OrderBy(k => k, StringComparer.Ordinal));
+                        if (processedDeclarations.Contains(declarationKey))
                             continue;
 
                         ValidateMembersForPush(members, sourceSymbol, targets, leaveAbstract);
@@ -415,35 +435,35 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                             sourceReplacement,
                             derivedUpdates,
                             cancellationToken);
+
+                        if (updated == null)
+                            continue;
+
+                        // Record cascade keys inserted onto each derived target so a
+                        // later visit of that type does not cascade those overloads.
+                        foreach (var target in targets)
+                        {
+                            var targetProjectId = ResolveSymbolProjectId(currentSolution, target)
+                                ?? currentDocument.Project.Id;
+                            var targetKey = TypeWalkKeyHelpers.TypeWalkKey(targetProjectId, target);
+                            if (!insertedMembersByType.TryGetValue(targetKey, out var insertedOnTarget))
+                            {
+                                insertedOnTarget = new HashSet<string>(StringComparer.Ordinal);
+                                insertedMembersByType[targetKey] = insertedOnTarget;
+                            }
+
+                            foreach (var member in members)
+                                insertedOnTarget.Add(MemberCascadeKey(member.Symbol));
+                        }
+
+                        processedDeclarations.Add(declarationKey);
+                        break;
                     }
                     catch (RefactoringException)
                     {
                         updated = null;
                         continue;
                     }
-
-                    if (updated == null)
-                        continue;
-
-                    // Record names inserted onto each derived target so a later
-                    // visit of that type does not cascade them further.
-                    foreach (var target in targets)
-                    {
-                        var targetProjectId = ResolveSymbolProjectId(currentSolution, target)
-                            ?? currentDocument.Project.Id;
-                        var targetKey = TypeWalkKeyHelpers.TypeWalkKey(targetProjectId, target);
-                        if (!insertedMembersByType.TryGetValue(targetKey, out var insertedOnTarget))
-                        {
-                            insertedOnTarget = new HashSet<string>(StringComparer.Ordinal);
-                            insertedMembersByType[targetKey] = insertedOnTarget;
-                        }
-
-                        foreach (var name in memberNames)
-                            insertedOnTarget.Add(name);
-                    }
-
-                    processedDeclarations.Add(declarationKey);
-                    break;
                 }
 
                 if (updated == null)
@@ -582,6 +602,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     private static List<string> CollectPushableMemberNames(
         TypeDeclarationSyntax typeDeclaration,
         SemanticModel semanticModel,
+        bool leaveAbstract,
         CancellationToken cancellationToken)
     {
         var names = new List<string>();
@@ -591,10 +612,61 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             if (symbol == null || !IsSupportedMember(symbol))
                 continue;
 
+            // When leaveAbstract is set, skip members that cannot become abstract
+            // so ValidateMembersForPush does not discard the whole site.
+            if (leaveAbstract && !CanBeAbstract(symbol))
+                continue;
+
             names.Add(name);
         }
 
         return names;
+    }
+
+    /// <summary>
+    /// Stable cascade-prevention key for a member. Methods and indexers include
+    /// their parameter signature so inserting one overload does not suppress
+    /// another with the same metadata name. Must omit the containing type —
+    /// after a push the member is redeclared on the derived type, and a
+    /// containing-type-qualified display string would not match the key
+    /// recorded at insertion time.
+    /// </summary>
+    private static readonly SymbolDisplayFormat CascadeKeyFormat = new(
+        memberOptions: SymbolDisplayMemberOptions.IncludeParameters
+            | SymbolDisplayMemberOptions.IncludeType,
+        parameterOptions: SymbolDisplayParameterOptions.IncludeType,
+        genericsOptions: SymbolDisplayGenericsOptions.IncludeTypeParameters);
+
+    internal static string MemberCascadeKey(ISymbol symbol) =>
+        symbol switch
+        {
+            IMethodSymbol method => method.ToDisplayString(CascadeKeyFormat),
+            IPropertySymbol { IsIndexer: true } indexer =>
+                indexer.ToDisplayString(CascadeKeyFormat),
+            _ => symbol.Name
+        };
+
+    /// <summary>
+    /// True when any declaring document of <paramref name="type"/> shares a
+    /// physical path with multiple linked workspace views.
+    /// </summary>
+    private static bool DeclaringPathHasLinkedMultiView(
+        INamedTypeSymbol type,
+        Solution solution,
+        IReadOnlyDictionary<string, int> linkedPathCounts)
+    {
+        foreach (var syntaxRef in type.DeclaringSyntaxReferences)
+        {
+            var document = solution.GetDocument(syntaxRef.SyntaxTree);
+            if (document?.FilePath == null)
+                continue;
+
+            var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
+            if (linkedPathCounts.TryGetValue(pathKey, out var count) && count > 1)
+                return true;
+        }
+
+        return false;
     }
 
     private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)

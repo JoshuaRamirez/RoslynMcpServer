@@ -3971,6 +3971,55 @@ public class PushMembersDownOperationTests
     }
 
     [Fact]
+    public void Validate_AllFilesTrue_WithEmptyTargetDerivedTypes_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PushMembersDownOperation.Validate(new PushMembersDownParams
+            {
+                AllFiles = true,
+                TargetDerivedTypes = Array.Empty<string>()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void MemberCascadeKey_DistinguishesMethodOverloads_OmitsContainingType()
+    {
+        var tree = CSharpSyntaxTree.ParseText("""
+            class Root
+            {
+                public void M(string s) { }
+                public void M(int i) { }
+                public int P { get; set; }
+            }
+
+            class Middle
+            {
+                public void M(string s) { }
+            }
+            """);
+        var compilation = CSharpCompilation.Create(
+            "CascadeKeyTest",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var methods = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().ToList();
+        var prop = tree.GetRoot().DescendantNodes().OfType<PropertyDeclarationSyntax>().Single();
+        var rootMString = model.GetDeclaredSymbol(methods[0])!;
+        var rootMInt = model.GetDeclaredSymbol(methods[1])!;
+        var middleMString = model.GetDeclaredSymbol(methods[2])!;
+        var p = model.GetDeclaredSymbol(prop)!;
+
+        var keyRootString = PushMembersDownOperation.MemberCascadeKey(rootMString);
+        var keyRootInt = PushMembersDownOperation.MemberCascadeKey(rootMInt);
+        var keyMiddleString = PushMembersDownOperation.MemberCascadeKey(middleMString);
+        Assert.NotEqual(keyRootString, keyRootInt);
+        Assert.Equal(keyRootString, keyMiddleString);
+        Assert.Equal("P", PushMembersDownOperation.MemberCascadeKey(p));
+    }
+
+    [Fact]
     public void Validate_AllFilesTrue_RelativeSourceFile_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -4275,6 +4324,141 @@ public class PushMembersDownOperationTests
         Assert.Contains("Speak", ExtractTypeBody(animalA, "Dog"));
         Assert.DoesNotContain("Name", ExtractTypeBody(animalB, "Animal"));
         Assert.Contains("Name", ExtractTypeBody(animalA, "Dog"));
+    }
+
+
+    private const string SameFilePartialsFile = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            public int Speak()
+            {
+                return 1;
+            }
+        }
+
+        public partial class Animal
+        {
+            public string Name { get; set; }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_PushesMembersFromSameFilePartials()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", SameFilePartialsFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        Assert.DoesNotContain("Speak", ExtractTypeBody(text, "Animal"));
+        Assert.DoesNotContain("Name", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("Speak", ExtractTypeBody(text, "Dog"));
+        Assert.Contains("Name", ExtractTypeBody(text, "Dog"));
+    }
+
+    private const string OverloadCascadeRootFile = """
+        namespace TestApp;
+
+        public class Root
+        {
+            public int M(string s)
+            {
+                return 1;
+            }
+        }
+
+        public class Middle : Root
+        {
+            public int M(int i)
+            {
+                return 2;
+            }
+        }
+        """;
+
+    private const string OverloadCascadeLeafFile = """
+        namespace TestApp;
+
+        public class Leaf : Middle
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_CascadeKeepsUnrelatedOverloads()
+    {
+        // Root.M(string) is pushed onto Middle; Middle.M(int) must still reach Leaf.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Leaf.cs", OverloadCascadeLeafFile),
+            ("Root.cs", OverloadCascadeRootFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var root = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        var leaf = await File.ReadAllTextAsync(workspace.SourcePaths["Leaf.cs"]);
+        Assert.DoesNotContain("M(string", ExtractTypeBody(root, "Root"));
+        Assert.Contains("M(string", ExtractTypeBody(root, "Middle"));
+        Assert.DoesNotContain("M(int", ExtractTypeBody(root, "Middle"));
+        Assert.Contains("M(int", ExtractTypeBody(leaf, "Leaf"));
+        Assert.DoesNotContain("M(string", ExtractTypeBody(leaf, "Leaf"));
+    }
+
+    private const string LeaveAbstractMixedFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public virtual int Speak()
+            {
+                return 1;
+            }
+
+            public static int Count;
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_LeaveAbstractSkipsNonAbstractableMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", LeaveAbstractMixedFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        // Speak becomes abstract on Animal and override on Dog; static Count stays.
+        Assert.Contains("abstract", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("Speak", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("Count", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("Speak", ExtractTypeBody(text, "Dog"));
+        Assert.DoesNotContain("Count", ExtractTypeBody(text, "Dog"));
     }
 
     #endregion
