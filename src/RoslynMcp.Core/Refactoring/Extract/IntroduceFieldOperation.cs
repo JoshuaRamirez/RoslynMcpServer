@@ -705,6 +705,13 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
                 ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not determine expression type.");
 
             ValidateFieldType(fieldType);
+            if (ReferencesMethodTypeParameter(expression, semanticModel, cancellationToken))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.InvalidTargetType,
+                    "Cannot introduce a field whose initializer references a method type parameter.");
+            }
+
             ValidateExpressionCaptures(expression, semanticModel, excludedLocal: null, @params.IsStatic, cancellationToken);
 
             if (ContainsAwait(expression))

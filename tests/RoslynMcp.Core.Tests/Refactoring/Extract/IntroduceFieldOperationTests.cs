@@ -1973,6 +1973,42 @@ public class IntroduceFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task IntroduceField_ExpressionWithTypeofMethodTypeParameter_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public System.Type CaptureMethodType<T>()
+                {
+                    return typeof(T);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "typeof(T)");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new IntroduceFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                FieldName = "_type"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidTargetType, ex.ErrorCode);
+        var unchanged = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("return typeof(T);", unchanged, StringComparison.Ordinal);
+        Assert.DoesNotContain("private System.Type _type", unchanged, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task IntroduceField_AllFilesTrue_PromotesLocalsWithPropertyPattern()
     {
         const string source = """
