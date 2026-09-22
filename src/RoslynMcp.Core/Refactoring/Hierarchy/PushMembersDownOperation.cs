@@ -46,6 +46,25 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     /// </summary>
     internal static void Validate(PushMembersDownParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.TypeName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue ||
+                @params.Members != null ||
+                (@params.TargetDerivedTypes != null && @params.TargetDerivedTypes.Count > 0))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with typeName, line, column, members, or targetDerivedTypes.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -55,11 +74,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (@params.Members == null || @params.Members.Count == 0 || @params.Members.All(string.IsNullOrWhiteSpace))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "members is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        ValidateSourceFilePath(@params.SourceFile!);
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
@@ -67,8 +82,17 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!File.Exists(@params.SourceFile))
+        if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+    }
+
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
     }
 
     /// <inheritdoc />
@@ -77,7 +101,10 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         PushMembersDownParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -89,12 +116,12 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         // pick (enum and DelegateDeclarationSyntax do not participate).
         // Line set also includes a covering enum or delegate so it
         // reaches InvalidSymbolKind instead of retargeting a later class.
-        var found = FindTypeDeclaration(root, @params.TypeName, @params.Line, @params.Column);
+        var found = FindTypeDeclaration(root, @params.TypeName!, @params.Line, @params.Column);
         if (found == null)
         {
             throw new RefactoringException(
                 ErrorCodes.TypeNotFound,
-                $"Type '{@params.TypeName}' not found in file.");
+                $"Type '{@params.TypeName!}' not found in file.");
         }
 
         var sourceSymbol = semanticModel.GetDeclaredSymbol(found, cancellationToken) as INamedTypeSymbol;
@@ -108,7 +135,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 $"Type '{sourceSymbol.Name}' is not a supported target for push_members_down.");
         }
 
-        var members = FindMembersToPush(sourceDecl, @params.Members, semanticModel, cancellationToken);
+        var members = FindMembersToPush(sourceDecl, @params.Members!, semanticModel, cancellationToken);
         var targets = await GetDerivedTypes(sourceSymbol, @params.TargetDerivedTypes, cancellationToken);
 
         if (targets.Count == 0)
@@ -130,7 +157,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
 
         await ValidateNoBreakingReferencesAsync(
-            members, sourceSymbol, targets, leaveAbstract, cancellationToken);
+            members, sourceSymbol, targets, leaveAbstract, Context.Solution, cancellationToken);
 
         var pushedNames = members.Select(m => m.Name).ToList();
         var derivedUpdates = new List<DerivedUpdate>();
@@ -177,14 +204,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         // look up by file path and rematch by span (same as
         // pull_members_up / extract_base_class / implement_abstract).
         document = annotatedSolution.GetDocument(previousTree)
-            ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName);
+            ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName!);
         root = await document.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         sourceDecl = RecoverAnnotatedType(
             root,
             sourceTypeAnnotation,
             sourceDecl,
-            @params.TypeName);
+            @params.TypeName!);
 
         // Strip the per-execution annotation so it does not linger in the
         // workspace after commit.
@@ -219,6 +246,391 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             },
             0,
             0);
+    }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// helpers as <c>PullMembersUpOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ExtractBaseClassOperation.ExecuteAllFilesAsync</c>) and pushes every
+    /// pushable member from each eligible base type onto all direct derived
+    /// types (same as omitted <c>targetDerivedTypes</c>). Optional
+    /// <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
+    /// Linked documents that share a physical path are rewritten once and
+    /// sibling text is coalesced via
+    /// <see cref="AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync"/>.
+    /// Types with no derived targets, empty pushable member sets, unsupported
+    /// kinds, uneditable / source-generated docs, non-editable derived types,
+    /// and linked multi-views are skipped rather than failing the walk.
+    /// Members inserted onto a derived type by an earlier push in this walk
+    /// are tracked and skipped when that type is later visited as a source,
+    /// so they are not cascaded further down the hierarchy. De-duplication
+    /// is per declaration (<c>TypeWalkKey</c> + document), so partial types
+    /// with pushable members in multiple files are all visited.
+    /// Deterministic <c>SpanStart</c> order within a file. When every file is
+    /// a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        PushMembersDownParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+        var pushedCountByDoc = new Dictionary<DocumentId, int>();
+        // Per-declaration keys (type + document), not type-wide: partials that
+        // declare pushable members in multiple files must each be visited.
+        // Claim after success so a no-member partial does not block another
+        // partial of the same type.
+        var processedDeclarations = new HashSet<string>(StringComparer.Ordinal);
+        var insertedMembersByType = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Linked multi-project views of the same path can diverge under
+            // preprocessor symbols; skip rather than coalescing a push that
+            // only one compilation can honor. Same contract as
+            // pull_members_up / extract_base_class allFiles.
+            if (linkedDocuments.Count > 1)
+                continue;
+
+            var primary = linkedDocuments.FirstOrDefault(d =>
+                d is not SourceGeneratedDocument &&
+                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+            if (primary == null)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(primary.Id);
+                if (currentDocument == null ||
+                    currentDocument is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                {
+                    break;
+                }
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var typeNode in TypeDeclarationHelpers.CollectTypeDeclarations(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (typeNode is not TypeDeclarationSyntax typeDeclaration)
+                        continue;
+
+                    var sourceSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
+                    if (sourceSymbol == null)
+                        continue;
+
+                    var typeKey = TypeWalkKeyHelpers.TypeWalkKey(currentDocument.Project.Id, sourceSymbol);
+                    var declarationKey = typeKey + "|" + currentDocument.Id.Id;
+                    if (processedDeclarations.Contains(declarationKey))
+                        continue;
+
+                    IReadOnlyList<INamedTypeSymbol> targets;
+                    try
+                    {
+                        targets = await GetDerivedTypes(
+                            sourceSymbol, targetNames: null, currentSolution, cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        continue;
+                    }
+
+                    if (targets.Count == 0)
+                        continue;
+
+                    try
+                    {
+                        foreach (var target in targets)
+                            ValidateDerivedIsEditable(target);
+                    }
+                    catch (RefactoringException)
+                    {
+                        continue;
+                    }
+
+                    var leaveAbstract = @params.LeaveAbstract && sourceSymbol.TypeKind != TypeKind.Interface;
+                    var memberNames = CollectPushableMemberNames(
+                        typeDeclaration, semanticModel, cancellationToken);
+                    // Skip members this walk already inserted onto this type
+                    // (cascade prevention).
+                    if (insertedMembersByType.TryGetValue(typeKey, out var insertedHere) &&
+                        insertedHere.Count > 0)
+                    {
+                        memberNames = memberNames
+                            .Where(name => !insertedHere.Contains(name))
+                            .ToList();
+                    }
+
+                    if (memberNames.Count == 0)
+                        continue;
+
+                    try
+                    {
+                        var members = FindMembersToPush(
+                            typeDeclaration, memberNames, semanticModel, cancellationToken);
+                        if (members.Count == 0)
+                            continue;
+
+                        ValidateMembersForPush(members, sourceSymbol, targets, leaveAbstract);
+                        if (leaveAbstract)
+                        {
+                            ValidateLeaveAbstractCoversConcreteDerived(sourceSymbol, targets, targets);
+                        }
+
+                        await ValidateNoBreakingReferencesAsync(
+                            members, sourceSymbol, targets, leaveAbstract, currentSolution, cancellationToken);
+
+                        var derivedUpdates = new List<DerivedUpdate>();
+                        foreach (var target in targets)
+                        {
+                            var original = await GetTypeDeclarationAsync(target, cancellationToken);
+                            var copies = members
+                                .Select(member => ConvertForDerived(
+                                    member, sourceSymbol, target, semanticModel, leaveAbstract))
+                                .ToList();
+                            derivedUpdates.Add(new DerivedUpdate(target, original, AddMembersToType(original, copies)));
+                        }
+
+                        var sourceReplacement = BuildSourceReplacement(
+                            typeDeclaration, members, sourceSymbol, leaveAbstract);
+
+                        updated = await ApplyChangesAsync(
+                            currentDocument,
+                            typeDeclaration,
+                            sourceReplacement,
+                            derivedUpdates,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        updated = null;
+                        continue;
+                    }
+
+                    if (updated == null)
+                        continue;
+
+                    // Record names inserted onto each derived target so a later
+                    // visit of that type does not cascade them further.
+                    foreach (var target in targets)
+                    {
+                        var targetProjectId = ResolveSymbolProjectId(currentSolution, target)
+                            ?? currentDocument.Project.Id;
+                        var targetKey = TypeWalkKeyHelpers.TypeWalkKey(targetProjectId, target);
+                        if (!insertedMembersByType.TryGetValue(targetKey, out var insertedOnTarget))
+                        {
+                            insertedOnTarget = new HashSet<string>(StringComparer.Ordinal);
+                            insertedMembersByType[targetKey] = insertedOnTarget;
+                        }
+
+                        foreach (var name in memberNames)
+                            insertedOnTarget.Add(name);
+                    }
+
+                    processedDeclarations.Add(declarationKey);
+                    break;
+                }
+
+                if (updated == null)
+                    break;
+
+                var beforeSolution = currentSolution;
+                currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                    beforeSolution,
+                    updated,
+                    Context.Workspace,
+                    cancellationToken);
+
+                pushedCountByDoc[primary.Id] =
+                    pushedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution)
+            .Concat(
+                currentSolution.Projects
+                    .SelectMany(p => p.Documents)
+                    .Where(d => d.FilePath != null &&
+                                d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
+                                originalSolution.GetDocument(d.Id) == null))
+            .GroupBy(d => d.Id)
+            .Select(g => g.First())
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (currentDocument == null || originalDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var pushedCount = pushedCountByDoc.GetValueOrDefault(document.Id);
+                if (pushedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        pushedCount = Math.Max(pushedCount, pushedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = pushedCount > 0
+                        ? BuildAllFilesDescription(pushedCount)
+                        : "Update push_members_down rewrites",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Resolves the <see cref="ProjectId"/> that owns
+    /// <paramref name="symbol"/>'s declaring syntax, when available.
+    /// </summary>
+    private static ProjectId? ResolveSymbolProjectId(Solution solution, ISymbol symbol)
+    {
+        foreach (var reference in symbol.DeclaringSyntaxReferences)
+        {
+            var document = solution.GetDocument(reference.SyntaxTree);
+            if (document != null)
+                return document.Project.Id;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Preview description for a file that pushed members from
+    /// <paramref name="pushedCount"/> base types.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int pushedCount) =>
+        pushedCount == 1
+            ? "Push members down"
+            : $"Push members down from {pushedCount} types";
+
+    private static List<string> CollectPushableMemberNames(
+        TypeDeclarationSyntax typeDeclaration,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var names = new List<string>();
+        foreach (var (name, symbol, _) in EnumerateDeclaredMembers(
+                     typeDeclaration, semanticModel, cancellationToken))
+        {
+            if (symbol == null || !IsSupportedMember(symbol))
+                continue;
+
+            names.Add(name);
+        }
+
+        return names;
+    }
+
+    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var exactMatches = documents
+            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
+            .ToList();
+        if (exactMatches.Count > 0)
+        {
+            var exactKeys = exactMatches
+                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+                .ToHashSet(StringComparer.Ordinal);
+            return documents
+                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
+                .ToList();
+        }
+
+        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
+        var distinctPaths = matchedDocuments
+            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return distinctPaths.Count switch
+        {
+            0 when !File.Exists(sourceFile) => throw new RefactoringException(
+                ErrorCodes.SourceFileNotFound,
+                $"Source file not found: {sourceFile}"),
+            0 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"File not found in workspace: {sourceFile}"),
+            > 1 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ => matchedDocuments
+        };
     }
 
     /// <summary>
@@ -744,6 +1156,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         INamedTypeSymbol source,
         IReadOnlyList<INamedTypeSymbol> targets,
         bool leaveAbstract,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         if (source.TypeKind == TypeKind.Interface)
@@ -751,14 +1164,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
         if (leaveAbstract)
         {
-            await ValidateEventsNotRaisedBySourceAsync(members, source, cancellationToken);
+            await ValidateEventsNotRaisedBySourceAsync(members, source, solution, cancellationToken);
             return;
         }
 
         foreach (var member in members)
         {
             var references = await SymbolFinder.FindReferencesAsync(
-                member.Symbol, Context.Solution, cancellationToken);
+                member.Symbol, solution, cancellationToken);
 
             foreach (var referenced in references)
             {
@@ -840,6 +1253,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     private async Task ValidateEventsNotRaisedBySourceAsync(
         IReadOnlyList<PushableMember> members,
         INamedTypeSymbol source,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         foreach (var member in members)
@@ -848,7 +1262,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 continue;
 
             var references = await SymbolFinder.FindReferencesAsync(
-                member.Symbol, Context.Solution, cancellationToken);
+                member.Symbol, solution, cancellationToken);
 
             foreach (var referenced in references)
             {
@@ -1799,13 +2213,13 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         {
             new()
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = source.TypeKind == TypeKind.Interface
-                    ? $"Keep {memberList} on {@params.TypeName}"
+                    ? $"Keep {memberList} on {@params.TypeName!}"
                     : @params.LeaveAbstract
-                        ? $"Leave {memberList} as abstract on {@params.TypeName}"
-                        : $"Remove {memberList} from {@params.TypeName}",
+                        ? $"Leave {memberList} as abstract on {@params.TypeName!}"
+                        : $"Remove {memberList} from {@params.TypeName!}",
                 BeforeSnippet = originalSource.Identifier.Text,
                 AfterSnippet = updatedSource.NormalizeWhitespace().ToFullString()
             }
@@ -1814,7 +2228,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         foreach (var update in derivedUpdates)
         {
             var location = update.Type.Locations.FirstOrDefault(l => l.IsInSource);
-            var file = location?.SourceTree?.FilePath ?? @params.SourceFile;
+            var file = location?.SourceTree?.FilePath ?? @params.SourceFile!;
             pendingChanges.Add(new PendingChange
             {
                 File = file,

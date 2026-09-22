@@ -3865,7 +3865,427 @@ public class PushMembersDownOperationTests
 
     #endregion
 
+    #region allFiles
+
+    private const string EligiblePushFileA = """
+        namespace TestApp;
+
+        public class AnimalA
+        {
+            public int Speak()
+            {
+                return 1;
+            }
+        }
+
+        public class DogA : AnimalA
+        {
+        }
+        """;
+
+    private const string EligiblePushFileB = """
+        namespace TestApp;
+
+        public class AnimalB
+        {
+            public string Name { get; set; }
+        }
+
+        public class DogB : AnimalB
+        {
+        }
+        """;
+
+    private const string IneligibleNoDerivedFile = """
+        namespace TestApp;
+
+        public class Standalone
+        {
+            public int Speak()
+            {
+                return 1;
+            }
+        }
+        """;
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrTypeName_DoesNotThrow()
+    {
+        PushMembersDownOperation.Validate(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PushMembersDownOperation.Validate(new PushMembersDownParams
+            {
+                AllFiles = true,
+                TypeName = "AnimalA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PushMembersDownOperation.Validate(new PushMembersDownParams
+            {
+                AllFiles = true,
+                Members = new[] { "Speak" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PushMembersDownOperation.Validate(new PushMembersDownParams
+            {
+                AllFiles = true,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTargetDerivedTypes_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PushMembersDownOperation.Validate(new PushMembersDownParams
+            {
+                AllFiles = true,
+                TargetDerivedTypes = new[] { "DogA" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_RelativeSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PushMembersDownOperation.Validate(new PushMembersDownParams
+            {
+                AllFiles = true,
+                SourceFile = "relative.cs"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PushMembersDownOperation.Validate(new PushMembersDownParams
+            {
+                AllFiles = false,
+                TypeName = "AnimalA",
+                Members = new[] { "Speak" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Push members down", PushMembersDownOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Push members down from 2 types", PushMembersDownOperation.BuildAllFilesDescription(2));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_OmittedAllFiles_KeepsSingleSitePush()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligiblePushFileA);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "AnimalA",
+            Members = new[] { "Speak" }
+        });
+
+        Assert.True(result.Success);
+        var text = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("Speak", ExtractTypeBody(text, "AnimalA"));
+        Assert.Contains("Speak", ExtractTypeBody(text, "DogA"));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_PushesEligibleTypesAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligiblePushFileA),
+            ("FileB.cs", EligiblePushFileB),
+            ("FileC.cs", IneligibleNoDerivedFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain("Speak", ExtractTypeBody(updatedA, "AnimalA"));
+        Assert.Contains("Speak", ExtractTypeBody(updatedA, "DogA"));
+        Assert.DoesNotContain("Name", ExtractTypeBody(updatedB, "AnimalB"));
+        Assert.Contains("Name", ExtractTypeBody(updatedB, "DogB"));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_WithoutSourceFileOrTypeName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligiblePushFileA),
+            ("FileB.cs", EligiblePushFileB));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Changes!.FilesModified.Count >= 1);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligiblePushFileA);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                AllFiles = false,
+                TypeName = "AnimalA",
+                Members = new[] { "Speak" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_WithTypeName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligiblePushFileA);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                AllFiles = true,
+                TypeName = "AnimalA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_WithMembers_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligiblePushFileA);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                AllFiles = true,
+                Members = new[] { "Speak" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligiblePushFileA),
+            ("FileB.cs", EligiblePushFileB),
+            ("FileC.cs", IneligibleNoDerivedFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.True(result.PendingChanges!.Count >= 1);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", IneligibleNoDerivedFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Empty(result.Changes.FilesCreated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligiblePushFileA),
+            ("FileB.cs", EligiblePushFileB));
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+    }
+
+    private const string CascadeRootFile = """
+        namespace TestApp;
+
+        public class Root
+        {
+            public int Cascaded()
+            {
+                return 1;
+            }
+        }
+
+        public class Middle : Root
+        {
+        }
+        """;
+
+    private const string CascadeLeafFile = """
+        namespace TestApp;
+
+        public class Leaf : Middle
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_DoesNotCascadeThroughMiddleDerived()
+    {
+        // Leaf.cs sorts before Root.cs alphabetically? "CascadeLeaf" vs - use names
+        // Leaf.cs before MiddleRoot.cs so Leaf is visited first (no members), then Root
+        // pushes Cascaded onto Middle. Without cascade tracking, Middle would then
+        // push Cascaded onto Leaf.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Leaf.cs", CascadeLeafFile),
+            ("Root.cs", CascadeRootFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var root = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        var leaf = await File.ReadAllTextAsync(workspace.SourcePaths["Leaf.cs"]);
+        Assert.DoesNotContain("Cascaded", ExtractTypeBody(root, "Root"));
+        Assert.Contains("Cascaded", ExtractTypeBody(root, "Middle"));
+        Assert.DoesNotContain("Cascaded", ExtractTypeBody(leaf, "Leaf"));
+    }
+
+    private const string PartialBasePartA = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            public int Speak()
+            {
+                return 1;
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    private const string PartialBasePartB = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            public string Name { get; set; }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_PushesMembersFromEveryPartialDeclaration()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("AnimalA.cs", PartialBasePartA),
+            ("AnimalB.cs", PartialBasePartB));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var animalA = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalA.cs"]);
+        var animalB = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalB.cs"]);
+        Assert.DoesNotContain("Speak", ExtractTypeBody(animalA, "Animal"));
+        Assert.Contains("Speak", ExtractTypeBody(animalA, "Dog"));
+        Assert.DoesNotContain("Name", ExtractTypeBody(animalB, "Animal"));
+        Assert.Contains("Name", ExtractTypeBody(animalA, "Dog"));
+    }
+
+    #endregion
+
     #region Helpers
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            StringComparison.OrdinalIgnoreCase);
 
     private static string AbsoluteTestPath() =>
         OperatingSystem.IsWindows() ? @"C:\test\file.cs" : "/test/file.cs";
@@ -4121,11 +4541,16 @@ public class PushMembersDownOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public IReadOnlyDictionary<string, string> SourcePaths { get; init; } =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public string LibraryPath { get; init; } = "";
         public string DerivedPath { get; init; } = "";
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateWithFilesAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -4133,33 +4558,48 @@ public class PushMembersDownOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            string? firstSource = null;
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+                firstSource ??= sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = firstSource!,
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }
