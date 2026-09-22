@@ -223,11 +223,7 @@ public sealed class IntroduceParameterOperation : RefactoringOperationBase<Intro
     {
         var originalSolution = Context.Solution;
         var currentSolution = originalSolution;
-        var allDocuments = originalSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
             allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
@@ -235,15 +231,7 @@ public sealed class IntroduceParameterOperation : RefactoringOperationBase<Intro
         // One physical path may appear as multiple Documents when linked into
         // several projects. Rewrite once per normalized path and apply the same
         // text to every sibling DocumentId (ConvertToBlockBody allFiles / Codex).
-        var documentGroups = allDocuments
-            .GroupBy(d => PathResolver.GetPathComparisonKey(d.FilePath!), StringComparer.Ordinal)
-            .Select(group => group
-                .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-                .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
-                .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
-                .ToList())
-            .OrderBy(group => group[0].FilePath, StringComparer.Ordinal)
-            .ToList();
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
 
         var promotedCountByDoc = new Dictionary<DocumentId, int>();
 
@@ -304,77 +292,18 @@ public sealed class IntroduceParameterOperation : RefactoringOperationBase<Intro
                 // Prefer a DocumentId that actually changed so an unchanged
                 // sorted-first sibling cannot overwrite the rewrite (Codex/Copilot).
                 var beforeSolution = currentSolution;
-                currentSolution = updated;
-                var changedDocIds = new HashSet<DocumentId>();
-                var changedPathKeys = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var projectChanges in updated.GetChanges(beforeSolution).GetProjectChanges())
-                {
-                    foreach (var docId in projectChanges.GetChangedDocuments())
-                    {
-                        changedDocIds.Add(docId);
-                        var changedDoc = updated.GetDocument(docId);
-                        if (changedDoc?.FilePath != null)
-                            changedPathKeys.Add(PathResolver.GetPathComparisonKey(changedDoc.FilePath));
-                    }
-                }
-
-                if (changedPathKeys.Count > 0)
-                {
-                    var allCurrent = currentSolution.Projects
-                        .SelectMany(p => p.Documents)
-                        .Where(d => d.FilePath != null)
-                        .ToList();
-
-                    foreach (var pathKey in changedPathKeys)
-                    {
-                        var siblings = allCurrent
-                            .Where(d => PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
-                            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-                            .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
-                            .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
-                            .ToList();
-                        if (siblings.Count <= 1)
-                            continue;
-
-                        var sourceDoc = siblings.FirstOrDefault(d =>
-                                changedDocIds.Contains(d.Id) &&
-                                d is not SourceGeneratedDocument &&
-                                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace))
-                            ?? siblings.FirstOrDefault(d =>
-                                d is not SourceGeneratedDocument &&
-                                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
-                        if (sourceDoc == null)
-                            continue;
-
-                        var live = currentSolution.GetDocument(sourceDoc.Id);
-                        if (live == null)
-                            continue;
-                        var sharedText = await live.GetTextAsync(cancellationToken);
-
-                        foreach (var sibling in siblings)
-                        {
-                            if (sibling.Id == sourceDoc.Id)
-                                continue;
-                            var siblingLive = currentSolution.GetDocument(sibling.Id);
-                            if (siblingLive == null || siblingLive is SourceGeneratedDocument)
-                                continue;
-                            if (!DocumentEditableHelpers.IsDocumentEditable(siblingLive, Context.Workspace))
-                                continue;
-                            currentSolution = currentSolution.WithDocumentText(sibling.Id, sharedText);
-                        }
-                    }
-                }
+                currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                    beforeSolution,
+                    updated,
+                    Context.Workspace,
+                    cancellationToken);
 
                 promotedCountByDoc[primary.Id] =
                     promotedCountByDoc.GetValueOrDefault(primary.Id) + 1;
             }
         }
 
-        var documentsToCompare = originalSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-            .ToList();
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;

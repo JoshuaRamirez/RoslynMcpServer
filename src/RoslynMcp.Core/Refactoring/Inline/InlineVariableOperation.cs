@@ -315,11 +315,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
     {
         var originalSolution = Context.Solution;
         var currentSolution = originalSolution;
-        var allDocuments = originalSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
             allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
@@ -327,15 +323,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         // One physical path may appear as multiple Documents when linked into
         // several projects. Rewrite once per normalized path and apply the same
         // text to every sibling DocumentId (ConvertToBlockBody allFiles / Codex).
-        var documentGroups = allDocuments
-            .GroupBy(d => PathResolver.GetPathComparisonKey(d.FilePath!), StringComparer.Ordinal)
-            .Select(group => group
-                .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-                .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
-                .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
-                .ToList())
-            .OrderBy(group => group[0].FilePath, StringComparer.Ordinal)
-            .ToList();
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
 
         var inlinedCountByDoc = new Dictionary<DocumentId, int>();
 
@@ -415,11 +403,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             }
         }
 
-        var documentsToCompare = originalSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-            .ToList();
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;

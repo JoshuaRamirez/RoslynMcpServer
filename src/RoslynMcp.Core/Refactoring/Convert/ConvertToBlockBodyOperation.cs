@@ -196,11 +196,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         CancellationToken cancellationToken)
     {
         var currentSolution = Context.Solution;
-        var allDocuments = currentSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
         {
@@ -213,15 +209,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         // conflicting preprocessor variants (Codex P2). Group by the physical
         // path comparison key so case-insensitive filesystems coalesce wrong-
         // cased aliases while case-sensitive files stay distinct.
-        var documentGroups = allDocuments
-            .GroupBy(d => PathResolver.GetPathComparisonKey(d.FilePath!), StringComparer.Ordinal)
-            .Select(group => group
-                .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-                .ThenBy(d => d.Project.Name, StringComparer.Ordinal)
-                .ThenBy(d => d.Id.Id.ToString(), StringComparer.Ordinal)
-                .ToList())
-            .OrderBy(group => group[0].FilePath, StringComparer.Ordinal)
-            .ToList();
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;
