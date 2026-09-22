@@ -1316,7 +1316,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
             // Only reject members accessed via implicit this, this, or base —
             // not instance members of other objects (e.g. DateTime.Now.Day).
-            if (IsAccessedViaContainingInstance(name, semanticModel, cancellationToken))
+            if (IsAccessedViaContainingInstance(name, initializer, semanticModel, cancellationToken))
             {
                 throw new RefactoringException(
                     ErrorCodes.ExpressionNotFieldInitializable,
@@ -1361,6 +1361,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
     /// </summary>
     private static bool IsAccessedViaContainingInstance(
         SimpleNameSyntax name,
+        SyntaxNode movedSubtree,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
@@ -1381,14 +1382,14 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
         if (name.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == name)
         {
-            return IsContainingInstanceReceiver(memberAccess.Expression, semanticModel, cancellationToken);
+            return IsContainingInstanceReceiver(memberAccess.Expression, movedSubtree, semanticModel, cancellationToken);
         }
 
         if (name.Parent is MemberBindingExpressionSyntax)
         {
             var conditional = name.Ancestors().OfType<ConditionalAccessExpressionSyntax>().FirstOrDefault();
             return conditional != null &&
-                IsContainingInstanceReceiver(conditional.Expression, semanticModel, cancellationToken);
+                IsContainingInstanceReceiver(conditional.Expression, movedSubtree, semanticModel, cancellationToken);
         }
 
         // nameof(...) references are compile-time only and do not capture instance state.
@@ -1462,6 +1463,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
     private static bool IsContainingInstanceReceiver(
         ExpressionSyntax expression,
+        SyntaxNode movedSubtree,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
@@ -1473,11 +1475,11 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
         return expression switch
         {
-            SimpleNameSyntax simpleName => IsImplicitContainingInstanceMember(simpleName, semanticModel, cancellationToken),
-            MemberAccessExpressionSyntax memberAccess => IsContainingInstanceReceiver(memberAccess.Expression, semanticModel, cancellationToken),
-            InvocationExpressionSyntax invocation => IsContainingInstanceReceiver(invocation.Expression, semanticModel, cancellationToken),
-            ElementAccessExpressionSyntax elementAccess => IsContainingInstanceReceiver(elementAccess.Expression, semanticModel, cancellationToken),
-            ConditionalAccessExpressionSyntax conditionalAccess => IsContainingInstanceReceiver(conditionalAccess.Expression, semanticModel, cancellationToken),
+            SimpleNameSyntax simpleName => IsImplicitContainingInstanceMember(simpleName, movedSubtree, semanticModel, cancellationToken),
+            MemberAccessExpressionSyntax memberAccess => IsContainingInstanceReceiver(memberAccess.Expression, movedSubtree, semanticModel, cancellationToken),
+            InvocationExpressionSyntax invocation => IsContainingInstanceReceiver(invocation.Expression, movedSubtree, semanticModel, cancellationToken),
+            ElementAccessExpressionSyntax elementAccess => IsContainingInstanceReceiver(elementAccess.Expression, movedSubtree, semanticModel, cancellationToken),
+            ConditionalAccessExpressionSyntax conditionalAccess => IsContainingInstanceReceiver(conditionalAccess.Expression, movedSubtree, semanticModel, cancellationToken),
             _ => expression.DescendantNodesAndSelf().Any(node =>
                 node is ThisExpressionSyntax or BaseExpressionSyntax)
         };
@@ -1485,6 +1487,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
     private static bool IsImplicitContainingInstanceMember(
         SimpleNameSyntax simpleName,
+        SyntaxNode movedSubtree,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
@@ -1494,6 +1497,14 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
         if (symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol)
             return false;
+
+        // Local functions declared inside the moved initializer are not
+        // containing-instance receivers (Codex P2 on #1316).
+        if (symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction } localFunction &&
+            IsDeclaredWithinNode(localFunction, movedSubtree))
+        {
+            return false;
+        }
 
         return CouldBeContainingInstanceMember(symbol);
     }

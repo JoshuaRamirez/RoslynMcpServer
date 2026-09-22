@@ -2615,6 +2615,92 @@ public class IntroduceFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_PromotesLocalsWithNestedLocalFunctionReceiver()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public System.Func<int> CaptureNestedReceiver()
+                {
+                    System.Func<int> factory = () =>
+                    {
+                        string Get() => "";
+                        return Get().Length;
+                    };
+                    return factory;
+                }
+
+                public int Clean()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private System.Func<int> factory = () =>", updated, StringComparison.Ordinal);
+        Assert.Contains("string Get() => \"\";", updated, StringComparison.Ordinal);
+        Assert.Contains("return Get().Length;", updated, StringComparison.Ordinal);
+        Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("                    System.Func<int> factory = () =>", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_LocalWithNestedLocalFunctionReceiver_Promotes()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public System.Func<int> CaptureNestedReceiver()
+                {
+                    System.Func<int> factory = () =>
+                    {
+                        string Get() => "";
+                        return Get().Length;
+                    };
+                    return factory;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "factory = () =>");
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            FieldName = "_factory"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private System.Func<int> _factory = () =>", updated, StringComparison.Ordinal);
+        Assert.Contains("string Get() => \"\";", updated, StringComparison.Ordinal);
+        Assert.Contains("return Get().Length;", updated, StringComparison.Ordinal);
+        Assert.Contains("return this._factory;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("                    System.Func<int> factory = () =>", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task IntroduceField_LocalWithNameofThis_Throws()
     {
         const string source = """
