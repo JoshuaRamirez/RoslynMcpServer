@@ -1136,62 +1136,15 @@ public class ExtractConstantOperationTests
     [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_SkipsHideWhenImportedTypeNameWouldRebind()
     {
-        // using Lib imports type Foo; Existing => Foo.Value binds through that type.
-        // Literal "foo" derives const name Foo — inserting C.Foo would rebind Foo.Value
-        // (Codex P1).
-        const string source = """
-            using Lib;
-
-            namespace TestApp;
-
-            public class C
-            {
-                public int Existing => Foo.Value;
-
-                public string Run() => "foo";
-            }
-            """;
-
-        const string lib = """
-            namespace Lib;
-
-            public static class Foo
-            {
-                public const int Value = 7;
-            }
-            """;
-
-        await using var workspace = await TempWorkspace.CreateAsync(
-            new Dictionary<string, string>
-            {
-                ["FileC.cs"] = source,
-                ["Lib.cs"] = lib
-            });
-        var operation = new ExtractConstantOperation(workspace.Context);
-        var before = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
-
-        var result = await operation.ExecuteAsync(new ExtractConstantParams
-        {
-            AllFiles = true
-        });
-
-        Assert.True(result.Success);
-        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
-        Assert.Empty(result.Changes!.FilesModified);
-    }
-
-
-    [SkippableFact]
-    public async Task ExtractConstant_AllFilesTrue_SkipsHideWhenImportedTypeNameWouldRebind()
-    {
         // using Lib; + existing Foo.Value; extracting "foo" → const Foo rebinds
         // Foo.Value through the field and can fail to compile (Codex P1).
+        // Lib has no LiteralExpressionSyntax so AllFiles cannot extract there.
         const string lib = """
             namespace Lib;
 
             public class Foo
             {
-                public static int Value = 1;
+                public static int Value => nameof(Foo).Length;
             }
             """;
         const string source = """
@@ -1223,6 +1176,99 @@ public class ExtractConstantOperationTests
         Assert.Equal(beforeLib, await File.ReadAllTextAsync(workspace.SourcePaths["Lib.cs"]));
         Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["C.cs"]));
         Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsHideWhenImportedAliasNameWouldRebind()
+    {
+        // using Foo = Lib.Bar; Existing => Foo.Value binds through the alias.
+        // Literal "foo" derives const name Foo — inserting C.Foo would rebind Foo.Value
+        // (Codex P1 alias). Lib has no extractable literals.
+        const string lib = """
+            namespace Lib;
+
+            public class Bar
+            {
+                public static int Value => nameof(Bar).Length;
+            }
+            """;
+        const string source = """
+            using Foo = Lib.Bar;
+
+            namespace TestApp;
+
+            public class C
+            {
+                public int Existing => Foo.Value;
+
+                public string Run() => "foo";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Lib.cs", lib),
+            ("C.cs", source));
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var beforeLib = await File.ReadAllTextAsync(workspace.SourcePaths["Lib.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["C.cs"]);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeLib, await File.ReadAllTextAsync(workspace.SourcePaths["Lib.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["C.cs"]));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_SingleSite_ImportedTypeNameWouldRebind_ThrowsNameCollision()
+    {
+        // Single-site must throw NameCollision when inserting Foo would rebind
+        // an existing imported-type simple-name use (Codex P1).
+        const string lib = """
+            namespace Lib;
+
+            public class Foo
+            {
+                public static int Value => nameof(Foo).Length;
+            }
+            """;
+        const string source = """
+            using Lib;
+
+            namespace TestApp;
+
+            public class C
+            {
+                public int Existing => Foo.Value;
+
+                public string Run() => "foo";
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Lib.cs", lib),
+            ("C.cs", source));
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var span = FindSpan(source, "\"foo\"");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractConstantParams
+            {
+                SourceFile = workspace.SourcePaths["C.cs"],
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                ConstantName = "Foo"
+            }));
+
+        Assert.Equal(ErrorCodes.NameCollision, ex.ErrorCode);
+        Assert.Equal(NormalizeNewlines(source), NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["C.cs"])));
+        Assert.Equal(NormalizeNewlines(lib), NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Lib.cs"])));
     }
 
     [SkippableFact]
