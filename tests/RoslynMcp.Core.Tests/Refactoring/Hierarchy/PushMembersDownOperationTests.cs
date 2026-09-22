@@ -5517,6 +5517,70 @@ public class PushMembersDownOperationTests
         Assert.DoesNotContain("NotImplementedException", dog);
     }
 
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_LeaveAbstractSkipsPartialMethods()
+    {
+        // leaveAbstract must not rewrite partial method definition/implementation
+        // pairs into invalid `abstract partial` semicolon decls (CS). Skip them.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("AnimalA.cs", PartialMethodPairPartA),
+            ("AnimalB.cs", PartialMethodPairPartB));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var animalA = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalA.cs"]);
+        var animalB = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalB.cs"]);
+        Assert.Contains("partial void Notify();", ExtractTypeBody(animalA, "Animal"));
+        Assert.Contains("partial void Notify()", ExtractTypeBody(animalB, "Animal"));
+        Assert.DoesNotContain("abstract", ExtractTypeBody(animalA, "Animal"));
+        Assert.DoesNotContain("Notify", ExtractTypeBody(animalA, "Dog"));
+        Assert.DoesNotContain("abstract partial", NormalizeNewlines(animalA + animalB));
+    }
+
+    private const string ThisGovernedPropertyPatternFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int X;
+
+            public bool Matches() => this is { X: 1 };
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_PushesThisGovernedPropertyPatternInBatch()
+    {
+        // `this is { X: 1 }` is governed by this — after the batch moves, this is
+        // the derived target (like this.X). Must not reject as a source-typed receiver.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", ThisGovernedPropertyPatternFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        Assert.DoesNotContain("X", ExtractTypeBody(text, "Animal"));
+        Assert.DoesNotContain("Matches", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("X", ExtractTypeBody(text, "Dog"));
+        Assert.Contains("Matches", ExtractTypeBody(text, "Dog"));
+        Assert.Contains("this is { X: 1 }", ExtractTypeBody(text, "Dog"));
+    }
+
     #endregion
 
     #region Helpers

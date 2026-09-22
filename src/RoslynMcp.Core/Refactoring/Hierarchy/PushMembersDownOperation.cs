@@ -1722,9 +1722,15 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
         // Property / recursive pattern designators (`other is { X: 1 }`) look
         // like simple names but bind to the matched type, not implicit this.
+        // When the pattern is governed by `this` (`this is { X: 1 }`), the
+        // receiver becomes the derived target after the move — same as this.X.
         if (name != null &&
-            TryGetPropertyOrRecursivePatternReceiver(name, model, out var patternReceiver))
+            TryGetPropertyOrRecursivePatternReceiver(
+                name, model, out var patternReceiver, out var isThisPattern))
         {
+            if (isThisPattern)
+                return true;
+
             return WillHaveMemberAfterPush(patternReceiver, targets);
         }
 
@@ -1756,7 +1762,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return elementReceiver;
 
         if (name != null &&
-            TryGetPropertyOrRecursivePatternReceiver(name, model, out var patternReceiver))
+            TryGetPropertyOrRecursivePatternReceiver(
+                name, model, out var patternReceiver, out _))
         {
             return patternReceiver;
         }
@@ -1889,20 +1896,26 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     /// <c>Child: { X: 1 }</c>). Sets <paramref name="receiverType"/> to the
     /// type the pattern matches against (is/switch expression type, explicit
     /// pattern type, or outer subpattern member type).
+    /// <paramref name="isThisReceiver"/> is true when that input comes from a
+    /// governing <c>this</c> expression with no explicit pattern type (so after
+    /// a batch move <c>this</c> denotes the derived target).
     /// </summary>
     private static bool TryGetPropertyOrRecursivePatternReceiver(
         SimpleNameSyntax name,
         SemanticModel model,
-        out ITypeSymbol? receiverType)
+        out ITypeSymbol? receiverType,
+        out bool isThisReceiver)
     {
         receiverType = null;
+        isThisReceiver = false;
 
         // Standard designator: { X: pattern }
         if (name.Parent is NameColonSyntax nameColon &&
             nameColon.Name == name &&
             nameColon.Parent is SubpatternSyntax subpattern)
         {
-            receiverType = GetPropertyPatternClauseInputType(subpattern, model);
+            receiverType = GetPropertyPatternClauseInputType(
+                subpattern, model, out isThisReceiver);
             return receiverType != null;
         }
 
@@ -1916,11 +1929,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
             if (name.Parent is MemberAccessExpressionSyntax access && access.Name == name)
             {
+                // Extended path binds to the left of `.X`, never bare this.
                 receiverType = model.GetTypeInfo(access.Expression).Type;
+                isThisReceiver = false;
                 return receiverType != null;
             }
 
-            receiverType = GetPropertyPatternClauseInputType(extendedSubpattern, model);
+            receiverType = GetPropertyPatternClauseInputType(
+                extendedSubpattern, model, out isThisReceiver);
             return receiverType != null;
         }
 
@@ -1933,25 +1949,32 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     /// </summary>
     private static ITypeSymbol? GetPropertyPatternClauseInputType(
         SubpatternSyntax subpattern,
-        SemanticModel model)
+        SemanticModel model,
+        out bool isThisReceiver)
     {
+        isThisReceiver = false;
         if (subpattern.Parent is not PropertyPatternClauseSyntax clause ||
             clause.Parent is not RecursivePatternSyntax recursive)
         {
             return null;
         }
 
-        return GetRecursivePatternInputType(recursive, model);
+        return GetRecursivePatternInputType(recursive, model, out isThisReceiver);
     }
 
     /// <summary>
     /// Type a recursive/property pattern matches against: explicit pattern
     /// type, outer subpattern member type, or governing is/switch expression.
+    /// <paramref name="isThisReceiver"/> is true only when the type comes from
+    /// a bare governing <c>this</c> (no explicit pattern type, not nested).
     /// </summary>
     private static ITypeSymbol? GetRecursivePatternInputType(
         RecursivePatternSyntax recursive,
-        SemanticModel model)
+        SemanticModel model,
+        out bool isThisReceiver)
     {
+        isThisReceiver = false;
+
         if (recursive.Type != null)
         {
             var explicitType = model.GetTypeInfo(recursive.Type).Type;
@@ -1984,13 +2007,16 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         switch (pattern.Parent)
         {
             case IsPatternExpressionSyntax isPattern:
+                isThisReceiver = isPattern.Expression is ThisExpressionSyntax;
                 return model.GetTypeInfo(isPattern.Expression).Type;
             case SwitchExpressionArmSyntax arm
                 when arm.Parent is SwitchExpressionSyntax switchExpression:
+                isThisReceiver = switchExpression.GoverningExpression is ThisExpressionSyntax;
                 return model.GetTypeInfo(switchExpression.GoverningExpression).Type;
             case CasePatternSwitchLabelSyntax
                 when pattern.Parent.Parent is SwitchSectionSyntax &&
                      pattern.Parent.Parent.Parent is SwitchStatementSyntax switchStatement:
+                isThisReceiver = switchStatement.Expression is ThisExpressionSyntax;
                 return model.GetTypeInfo(switchStatement.Expression).Type;
             default:
                 return null;
@@ -2229,11 +2255,19 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     private static bool CanBeAbstract(ISymbol member) => member switch
     {
-        IMethodSymbol method => !method.IsStatic,
+        // Partial methods cannot become abstract (abstract partial is illegal);
+        // skip them when leaveAbstract so both definition + implementation parts
+        // are not rewritten into invalid semicolon-only abstract partial decls.
+        IMethodSymbol method => !method.IsStatic && !IsPartialMethodSymbol(method),
         IPropertySymbol property => !property.IsStatic && (!property.IsIndexer || CanPushIndexerAsAbstract(property)),
         IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
         _ => false
     };
+
+    private static bool IsPartialMethodSymbol(IMethodSymbol method) =>
+        method.IsPartialDefinition ||
+        method.PartialDefinitionPart != null ||
+        method.PartialImplementationPart != null;
 
     private static bool CanPushIndexerAsAbstract(IPropertySymbol indexer)
     {
