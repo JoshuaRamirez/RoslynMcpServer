@@ -147,7 +147,7 @@ public sealed class ToolRegistry
 
         // ── Refactoring: Extract (7) ──────────────────────────────────
         r.RegisterRefactoring<ExtractMethodOperation, ExtractMethodParams>(
-            "extract-method", "Extract selected code into a new method");
+            "extract-method", "Extract selected code into a new method; sourceFile, startLine, startColumn, endLine, endColumn, and methodName are required when allFiles is omitted or false; allFiles (default false) extracts every eligible contiguous ≥2-statement proper-subset run in every C# file (method named from the statement text; sourceFile optional when true; cannot be combined with startLine, startColumn, endLine, endColumn, or methodName); visibility / makeStatic / preview remain valid with allFiles where they apply");
         r.RegisterRefactoring<ExtractVariableOperation, ExtractVariableParams>(
             "extract-variable", "Extract an expression into a local variable; sourceFile, startLine, startColumn, endLine, endColumn, and variableName are required when allFiles is omitted or false; allFiles (default false) extracts every eligible outermost non-trivial expression in every C# file (variable named from the expression text; sourceFile optional when true; cannot be combined with startLine, startColumn, endLine, endColumn, or variableName); useVar / replaceAll / preview remain valid with allFiles where they apply");
         r.RegisterRefactoring<ExtractConstantOperation, ExtractConstantParams>(

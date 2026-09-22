@@ -32,31 +32,31 @@ public class ExtractMethodToolTests
     {
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public void GetDefinition_ReturnsCorrectSchema()
     {
-        // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        // Assert
         Assert.Equal("object", root.GetProperty("type").GetString());
         Assert.True(root.TryGetProperty("properties", out _));
         Assert.True(root.TryGetProperty("required", out _));
+        Assert.True(root.TryGetProperty("oneOf", out _));
     }
 
     [Fact]
-    public void GetDefinition_HasRequiredFields()
+    public void GetDefinition_UsesConditionalRequiredFields()
     {
-        // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
-        var required = doc.RootElement.GetProperty("required");
+        var root = doc.RootElement;
+        var required = root.GetProperty("required");
 
         var requiredFields = new List<string>();
         foreach (var item in required.EnumerateArray())
@@ -64,35 +64,63 @@ public class ExtractMethodToolTests
             requiredFields.Add(item.GetString()!);
         }
 
-        // Assert
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("startLine", requiredFields);
-        Assert.Contains("startColumn", requiredFields);
-        Assert.Contains("endLine", requiredFields);
-        Assert.Contains("endColumn", requiredFields);
-        Assert.Contains("methodName", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+
+        var branches = root.GetProperty("oneOf");
+        Assert.Equal(2, branches.GetArrayLength());
+
+        var singleSiteRequired = ReadStrings(branches[0].GetProperty("required"));
+        Assert.Contains("solutionPath", singleSiteRequired);
+        Assert.Contains("sourceFile", singleSiteRequired);
+        Assert.Contains("startLine", singleSiteRequired);
+        Assert.Contains("startColumn", singleSiteRequired);
+        Assert.Contains("endLine", singleSiteRequired);
+        Assert.Contains("endColumn", singleSiteRequired);
+        Assert.Contains("methodName", singleSiteRequired);
+
+        var allFilesRequired = ReadStrings(branches[1].GetProperty("required"));
+        Assert.Contains("solutionPath", allFilesRequired);
+        Assert.Contains("allFiles", allFilesRequired);
+        Assert.DoesNotContain("sourceFile", allFilesRequired);
+        Assert.DoesNotContain("methodName", allFilesRequired);
+        Assert.Equal(
+            JsonValueKind.True,
+            branches[1].GetProperty("properties").GetProperty("allFiles").GetProperty("const").ValueKind);
     }
 
     [Fact]
-    public void GetDefinition_HasProperties_ForAllParameters()
+    public void GetDefinition_HasOptionalAllFiles()
     {
-        // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
         var properties = doc.RootElement.GetProperty("properties");
 
-        // Assert - Required properties
+        Assert.True(properties.TryGetProperty("allFiles", out var allFiles));
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("sourceFile", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("methodName", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_HasProperties_ForAllParameters()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.True(properties.TryGetProperty("startLine", out _));
         Assert.True(properties.TryGetProperty("startColumn", out _));
         Assert.True(properties.TryGetProperty("endLine", out _));
         Assert.True(properties.TryGetProperty("endColumn", out _));
         Assert.True(properties.TryGetProperty("methodName", out _));
-
-        // Assert - Optional properties
         Assert.True(properties.TryGetProperty("visibility", out _));
         Assert.True(properties.TryGetProperty("makeStatic", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
@@ -101,13 +129,11 @@ public class ExtractMethodToolTests
     [Fact]
     public void GetDefinition_VisibilityProperty_HasEnumValues()
     {
-        // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
         var visibility = doc.RootElement.GetProperty("properties").GetProperty("visibility");
 
-        // Assert
         Assert.True(visibility.TryGetProperty("enum", out var enumValues));
         var values = new List<string>();
         foreach (var v in enumValues.EnumerateArray())
@@ -146,19 +172,36 @@ public class ExtractMethodToolTests
     [Fact]
     public async Task ExecuteAsync_MissingRequiredField_ReturnsError()
     {
-        // Arrange - Missing methodName
-        var args = JsonDocument.Parse(@"{
-            ""solutionPath"": ""C:/test/test.sln"",
-            ""sourceFile"": ""C:/test/Test.cs"",
-            ""startLine"": 10,
-            ""startColumn"": 1,
-            ""endLine"": 15,
-            ""endColumn"": 1
-        }").RootElement;
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "sourceFile": "C:/test/Test.cs",
+                "startLine": 10,
+                "startColumn": 1,
+                "endLine": 15,
+                "endColumn": 1
+            }
+            """).RootElement;
 
         var result = await _tool.ExecuteAsync(args);
 
         Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Failed to parse arguments", GetResultText(result), StringComparison.Ordinal);
     }
 
     #endregion
@@ -168,6 +211,17 @@ public class ExtractMethodToolTests
     private static string GetResultText(ToolResult result)
     {
         return result.Content.FirstOrDefault()?.Text ?? string.Empty;
+    }
+
+    private static List<string> ReadStrings(JsonElement array)
+    {
+        var values = new List<string>();
+        foreach (var item in array.EnumerateArray())
+        {
+            values.Add(item.GetString()!);
+        }
+
+        return values;
     }
 
     #endregion

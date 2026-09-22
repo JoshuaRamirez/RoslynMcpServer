@@ -1,191 +1,341 @@
+using Microsoft.CodeAnalysis.CSharp;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Extract;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring;
 
 /// <summary>
-/// Tests for ExtractMethodParams validation.
+/// Tests for ExtractMethodParams validation via ExtractMethodOperation.Validate.
 /// </summary>
 public class ExtractMethodParamsValidationTests
 {
-    /// <summary>
-    /// Returns a platform-appropriate absolute path for test purposes.
-    /// On Windows: C:\test\file.cs, on Unix: /test/file.cs
-    /// </summary>
-    private static string AbsoluteTestPath(string extension = ".cs") =>
-        OperatingSystem.IsWindows()
-            ? $"C:\\test\\file{extension}"
-            : $"/test/file{extension}";
-    [Fact]
-    public void ValidateParams_MissingSourceFile_ThrowsException()
-    {
-        var @params = new ExtractMethodParams
-        {
-            SourceFile = "",
-            StartLine = 1,
-            StartColumn = 1,
-            EndLine = 5,
-            EndColumn = 10,
-            MethodName = "ExtractedMethod"
-        };
 
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrMethodName_DoesNotThrow()
+    {
+        ExtractMethodOperation.Validate(new ExtractMethodParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithEmptyMethodName_Throws()
+    {
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractMethodOperation.Validate(new ExtractMethodParams
+            {
+                AllFiles = true,
+                MethodName = ""
+            }));
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
     [Fact]
-    public void ValidateParams_MissingMethodName_ThrowsException()
+    public void Validate_AllFilesTrue_WithMethodName_Throws()
     {
-        var @params = new ExtractMethodParams
-        {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 1,
-            StartColumn = 1,
-            EndLine = 5,
-            EndColumn = 10,
-            MethodName = ""
-        };
-
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractMethodOperation.Validate(new ExtractMethodParams
+            {
+                AllFiles = true,
+                MethodName = "Extracted"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithStartLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractMethodOperation.Validate(new ExtractMethodParams
+            {
+                AllFiles = true,
+                StartLine = 1
+            }));
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
     [Fact]
-    public void ValidateParams_InvalidStartLine_ThrowsException()
+    public void Validate_AllFilesTrue_WithSpan_Throws()
     {
-        var @params = new ExtractMethodParams
-        {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 0,
-            StartColumn = 1,
-            EndLine = 5,
-            EndColumn = 10,
-            MethodName = "ExtractedMethod"
-        };
-
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractMethodOperation.Validate(new ExtractMethodParams
+            {
+                AllFiles = true,
+                StartLine = 1,
+                StartColumn = 1,
+                EndLine = 1,
+                EndColumn = 5
+            }));
 
-        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
     [Fact]
-    public void ValidateParams_InvalidStartColumn_ThrowsException()
+    public void Validate_AllFilesTrue_RelativeSourceFile_Throws()
     {
-        var @params = new ExtractMethodParams
-        {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 1,
-            StartColumn = 0,
-            EndLine = 5,
-            EndColumn = 10,
-            MethodName = "ExtractedMethod"
-        };
-
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractMethodOperation.Validate(new ExtractMethodParams
+            {
+                AllFiles = true,
+                SourceFile = "relative.cs"
+            }));
 
-        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
     }
 
     [Fact]
-    public void ValidateParams_SelectionEndBeforeStart_ThrowsException()
+    public void Validate_AllFilesTrue_MissingSourceFile_DoesNotThrow()
     {
-        var @params = new ExtractMethodParams
+        ExtractMethodOperation.Validate(new ExtractMethodParams
         {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 5,
-            StartColumn = 1,
-            EndLine = 3,
-            EndColumn = 10,
-            MethodName = "ExtractedMethod"
-        };
-
-        var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
-
-        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+            AllFiles = true,
+            SourceFile = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractMethodMissingAllFiles.cs")
+        });
     }
 
     [Fact]
-    public void ValidateParams_SameLineColumnEndBeforeStart_ThrowsException()
+    public void Validate_AllFilesFalse_WithoutStartLine_Throws()
     {
-        var @params = new ExtractMethodParams
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractMethodAllFilesFalse.cs");
+        File.WriteAllText(file, "// test");
+        try
         {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 5,
-            StartColumn = 10,
-            EndLine = 5,
-            EndColumn = 5,
-            MethodName = "ExtractedMethod"
-        };
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractMethodOperation.Validate(new ExtractMethodParams
+                {
+                    AllFiles = false,
+                    SourceFile = file,
+                    StartColumn = 1,
+                    EndLine = 1,
+                    EndColumn = 5,
+                    MethodName = "Extracted"
+                }));
 
-        var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
-
-        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+            Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
     }
 
     [Fact]
-    public void ValidateParams_InvalidMethodName_ThrowsException()
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
     {
-        var @params = new ExtractMethodParams
-        {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 1,
-            StartColumn = 1,
-            EndLine = 5,
-            EndColumn = 10,
-            MethodName = "123Invalid"
-        };
-
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractMethodOperation.Validate(new ExtractMethodParams
+            {
+                AllFiles = false,
+                StartLine = 1,
+                StartColumn = 1,
+                EndLine = 5,
+                EndColumn = 10,
+                MethodName = "Extracted"
+            }));
 
-        Assert.Equal(ErrorCodes.InvalidNewName, ex.ErrorCode);
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void ValidateParams_MethodNameIsKeyword_ThrowsException()
+    public void Validate_AllFilesFalse_WithoutMethodName_Throws()
     {
-        var @params = new ExtractMethodParams
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractMethodMissingName.cs");
+        File.WriteAllText(file, "// test");
+        try
         {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 1,
-            StartColumn = 1,
-            EndLine = 5,
-            EndColumn = 10,
-            MethodName = "void"
-        };
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractMethodOperation.Validate(new ExtractMethodParams
+                {
+                    SourceFile = file,
+                    StartLine = 1,
+                    StartColumn = 1,
+                    EndLine = 5,
+                    EndColumn = 10,
+                    MethodName = ""
+                }));
 
-        var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
-
-        Assert.Equal(ErrorCodes.ReservedKeyword, ex.ErrorCode);
+            Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
     }
 
     [Fact]
-    public void ValidateParams_InvalidVisibility_ThrowsException()
+    public void Validate_InvalidEndLine_ThrowsException()
     {
-        var @params = new ExtractMethodParams
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractMethodInvalidEndLine.cs");
+        File.WriteAllText(file, "// test");
+        try
         {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 1,
-            StartColumn = 1,
-            EndLine = 5,
-            EndColumn = 10,
-            MethodName = "ExtractedMethod",
-            Visibility = "invalid"
-        };
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractMethodOperation.Validate(new ExtractMethodParams
+                {
+                    SourceFile = file,
+                    StartLine = 1,
+                    StartColumn = 1,
+                    EndLine = 0,
+                    EndColumn = 10,
+                    MethodName = "Extracted"
+                }));
 
+            Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void Validate_InvalidEndColumn_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractMethodInvalidEndColumn.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractMethodOperation.Validate(new ExtractMethodParams
+                {
+                    SourceFile = file,
+                    StartLine = 1,
+                    StartColumn = 1,
+                    EndLine = 5,
+                    EndColumn = 0,
+                    MethodName = "Extracted"
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void Validate_SelectionEndBeforeStart_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractMethodSelectionOrder.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractMethodOperation.Validate(new ExtractMethodParams
+                {
+                    SourceFile = file,
+                    StartLine = 5,
+                    StartColumn = 1,
+                    EndLine = 3,
+                    EndColumn = 10,
+                    MethodName = "Extracted"
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void Validate_SameLineExclusiveEndEqualStart_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractMethodExclusiveEnd.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractMethodOperation.Validate(new ExtractMethodParams
+                {
+                    SourceFile = file,
+                    StartLine = 5,
+                    StartColumn = 10,
+                    EndLine = 5,
+                    EndColumn = 10,
+                    MethodName = "Extracted"
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void Validate_InvalidMethodName_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractMethodInvalidName.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractMethodOperation.Validate(new ExtractMethodParams
+                {
+                    SourceFile = file,
+                    StartLine = 1,
+                    StartColumn = 1,
+                    EndLine = 5,
+                    EndColumn = 10,
+                    MethodName = "123Invalid"
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidNewName, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void Validate_MethodNameIsKeyword_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractMethodKeyword.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractMethodOperation.Validate(new ExtractMethodParams
+                {
+                    SourceFile = file,
+                    StartLine = 1,
+                    StartColumn = 1,
+                    EndLine = 5,
+                    EndColumn = 10,
+                    MethodName = "void"
+                }));
+
+            Assert.Equal(ErrorCodes.ReservedKeyword, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void Validate_InvalidVisibility_ThrowsException()
+    {
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractMethodOperation.Validate(new ExtractMethodParams
+            {
+                AllFiles = true,
+                Visibility = "invalid"
+            }));
 
         Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
     }
@@ -195,78 +345,52 @@ public class ExtractMethodParamsValidationTests
     [InlineData("internal")]
     [InlineData("protected")]
     [InlineData("public")]
-    public void ValidateParams_ValidVisibility_DoesNotThrowForVisibility(string visibility)
+    public void Validate_ValidVisibility_WithAllFiles_DoesNotThrow(string visibility)
     {
-        var @params = new ExtractMethodParams
+        ExtractMethodOperation.Validate(new ExtractMethodParams
         {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 1,
-            StartColumn = 1,
-            EndLine = 5,
-            EndColumn = 10,
-            MethodName = "ExtractedMethod",
+            AllFiles = true,
             Visibility = visibility
-        };
-
-        // Will throw for file not found, but not for visibility
-        var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
-
-        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+        });
     }
 
-    /// <summary>
-    /// Mimics the parameter validation from ExtractMethodOperation.
-    /// </summary>
-    private static void ThrowIfInvalidParams(ExtractMethodParams @params)
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
     {
-        var validVisibilities = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        Assert.Equal("Extract method", ExtractMethodOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Extract 2 methods", ExtractMethodOperation.BuildAllFilesDescription(2));
+    }
+
+    [Fact]
+    public void DeriveMethodNameFromStatements_PrefersInvokedSimpleName()
+    {
+        var statements = new[]
         {
-            "private", "internal", "protected", "public", "private protected", "protected internal"
+            SyntaxFactory.ParseStatement("DoWork();"),
+            SyntaxFactory.ParseStatement("Log();")
         };
-
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-
-        if (string.IsNullOrWhiteSpace(@params.MethodName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
-
-        if (!IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!IsValidIdentifier(@params.MethodName))
-            throw new RefactoringException(ErrorCodes.InvalidNewName, $"'{@params.MethodName}' is not a valid method name.");
-
-        if (IsKeyword(@params.MethodName))
-            throw new RefactoringException(ErrorCodes.ReservedKeyword, $"'{@params.MethodName}' is a C# reserved keyword.");
-
-        if (@params.StartLine < 1 || @params.EndLine < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line numbers must be >= 1.");
-
-        if (@params.StartColumn < 1 || @params.EndColumn < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column numbers must be >= 1.");
-
-        if (@params.StartLine > @params.EndLine ||
-            (@params.StartLine == @params.EndLine && @params.StartColumn >= @params.EndColumn))
-            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "Selection start must be before end.");
-
-        if (!validVisibilities.Contains(@params.Visibility))
-            throw new RefactoringException(ErrorCodes.InvalidVisibility, $"'{@params.Visibility}' is not a valid visibility modifier.");
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+        Assert.Equal("DoWork", ExtractMethodOperation.DeriveMethodNameFromStatements(statements));
     }
 
-    private static bool IsAbsolutePath(string path) =>
-        Path.IsPathRooted(path);
-
-    private static bool IsValidIdentifier(string name) =>
-        System.Text.RegularExpressions.Regex.IsMatch(name, @"^@?[A-Za-z_][A-Za-z0-9_]*$");
-
-    private static bool IsKeyword(string name)
+    [Fact]
+    public void DeriveMethodNameFromStatements_PrefersCreatedTypeName()
     {
-        if (name.StartsWith("@")) return false;
-        return Microsoft.CodeAnalysis.CSharp.SyntaxFacts.GetKeywordKind(name) !=
-               Microsoft.CodeAnalysis.CSharp.SyntaxKind.None;
+        var statements = new[]
+        {
+            SyntaxFactory.ParseStatement("var x = new Item();"),
+            SyntaxFactory.ParseStatement("Use(x);")
+        };
+        Assert.Equal("Item", ExtractMethodOperation.DeriveMethodNameFromStatements(statements));
+    }
+
+    [Fact]
+    public void DeriveMethodNameFromStatements_PascalCasesInvokedName()
+    {
+        var statements = new[]
+        {
+            SyntaxFactory.ParseStatement("doWork();"),
+            SyntaxFactory.ParseStatement("Log();")
+        };
+        Assert.Equal("DoWork", ExtractMethodOperation.DeriveMethodNameFromStatements(statements));
     }
 }
