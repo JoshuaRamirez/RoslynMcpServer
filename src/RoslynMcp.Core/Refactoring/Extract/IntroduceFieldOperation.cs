@@ -1214,7 +1214,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         bool isStaticField,
         CancellationToken cancellationToken)
     {
-        foreach (var ident in expression.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+        foreach (var ident in expression.DescendantNodesAndSelf().OfType<SimpleNameSyntax>())
         {
             var symbol = semanticModel.GetSymbolInfo(ident, cancellationToken).Symbol;
             if (symbol == null)
@@ -1233,6 +1233,18 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
                 throw new RefactoringException(
                     ErrorCodes.ExpressionCapturesLocal,
                     $"Expression captures parameter '{parameter.Name}'.");
+            }
+
+            // Local functions declared outside the initializer disappear when
+            // the expression moves to type scope, even when static. Local
+            // functions nested inside the initializer move with it and remain
+            // valid (Codex P1 on #1316).
+            if (symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction } localFunction &&
+                !IsDeclaredWithinNode(localFunction, expression))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.ExpressionCapturesLocal,
+                    $"Expression captures local function '{localFunction.Name}'.");
             }
 
             if (isStaticField && symbol is ISymbol { IsStatic: false, Kind: not Microsoft.CodeAnalysis.SymbolKind.Namespace and not Microsoft.CodeAnalysis.SymbolKind.NamedType })

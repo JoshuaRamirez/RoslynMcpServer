@@ -2101,6 +2101,83 @@ public class IntroduceFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_SkipsLocalsCallingEnclosingStaticLocalFunction()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int CaptureLocalFunction()
+                {
+                    static int Get() => 1;
+                    int number = Get();
+                    return number;
+                }
+
+                public int Clean()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("int number = Get();", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("private int number = Get();", updated, StringComparison.Ordinal);
+        Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.Contains("return this.total;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_LocalCallingEnclosingStaticGenericLocalFunction_Throws()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public int CaptureLocalFunction()
+                {
+                    static T Get<T>(T value) => value;
+                    int number = Get<int>(1);
+                    return number;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "number = Get<int>(1)");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new IntroduceFieldParams
+            {
+                SourceFile = workspace.SourcePath,
+                StartLine = span.StartLine,
+                StartColumn = span.StartColumn,
+                EndLine = span.EndLine,
+                EndColumn = span.EndColumn,
+                FieldName = "_number"
+            }));
+
+        Assert.Equal(ErrorCodes.ExpressionCapturesLocal, ex.ErrorCode);
+        var unchanged = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("int number = Get<int>(1);", unchanged, StringComparison.Ordinal);
+        Assert.DoesNotContain("private int _number", unchanged, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task IntroduceField_AllFilesTrue_PromotesLocalsWithPropertyPattern()
     {
         const string source = """
