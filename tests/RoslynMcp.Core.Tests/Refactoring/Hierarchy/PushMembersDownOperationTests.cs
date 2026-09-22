@@ -5425,6 +5425,98 @@ public class PushMembersDownOperationTests
         Assert.DoesNotContain("Read", ExtractTypeBody(text, "Dog"));
     }
 
+    private const string PropertyPatternReceiverFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int X;
+
+            public bool Matches(Animal other)
+            {
+                return other is { X: 1 };
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsPropertyPatternReceiverInBatch()
+    {
+        // Property-pattern designator X in `other is { X: 1 }` binds to Animal,
+        // not implicit this. Pushing X + Matches together would leave the pattern
+        // targeting Animal after X moved to Dog — uncompilable.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", PropertyPatternReceiverFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        Assert.Contains("X", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("Matches", ExtractTypeBody(text, "Animal"));
+        Assert.DoesNotContain("X", ExtractTypeBody(text, "Dog"));
+        Assert.DoesNotContain("Matches", ExtractTypeBody(text, "Dog"));
+    }
+
+    private const string PartialMethodPairPartA = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            partial void Notify();
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    private const string PartialMethodPairPartB = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            partial void Notify()
+            {
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_PushesPartialMethodDefinitionAndImplementationTogether()
+    {
+        // Defining + implementing partial method declarations share a cascade
+        // key but must both enter the batch and move together.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("AnimalA.cs", PartialMethodPairPartA),
+            ("AnimalB.cs", PartialMethodPairPartB));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var animalA = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalA.cs"]);
+        var animalB = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalB.cs"]);
+        Assert.DoesNotContain("Notify", ExtractTypeBody(animalA, "Animal"));
+        Assert.DoesNotContain("Notify", ExtractTypeBody(animalB, "Animal"));
+        var dog = ExtractTypeBody(animalA, "Dog");
+        Assert.Contains("partial class Dog", NormalizeNewlines(animalA));
+        Assert.Equal(2, CountOccurrences(dog, "partial void Notify"));
+        Assert.Contains("partial void Notify();", dog);
+        Assert.DoesNotContain("NotImplementedException", dog);
+    }
+
     #endregion
 
     #region Helpers

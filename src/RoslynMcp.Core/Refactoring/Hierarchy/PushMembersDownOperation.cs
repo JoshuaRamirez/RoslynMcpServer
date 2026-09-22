@@ -673,7 +673,10 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
             foreach (var member in FindMembersToPush(decl, names, model, cancellationToken))
             {
-                if (seenKeys.Add(MemberCascadeKey(member.Symbol)))
+                // Cascade keys alone collapse partial method definition +
+                // implementation pairs to one entry; keep both so the rewrite
+                // moves the matched pair together.
+                if (seenKeys.Add(MemberBatchIdentityKey(member.Symbol, member.Syntax)))
                     members.Add(member);
             }
         }
@@ -749,6 +752,27 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 indexer.ToDisplayString(CascadeKeyFormat),
             _ => symbol.Name
         };
+
+    /// <summary>
+    /// Collection-phase identity for type-wide batches. Same as
+    /// <see cref="MemberCascadeKey"/> except partial method definition and
+    /// implementation parts stay distinct (syntax span identity) so both
+    /// declarations enter the batch and move together.
+    /// </summary>
+    internal static string MemberBatchIdentityKey(ISymbol symbol, MemberDeclarationSyntax syntax)
+    {
+        var key = MemberCascadeKey(symbol);
+        if (symbol is IMethodSymbol method &&
+            (method.IsPartialDefinition ||
+             method.PartialDefinitionPart != null ||
+             method.PartialImplementationPart != null))
+        {
+            var part = method.IsPartialDefinition ? "partial-def" : "partial-impl";
+            return key + "|" + part + "|" + syntax.SpanStart;
+        }
+
+        return key;
+    }
 
     /// <summary>
     /// Cascade key for a member as it will appear on <paramref name="target"/>
@@ -1375,6 +1399,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             foreach (var member in members)
             {
                 var key = DeclarationCollisionKeyForTarget(member.Symbol, source, target);
+                // Partial definition + implementation share declaration identity
+                // but are one legal method pair that must both land on the target.
+                if (member.Symbol is IMethodSymbol method &&
+                    (method.IsPartialDefinition || method.PartialDefinitionPart != null))
+                {
+                    key += method.IsPartialDefinition ? "|partial-def" : "|partial-impl";
+                }
+
                 if (!seen.Add(key))
                 {
                     throw new RefactoringException(
@@ -1688,6 +1720,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return WillHaveMemberAfterPush(elementReceiver, targets);
         }
 
+        // Property / recursive pattern designators (`other is { X: 1 }`) look
+        // like simple names but bind to the matched type, not implicit this.
+        if (name != null &&
+            TryGetPropertyOrRecursivePatternReceiver(name, model, out var patternReceiver))
+        {
+            return WillHaveMemberAfterPush(patternReceiver, targets);
+        }
+
         // Simple name / implicit this — moves with the containing batch member.
         return true;
     }
@@ -1714,6 +1754,12 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
         if (TryGetElementAccessReceiver(node, model, out var elementReceiver, out _))
             return elementReceiver;
+
+        if (name != null &&
+            TryGetPropertyOrRecursivePatternReceiver(name, model, out var patternReceiver))
+        {
+            return patternReceiver;
+        }
 
         return model.GetEnclosingSymbol(node.SpanStart)?.ContainingType;
     }
@@ -1836,6 +1882,128 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 return false;
         }
     }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is a property/recursive-pattern
+    /// designator (e.g. <c>X</c> in <c>other is { X: 1 }</c> or nested
+    /// <c>Child: { X: 1 }</c>). Sets <paramref name="receiverType"/> to the
+    /// type the pattern matches against (is/switch expression type, explicit
+    /// pattern type, or outer subpattern member type).
+    /// </summary>
+    private static bool TryGetPropertyOrRecursivePatternReceiver(
+        SimpleNameSyntax name,
+        SemanticModel model,
+        out ITypeSymbol? receiverType)
+    {
+        receiverType = null;
+
+        // Standard designator: { X: pattern }
+        if (name.Parent is NameColonSyntax nameColon &&
+            nameColon.Name == name &&
+            nameColon.Parent is SubpatternSyntax subpattern)
+        {
+            receiverType = GetPropertyPatternClauseInputType(subpattern, model);
+            return receiverType != null;
+        }
+
+        // Extended property pattern: { Child.X: pattern }
+        foreach (var colon in name.Ancestors().OfType<ExpressionColonSyntax>())
+        {
+            if (colon.Parent is not SubpatternSyntax extendedSubpattern)
+                continue;
+            if (!colon.Expression.Span.Contains(name.Span))
+                continue;
+
+            if (name.Parent is MemberAccessExpressionSyntax access && access.Name == name)
+            {
+                receiverType = model.GetTypeInfo(access.Expression).Type;
+                return receiverType != null;
+            }
+
+            receiverType = GetPropertyPatternClauseInputType(extendedSubpattern, model);
+            return receiverType != null;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Input type for the <see cref="RecursivePatternSyntax"/> that owns
+    /// <paramref name="subpattern"/>'s property-pattern clause.
+    /// </summary>
+    private static ITypeSymbol? GetPropertyPatternClauseInputType(
+        SubpatternSyntax subpattern,
+        SemanticModel model)
+    {
+        if (subpattern.Parent is not PropertyPatternClauseSyntax clause ||
+            clause.Parent is not RecursivePatternSyntax recursive)
+        {
+            return null;
+        }
+
+        return GetRecursivePatternInputType(recursive, model);
+    }
+
+    /// <summary>
+    /// Type a recursive/property pattern matches against: explicit pattern
+    /// type, outer subpattern member type, or governing is/switch expression.
+    /// </summary>
+    private static ITypeSymbol? GetRecursivePatternInputType(
+        RecursivePatternSyntax recursive,
+        SemanticModel model)
+    {
+        if (recursive.Type != null)
+        {
+            var explicitType = model.GetTypeInfo(recursive.Type).Type;
+            if (explicitType != null)
+                return explicitType;
+        }
+
+        // Nested: parent Subpattern designator supplies the matched type
+        // (`other is { Child: { X: 1 } }` → X matches Child's type).
+        if (recursive.Parent is SubpatternSyntax nestedSubpattern)
+        {
+            if (nestedSubpattern.NameColon != null)
+            {
+                var member = model.GetSymbolInfo(nestedSubpattern.NameColon.Name).Symbol;
+                return MemberType(member) ?? model.GetTypeInfo(nestedSubpattern.NameColon.Name).Type;
+            }
+
+            if (nestedSubpattern.ExpressionColon?.Expression is { } designator)
+            {
+                var member = model.GetSymbolInfo(designator).Symbol;
+                return MemberType(member) ?? model.GetTypeInfo(designator).Type;
+            }
+        }
+
+        // Walk past pattern wrappers (parentheses, unary not, binary and/or).
+        PatternSyntax pattern = recursive;
+        while (pattern.Parent is PatternSyntax parentPattern)
+            pattern = parentPattern;
+
+        switch (pattern.Parent)
+        {
+            case IsPatternExpressionSyntax isPattern:
+                return model.GetTypeInfo(isPattern.Expression).Type;
+            case SwitchExpressionArmSyntax arm
+                when arm.Parent is SwitchExpressionSyntax switchExpression:
+                return model.GetTypeInfo(switchExpression.GoverningExpression).Type;
+            case CasePatternSwitchLabelSyntax
+                when pattern.Parent.Parent is SwitchSectionSyntax &&
+                     pattern.Parent.Parent.Parent is SwitchStatementSyntax switchStatement:
+                return model.GetTypeInfo(switchStatement.Expression).Type;
+            default:
+                return null;
+        }
+    }
+
+    private static ITypeSymbol? MemberType(ISymbol? symbol) => symbol switch
+    {
+        IFieldSymbol field => field.Type,
+        IPropertySymbol property => property.Type,
+        IEventSymbol evt => evt.Type,
+        _ => null
+    };
 
     /// <summary>
     /// True when <paramref name="name"/> is the left-hand member of an object,
@@ -2510,6 +2678,11 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (method.Body != null || method.ExpressionBody != null)
             return method;
 
+        // Partial method declarations must stay semicolon-only; synthesizing a
+        // body would turn the defining declaration into a second implementation.
+        if (method.Modifiers.Any(SyntaxKind.PartialKeyword))
+            return method;
+
         return method
             .WithSemicolonToken(default)
             .WithBody(CreateNotImplementedBlock());
@@ -2771,7 +2944,40 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             .WithLeadingTrivia(SyntaxFactory.ElasticCarriageReturnLineFeed)
             .WithTrailingTrivia(SyntaxFactory.ElasticCarriageReturnLineFeed));
 
-        return typeDecl.WithMembers(typeDecl.Members.AddRange(formatted));
+        var updated = typeDecl.WithMembers(typeDecl.Members.AddRange(formatted));
+        // Partial methods are only legal on partial types.
+        if (members.Any(IsPartialMethodSyntax))
+            updated = EnsurePartialTypeModifier(updated);
+
+        return updated;
+    }
+
+    private static bool IsPartialMethodSyntax(MemberDeclarationSyntax member) =>
+        member is MethodDeclarationSyntax method &&
+        method.Modifiers.Any(SyntaxKind.PartialKeyword);
+
+    private static TypeDeclarationSyntax EnsurePartialTypeModifier(TypeDeclarationSyntax typeDecl)
+    {
+        if (typeDecl.Modifiers.Any(SyntaxKind.PartialKeyword))
+            return typeDecl;
+
+        var partial = SyntaxFactory.Token(SyntaxKind.PartialKeyword)
+            .WithTrailingTrivia(SyntaxFactory.Space);
+
+        // Prefer `public partial class` over `public class partial`.
+        for (var i = typeDecl.Modifiers.Count - 1; i >= 0; i--)
+        {
+            if (typeDecl.Modifiers[i].Kind() is SyntaxKind.PublicKeyword
+                or SyntaxKind.PrivateKeyword
+                or SyntaxKind.ProtectedKeyword
+                or SyntaxKind.InternalKeyword
+                or SyntaxKind.FileKeyword)
+            {
+                return typeDecl.WithModifiers(typeDecl.Modifiers.Insert(i + 1, partial));
+            }
+        }
+
+        return typeDecl.WithModifiers(typeDecl.Modifiers.Insert(0, partial));
     }
 
     private static async Task<TypeDeclarationSyntax> GetTypeDeclarationAsync(
