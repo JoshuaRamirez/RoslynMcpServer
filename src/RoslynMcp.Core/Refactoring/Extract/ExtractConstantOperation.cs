@@ -978,8 +978,9 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
     /// <summary>
     /// True when declaring a new const named <paramref name="bareName"/> on
     /// <paramref name="containingType"/> would hide an inherited/enclosing member
-    /// and rebind at least one existing unqualified use of that name inside the
-    /// type (Codex P1). Hiding with no prior uses remains allowed.
+    /// and rebind at least one existing use of that name inside the type (Codex P1).
+    /// Hiding with no prior uses remains allowed. Explicit <c>base.</c> accesses are
+    /// ignored because they keep binding to the base member after the hide.
     /// </summary>
     private static bool WouldRebindExistingUsesOfInheritedName(
         SemanticModel semanticModel,
@@ -1003,9 +1004,9 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                 continue;
             if (SymbolEqualityComparer.Default.Equals(symbol.ContainingType, containingTypeSymbol))
                 continue;
-            // Nested-within still shadows via WouldBeShadowedAtSite; here we care
-            // about inherited bases / enclosing types the new const would hide.
-            if (IsNamedTypeNestedWithin(symbol.ContainingType, containingTypeSymbol))
+            // Only inherited bases / enclosing outer types — nested-within still
+            // shadows via WouldBeShadowedAtSite (Codex P1/P2).
+            if (!IsBaseOrEnclosingTypeOf(symbol.ContainingType, containingTypeSymbol))
                 continue;
             hideTargets.Add(symbol);
         }
@@ -1018,8 +1019,19 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             if (!string.Equals(id.Identifier.ValueText, bareName, StringComparison.Ordinal))
                 continue;
 
-            var bound = semanticModel.GetSymbolInfo(id, cancellationToken).Symbol
-                ?? semanticModel.GetSymbolInfo(id, cancellationToken).CandidateSymbols.FirstOrDefault();
+            // base._42 keeps binding to the base member after a Derived hide.
+            if (id.Parent is MemberAccessExpressionSyntax
+                {
+                    Expression: BaseExpressionSyntax,
+                    Name: var memberName
+                } &&
+                ReferenceEquals(memberName, id))
+            {
+                continue;
+            }
+
+            var info = semanticModel.GetSymbolInfo(id, cancellationToken);
+            var bound = info.Symbol ?? info.CandidateSymbols.FirstOrDefault();
             if (bound == null)
                 continue;
 
@@ -1031,6 +1043,27 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                     return true;
                 }
             }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="candidate"/> is a base type or an enclosing
+    /// (outer) type of <paramref name="target"/>.
+    /// </summary>
+    private static bool IsBaseOrEnclosingTypeOf(INamedTypeSymbol candidate, INamedTypeSymbol target)
+    {
+        for (var current = target.BaseType; current != null; current = current.BaseType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(current, candidate))
+                return true;
+        }
+
+        for (var current = target.ContainingType; current != null; current = current.ContainingType)
+        {
+            if (SymbolEqualityComparer.Default.Equals(current, candidate))
+                return true;
         }
 
         return false;

@@ -802,6 +802,82 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsHideWhenInheritedMethodCallWouldRebind()
+    {
+        // Existing _42() call would break / rebind if we introduce const _42 (Codex P1).
+        // Base has no extractable literals (nameof is not a LiteralExpressionSyntax).
+        const string source = """
+            namespace TestApp;
+
+            public class Base
+            {
+                protected int _42() => nameof(Base).Length;
+            }
+
+            public class Derived : Base
+            {
+                public int Existing() => _42();
+
+                public int Run()
+                {
+                    return 42;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_AllowsHideWhenOnlyBaseAccessUsesInheritedName()
+    {
+        // Explicit base._42 keeps binding after hide — safe to introduce Derived._42.
+        const string source = """
+            namespace TestApp;
+
+            public class Base
+            {
+                protected const int _42 = 7;
+            }
+
+            public class Derived : Base
+            {
+                public int Existing => base._42;
+
+                public int Run()
+                {
+                    return 42;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("const int _42", updated, StringComparison.Ordinal);
+        Assert.Contains("return _42;", updated, StringComparison.Ordinal);
+        Assert.Contains("base._42", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_Protected_AllowsProtectedEnumFromBaseType()
     {
         const string source = """
