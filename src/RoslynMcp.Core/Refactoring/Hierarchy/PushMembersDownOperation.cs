@@ -262,12 +262,15 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     /// kinds, uneditable / source-generated docs, non-editable derived types,
     /// and linked multi-views are skipped rather than failing the walk.
     /// Members inserted onto a derived type by an earlier push in this walk
-    /// are tracked by cascade key (signature for methods/indexers) and skipped
-    /// when that type is later visited as a source, so they are not cascaded
-    /// further down the hierarchy. De-duplication is per declaration
-    /// (<c>TypeWalkKey</c> + document + member cascade keys), so partial types
-    /// with pushable members in multiple files — or multiple parts in one file —
-    /// are all visited. Linked multi-view targets are skipped. Deterministic
+    /// are tracked by cascade key (signature for methods/indexers, after
+    /// constructed-base type substitution) and skipped when that type is later
+    /// visited as a source, so they are not cascaded further down the hierarchy.
+    /// De-duplication is per declaration (<c>TypeWalkKey</c> + document + member
+    /// cascade keys), so partial types with pushable members in multiple files —
+    /// or multiple parts in one file — are all visited. Skipped declarations are
+    /// revisited in later passes once dependent parts unlock them. Linked
+    /// multi-view path counts come from the full solution (independent of
+    /// <c>sourceFile</c>); multi-view targets are skipped. Deterministic
     /// <c>SpanStart</c> order within a file. When every file is a no-op,
     /// succeeds with empty changes.
     /// </summary>
@@ -278,19 +281,16 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     {
         var originalSolution = Context.Solution;
         var currentSolution = originalSolution;
+        // Linked-path counts must cover the whole solution — not just the
+        // sourceFile-filtered walk — so DeclaringPathHasLinkedMultiView still
+        // sees multi-view derived targets outside the filtered source set.
+        var linkedPathCounts = BuildLinkedPathCounts(originalSolution);
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
             allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
-        // Path → linked-view count from the original solution. Used to skip
-        // sites whose derived targets live on multi-view linked paths so
-        // CoalesceLinkedDocumentTextAsync cannot overwrite a divergent sibling.
-        var linkedPathCounts = documentGroups
-            .Where(g => g.Count > 0 && g[0].FilePath != null)
-            .GroupBy(g => PathResolver.GetPathComparisonKey(g[0].FilePath!), StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.First().Count, StringComparer.Ordinal);
         var pushedCountByDoc = new Dictionary<DocumentId, int>();
         // Per-declaration keys (type + document + cascade keys of members
         // pushed from that part). Partials in the same file with different
@@ -301,8 +301,14 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         // so inserting Root.M(string) does not suppress Middle.M(int).
         var insertedMembersByType = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
 
-        foreach (var linkedDocuments in documentGroups)
+        // Revisit skipped declarations after later partial parts unlock them
+        // (e.g. field blocked by a method in another file that later moves).
+        bool madeProgress;
+        do
         {
+            madeProgress = false;
+            foreach (var linkedDocuments in documentGroups)
+            {
             cancellationToken.ThrowIfCancellationRequested();
 
             // Linked multi-project views of the same path can diverge under
@@ -453,7 +459,13 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                             }
 
                             foreach (var member in members)
-                                insertedOnTarget.Add(MemberCascadeKey(member.Symbol));
+                            {
+                                // Record the signature as it will appear on the
+                                // derived type after type-parameter substitution
+                                // (Root<T>.M(T) → Middle:Root<int> records M(int)).
+                                insertedOnTarget.Add(
+                                    MemberCascadeKeyForTarget(member.Symbol, sourceSymbol, target));
+                            }
                         }
 
                         processedDeclarations.Add(declarationKey);
@@ -478,8 +490,10 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
                 pushedCountByDoc[primary.Id] =
                     pushedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+                madeProgress = true;
             }
-        }
+            }
+        } while (madeProgress);
 
         var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution)
             .Concat(
@@ -645,6 +659,47 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 indexer.ToDisplayString(CascadeKeyFormat),
             _ => symbol.Name
         };
+
+    /// <summary>
+    /// Cascade key for a member as it will appear on <paramref name="target"/>
+    /// after constructed-base type-parameter substitution. Falls back to
+    /// <see cref="MemberCascadeKey"/> when there is no generic substitution.
+    /// </summary>
+    internal static string MemberCascadeKeyForTarget(
+        ISymbol symbol,
+        INamedTypeSymbol source,
+        INamedTypeSymbol target)
+    {
+        var constructed = GetConstructedBase(source, target);
+        if (constructed == null || constructed.TypeArguments.Length == 0)
+            return MemberCascadeKey(symbol);
+
+        foreach (var candidate in constructed.GetMembers(symbol.Name))
+        {
+            if (SymbolEqualityComparer.Default.Equals(
+                    candidate.OriginalDefinition, symbol.OriginalDefinition))
+            {
+                return MemberCascadeKey(candidate);
+            }
+        }
+
+        return MemberCascadeKey(symbol);
+    }
+
+    /// <summary>
+    /// Path → linked-view count across the entire solution (not a filtered
+    /// sourceFile subset). Used so multi-view derived targets are still
+    /// detected when the walk is limited to one source path.
+    /// </summary>
+    internal static Dictionary<string, int> BuildLinkedPathCounts(Solution solution)
+    {
+        var groups = AllFilesDocumentHelpers.GroupByLinkedPath(
+            AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution));
+        return groups
+            .Where(g => g.Count > 0 && g[0].FilePath != null)
+            .GroupBy(g => PathResolver.GetPathComparisonKey(g[0].FilePath!), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Count, StringComparer.Ordinal);
+    }
 
     /// <summary>
     /// True when any declaring document of <paramref name="type"/> shares a

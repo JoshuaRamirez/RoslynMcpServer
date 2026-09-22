@@ -4020,6 +4020,43 @@ public class PushMembersDownOperationTests
     }
 
     [Fact]
+    public void MemberCascadeKeyForTarget_SubstitutesConstructedGenericSignature()
+    {
+        var tree = CSharpSyntaxTree.ParseText("""
+            class Root<T>
+            {
+                public int M(T value) { return 1; }
+            }
+
+            class Middle : Root<int>
+            {
+            }
+            """);
+        var compilation = CSharpCompilation.Create(
+            "CascadeKeyGenericTest",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var rootType = model.GetDeclaredSymbol(
+            tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+                .First(c => c.Identifier.Text == "Root"))!;
+        var middleType = model.GetDeclaredSymbol(
+            tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+                .First(c => c.Identifier.Text == "Middle"))!;
+        var method = rootType.GetMembers("M").OfType<IMethodSymbol>().Single();
+
+        var rawKey = PushMembersDownOperation.MemberCascadeKey(method);
+        var targetKey = PushMembersDownOperation.MemberCascadeKeyForTarget(
+            method, rootType, middleType);
+
+        Assert.Contains("T", rawKey, StringComparison.Ordinal);
+        Assert.DoesNotContain("T", targetKey, StringComparison.Ordinal);
+        Assert.Contains("Int32", targetKey, StringComparison.Ordinal);
+        Assert.NotEqual(rawKey, targetKey);
+    }
+
+
+    [Fact]
     public void Validate_AllFilesTrue_RelativeSourceFile_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -4418,6 +4455,150 @@ public class PushMembersDownOperationTests
         Assert.DoesNotContain("M(int", ExtractTypeBody(root, "Middle"));
         Assert.Contains("M(int", ExtractTypeBody(leaf, "Leaf"));
         Assert.DoesNotContain("M(string", ExtractTypeBody(leaf, "Leaf"));
+    }
+
+    private const string PartialDependentFieldPartA = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            private int _x;
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    private const string PartialDependentFieldPartB = """
+        namespace TestApp;
+
+        public partial class Animal
+        {
+            public int Speak()
+            {
+                return _x;
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RevisitsPartialAfterDependentMemberMoves()
+    {
+        // Field file sorts first; validation initially rejects moving _x while Speak
+        // still references it. After Speak moves from the later part, revisit must
+        // push _x too — otherwise Dog.Speak references a private field still on Animal.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("AnimalA.cs", PartialDependentFieldPartA),
+            ("AnimalB.cs", PartialDependentFieldPartB));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var animalA = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalA.cs"]);
+        var animalB = await File.ReadAllTextAsync(workspace.SourcePaths["AnimalB.cs"]);
+        Assert.DoesNotContain("_x", ExtractTypeBody(animalA, "Animal"));
+        Assert.DoesNotContain("Speak", ExtractTypeBody(animalB, "Animal"));
+        Assert.Contains("_x", ExtractTypeBody(animalA, "Dog"));
+        Assert.Contains("Speak", ExtractTypeBody(animalA, "Dog"));
+    }
+
+    private const string GenericCascadeRootFile = """
+        namespace TestApp;
+
+        public class Root<T>
+        {
+            public int M(T value)
+            {
+                return 1;
+            }
+        }
+
+        public class Middle : Root<int>
+        {
+        }
+        """;
+
+    private const string GenericCascadeLeafFile = """
+        namespace TestApp;
+
+        public class Leaf : Middle
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_CascadeUsesConstructedGenericSignature()
+    {
+        // Root<T>.M(T) pushes onto Middle : Root<int> as M(int). Cascade tracking
+        // must record M(int), not M(T), or Middle would re-push to Leaf.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Leaf.cs", GenericCascadeLeafFile),
+            ("Root.cs", GenericCascadeRootFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var root = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        var leaf = await File.ReadAllTextAsync(workspace.SourcePaths["Leaf.cs"]);
+        Assert.DoesNotContain("M(", ExtractTypeBody(root, "Root"));
+        Assert.Contains("M(int", ExtractTypeBody(root, "Middle"));
+        Assert.DoesNotContain("M(", ExtractTypeBody(leaf, "Leaf"));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_SourceFileFilter_SkipsLinkedMultiViewDerived()
+    {
+        // Base lives only in ProjectA; derived is linked into A+B. sourceFile limits
+        // the walk to Base.cs — linked-path counts must still see Derived's multi-view
+        // and skip, rather than pushing and coalescing over divergent siblings.
+        const string baseSource = """
+            namespace TestApp;
+
+            public class Root
+            {
+                public int Speak()
+                {
+                    return 1;
+                }
+            }
+            """;
+        const string derivedSource = """
+            namespace TestApp;
+
+            public class Dog : Root
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedDerivedAsync(
+            baseSource, derivedSource);
+        var beforeBase = await File.ReadAllTextAsync(workspace.SourcePaths["Base.cs"]);
+        var beforeDerived = await File.ReadAllTextAsync(workspace.SourcePaths["Derived.cs"]);
+        var counts = PushMembersDownOperation.BuildLinkedPathCounts(workspace.Context.Solution);
+        var derivedKey = RoslynMcp.Core.FileSystem.PathResolver.GetPathComparisonKey(
+            workspace.SourcePaths["Derived.cs"]);
+        Assert.True(counts.TryGetValue(derivedKey, out var derivedCount) && derivedCount > 1);
+
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["Base.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeBase, await File.ReadAllTextAsync(workspace.SourcePaths["Base.cs"]));
+        Assert.Equal(beforeDerived, await File.ReadAllTextAsync(workspace.SourcePaths["Derived.cs"]));
+        Assert.Empty(result.Changes!.FilesModified);
     }
 
     private const string LeaveAbstractMixedFile = """
@@ -4883,6 +5064,144 @@ public class PushMembersDownOperationTests
                     SourcePath = libSource,
                     LibraryPath = libSource,
                     DerivedPath = appSourcePath,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+
+        /// <summary>
+        /// ProjectA owns Base.cs alone; Derived.cs is linked into ProjectA and
+        /// ProjectB (ProjectB references ProjectA). Used to prove sourceFile-
+        /// filtered walks still see multi-view derived declaring paths.
+        /// </summary>
+        public static async Task<TempWorkspace> CreateWithLinkedDerivedAsync(
+            string baseSource,
+            string derivedSource)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpPushMembersDownLinked_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            var basePath = Path.Combine(directory, "Base.cs");
+            var derivedPath = Path.Combine(directory, "Derived.cs");
+            var projectAPath = Path.Combine(directory, "ProjectA.csproj");
+            var projectBPath = Path.Combine(directory, "ProjectB.csproj");
+            var projectTypeGuid = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
+            var projectAGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+            var projectBGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+
+            await File.WriteAllTextAsync(basePath, baseSource);
+            await File.WriteAllTextAsync(derivedPath, derivedSource);
+            await File.WriteAllTextAsync(solutionPath, $$"""
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                VisualStudioVersion = 17.0.31903.59
+                MinimumVisualStudioVersion = 10.0.40219.1
+                Project("{{projectTypeGuid}}") = "ProjectA", "ProjectA.csproj", "{{projectAGuid}}"
+                EndProject
+                Project("{{projectTypeGuid}}") = "ProjectB", "ProjectB.csproj", "{{projectBGuid}}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                		Release|Any CPU = Release|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{{projectAGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectAGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            await File.WriteAllTextAsync(projectAPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="Base.cs" />
+                    <Compile Include="Derived.cs" Link="Derived.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            await File.WriteAllTextAsync(projectBPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="ProjectA.csproj" />
+                    <Compile Include="Derived.cs" Link="Derived.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                if (context.GetDocumentByPath(basePath) == null ||
+                    context.GetDocumentByPath(derivedPath) == null)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException("Workspace loaded but did not include Base/Derived sources.");
+                }
+
+                var linkedViews = context.Solution.Projects
+                    .SelectMany(p => p.Documents)
+                    .Count(d => string.Equals(
+                        Path.GetFullPath(d.FilePath!),
+                        Path.GetFullPath(derivedPath),
+                        StringComparison.OrdinalIgnoreCase));
+                if (linkedViews < 2)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException(
+                        $"Expected Derived.cs linked into 2 projects, found {linkedViews}.");
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = solutionPath,
+                    SourcePath = basePath,
+                    SourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["Base.cs"] = basePath,
+                        ["Derived.cs"] = derivedPath
+                    },
                     Context = context
                 };
             }
