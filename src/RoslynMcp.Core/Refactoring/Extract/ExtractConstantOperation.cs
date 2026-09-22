@@ -196,7 +196,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         List<LiteralExpressionSyntax> literalsToReplace;
         if (@params.ReplaceAll)
         {
-            literalsToReplace = FindMatchingLiterals(containingType, literal);
+            literalsToReplace = FindMatchingLiterals(containingType, literal, constantType, semanticModel, cancellationToken);
         }
         else
         {
@@ -337,6 +337,23 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                     catch (RefactoringException)
                     {
                         updated = null;
+                    }
+
+                    if (updated != null &&
+                        !await LinkedViewsCanHonorRewriteAsync(
+                            linkedDocuments,
+                            currentDocument,
+                            literal,
+                            @params,
+                            currentSolution,
+                            updated,
+                            cancellationToken))
+                    {
+                        // Sibling linked project cannot accept the same rewrite
+                        // (e.g. name collision under different refs/preprocessor) —
+                        // skip-not-throw rather than copying invalid text (Codex P1).
+                        updated = null;
+                        continue;
                     }
 
                     if (updated != null)
@@ -629,32 +646,36 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         var bareName = SyntaxIdentifierValidation.NormalizeIdentifier(constantName);
         var containingTypeSymbol = semanticModel.GetDeclaredSymbol(containingType, cancellationToken) as INamedTypeSymbol;
         if (containingTypeSymbol != null &&
-            containingTypeSymbol.GetMembers(bareName).Length > 0)
+            (containingTypeSymbol.GetMembers(bareName).Length > 0 ||
+             string.Equals(containingTypeSymbol.Name, bareName, StringComparison.Ordinal)))
         {
             // Skip when any member (field/property/method/nested type/event, including
             // other partial declarations) already uses this name — syntax-only field
             // checks miss non-field members and cross-partial collisions (Codex P1).
+            // Also skip when the derived name equals the containing type (CS0542) (Codex P2).
             return null;
         }
 
-        List<LiteralExpressionSyntax> literalsToReplace;
+        List<LiteralExpressionSyntax> candidates;
         if (bulkParams.ReplaceAll)
         {
-            literalsToReplace = FindMatchingLiterals(containingType, literal);
+            candidates = FindMatchingLiterals(containingType, literal, constantType, semanticModel, cancellationToken);
         }
         else
         {
-            literalsToReplace = new List<LiteralExpressionSyntax> { literal };
+            candidates = new List<LiteralExpressionSyntax> { literal };
         }
 
-        // Skip when an unqualified identifier would bind to a local/parameter
-        // (or other non-type-member) at any replacement site instead of the new
-        // constant (Codex P1).
-        foreach (var site in literalsToReplace)
-        {
-            if (WouldBeShadowedAtSite(semanticModel, site.SpanStart, bareName))
-                return null;
-        }
+        // Drop sites where an unqualified identifier would bind to a local/
+        // parameter/range-variable OR a nested-type member of the derived name
+        // instead of the new constant (Codex P1). Skip when the seed literal
+        // itself is shadowed.
+        var literalsToReplace = candidates
+            .Where(site => !WouldBeShadowedAtSite(
+                semanticModel, site.SpanStart, bareName, containingTypeSymbol))
+            .ToList();
+        if (!literalsToReplace.Contains(literal))
+            return null;
 
         var constField = CreateConstantField(
             constantName,
@@ -668,11 +689,11 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             literalsToReplace,
             (original, rewritten) => constantRef.WithTriviaFrom(original));
 
+        // Rematch by span-start identity only — name fallback can pick an
+        // unrelated same-named type declaration (Codex P1).
         var updatedContainingType = newRoot.DescendantNodes()
             .OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault(t =>
-                t.SpanStart == containingType.SpanStart ||
-                t.Identifier.Text == containingType.Identifier.Text);
+            .FirstOrDefault(t => t.SpanStart == containingType.SpanStart);
         if (updatedContainingType == null)
             return null;
 
@@ -794,15 +815,110 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
     /// <summary>
     /// True when <paramref name="bareName"/> already binds in scope at
-    /// <paramref name="position"/> to a local, parameter, or range variable
-    /// that would shadow an unqualified constant reference after rewrite.
+    /// <paramref name="position"/> to a local, parameter, range variable, or a
+    /// member declared on a type other than <paramref name="targetContainingType"/>
+    /// (nested-type fields/consts) that would capture an unqualified constant
+    /// reference after rewrite (Codex P1).
     /// </summary>
     private static bool WouldBeShadowedAtSite(
         SemanticModel semanticModel,
         int position,
-        string bareName) =>
-        semanticModel.LookupSymbols(position, name: bareName)
-            .Any(symbol => symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol);
+        string bareName,
+        INamedTypeSymbol? targetContainingType)
+    {
+        foreach (var symbol in semanticModel.LookupSymbols(position, name: bareName))
+        {
+            if (symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol)
+                return true;
+
+            if (symbol.ContainingType != null &&
+                targetContainingType != null &&
+                !SymbolEqualityComparer.Default.Equals(symbol.ContainingType, targetContainingType))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Validates that every linked sibling document can apply an equivalent
+    /// extract for the same literal span before shared text is propagated.
+    /// Returns false (caller skips) when any editable sibling cannot honor the
+    /// rewrite or would produce divergent text (Codex P1).
+    /// </summary>
+    private async Task<bool> LinkedViewsCanHonorRewriteAsync(
+        IReadOnlyList<Document> linkedDocuments,
+        Document primary,
+        LiteralExpressionSyntax primaryLiteral,
+        ExtractConstantParams bulkParams,
+        Solution beforeSolution,
+        Solution afterPrimary,
+        CancellationToken cancellationToken)
+    {
+        if (linkedDocuments.Count <= 1)
+            return true;
+
+        var primaryAfter = afterPrimary.GetDocument(primary.Id);
+        if (primaryAfter == null)
+            return false;
+        var primaryText = await primaryAfter.GetTextAsync(cancellationToken);
+
+        foreach (var linked in linkedDocuments)
+        {
+            if (linked.Id == primary.Id)
+                continue;
+
+            var sibling = beforeSolution.GetDocument(linked.Id) ?? linked;
+            if (sibling is SourceGeneratedDocument)
+                continue;
+            if (!DocumentEditableHelpers.IsDocumentEditable(sibling, Context.Workspace))
+                continue;
+
+            var root = await sibling.GetSyntaxRootAsync(cancellationToken);
+            var model = await sibling.GetSemanticModelAsync(cancellationToken);
+            if (root == null || model == null)
+                return false;
+
+            var rematched = root.DescendantNodes()
+                .OfType<LiteralExpressionSyntax>()
+                .FirstOrDefault(lit =>
+                    lit.SpanStart == primaryLiteral.SpanStart &&
+                    lit.Kind() == primaryLiteral.Kind() &&
+                    lit.Token.ValueText == primaryLiteral.Token.ValueText);
+            if (rematched == null)
+                return false;
+
+            Solution? siblingUpdated;
+            try
+            {
+                siblingUpdated = TryExtractOne(
+                    sibling,
+                    root,
+                    model,
+                    rematched,
+                    bulkParams,
+                    cancellationToken);
+            }
+            catch (RefactoringException)
+            {
+                return false;
+            }
+
+            if (siblingUpdated == null)
+                return false;
+
+            var siblingDoc = siblingUpdated.GetDocument(sibling.Id);
+            if (siblingDoc == null)
+                return false;
+            var siblingText = await siblingDoc.GetTextAsync(cancellationToken);
+            if (!primaryText.ContentEquals(siblingText))
+                return false;
+        }
+
+        return true;
+    }
 
     private static LiteralExpressionSyntax? FindLiteralExpression(SyntaxNode node, TextSpan span)
     {
@@ -820,7 +936,10 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
     private static List<LiteralExpressionSyntax> FindMatchingLiterals(
         TypeDeclarationSyntax containingType,
-        LiteralExpressionSyntax originalLiteral)
+        LiteralExpressionSyntax originalLiteral,
+        ITypeSymbol constantType,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         return containingType.DescendantNodes()
             .OfType<LiteralExpressionSyntax>()
@@ -833,7 +952,13 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                     return false;
 
                 if (lit.Kind() != originalLiteral.Kind()) return false;
-                return lit.Token.ValueText == originalLiteral.Token.ValueText;
+                if (lit.Token.ValueText != originalLiteral.Token.ValueText) return false;
+
+                // replaceAll must keep contextual/semantic type compatibility
+                // (e.g. do not rewrite int 0 sites when the constant is State) (Codex P1).
+                var candidateType = ResolveConstantType(semanticModel.GetTypeInfo(lit, cancellationToken));
+                return candidateType != null &&
+                       SymbolEqualityComparer.Default.Equals(candidateType, constantType);
             })
             .ToList();
     }
