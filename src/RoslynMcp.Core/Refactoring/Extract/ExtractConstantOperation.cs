@@ -191,7 +191,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (IsSpecialMinValueUnaryOperand(literal))
         {
             throw new RefactoringException(
-                ErrorCodes.NotCompileTimeConstant,
+                ErrorCodes.InvalidTargetType,
                 "Cannot extract the operand of a special minimum-value unary expression (-2147483648 / -9223372036854775808); extract the full expression or choose another literal.");
         }
 
@@ -214,21 +214,26 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                 $"Constant '{constantName}' already exists in type.");
         }
 
+        var bareName = SyntaxIdentifierValidation.NormalizeIdentifier(constantName);
+        var containingTypeSymbolForShadow = semanticModel.GetDeclaredSymbol(containingType, cancellationToken) as INamedTypeSymbol;
+        if (WouldBeShadowedAtSite(semanticModel, literal.SpanStart, bareName, containingTypeSymbolForShadow))
+        {
+            throw new RefactoringException(
+                ErrorCodes.NameCollision,
+                $"Constant name '{constantName}' would be shadowed at the extraction site.");
+        }
+
         List<LiteralExpressionSyntax> literalsToReplace;
         if (@params.ReplaceAll)
         {
-            var containingTypeSymbol = semanticModel.GetDeclaredSymbol(containingType, cancellationToken) as INamedTypeSymbol;
             literalsToReplace = FindMatchingLiterals(containingType, literal, constantType, semanticModel, cancellationToken)
                 .Where(site => !WouldBeShadowedAtSite(
                     semanticModel,
                     site.SpanStart,
-                    constantName,
-                    containingTypeSymbol))
+                    bareName,
+                    containingTypeSymbolForShadow))
                 .ToList();
-            if (literalsToReplace.Count == 0)
-                literalsToReplace = new List<LiteralExpressionSyntax> { literal };
-            else if (!literalsToReplace.Contains(literal) &&
-                     !WouldBeShadowedAtSite(semanticModel, literal.SpanStart, constantName, containingTypeSymbol))
+            if (!literalsToReplace.Contains(literal))
                 literalsToReplace.Insert(0, literal);
         }
         else
