@@ -309,189 +309,189 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             madeProgress = false;
             foreach (var linkedDocuments in documentGroups)
             {
-            cancellationToken.ThrowIfCancellationRequested();
+                cancellationToken.ThrowIfCancellationRequested();
 
-            // Linked multi-project views of the same path can diverge under
-            // preprocessor symbols; skip rather than coalescing a push that
-            // only one compilation can honor. Same contract as
-            // pull_members_up / extract_base_class allFiles.
-            if (linkedDocuments.Count > 1)
-                continue;
+                // Linked multi-project views of the same path can diverge under
+                // preprocessor symbols; skip rather than coalescing a push that
+                // only one compilation can honor. Same contract as
+                // pull_members_up / extract_base_class allFiles.
+                if (linkedDocuments.Count > 1)
+                    continue;
 
-            var primary = linkedDocuments.FirstOrDefault(d =>
-                d is not SourceGeneratedDocument &&
-                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
-            if (primary == null)
-                continue;
+                var primary = linkedDocuments.FirstOrDefault(d =>
+                    d is not SourceGeneratedDocument &&
+                    DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+                if (primary == null)
+                    continue;
 
-            while (true)
-            {
-                var currentDocument = currentSolution.GetDocument(primary.Id);
-                if (currentDocument == null ||
-                    currentDocument is SourceGeneratedDocument ||
-                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                while (true)
                 {
-                    break;
-                }
-
-                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
-                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
-                if (root == null || semanticModel == null)
-                    break;
-
-                Solution? updated = null;
-                foreach (var typeNode in TypeDeclarationHelpers.CollectTypeDeclarations(root))
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    if (typeNode is not TypeDeclarationSyntax typeDeclaration)
-                        continue;
-
-                    var sourceSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
-                    if (sourceSymbol == null)
-                        continue;
-
-                    var typeKey = TypeWalkKeyHelpers.TypeWalkKey(currentDocument.Project.Id, sourceSymbol);
-
-                    IReadOnlyList<INamedTypeSymbol> targets;
-                    try
+                    var currentDocument = currentSolution.GetDocument(primary.Id);
+                    if (currentDocument == null ||
+                        currentDocument is SourceGeneratedDocument ||
+                        !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
                     {
-                        targets = await GetDerivedTypes(
-                            sourceSymbol, targetNames: null, currentSolution, cancellationToken);
-                    }
-                    catch (RefactoringException)
-                    {
-                        continue;
-                    }
-
-                    if (targets.Count == 0)
-                        continue;
-
-                    // Skip when any derived target declares on a linked multi-view
-                    // path — coalescing would overwrite divergent siblings.
-                    if (targets.Any(t => DeclaringPathHasLinkedMultiView(t, currentSolution, linkedPathCounts)))
-                        continue;
-
-                    try
-                    {
-                        foreach (var target in targets)
-                            ValidateDerivedIsEditable(target);
-                    }
-                    catch (RefactoringException)
-                    {
-                        continue;
-                    }
-
-                    var leaveAbstract = @params.LeaveAbstract && sourceSymbol.TypeKind != TypeKind.Interface;
-                    var memberNames = CollectPushableMemberNames(
-                        typeDeclaration, semanticModel, leaveAbstract, cancellationToken);
-
-                    if (memberNames.Count == 0)
-                        continue;
-
-                    try
-                    {
-                        var members = FindMembersToPush(
-                            typeDeclaration, memberNames, semanticModel, cancellationToken);
-                        // Cascade filter by signature so overloads stay independent.
-                        if (insertedMembersByType.TryGetValue(typeKey, out var insertedHere) &&
-                            insertedHere.Count > 0)
-                        {
-                            members = members
-                                .Where(m => !insertedHere.Contains(MemberCascadeKey(m.Symbol)))
-                                .ToList();
-                        }
-
-                        if (members.Count == 0)
-                            continue;
-
-                        var declarationKey = typeKey + "|" + currentDocument.Id.Id + "|" +
-                            string.Join("\0", members
-                                .Select(m => MemberCascadeKey(m.Symbol))
-                                .OrderBy(k => k, StringComparer.Ordinal));
-                        if (processedDeclarations.Contains(declarationKey))
-                            continue;
-
-                        ValidateMembersForPush(members, sourceSymbol, targets, leaveAbstract);
-                        if (leaveAbstract)
-                        {
-                            ValidateLeaveAbstractCoversConcreteDerived(sourceSymbol, targets, targets);
-                        }
-
-                        await ValidateNoBreakingReferencesAsync(
-                            members, sourceSymbol, targets, leaveAbstract, currentSolution, cancellationToken);
-
-                        var derivedUpdates = new List<DerivedUpdate>();
-                        foreach (var target in targets)
-                        {
-                            var original = await GetTypeDeclarationAsync(target, cancellationToken);
-                            var copies = members
-                                .Select(member => ConvertForDerived(
-                                    member, sourceSymbol, target, semanticModel, leaveAbstract))
-                                .ToList();
-                            derivedUpdates.Add(new DerivedUpdate(target, original, AddMembersToType(original, copies)));
-                        }
-
-                        var sourceReplacement = BuildSourceReplacement(
-                            typeDeclaration, members, sourceSymbol, leaveAbstract);
-
-                        updated = await ApplyChangesAsync(
-                            currentDocument,
-                            typeDeclaration,
-                            sourceReplacement,
-                            derivedUpdates,
-                            cancellationToken);
-
-                        if (updated == null)
-                            continue;
-
-                        // Record cascade keys inserted onto each derived target so a
-                        // later visit of that type does not cascade those overloads.
-                        foreach (var target in targets)
-                        {
-                            var targetProjectId = ResolveSymbolProjectId(currentSolution, target)
-                                ?? currentDocument.Project.Id;
-                            var targetKey = TypeWalkKeyHelpers.TypeWalkKey(targetProjectId, target);
-                            if (!insertedMembersByType.TryGetValue(targetKey, out var insertedOnTarget))
-                            {
-                                insertedOnTarget = new HashSet<string>(StringComparer.Ordinal);
-                                insertedMembersByType[targetKey] = insertedOnTarget;
-                            }
-
-                            foreach (var member in members)
-                            {
-                                // Record the signature as it will appear on the
-                                // derived type after type-parameter substitution
-                                // (Root<T>.M(T) → Middle:Root<int> records M(int)).
-                                insertedOnTarget.Add(
-                                    MemberCascadeKeyForTarget(member.Symbol, sourceSymbol, target));
-                            }
-                        }
-
-                        processedDeclarations.Add(declarationKey);
                         break;
                     }
-                    catch (RefactoringException)
+
+                    var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                    var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                    if (root == null || semanticModel == null)
+                        break;
+
+                    Solution? updated = null;
+                    foreach (var typeNode in TypeDeclarationHelpers.CollectTypeDeclarations(root))
                     {
-                        updated = null;
-                        continue;
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        if (typeNode is not TypeDeclarationSyntax typeDeclaration)
+                            continue;
+
+                        var sourceSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
+                        if (sourceSymbol == null)
+                            continue;
+
+                        var typeKey = TypeWalkKeyHelpers.TypeWalkKey(currentDocument.Project.Id, sourceSymbol);
+
+                        IReadOnlyList<INamedTypeSymbol> targets;
+                        try
+                        {
+                            targets = await GetDerivedTypes(
+                                sourceSymbol, targetNames: null, currentSolution, cancellationToken);
+                        }
+                        catch (RefactoringException)
+                        {
+                            continue;
+                        }
+
+                        if (targets.Count == 0)
+                            continue;
+
+                        // Skip when any derived target declares on a linked multi-view
+                        // path — coalescing would overwrite divergent siblings.
+                        if (targets.Any(t => DeclaringPathHasLinkedMultiView(t, currentSolution, linkedPathCounts)))
+                            continue;
+
+                        try
+                        {
+                            foreach (var target in targets)
+                                ValidateDerivedIsEditable(target);
+                        }
+                        catch (RefactoringException)
+                        {
+                            continue;
+                        }
+
+                        var leaveAbstract = @params.LeaveAbstract && sourceSymbol.TypeKind != TypeKind.Interface;
+                        var memberNames = CollectPushableMemberNames(
+                            typeDeclaration, semanticModel, leaveAbstract, cancellationToken);
+
+                        if (memberNames.Count == 0)
+                            continue;
+
+                        try
+                        {
+                            var members = FindMembersToPush(
+                                typeDeclaration, memberNames, semanticModel, cancellationToken);
+                            // Cascade filter by signature so overloads stay independent.
+                            if (insertedMembersByType.TryGetValue(typeKey, out var insertedHere) &&
+                                insertedHere.Count > 0)
+                            {
+                                members = members
+                                    .Where(m => !insertedHere.Contains(MemberCascadeKey(m.Symbol)))
+                                    .ToList();
+                            }
+
+                            if (members.Count == 0)
+                                continue;
+
+                            var declarationKey = typeKey + "|" + currentDocument.Id.Id + "|" +
+                                string.Join("\0", members
+                                    .Select(m => MemberCascadeKey(m.Symbol))
+                                    .OrderBy(k => k, StringComparer.Ordinal));
+                            if (processedDeclarations.Contains(declarationKey))
+                                continue;
+
+                            ValidateMembersForPush(members, sourceSymbol, targets, leaveAbstract);
+                            if (leaveAbstract)
+                            {
+                                ValidateLeaveAbstractCoversConcreteDerived(sourceSymbol, targets, targets);
+                            }
+
+                            await ValidateNoBreakingReferencesAsync(
+                                members, sourceSymbol, targets, leaveAbstract, currentSolution, cancellationToken);
+
+                            var derivedUpdates = new List<DerivedUpdate>();
+                            foreach (var target in targets)
+                            {
+                                var original = await GetTypeDeclarationAsync(target, cancellationToken);
+                                var copies = members
+                                    .Select(member => ConvertForDerived(
+                                        member, sourceSymbol, target, semanticModel, leaveAbstract))
+                                    .ToList();
+                                derivedUpdates.Add(new DerivedUpdate(target, original, AddMembersToType(original, copies)));
+                            }
+
+                            var sourceReplacement = BuildSourceReplacement(
+                                typeDeclaration, members, sourceSymbol, leaveAbstract);
+
+                            updated = await ApplyChangesAsync(
+                                currentDocument,
+                                typeDeclaration,
+                                sourceReplacement,
+                                derivedUpdates,
+                                cancellationToken);
+
+                            if (updated == null)
+                                continue;
+
+                            // Record cascade keys inserted onto each derived target so a
+                            // later visit of that type does not cascade those overloads.
+                            foreach (var target in targets)
+                            {
+                                var targetProjectId = ResolveSymbolProjectId(currentSolution, target)
+                                    ?? currentDocument.Project.Id;
+                                var targetKey = TypeWalkKeyHelpers.TypeWalkKey(targetProjectId, target);
+                                if (!insertedMembersByType.TryGetValue(targetKey, out var insertedOnTarget))
+                                {
+                                    insertedOnTarget = new HashSet<string>(StringComparer.Ordinal);
+                                    insertedMembersByType[targetKey] = insertedOnTarget;
+                                }
+
+                                foreach (var member in members)
+                                {
+                                    // Record the signature as it will appear on the
+                                    // derived type after type-parameter substitution
+                                    // (Root<T>.M(T) → Middle:Root<int> records M(int)).
+                                    insertedOnTarget.Add(
+                                        MemberCascadeKeyForTarget(member.Symbol, sourceSymbol, target));
+                                }
+                            }
+
+                            processedDeclarations.Add(declarationKey);
+                            break;
+                        }
+                        catch (RefactoringException)
+                        {
+                            updated = null;
+                            continue;
+                        }
                     }
+
+                    if (updated == null)
+                        break;
+
+                    var beforeSolution = currentSolution;
+                    currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                        beforeSolution,
+                        updated,
+                        Context.Workspace,
+                        cancellationToken);
+
+                    pushedCountByDoc[primary.Id] =
+                        pushedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+                    madeProgress = true;
                 }
-
-                if (updated == null)
-                    break;
-
-                var beforeSolution = currentSolution;
-                currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
-                    beforeSolution,
-                    updated,
-                    Context.Workspace,
-                    cancellationToken);
-
-                pushedCountByDoc[primary.Id] =
-                    pushedCountByDoc.GetValueOrDefault(primary.Id) + 1;
-                madeProgress = true;
-            }
             }
         } while (madeProgress);
 
