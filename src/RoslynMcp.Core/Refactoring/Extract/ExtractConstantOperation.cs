@@ -582,7 +582,15 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             .OfType<LiteralExpressionSyntax>()
             .Where(literal =>
             {
-                if (literal.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault() == null)
+                var containingType = literal.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
+                if (containingType == null || containingType is InterfaceDeclarationSyntax)
+                    return false;
+
+                // Enum member initializers are not const-field extract targets.
+                if (literal.Ancestors().OfType<EnumDeclarationSyntax>().Any())
+                    return false;
+
+                if (IsSpecialMinValueUnaryOperand(literal))
                     return false;
 
                 if (literal.Ancestors().OfType<AttributeSyntax>().Any())
@@ -637,10 +645,19 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             return null;
 
         var containingType = literal.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
-        if (containingType == null)
+        if (containingType == null || containingType is InterfaceDeclarationSyntax)
+            return null;
+
+        if (literal.Ancestors().OfType<EnumDeclarationSyntax>().Any())
+            return null;
+
+        if (IsSpecialMinValueUnaryOperand(literal))
             return null;
 
         if (IsVisibilityIncompatibleWithContainingType(bulkParams.Visibility, containingType))
+            return null;
+
+        if (IsConstantTypeLessAccessibleThanVisibility(constantType, bulkParams.Visibility))
             return null;
 
         var bareName = SyntaxIdentifierValidation.NormalizeIdentifier(constantName);
@@ -815,10 +832,10 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
     /// <summary>
     /// True when <paramref name="bareName"/> already binds in scope at
-    /// <paramref name="position"/> to a local, parameter, range variable, or a
-    /// member declared on a type other than <paramref name="targetContainingType"/>
-    /// (nested-type fields/consts) that would capture an unqualified constant
-    /// reference after rewrite (Codex P1).
+    /// <paramref name="position"/> to a local, parameter, range variable, local
+    /// function, type parameter, or a member declared on a type other than
+    /// <paramref name="targetContainingType"/> (nested-type fields/consts) that
+    /// would capture an unqualified constant reference after rewrite (Codex P1).
     /// </summary>
     private static bool WouldBeShadowedAtSite(
         SemanticModel semanticModel,
@@ -831,11 +848,88 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             if (symbol is ILocalSymbol or IParameterSymbol or IRangeVariableSymbol)
                 return true;
 
+            if (symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction })
+                return true;
+
+            if (symbol is ITypeParameterSymbol)
+                return true;
+
             if (symbol.ContainingType != null &&
                 targetContainingType != null &&
                 !SymbolEqualityComparer.Default.Equals(symbol.ContainingType, targetContainingType))
             {
                 return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True for the operand of the special minimum-value unary forms
+    /// <c>-2147483648</c> / <c>-9223372036854775808</c>, where the literal is
+    /// typed as unsigned and replacing only the operand changes semantics
+    /// (Codex P2).
+    /// </summary>
+    internal static bool IsSpecialMinValueUnaryOperand(LiteralExpressionSyntax literal)
+    {
+        if (literal.Parent is not PrefixUnaryExpressionSyntax unary ||
+            !unary.IsKind(SyntaxKind.UnaryMinusExpression) ||
+            !ReferenceEquals(unary.Operand, literal))
+        {
+            return false;
+        }
+
+        var text = literal.Token.Text;
+        return text is "2147483648" or "9223372036854775808";
+    }
+
+    /// <summary>
+    /// True when <paramref name="constantType"/> is less accessible than the
+    /// requested member <paramref name="visibility"/> (e.g. private nested enum
+    /// with public const) — bulk must skip those sites (Codex P2).
+    /// </summary>
+    internal static bool IsConstantTypeLessAccessibleThanVisibility(
+        ITypeSymbol constantType,
+        string visibility)
+    {
+        var memberAccessibility = visibility.ToLowerInvariant() switch
+        {
+            "public" => Accessibility.Public,
+            "protected" => Accessibility.Protected,
+            "internal" => Accessibility.Internal,
+            "protected internal" => Accessibility.ProtectedOrInternal,
+            "private protected" => Accessibility.ProtectedAndInternal,
+            _ => Accessibility.Private
+        };
+
+        if (memberAccessibility == Accessibility.Private)
+            return false;
+
+        return TypeIsLessAccessibleThan(constantType, memberAccessibility);
+    }
+
+    private static bool TypeIsLessAccessibleThan(ITypeSymbol type, Accessibility required)
+    {
+        if (type is IArrayTypeSymbol array)
+            return TypeIsLessAccessibleThan(array.ElementType, required);
+
+        if (type is IPointerTypeSymbol pointer)
+            return TypeIsLessAccessibleThan(pointer.PointedAtType, required);
+
+        if (type is INamedTypeSymbol named)
+        {
+            var effective = ContextValidTypeHelpers.GetEffectiveAccessibility(named);
+            if (AccessibilityRankHelpers.AccessibilityRank(effective) <
+                AccessibilityRankHelpers.AccessibilityRank(required))
+            {
+                return true;
+            }
+
+            foreach (var argument in named.TypeArguments)
+            {
+                if (TypeIsLessAccessibleThan(argument, required))
+                    return true;
             }
         }
 
@@ -951,6 +1045,11 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                 if (lit.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault() != containingType)
                     return false;
 
+                // Skip special min-value unary operands even when text/type match
+                // a non-unary seed (Codex P2).
+                if (IsSpecialMinValueUnaryOperand(lit))
+                    return false;
+
                 if (lit.Kind() != originalLiteral.Kind()) return false;
                 if (lit.Token.ValueText != originalLiteral.Token.ValueText) return false;
 
@@ -1011,6 +1110,11 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         TypeDeclarationSyntax typeDeclaration,
         FieldDeclarationSyntax constField)
     {
+        // Semicolon-bodied positional records (e.g. record R(int X = 42);) have
+        // no member body braces — WithMembers alone leaves an invalid declaration
+        // (Codex P1). Convert to a braced form before inserting.
+        typeDeclaration = EnsureMemberBodyBraces(typeDeclaration);
+
         var members = typeDeclaration.Members.ToList();
 
         var insertIndex = 0;
@@ -1032,6 +1136,37 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed));
 
         return typeDeclaration.WithMembers(SyntaxFactory.List(members));
+    }
+
+    /// <summary>
+    /// Converts a semicolon-bodied type declaration (no open brace) into a
+    /// braced form so members can be inserted validly (Codex P1).
+    /// </summary>
+    internal static TypeDeclarationSyntax EnsureMemberBodyBraces(TypeDeclarationSyntax typeDeclaration)
+    {
+        if (!typeDeclaration.OpenBraceToken.IsKind(SyntaxKind.None))
+            return typeDeclaration;
+
+        var open = SyntaxFactory.Token(SyntaxKind.OpenBraceToken)
+            .WithLeadingTrivia(SyntaxFactory.Space)
+            .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
+
+        if (typeDeclaration is RecordDeclarationSyntax record)
+        {
+            var semicolon = record.SemicolonToken;
+            var close = SyntaxFactory.Token(SyntaxKind.CloseBraceToken)
+                .WithTrailingTrivia(semicolon.TrailingTrivia);
+            return record
+                .WithSemicolonToken(default)
+                .WithOpenBraceToken(open)
+                .WithCloseBraceToken(close);
+        }
+
+        var closeBrace = SyntaxFactory.Token(SyntaxKind.CloseBraceToken)
+            .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed);
+        return typeDeclaration
+            .WithOpenBraceToken(open)
+            .WithCloseBraceToken(closeBrace);
     }
 
     private static RefactoringResult CreatePreviewResult(

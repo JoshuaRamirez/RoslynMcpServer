@@ -627,6 +627,182 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SemicolonRecord_AddsBracesAndConstant()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public record R(int X = 42);
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("const int _42", updated, StringComparison.Ordinal);
+        Assert.Contains("int X = _42", updated, StringComparison.Ordinal);
+        Assert.Contains("{", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("record R(int X = 42);", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsTypeParameterShadowing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public int Run<_42>()
+                {
+                    int x = 42;
+                    return x;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsLocalFunctionShadowing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public int Run()
+                {
+                    int _42() => 1;
+                    int x = 42;
+                    return x + _42();
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("int x = 42;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("const int _42", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("int x = _42;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_Public_SkipsLessAccessibleEnumType()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                private enum State { Off = 0, On = 1 }
+
+                public State Run()
+                {
+                    State value = 0;
+                    return value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            Visibility = "public"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsIntMinValueUnaryOperand()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public int Run()
+                {
+                    int x = -2147483648;
+                    return x;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsInterfaceDefaultMemberLiterals()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IHost
+            {
+                int Run() => 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_ReplaceAll_ReplacesMatchingLiteralsInType()
     {
         const string source = """
