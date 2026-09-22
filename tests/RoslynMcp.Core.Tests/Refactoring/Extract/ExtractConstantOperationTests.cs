@@ -5,6 +5,9 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Extract;
+using RoslynMcp.Core.Refactoring.Utilities;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System.Threading;
 using RoslynMcp.Core.Workspace;
 using Xunit;
 
@@ -742,8 +745,69 @@ public class ExtractConstantOperationTests
         });
 
         Assert.True(result.Success);
-        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
-        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Equal(before,     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_Public_InInternalType_AllowsInternalEnumType()
+    {
+        // Codex P2: requested public is capped by internal Host → effective internal,
+        // so an internal enum State is valid for the inserted const.
+        const string source = """
+            namespace TestApp;
+
+            internal enum State { Off = 0, On = 1 }
+
+            internal class Host
+            {
+                public State Run()
+                {
+                    State value = 0;
+                    return value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var document = workspace.Context.Solution.Projects.SelectMany(p => p.Documents).First();
+        var root = await document.GetSyntaxRootAsync();
+        var model = await document.GetSemanticModelAsync();
+        Assert.NotNull(root);
+        Assert.NotNull(model);
+        var literals = ExtractConstantOperation.CollectEligibleLiterals(root!, model!, CancellationToken.None);
+        Assert.NotEmpty(literals);
+        var literal = literals[0];
+        var containingType = literal.Ancestors().OfType<TypeDeclarationSyntax>().First();
+        var containingTypeSymbol = model!.GetDeclaredSymbol(containingType) as INamedTypeSymbol;
+        Assert.NotNull(containingTypeSymbol);
+        var typeInfo = model.GetTypeInfo(literal);
+        var constantType = typeInfo.ConvertedType is { TypeKind: TypeKind.Enum } ? typeInfo.ConvertedType : typeInfo.Type;
+        Assert.NotNull(constantType);
+        Assert.Equal(Accessibility.Internal, ContextValidTypeHelpers.GetEffectiveAccessibility(containingTypeSymbol!));
+        Assert.Equal(Accessibility.Internal, ContextValidTypeHelpers.GetEffectiveAccessibility((INamedTypeSymbol)constantType!));
+        Assert.False(
+            ExtractConstantOperation.IsConstantTypeLessAccessibleThanVisibility(
+                constantType!, "public", containingTypeSymbol),
+            "capped public should allow internal State in internal Host");
+        Assert.True(
+            ExtractConstantOperation.IsConstantTypeLessAccessibleThanVisibility(
+                constantType!, "public", null),
+            "uncapped public should still reject internal State");
+
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            Visibility = "public"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        if (!updated.Contains("const", StringComparison.Ordinal))
+            throw new Xunit.Sdk.XunitException($"No const inserted. FilesModified={result.Changes?.FilesModified?.Count}. Text:\n{updated}");
+        Assert.Contains("public const State _0 = 0;", updated, StringComparison.Ordinal);
+        Assert.Contains("State value = _0;", updated, StringComparison.Ordinal);
+    }
+
+ingComparison.Ordinal);
+        Assert.Contains("State value = _0;", updated, StringComparison.Ordinal);
     }
 
     [SkippableFact]

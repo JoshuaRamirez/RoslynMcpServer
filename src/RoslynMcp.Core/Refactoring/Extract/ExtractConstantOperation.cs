@@ -195,7 +195,10 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                 "Cannot extract the operand of a special minimum-value unary expression (-2147483648 / -9223372036854775808); extract the full expression or choose another literal.");
         }
 
-        if (IsConstantTypeLessAccessibleThanVisibility(constantType, @params.Visibility))
+        var bareName = SyntaxIdentifierValidation.NormalizeIdentifier(constantName);
+        var containingTypeSymbolForShadow = semanticModel.GetDeclaredSymbol(containingType, cancellationToken) as INamedTypeSymbol;
+
+        if (IsConstantTypeLessAccessibleThanVisibility(constantType, @params.Visibility, containingTypeSymbolForShadow))
         {
             throw new RefactoringException(
                 ErrorCodes.InvalidVisibility,
@@ -214,8 +217,6 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                 $"Constant '{constantName}' already exists in type.");
         }
 
-        var bareName = SyntaxIdentifierValidation.NormalizeIdentifier(constantName);
-        var containingTypeSymbolForShadow = semanticModel.GetDeclaredSymbol(containingType, cancellationToken) as INamedTypeSymbol;
         if (WouldBeShadowedAtSite(semanticModel, literal.SpanStart, bareName, containingTypeSymbolForShadow))
         {
             throw new RefactoringException(
@@ -713,11 +714,11 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (IsVisibilityIncompatibleWithContainingType(bulkParams.Visibility, containingType))
             return null;
 
-        if (IsConstantTypeLessAccessibleThanVisibility(constantType, bulkParams.Visibility))
-            return null;
-
         var bareName = SyntaxIdentifierValidation.NormalizeIdentifier(constantName);
         var containingTypeSymbol = semanticModel.GetDeclaredSymbol(containingType, cancellationToken) as INamedTypeSymbol;
+
+        if (IsConstantTypeLessAccessibleThanVisibility(constantType, bulkParams.Visibility, containingTypeSymbol))
+            return null;
         var canReuseReplaceAllConstant =
             bulkParams.ReplaceAll &&
             CanReuseReplaceAllConstant(
@@ -962,13 +963,15 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
     /// <summary>
     /// True when <paramref name="constantType"/> is not at least as accessible
-    /// as the requested member <paramref name="visibility"/> (e.g. private
-    /// nested enum with public const, or internal enum with protected const —
-    /// protected/internal are incomparable) — bulk must skip (Codex P2).
+    /// as the requested member <paramref name="visibility"/> after that visibility
+    /// is capped by the containing type's effective accessibility (a public const
+    /// on an internal type is effectively internal). Also covers private nested
+    /// enums with public const and incomparable protected/internal (Codex P2).
     /// </summary>
     internal static bool IsConstantTypeLessAccessibleThanVisibility(
         ITypeSymbol constantType,
-        string visibility)
+        string visibility,
+        INamedTypeSymbol? containingTypeSymbol)
     {
         var memberAccessibility = visibility.ToLowerInvariant() switch
         {
@@ -980,7 +983,15 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             _ => Accessibility.Private
         };
 
-        if (memberAccessibility == Accessibility.Private)
+        if (containingTypeSymbol != null)
+        {
+            var containerEffective = ContextValidTypeHelpers.GetEffectiveAccessibility(containingTypeSymbol);
+            memberAccessibility = ContextValidTypeHelpers.IntersectAccessibility(
+                memberAccessibility,
+                containerEffective);
+        }
+
+        if (memberAccessibility is Accessibility.Private or Accessibility.NotApplicable)
             return false;
 
         return !TypeIsAtLeastAsAccessibleAs(constantType, memberAccessibility);

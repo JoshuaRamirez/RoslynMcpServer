@@ -116,7 +116,11 @@ internal static class ContextValidTypeHelpers
         return current;
     }
 
-    private static Accessibility IntersectAccessibility(Accessibility left, Accessibility right)
+    /// <summary>
+    /// Intersect two accessibility domains (public∩internal → internal, etc.).
+    /// Used to cap a requested member visibility by its containing type.
+    /// </summary>
+    internal static Accessibility IntersectAccessibility(Accessibility left, Accessibility right)
     {
         if (left == right)
             return left;
