@@ -1173,8 +1173,9 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
     /// <summary>
     /// True for member accesses whose receiver will keep selecting the inherited
     /// member after <paramref name="containingTypeSymbol"/> hides the name —
-    /// <c>base.Name</c>, <c>Base.Name</c>, or an expression whose static type is a
-    /// base/enclosing owner (Codex P2).
+    /// <c>base.Name</c>, type-qualified <c>Base.Name</c> / <c>Values.Name</c>
+    /// (including using-static owners), or an instance receiver whose static type
+    /// is a base/enclosing owner (Codex P2).
     /// </summary>
     private static bool IsStableQualifiedInheritedAccess(
         SemanticModel semanticModel,
@@ -1195,10 +1196,18 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (receiver is BaseExpressionSyntax)
             return true;
 
-        // Prefer the bound type symbol for type-qualified access (Base._42).
+        // Prefer the bound type symbol for type-qualified access (Base._42 /
+        // Values._42). A receiver that resolves as a type (not an instance)
+        // keeps selecting that type's member after a hide on containingType —
+        // including using-static owners that are neither base nor enclosing
+        // (Codex P2).
         var receiverSymbol = semanticModel.GetSymbolInfo(receiver, cancellationToken).Symbol;
-        ITypeSymbol? receiverType = receiverSymbol as ITypeSymbol
-            ?? semanticModel.GetTypeInfo(receiver, cancellationToken).Type;
+        if (receiverSymbol is INamedTypeSymbol typeReceiver)
+        {
+            return !SymbolEqualityComparer.Default.Equals(typeReceiver, containingTypeSymbol);
+        }
+
+        ITypeSymbol? receiverType = semanticModel.GetTypeInfo(receiver, cancellationToken).Type;
         if (receiverType is not INamedTypeSymbol namedReceiver)
             return false;
 
@@ -1528,7 +1537,49 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             return false;
 
         return SymbolEqualityComparer.Default.Equals(field.Type, constantType) &&
-               Equals(field.ConstantValue, constantValue);
+               ConstantValuesEqual(constantType, field.ConstantValue, constantValue);
+    }
+
+    /// <summary>
+    /// True when two const values represent the same constant for
+    /// <paramref name="constantType"/> — including enum fields whose
+    /// <see cref="IFieldSymbol.ConstantValue"/> is boxed as the underlying
+    /// type while <see cref="SemanticModel.GetConstantValue(SyntaxNode, CancellationToken)"/>
+    /// may box the same numeric as <see cref="int"/> (Codex P2).
+    /// </summary>
+    private static bool ConstantValuesEqual(ITypeSymbol constantType, object? left, object? right)
+    {
+        if (Equals(left, right))
+            return true;
+        if (left is null || right is null)
+            return false;
+
+        if (constantType is not INamedTypeSymbol { TypeKind: TypeKind.Enum, EnumUnderlyingType: { } underlying })
+            return false;
+
+        try
+        {
+            var clr = underlying.SpecialType switch
+            {
+                SpecialType.System_Byte => typeof(byte),
+                SpecialType.System_SByte => typeof(sbyte),
+                SpecialType.System_Int16 => typeof(short),
+                SpecialType.System_UInt16 => typeof(ushort),
+                SpecialType.System_Int32 => typeof(int),
+                SpecialType.System_UInt32 => typeof(uint),
+                SpecialType.System_Int64 => typeof(long),
+                SpecialType.System_UInt64 => typeof(ulong),
+                _ => null
+            };
+            if (clr == null)
+                return false;
+
+            return Equals(global::System.Convert.ChangeType(left, clr), global::System.Convert.ChangeType(right, clr));
+        }
+        catch (Exception ex) when (ex is InvalidCastException or FormatException or OverflowException)
+        {
+            return false;
+        }
     }
 
     private static string? TryCreateExtractedConstantKey(

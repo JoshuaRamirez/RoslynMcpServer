@@ -1097,6 +1097,45 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_AllowsHideWhenOnlyUsingStaticTypeQualifiedAccessUsesImportedName()
+    {
+        // Values._42 stays bound after hide even when using static also imports
+        // _42 — safe to introduce C._42 for Run()'s 42 (Codex P2).
+        const string source = """
+            using static TestApp.Values;
+
+            namespace TestApp;
+
+            public static class Values
+            {
+                public const int _42 = 7;
+            }
+
+            public class C
+            {
+                public int Existing => Values._42;
+
+                public int Run() => 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("const int _42", updated, StringComparison.Ordinal);
+        Assert.Contains("=> _42;", updated, StringComparison.Ordinal);
+        Assert.Contains("Values._42", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("Existing => _42", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_SkipsHideWhenUsingStaticImportWouldRebind()
     {
         // using static Values brings Values._42 into unqualified scope; inserting
@@ -1927,6 +1966,60 @@ public class ExtractConstantOperationTests
         Assert.Contains("return _7;", updatedA, StringComparison.Ordinal);
         Assert.Contains("return _7 + _7;", updatedB, StringComparison.Ordinal);
         Assert.Equal(1, CountOccurrences(updatedA + updatedB, "const int _7"));
+    }
+
+    [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_ReplaceAll_ReusesByteEnumConstantAcrossPartialFiles()
+    {
+        // Non-int-backed enum: field.ConstantValue is boxed byte while later
+        // GetConstantValue may box int — must still reuse (Codex P2).
+        const string partA = """
+            namespace TestApp;
+
+            public enum ByteState : byte { Off = 0, On = 1 }
+
+            public partial class Host
+            {
+                public ByteState Run()
+                {
+                    ByteState value = 0;
+                    return value;
+                }
+            }
+            """;
+        const string partB = """
+            namespace TestApp;
+
+            public partial class Host
+            {
+                public ByteState Other()
+                {
+                    ByteState value = 0;
+                    return value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("PartA.cs", partA),
+            ("PartB.cs", partB));
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            ReplaceAll = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["PartA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["PartB.cs"]));
+        Assert.Contains("const ByteState _0", updatedA, StringComparison.Ordinal);
+        Assert.Contains("ByteState value = _0;", updatedA, StringComparison.Ordinal);
+        Assert.Contains("ByteState value = _0;", updatedB, StringComparison.Ordinal);
+        Assert.DoesNotContain("ByteState value = 0;", updatedA, StringComparison.Ordinal);
+        Assert.DoesNotContain("ByteState value = 0;", updatedB, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(updatedA + updatedB, "const ByteState _0"));
     }
 
     [SkippableFact]
