@@ -1347,6 +1347,38 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 }
             }
         }
+
+        ValidateNoPostSubstitutionCollisions(members, source, targets);
+    }
+
+    /// <summary>
+    /// Ensures converted copies do not collide with each other after
+    /// constructed-generic substitution (e.g. <c>M(T)</c> + <c>M(U)</c>
+    /// onto <c>Root&lt;int,int&gt;</c> both become <c>M(int)</c> → CS0111).
+    /// Existing target members are already covered by <see cref="CanMoveMember"/>.
+    /// </summary>
+    private static void ValidateNoPostSubstitutionCollisions(
+        IReadOnlyList<PushableMember> members,
+        INamedTypeSymbol source,
+        IReadOnlyList<INamedTypeSymbol> targets)
+    {
+        if (members.Count < 2)
+            return;
+
+        foreach (var target in targets)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var member in members)
+            {
+                var key = MemberCascadeKeyForTarget(member.Symbol, source, target);
+                if (!seen.Add(key))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.ConflictsWithExistingMember,
+                        $"Pushing members to '{target.Name}' would create duplicate '{member.Name}' after generic substitution.");
+                }
+            }
+        }
     }
 
     private static void ValidateLeaveAbstractCoversConcreteDerived(
@@ -1486,6 +1518,16 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return WillHaveMemberAfterPush(model.GetTypeInfo(conditional.Expression).Type, targets);
         }
 
+        // Object / with-initializer member names look like simple identifiers
+        // (`new Animal { X = 1 }`) but bind to the initialized object's type,
+        // not implicit this. Reject when that type will not receive the member.
+        if (name != null &&
+            TryGetObjectOrWithInitializerTarget(name, out var initializedExpression))
+        {
+            return WillHaveMemberAfterPush(
+                model.GetTypeInfo(initializedExpression).Type, targets);
+        }
+
         // Simple name / implicit this — moves with the containing batch member.
         return true;
     }
@@ -1504,7 +1546,45 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return model.GetTypeInfo(conditional.Expression).Type;
         }
 
+        if (name != null &&
+            TryGetObjectOrWithInitializerTarget(name, out var initializedExpression))
+        {
+            return model.GetTypeInfo(initializedExpression).Type;
+        }
+
         return model.GetEnclosingSymbol(node.SpanStart)?.ContainingType;
+    }
+
+    /// <summary>
+    /// True when <paramref name="name"/> is the left-hand member of an
+    /// object or <c>with</c> initializer assignment (<c>new T { X = … }</c>
+    /// / <c>expr with { X = … }</c>). Sets <paramref name="initializedExpression"/>
+    /// to the creation or with-source expression whose type owns the member.
+    /// </summary>
+    private static bool TryGetObjectOrWithInitializerTarget(
+        SimpleNameSyntax name,
+        out ExpressionSyntax initializedExpression)
+    {
+        initializedExpression = null!;
+
+        if (name.Parent is not AssignmentExpressionSyntax assignment ||
+            assignment.Left != name ||
+            assignment.Parent is not InitializerExpressionSyntax initializer)
+        {
+            return false;
+        }
+
+        switch (initializer.Parent)
+        {
+            case BaseObjectCreationExpressionSyntax creation:
+                initializedExpression = creation;
+                return true;
+            case WithExpressionSyntax withExpression:
+                initializedExpression = withExpression.Expression;
+                return true;
+            default:
+                return false;
+        }
     }
 
     private static bool WillHaveMemberAfterPush(ITypeSymbol? receiver, IReadOnlyList<INamedTypeSymbol> targets)

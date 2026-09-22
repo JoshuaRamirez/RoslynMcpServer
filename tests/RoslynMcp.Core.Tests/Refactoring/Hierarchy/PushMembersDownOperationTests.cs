@@ -4840,6 +4840,91 @@ public class PushMembersDownOperationTests
         Assert.Contains("B =>", ExtractTypeBody(animalA, "Dog"));
     }
 
+    private const string ObjectInitializerReceiverFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int X;
+
+            public Animal Make()
+            {
+                return new Animal { X = 1 };
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsObjectInitializerReceiverInBatch()
+    {
+        // Pushing X + Make together would leave `new Animal { X = 1 }` on Dog
+        // after X is removed from Animal — uncompilable. Object-initializer
+        // member names must not be treated as implicit this.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", ObjectInitializerReceiverFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        Assert.Contains("X", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("Make", ExtractTypeBody(text, "Animal"));
+        Assert.DoesNotContain("X", ExtractTypeBody(text, "Dog"));
+        Assert.DoesNotContain("Make", ExtractTypeBody(text, "Dog"));
+    }
+
+    private const string PostSubstitutionCollisionFile = """
+        namespace TestApp;
+
+        public class Root<T, U>
+        {
+            public int M(T value)
+            {
+                return 0;
+            }
+
+            public int M(U value)
+            {
+                return 1;
+            }
+        }
+
+        public class Middle : Root<int, int>
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsPostSubstitutionBatchCollisions()
+    {
+        // Root<T,U>.M(T) + M(U) are distinct on the source, but both become
+        // M(int) on Middle : Root<int,int>. The batch must reject rather than
+        // emit duplicate declarations (CS0111).
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Root.cs", PostSubstitutionCollisionFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        Assert.Contains("M(T", ExtractTypeBody(text, "Root"));
+        Assert.Contains("M(U", ExtractTypeBody(text, "Root"));
+        Assert.DoesNotContain("M(int", ExtractTypeBody(text, "Middle"));
+        Assert.DoesNotContain("M(", ExtractTypeBody(text, "Middle"));
+    }
+
     #endregion
 
     #region Helpers
