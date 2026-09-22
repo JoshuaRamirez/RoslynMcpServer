@@ -149,7 +149,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<ExtractMethodOperation, ExtractMethodParams>(
             "extract-method", "Extract selected code into a new method");
         r.RegisterRefactoring<ExtractVariableOperation, ExtractVariableParams>(
-            "extract-variable", "Extract an expression into a local variable");
+            "extract-variable", "Extract an expression into a local variable; sourceFile, startLine, startColumn, endLine, endColumn, and variableName are required when allFiles is omitted or false; allFiles (default false) extracts every eligible outermost non-trivial expression in every C# file (variable named from the expression text; sourceFile optional when true; cannot be combined with startLine, startColumn, endLine, endColumn, or variableName); useVar / replaceAll / preview remain valid with allFiles where they apply");
         r.RegisterRefactoring<ExtractConstantOperation, ExtractConstantParams>(
             "extract-constant", "Extract a literal value into a named constant; sourceFile, startLine, startColumn, endLine, endColumn, and constantName are required when allFiles is omitted or false; allFiles (default false) extracts every eligible compile-time literal in every C# file (constant named from the literal value; sourceFile optional when true; cannot be combined with startLine, startColumn, endLine, endColumn, or constantName); visibility / replaceAll / preview remain valid with allFiles where they apply");
         r.RegisterRefactoring<ExtractInterfaceOperation, ExtractInterfaceParams>(

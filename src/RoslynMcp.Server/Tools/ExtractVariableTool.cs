@@ -32,13 +32,14 @@ public sealed class ExtractVariableTool : IToolHandler
     public string Name => "extract_variable";
 
     /// <inheritdoc />
-    public string Description => "Extract an expression to a local variable.";
+    public string Description =>
+        "Extract an expression to a local variable. sourceFile, startLine, startColumn, endLine, endColumn, and variableName are required when allFiles is omitted or false. allFiles: true walks every C# file and extracts every eligible outermost non-trivial expression (variable named from expression text; sourceFile optional when true; cannot be combined with startLine, startColumn, endLine, endColumn, or variableName). useVar / replaceAll / preview remain valid with allFiles where they apply (sites that cannot honor them are skipped).";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "startLine", "startColumn", "endLine", "endColumn", "variableName" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -49,50 +50,96 @@ public sealed class ExtractVariableTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file"
+                description = "Absolute path to the source file. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with startLine, startColumn, endLine, endColumn, or variableName.",
+                @default = false
             },
             startLine = new
             {
                 type = "integer",
-                description = "Start line of the expression (1-based)"
+                description = "Start line of the expression (1-based). Required when allFiles is false. Single-site only; cannot be combined with allFiles.",
+                minimum = 1
             },
             startColumn = new
             {
                 type = "integer",
-                description = "Start column of the expression (1-based)"
+                description = "Start column of the expression (1-based). Required when allFiles is false. Single-site only; cannot be combined with allFiles.",
+                minimum = 1
             },
             endLine = new
             {
                 type = "integer",
-                description = "End line of the expression (1-based)"
+                description = "End line of the expression (1-based). Required when allFiles is false. Single-site only; cannot be combined with allFiles.",
+                minimum = 1
             },
             endColumn = new
             {
                 type = "integer",
-                description = "End column of the expression (1-based)"
+                description = "End column of the expression (1-based). Required when allFiles is false. Single-site only; cannot be combined with allFiles.",
+                minimum = 1
             },
             variableName = new
             {
                 type = "string",
-                description = "Name for the new variable"
+                description = "Name for the new variable. Required when allFiles is false. Single-site only; cannot be combined with allFiles. When allFiles is true, each variable is named from its expression text."
             },
             useVar = new
             {
                 type = "boolean",
-                description = "Use var instead of explicit type",
+                description = "Use var instead of explicit type. Valid with allFiles.",
                 @default = true
             },
             replaceAll = new
             {
                 type = "boolean",
-                description = "Replace all equivalent occurrences in the same containing method or block",
+                description = "Replace all equivalent occurrences in the same containing method or block. Valid with allFiles.",
                 @default = false
             },
             preview = new
             {
                 type = "boolean",
-                description = "Return computed changes without applying",
+                description = "Return computed changes without applying. Valid with allFiles.",
                 @default = false
+            }
+        },
+        oneOf = new object[]
+        {
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @enum = new[] { false }
+                    }
+                },
+                required = new[] { "solutionPath", "sourceFile", "startLine", "startColumn", "endLine", "endColumn", "variableName" }
+            },
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @const = true
+                    }
+                },
+                required = new[] { "solutionPath", "allFiles" },
+                not = new
+                {
+                    anyOf = new object[]
+                    {
+                        new { required = new[] { "startLine" } },
+                        new { required = new[] { "startColumn" } },
+                        new { required = new[] { "endLine" } },
+                        new { required = new[] { "endColumn" } },
+                        new { required = new[] { "variableName" } }
+                    }
+                }
             }
         },
         additionalProperties = false
@@ -122,6 +169,7 @@ public sealed class ExtractVariableTool : IToolHandler
             var @params = new ExtractVariableParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 StartLine = args.StartLine,
                 StartColumn = args.StartColumn,
                 EndLine = args.EndLine,
@@ -157,12 +205,13 @@ public sealed class ExtractVariableTool : IToolHandler
     private sealed class ExtractVariableArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public int StartLine { get; init; }
-        public int StartColumn { get; init; }
-        public int EndLine { get; init; }
-        public int EndColumn { get; init; }
-        public string VariableName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public int? StartLine { get; init; }
+        public int? StartColumn { get; init; }
+        public int? EndLine { get; init; }
+        public int? EndColumn { get; init; }
+        public string? VariableName { get; init; }
         public bool? UseVar { get; init; }
         public bool? ReplaceAll { get; init; }
         public bool? Preview { get; init; }

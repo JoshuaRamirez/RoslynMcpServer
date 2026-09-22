@@ -1,12 +1,13 @@
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Extract;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring;
 
 /// <summary>
-/// Tests for ExtractVariableParams validation (mirrors ExtractVariableOperation.ValidateParams rules for end bounds).
+/// Tests for ExtractVariableParams validation via ExtractVariableOperation.Validate.
 /// </summary>
 public class ExtractVariableParamsValidationTests
 {
@@ -16,126 +17,234 @@ public class ExtractVariableParamsValidationTests
             : $"/test/file{extension}";
 
     [Fact]
-    public void ValidateParams_InvalidEndLine_ThrowsException()
+    public void Validate_AllFilesTrue_WithoutSourceFileOrVariableName_DoesNotThrow()
     {
-        var @params = new ExtractVariableParams
+        ExtractVariableOperation.Validate(new ExtractVariableParams
         {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 1,
-            StartColumn = 1,
-            EndLine = 0,
-            EndColumn = 10,
-            VariableName = "extracted"
-        };
-
-        var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
-
-        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+            AllFiles = true
+        });
     }
 
     [Fact]
-    public void ValidateParams_InvalidEndColumn_ThrowsException()
+    public void Validate_AllFilesTrue_WithVariableName_Throws()
     {
-        var @params = new ExtractVariableParams
-        {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 1,
-            StartColumn = 1,
-            EndLine = 5,
-            EndColumn = 0,
-            VariableName = "extracted"
-        };
-
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractVariableOperation.Validate(new ExtractVariableParams
+            {
+                AllFiles = true,
+                VariableName = "extracted"
+            }));
 
-        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("variableName", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void ValidateParams_SelectionEndBeforeStart_ThrowsException()
+    public void Validate_AllFilesTrue_WithStartLine_Throws()
     {
-        var @params = new ExtractVariableParams
-        {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 5,
-            StartColumn = 1,
-            EndLine = 3,
-            EndColumn = 10,
-            VariableName = "extracted"
-        };
-
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractVariableOperation.Validate(new ExtractVariableParams
+            {
+                AllFiles = true,
+                StartLine = 1
+            }));
 
-        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
     [Fact]
-    public void ValidateParams_SameLineExclusiveEndEqualStart_ThrowsException()
+    public void Validate_AllFilesTrue_WithSpan_Throws()
     {
-        var @params = new ExtractVariableParams
-        {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 5,
-            StartColumn = 10,
-            EndLine = 5,
-            EndColumn = 10,
-            VariableName = "extracted"
-        };
-
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractVariableOperation.Validate(new ExtractVariableParams
+            {
+                AllFiles = true,
+                StartLine = 1,
+                StartColumn = 1,
+                EndLine = 1,
+                EndColumn = 5
+            }));
 
-        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
     [Fact]
-    public void ValidateParams_SameLineColumnEndBeforeStart_ThrowsException()
+    public void Validate_AllFilesTrue_RelativeSourceFile_Throws()
     {
-        var @params = new ExtractVariableParams
-        {
-            SourceFile = AbsoluteTestPath(),
-            StartLine = 5,
-            StartColumn = 10,
-            EndLine = 5,
-            EndColumn = 5,
-            VariableName = "extracted"
-        };
-
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            ExtractVariableOperation.Validate(new ExtractVariableParams
+            {
+                AllFiles = true,
+                SourceFile = "relative.cs"
+            }));
 
-        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
     }
 
-    /// <summary>
-    /// Mimics ExtractVariableOperation.ValidateParams line/column/selection rules (before File.Exists),
-    /// matching ExtractConstantParamsValidationTests so invalid ends are asserted without a real file.
-    /// </summary>
-    private static void ThrowIfInvalidParams(ExtractVariableParams @params)
+    [Fact]
+    public void Validate_AllFilesTrue_MissingSourceFile_DoesNotThrow()
     {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+        ExtractVariableOperation.Validate(new ExtractVariableParams
+        {
+            AllFiles = true,
+            SourceFile = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractVariableMissingAllFiles.cs")
+        });
+    }
 
-        if (string.IsNullOrWhiteSpace(@params.VariableName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "variableName is required.");
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutStartLine_Throws()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractVariableAllFilesFalse.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractVariableOperation.Validate(new ExtractVariableParams
+                {
+                    AllFiles = false,
+                    SourceFile = file,
+                    StartColumn = 1,
+                    EndLine = 1,
+                    EndColumn = 5,
+                    VariableName = "extracted"
+                }));
 
-        if (!Path.IsPathRooted(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+            Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
 
-        if (@params.StartLine < 1 || @params.EndLine < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line numbers must be >= 1.");
+    [Fact]
+    public void Validate_InvalidEndLine_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractVariableInvalidEndLine.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractVariableOperation.Validate(new ExtractVariableParams
+                {
+                    SourceFile = file,
+                    StartLine = 1,
+                    StartColumn = 1,
+                    EndLine = 0,
+                    EndColumn = 10,
+                    VariableName = "extracted"
+                }));
 
-        if (@params.StartColumn < 1 || @params.EndColumn < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column numbers must be >= 1.");
+            Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
 
-        if (@params.StartLine > @params.EndLine ||
-            (@params.StartLine == @params.EndLine && @params.StartColumn >= @params.EndColumn))
-            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "Selection start must be before end.");
+    [Fact]
+    public void Validate_InvalidEndColumn_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractVariableInvalidEndColumn.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractVariableOperation.Validate(new ExtractVariableParams
+                {
+                    SourceFile = file,
+                    StartLine = 1,
+                    StartColumn = 1,
+                    EndLine = 5,
+                    EndColumn = 0,
+                    VariableName = "extracted"
+                }));
 
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void Validate_SelectionEndBeforeStart_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractVariableSelectionOrder.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractVariableOperation.Validate(new ExtractVariableParams
+                {
+                    SourceFile = file,
+                    StartLine = 5,
+                    StartColumn = 1,
+                    EndLine = 3,
+                    EndColumn = 10,
+                    VariableName = "extracted"
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void Validate_SameLineExclusiveEndEqualStart_ThrowsException()
+    {
+        var file = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractVariableExclusiveEnd.cs");
+        File.WriteAllText(file, "// test");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ExtractVariableOperation.Validate(new ExtractVariableParams
+                {
+                    SourceFile = file,
+                    StartLine = 5,
+                    StartColumn = 10,
+                    EndLine = 5,
+                    EndColumn = 10,
+                    VariableName = "extracted"
+                }));
+
+            Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Extract variable", ExtractVariableOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Extract 2 variables", ExtractVariableOperation.BuildAllFilesDescription(2));
+    }
+    [Fact]
+    public void DeriveVariableNameFromExpression_PrefersInvokedSimpleName()
+    {
+        var invocation = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseExpression("GetValue()");
+        Assert.Equal("getValue", ExtractVariableOperation.DeriveVariableNameFromExpression(invocation));
+    }
+
+    [Fact]
+    public void DeriveVariableNameFromExpression_PrefersCreatedTypeName()
+    {
+        var creation = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseExpression("new Item()");
+        Assert.Equal("item", ExtractVariableOperation.DeriveVariableNameFromExpression(creation));
+    }
+
+    [Fact]
+    public void DeriveVariableNameFromExpression_EscapesReservedKeyword()
+    {
+        var invocation = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseExpression("Class()");
+        Assert.Equal("@class", ExtractVariableOperation.DeriveVariableNameFromExpression(invocation));
     }
 }

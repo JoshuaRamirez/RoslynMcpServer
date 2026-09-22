@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -15,6 +16,10 @@ namespace RoslynMcp.Core.Refactoring.Extract;
 
 /// <summary>
 /// Extracts an expression to a local variable.
+/// Optional <c>allFiles</c> walks every C# document (or the optional single
+/// <c>sourceFile</c>) and extracts every eligible outermost non-trivial
+/// expression, naming each variable from that expression and skipping
+/// ineligible sites rather than throwing.
 /// </summary>
 public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractVariableParams>
 {
@@ -26,35 +31,80 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(ExtractVariableParams @params)
+    protected override void ValidateParams(ExtractVariableParams @params) => Validate(@params);
+
+    /// <summary>
+    /// Validates <paramref name="params"/> the same way
+    /// <see cref="ValidateParams"/> does (exposed for unit tests).
+    /// </summary>
+    internal static void Validate(ExtractVariableParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (@params.StartLine.HasValue ||
+                @params.StartColumn.HasValue ||
+                @params.EndLine.HasValue ||
+                @params.EndColumn.HasValue ||
+                !string.IsNullOrWhiteSpace(@params.VariableName))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with startLine, startColumn, endLine, endColumn, or variableName.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            {
+                ValidateSourceFilePath(@params.SourceFile!);
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (string.IsNullOrWhiteSpace(@params.VariableName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "variableName is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+        if (!@params.StartLine.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "startLine is required.");
 
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        if (!@params.StartColumn.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "startColumn is required.");
 
-        if (!File.Exists(@params.SourceFile))
+        if (!@params.EndLine.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endLine is required.");
+
+        if (!@params.EndColumn.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endColumn is required.");
+
+        ValidateSourceFilePath(@params.SourceFile!);
+
+        if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (@params.StartLine < 1 || @params.EndLine < 1)
+        if (@params.StartLine.Value < 1 || @params.EndLine.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line numbers must be >= 1.");
 
-        if (@params.StartColumn < 1 || @params.EndColumn < 1)
+        if (@params.StartColumn.Value < 1 || @params.EndColumn.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column numbers must be >= 1.");
 
-        if (@params.StartLine > @params.EndLine ||
-            (@params.StartLine == @params.EndLine && @params.StartColumn >= @params.EndColumn))
+        if (@params.StartLine.Value > @params.EndLine.Value ||
+            (@params.StartLine.Value == @params.EndLine.Value &&
+             @params.StartColumn.Value >= @params.EndColumn.Value))
             throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "Selection start must be before end.");
 
-        if (!IdentifierValidation.IsValidIdentifier(@params.VariableName))
+        if (!IdentifierValidation.IsValidIdentifier(@params.VariableName!))
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid variable name: {@params.VariableName}");
+    }
+
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
     }
 
     /// <inheritdoc />
@@ -63,7 +113,17 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         ExtractVariableParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var sourceFile = @params.SourceFile!;
+        var variableName = @params.VariableName!;
+        var startLine = @params.StartLine!.Value;
+        var startColumn = @params.StartColumn!.Value;
+        var endLine = @params.EndLine!.Value;
+        var endColumn = @params.EndColumn!.Value;
+
+        var document = GetDocumentOrThrow(sourceFile);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -74,8 +134,8 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
 
         // Get text span from line/column (bounds-checked like extract_method / extract_constant)
         var sourceText = await document.GetTextAsync(cancellationToken);
-        var startPosition = SymbolResolver.GetPosition(sourceText, @params.StartLine, @params.StartColumn);
-        var endPosition = SymbolResolver.GetPosition(sourceText, @params.EndLine, @params.EndColumn);
+        var startPosition = SymbolResolver.GetPosition(sourceText, startLine, startColumn);
+        var endPosition = SymbolResolver.GetPosition(sourceText, endLine, endColumn);
         var span = TextSpan.FromBounds(startPosition, endPosition);
 
         // Find expression at span
@@ -89,98 +149,39 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
                 "No valid expression found at the specified location.");
         }
 
-        // Get expression type
-        var typeInfo = semanticModel.GetTypeInfo(expression, cancellationToken);
-        if (typeInfo.Type == null)
+        var extracted = TryBuildExtractedSolution(
+            document,
+            root,
+            semanticModel,
+            expression,
+            variableName,
+            @params.UseVar,
+            @params.ReplaceAll,
+            cancellationToken,
+            out var typeInfoType,
+            out var variableDeclaration,
+            out var replacementCount);
+
+        if (extracted == null)
         {
             throw new RefactoringException(
                 ErrorCodes.RoslynError,
-                "Could not determine expression type.");
+                "Could not extract expression to variable.");
         }
 
-        // Check for void
-        if (typeInfo.Type.SpecialType == SpecialType.System_Void)
-        {
-            throw new RefactoringException(
-                ErrorCodes.ExpressionIsVoid,
-                "Cannot extract void expression to variable.");
-        }
-
-        // Find containing statement
-        var containingStatement = expression.Ancestors().OfType<StatementSyntax>().FirstOrDefault();
-        if (containingStatement == null)
-        {
-            throw new RefactoringException(
-                ErrorCodes.StatementNotFound,
-                "Expression must be inside a statement.");
-        }
-
-        // Check for existing variable with same name in scope
-        var containingBlock = containingStatement.Parent as BlockSyntax;
-        if (containingBlock != null)
-        {
-            var existingVar = containingBlock.DescendantNodes()
-                .OfType<VariableDeclaratorSyntax>()
-                .FirstOrDefault(v => v.Identifier.Text == @params.VariableName);
-
-            if (existingVar != null && existingVar.SpanStart < expression.SpanStart)
-            {
-                throw new RefactoringException(
-                    ErrorCodes.NameCollision,
-                    $"Variable '{@params.VariableName}' already exists in scope.");
-            }
-        }
-
-        if (@params.ReplaceAll && HasSideEffects(expression, semanticModel, cancellationToken))
-        {
-            throw new RefactoringException(
-                ErrorCodes.ExpressionHasSideEffects,
-                "Cannot replace all occurrences of an expression with side effects.");
-        }
-
-        var replacements = @params.ReplaceAll
-            ? FindEquivalentExpressions(expression, semanticModel, cancellationToken)
-            : new List<ExpressionSyntax> { expression };
-
-        // Determine type syntax
-        TypeSyntax typeSyntax;
-        if (@params.UseVar || typeInfo.Type.IsAnonymousType)
-        {
-            typeSyntax = SyntaxFactory.IdentifierName("var");
-        }
-        else
-        {
-            typeSyntax = SyntaxFactory.ParseTypeName(typeInfo.Type.ToDisplayString());
-        }
-
-        // Create variable declaration
-        var variableDeclaration = SyntaxFactory.LocalDeclarationStatement(
-            SyntaxFactory.VariableDeclaration(typeSyntax.WithTrailingTrivia(SyntaxFactory.Space))
-                .WithVariables(SyntaxFactory.SingletonSeparatedList(
-                    SyntaxFactory.VariableDeclarator(@params.VariableName)
-                        .WithInitializer(SyntaxFactory.EqualsValueClause(expression)))));
-
-        // If preview mode, return without applying
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, @params, expression, typeInfo.Type, variableDeclaration, replacements.Count);
+            return CreatePreviewResult(
+                operationId,
+                sourceFile,
+                variableName,
+                expression,
+                typeInfoType!,
+                variableDeclaration!,
+                replacementCount);
         }
 
-        SyntaxNode newRoot;
-        if (replacements.Count <= 1)
-        {
-            newRoot = ApplySingleReplacement(root, expression, containingStatement, containingBlock, @params.VariableName, variableDeclaration);
-        }
-        else
-        {
-            newRoot = ApplyReplaceAll(root, replacements, @params.VariableName, variableDeclaration);
-        }
-
-        var newDocument = document.WithSyntaxRoot(newRoot);
-        var newSolution = newDocument.Project.Solution;
-
-        // Commit changes
-        var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
+        var commitResult = await CommitChangesAsync(extracted, cancellationToken);
 
         return RefactoringResult.Succeeded(
             operationId,
@@ -192,12 +193,685 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.VariableName,
-                FullyQualifiedName = @params.VariableName,
+                Name = variableName,
+                FullyQualifiedName = variableName,
                 Kind = Contracts.Enums.SymbolKind.Local
             },
             0,
             0);
+    }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>ExtractConstantOperation.ExecuteAllFilesAsync</c>
+    /// / <c>IntroduceFieldOperation.ExecuteAllFilesAsync</c>) and extracts
+    /// every eligible outermost non-trivial expression to a local variable
+    /// named from the expression text. Optional <c>sourceFile</c> limits via
+    /// <see cref="DocumentSourceFileFilter"/>. Linked documents that share a
+    /// physical path are rewritten once and the same text is applied to every
+    /// sibling <see cref="DocumentId"/> via
+    /// <see cref="PathResolver.GetPathComparisonKey"/>. Uneditable /
+    /// source-generated docs, name collisions, void / ineligible expressions,
+    /// empty/invalid derived names, side-effecting sites when
+    /// <c>replaceAll</c> is set, and otherwise ineligible targets are skipped
+    /// rather than failing the walk. Deterministic <c>SpanStart</c> order
+    /// within a file. When every file is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ExtractVariableParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+
+        var extractedCountByDoc = new Dictionary<DocumentId, int>();
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var primary = linkedDocuments.FirstOrDefault(d =>
+                d is not SourceGeneratedDocument &&
+                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+            if (primary == null)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(primary.Id);
+                if (currentDocument == null ||
+                    currentDocument is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                {
+                    break;
+                }
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                ExpressionSyntax? updatedExpression = null;
+                foreach (var expression in CollectEligibleExpressions(root, semanticModel, cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        updated = TryExtractOne(
+                            currentDocument,
+                            root,
+                            semanticModel,
+                            expression,
+                            @params,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        updated = null;
+                    }
+
+                    if (updated != null &&
+                        !await LinkedViewsCanHonorRewriteAsync(
+                            linkedDocuments,
+                            currentDocument,
+                            expression,
+                            @params,
+                            currentSolution,
+                            updated,
+                            cancellationToken))
+                    {
+                        updated = null;
+                        continue;
+                    }
+
+                    if (updated != null)
+                    {
+                        updatedExpression = expression;
+                        break;
+                    }
+                }
+
+                if (updated == null)
+                    break;
+
+                _ = updatedExpression;
+
+                var beforeSolution = currentSolution;
+                currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                    beforeSolution,
+                    updated,
+                    Context.Workspace,
+                    cancellationToken);
+
+                extractedCountByDoc[primary.Id] =
+                    extractedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var extractedCount = extractedCountByDoc.GetValueOrDefault(document.Id);
+                if (extractedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        extractedCount = Math.Max(extractedCount, extractedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = extractedCount > 0
+                        ? BuildAllFilesDescription(extractedCount)
+                        : "Update extract_variable rewrites",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var sourceFileKey = PathResolver.GetPathComparisonKey(sourceFile);
+        var exactMatches = documents
+            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
+            .ToList();
+        if (exactMatches.Count > 0)
+        {
+            var exactKeys = exactMatches
+                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+                .ToHashSet(StringComparer.Ordinal);
+            return documents
+                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
+                .ToList();
+        }
+
+        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
+        var distinctPaths = matchedDocuments
+            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return distinctPaths.Count switch
+        {
+            0 when !File.Exists(sourceFile) => throw new RefactoringException(
+                ErrorCodes.SourceFileNotFound,
+                $"Source file not found: {sourceFile}"),
+            0 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"File not found in workspace: {sourceFile}"),
+            > 1 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ => matchedDocuments
+        };
+    }
+
+    /// <summary>
+    /// Preview description for a file that extracted
+    /// <paramref name="extractedCount"/> variables.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int extractedCount) =>
+        extractedCount == 1
+            ? "Extract variable"
+            : $"Extract {extractedCount} variables";
+
+    /// <summary>
+    /// Collects every outermost eligible non-trivial expression in
+    /// <paramref name="root"/> that lives inside a method/accessor/local-function
+    /// block. Deterministic <c>SpanStart</c> then span-length order.
+    /// </summary>
+    internal static IReadOnlyList<ExpressionSyntax> CollectEligibleExpressions(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var kindCandidates = root.DescendantNodes()
+            .OfType<ExpressionSyntax>()
+            .Select(Unwrap)
+            .Where(IsEligibleExpressionKind)
+            .Distinct()
+            .ToList();
+
+        var kindSet = new HashSet<ExpressionSyntax>(kindCandidates);
+
+        return kindCandidates
+            .Where(expr => !expr.Ancestors().OfType<ExpressionSyntax>().Select(Unwrap).Any(kindSet.Contains))
+            .Where(expr => IsStructurallyEligible(expr))
+            .Where(expr => IsSemanticallyEligible(expr, semanticModel, cancellationToken))
+            .OrderBy(expr => expr.SpanStart)
+            .ThenBy(expr => expr.Span.Length)
+            .ToList();
+    }
+
+    private static bool IsEligibleExpressionKind(ExpressionSyntax expression)
+    {
+        switch (expression)
+        {
+            case InvocationExpressionSyntax invocation:
+                return !IsNameofInvocation(invocation);
+            case ObjectCreationExpressionSyntax:
+            case ImplicitObjectCreationExpressionSyntax:
+            case ConditionalExpressionSyntax:
+            case ElementAccessExpressionSyntax:
+            case AwaitExpressionSyntax:
+            case CastExpressionSyntax:
+            case InterpolatedStringExpressionSyntax:
+            case SwitchExpressionSyntax:
+            case IsPatternExpressionSyntax:
+                return true;
+            case BinaryExpressionSyntax binary:
+                return !binary.IsKind(SyntaxKind.SimpleAssignmentExpression) &&
+                       !binary.IsKind(SyntaxKind.AddAssignmentExpression) &&
+                       !binary.IsKind(SyntaxKind.SubtractAssignmentExpression) &&
+                       !binary.IsKind(SyntaxKind.MultiplyAssignmentExpression) &&
+                       !binary.IsKind(SyntaxKind.DivideAssignmentExpression) &&
+                       !binary.IsKind(SyntaxKind.ModuloAssignmentExpression) &&
+                       !binary.IsKind(SyntaxKind.AndAssignmentExpression) &&
+                       !binary.IsKind(SyntaxKind.ExclusiveOrAssignmentExpression) &&
+                       !binary.IsKind(SyntaxKind.OrAssignmentExpression) &&
+                       !binary.IsKind(SyntaxKind.LeftShiftAssignmentExpression) &&
+                       !binary.IsKind(SyntaxKind.RightShiftAssignmentExpression) &&
+                       !binary.IsKind(SyntaxKind.CoalesceAssignmentExpression) &&
+                       !binary.IsKind(SyntaxKind.UnsignedRightShiftAssignmentExpression);
+            default:
+                return false;
+        }
+    }
+
+    private static bool IsNameofInvocation(InvocationExpressionSyntax invocation) =>
+        invocation.Expression is IdentifierNameSyntax { Identifier.ValueText: "nameof" };
+
+    private static bool IsStructurallyEligible(ExpressionSyntax expression)
+    {
+        if (expression.Ancestors().OfType<AttributeArgumentSyntax>().Any())
+            return false;
+
+        if (GetInnermostBlock(expression) == null)
+            return false;
+
+        if (expression.Ancestors().OfType<StatementSyntax>().FirstOrDefault() == null)
+            return false;
+
+        // Whole-statement expressions (e.g. Foo();) are not useful extract targets.
+        if (expression.Parent is ExpressionStatementSyntax)
+            return false;
+
+        // Already the initializer of a local — already "extracted".
+        if (expression.Parent is EqualsValueClauseSyntax
+            {
+                Parent: VariableDeclaratorSyntax
+                {
+                    Parent: VariableDeclarationSyntax { Parent: LocalDeclarationStatementSyntax }
+                }
+            })
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsSemanticallyEligible(
+        ExpressionSyntax expression,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        var typeInfo = semanticModel.GetTypeInfo(expression, cancellationToken);
+        if (typeInfo.Type == null)
+            return false;
+
+        if (typeInfo.Type.SpecialType == SpecialType.System_Void)
+            return false;
+
+        return true;
+    }
+
+    private Solution? TryExtractOne(
+        Document document,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        ExpressionSyntax expression,
+        ExtractVariableParams bulkParams,
+        CancellationToken cancellationToken)
+    {
+        if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        var variableName = DeriveVariableNameFromExpression(expression);
+        if (variableName == null)
+            return null;
+
+        return TryBuildExtractedSolution(
+            document,
+            root,
+            semanticModel,
+            expression,
+            variableName,
+            bulkParams.UseVar,
+            bulkParams.ReplaceAll,
+            cancellationToken,
+            out _,
+            out _,
+            out _);
+    }
+
+    private static Solution? TryBuildExtractedSolution(
+        Document document,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        ExpressionSyntax expression,
+        string variableName,
+        bool useVar,
+        bool replaceAll,
+        CancellationToken cancellationToken,
+        out ITypeSymbol? typeInfoType,
+        out LocalDeclarationStatementSyntax? variableDeclaration,
+        out int replacementCount)
+    {
+        typeInfoType = null;
+        variableDeclaration = null;
+        replacementCount = 0;
+
+        var typeInfo = semanticModel.GetTypeInfo(expression, cancellationToken);
+        if (typeInfo.Type == null)
+            return null;
+
+        if (typeInfo.Type.SpecialType == SpecialType.System_Void)
+        {
+            throw new RefactoringException(
+                ErrorCodes.ExpressionIsVoid,
+                "Cannot extract void expression to variable.");
+        }
+
+        var containingStatement = expression.Ancestors().OfType<StatementSyntax>().FirstOrDefault();
+        if (containingStatement == null)
+        {
+            throw new RefactoringException(
+                ErrorCodes.StatementNotFound,
+                "Expression must be inside a statement.");
+        }
+
+        var containingBlock = containingStatement.Parent as BlockSyntax;
+        if (containingBlock != null)
+        {
+            var existingVar = containingBlock.DescendantNodes()
+                .OfType<VariableDeclaratorSyntax>()
+                .FirstOrDefault(v => v.Identifier.Text == variableName);
+
+            if (existingVar != null && existingVar.SpanStart < expression.SpanStart)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.NameCollision,
+                    $"Variable '{variableName}' already exists in scope.");
+            }
+        }
+
+        if (replaceAll && HasSideEffects(expression, semanticModel, cancellationToken))
+        {
+            throw new RefactoringException(
+                ErrorCodes.ExpressionHasSideEffects,
+                "Cannot replace all occurrences of an expression with side effects.");
+        }
+
+        var replacements = replaceAll
+            ? FindEquivalentExpressions(expression, semanticModel, cancellationToken)
+            : new List<ExpressionSyntax> { expression };
+
+        TypeSyntax typeSyntax;
+        if (useVar || typeInfo.Type.IsAnonymousType)
+        {
+            typeSyntax = SyntaxFactory.IdentifierName("var");
+        }
+        else
+        {
+            typeSyntax = SyntaxFactory.ParseTypeName(typeInfo.Type.ToDisplayString());
+        }
+
+        variableDeclaration = SyntaxFactory.LocalDeclarationStatement(
+            SyntaxFactory.VariableDeclaration(typeSyntax.WithTrailingTrivia(SyntaxFactory.Space))
+                .WithVariables(SyntaxFactory.SingletonSeparatedList(
+                    SyntaxFactory.VariableDeclarator(variableName)
+                        .WithInitializer(SyntaxFactory.EqualsValueClause(expression)))));
+
+        SyntaxNode newRoot;
+        if (replacements.Count <= 1)
+        {
+            newRoot = ApplySingleReplacement(root, expression, containingStatement, containingBlock, variableName, variableDeclaration);
+        }
+        else
+        {
+            newRoot = ApplyReplaceAll(root, replacements, variableName, variableDeclaration);
+        }
+
+        typeInfoType = typeInfo.Type;
+        replacementCount = replacements.Count;
+        return document.WithSyntaxRoot(newRoot).Project.Solution;
+    }
+
+    /// <summary>
+    /// Derives a camelCase-ish valid identifier from an expression.
+    /// Prefers invoked simple name / created type name / sanitized expression text.
+    /// Returns <see langword="null"/> when the name would be empty, invalid, or
+    /// an unfixable keyword collision.
+    /// </summary>
+    internal static string? DeriveVariableNameFromExpression(ExpressionSyntax expression)
+    {
+        expression = Unwrap(expression);
+
+        string? seed = expression switch
+        {
+            InvocationExpressionSyntax invocation => PreferInvokedName(invocation),
+            ObjectCreationExpressionSyntax creation => PreferTypeName(creation.Type),
+            ImplicitObjectCreationExpressionSyntax => "created",
+            ElementAccessExpressionSyntax access => PreferInvokedNameFromExpression(access.Expression) ?? "element",
+            AwaitExpressionSyntax awaitExpr =>
+                DeriveVariableNameFromExpression(awaitExpr.Expression) is { } inner
+                    ? inner
+                    : "awaited",
+            CastExpressionSyntax cast => PreferTypeName(cast.Type) ?? "cast",
+            InterpolatedStringExpressionSyntax => "text",
+            SwitchExpressionSyntax => "result",
+            IsPatternExpressionSyntax => "matched",
+            BinaryExpressionSyntax binary when binary.IsKind(SyntaxKind.AsExpression) =>
+                PreferTypeName(binary.Right as TypeSyntax) ?? "asValue",
+            BinaryExpressionSyntax => "value",
+            ConditionalExpressionSyntax => "result",
+            _ => null
+        };
+
+        if (seed == null)
+            seed = SanitizeIdentifierSeed(expression.ToString());
+
+        return FinalizeVariableName(seed);
+    }
+
+    private static string? PreferInvokedName(InvocationExpressionSyntax invocation) =>
+        PreferInvokedNameFromExpression(invocation.Expression);
+
+    private static string? PreferInvokedNameFromExpression(ExpressionSyntax expression) =>
+        Unwrap(expression) switch
+        {
+            IdentifierNameSyntax id => id.Identifier.ValueText,
+            MemberAccessExpressionSyntax member => member.Name.Identifier.ValueText,
+            GenericNameSyntax generic => generic.Identifier.ValueText,
+            _ => null
+        };
+
+    private static string? PreferTypeName(TypeSyntax? type) =>
+        type switch
+        {
+            IdentifierNameSyntax id => id.Identifier.ValueText,
+            QualifiedNameSyntax q => q.Right.Identifier.ValueText,
+            GenericNameSyntax g => g.Identifier.ValueText,
+            NullableTypeSyntax n => PreferTypeName(n.ElementType),
+            AliasQualifiedNameSyntax a => a.Name.Identifier.ValueText,
+            _ => type == null ? null : SanitizeIdentifierSeed(type.ToString())
+        };
+
+    private static string? SanitizeIdentifierSeed(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        var builder = new StringBuilder(text.Length);
+        var startNewWord = true;
+        foreach (var c in text)
+        {
+            if (char.IsLetterOrDigit(c))
+            {
+                if (startNewWord && char.IsLetter(c))
+                {
+                    builder.Append(builder.Length == 0
+                        ? char.ToLowerInvariant(c)
+                        : char.ToUpperInvariant(c));
+                    startNewWord = false;
+                }
+                else
+                {
+                    builder.Append(c);
+                    startNewWord = false;
+                }
+            }
+            else
+            {
+                startNewWord = true;
+            }
+        }
+
+        var name = builder.ToString();
+        return string.IsNullOrEmpty(name) ? null : name;
+    }
+
+    private static string? FinalizeVariableName(string? seed)
+    {
+        if (string.IsNullOrEmpty(seed))
+            return null;
+
+        var name = seed;
+        if (char.IsDigit(name[0]))
+            name = "_" + name;
+
+        if (char.IsUpper(name[0]))
+            name = char.ToLowerInvariant(name[0]) + name[1..];
+
+        if (!SyntaxIdentifierValidation.IsValidIdentifier(name))
+        {
+            var keywordKind = SyntaxFacts.GetKeywordKind(name);
+            if (keywordKind != SyntaxKind.None && SyntaxFacts.IsReservedKeyword(keywordKind))
+            {
+                name = "@" + name;
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        return SyntaxIdentifierValidation.IsValidIdentifier(name) ? name : null;
+    }
+
+    private async Task<bool> LinkedViewsCanHonorRewriteAsync(
+        IReadOnlyList<Document> linkedDocuments,
+        Document primary,
+        ExpressionSyntax primaryExpression,
+        ExtractVariableParams bulkParams,
+        Solution beforeSolution,
+        Solution afterPrimary,
+        CancellationToken cancellationToken)
+    {
+        if (linkedDocuments.Count <= 1)
+            return true;
+
+        var primaryAfter = afterPrimary.GetDocument(primary.Id);
+        if (primaryAfter == null)
+            return false;
+        var primaryText = await primaryAfter.GetTextAsync(cancellationToken);
+
+        foreach (var linked in linkedDocuments)
+        {
+            if (linked.Id == primary.Id)
+                continue;
+
+            var sibling = beforeSolution.GetDocument(linked.Id) ?? linked;
+            if (sibling is SourceGeneratedDocument)
+                continue;
+            if (!DocumentEditableHelpers.IsDocumentEditable(sibling, Context.Workspace))
+                continue;
+
+            var root = await sibling.GetSyntaxRootAsync(cancellationToken);
+            var model = await sibling.GetSemanticModelAsync(cancellationToken);
+            if (root == null || model == null)
+                return false;
+
+            var rematched = root.DescendantNodes()
+                .OfType<ExpressionSyntax>()
+                .Select(Unwrap)
+                .FirstOrDefault(expr =>
+                    expr.SpanStart == primaryExpression.SpanStart &&
+                    expr.Span.Length == primaryExpression.Span.Length &&
+                    SyntaxFactory.AreEquivalent(expr, Unwrap(primaryExpression)));
+            if (rematched == null)
+                return false;
+
+            Solution? siblingUpdated;
+            try
+            {
+                siblingUpdated = TryExtractOne(
+                    sibling,
+                    root,
+                    model,
+                    rematched,
+                    bulkParams,
+                    cancellationToken);
+            }
+            catch (RefactoringException)
+            {
+                return false;
+            }
+
+            if (siblingUpdated == null)
+                return false;
+
+            var siblingDoc = siblingUpdated.GetDocument(sibling.Id);
+            if (siblingDoc == null)
+                return false;
+            var siblingText = await siblingDoc.GetTextAsync(cancellationToken);
+            if (!primaryText.ContentEquals(siblingText))
+                return false;
+        }
+
+        return true;
     }
 
     private static SyntaxNode ApplySingleReplacement(
@@ -555,7 +1229,8 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
 
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,
-        ExtractVariableParams @params,
+        string sourceFile,
+        string variableName,
         ExpressionSyntax expression,
         ITypeSymbol type,
         LocalDeclarationStatementSyntax declaration,
@@ -569,16 +1244,14 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         {
             new()
             {
-                File = @params.SourceFile,
+                File = sourceFile,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Extract expression to variable '{@params.VariableName}' of type {type.ToDisplayString()}{replacementSuffix}",
+                Description = $"Extract expression to variable '{variableName}' of type {type.ToDisplayString()}{replacementSuffix}",
                 BeforeSnippet = expression.ToFullString(),
-                AfterSnippet = $"{declaration.NormalizeWhitespace()}\n// ... {@params.VariableName} used in place of expression"
+                AfterSnippet = $"{declaration.NormalizeWhitespace()}\n// ... {variableName} used in place of expression"
             }
         };
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
-
-
 }

@@ -656,6 +656,9 @@ public class ExtractVariableOperationTests
         return (line, column);
     }
 
+
+
+
     private sealed class TempWorkspace : IAsyncDisposable
     {
         public required string DirectoryPath { get; init; }
@@ -663,16 +666,19 @@ public class ExtractVariableOperationTests
         public required string SourcePath { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Calculator.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Calculator.cs") =>
+            CreateAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+            if (files.Length == 0)
+                throw new ArgumentException("At least one source file is required.", nameof(files));
 
             var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractVariable_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
-
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
@@ -681,23 +687,35 @@ public class ExtractVariableOperationTests
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            string? firstSourcePath = null;
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+                await File.WriteAllTextAsync(sourcePath, source);
+                firstSourcePath ??= sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var (fileName, _) in files)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    var sourcePath = Path.Combine(directory, fileName);
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = firstSourcePath!,
                     Context = context
                 };
             }
