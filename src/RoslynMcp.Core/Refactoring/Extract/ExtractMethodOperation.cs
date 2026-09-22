@@ -275,6 +275,7 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
                     break;
 
                 Solution? updated = null;
+                IReadOnlyList<StatementSyntax>? updatedRun = null;
                 foreach (var run in CollectEligibleStatementRuns(root))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -294,12 +295,31 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
                         updated = null;
                     }
 
+                    if (updated != null &&
+                        !await LinkedViewsCanHonorRewriteAsync(
+                            linkedDocuments,
+                            currentDocument,
+                            run,
+                            @params,
+                            currentSolution,
+                            updated,
+                            cancellationToken))
+                    {
+                        updated = null;
+                        continue;
+                    }
+
                     if (updated != null)
+                    {
+                        updatedRun = run;
                         break;
+                    }
                 }
 
                 if (updated == null)
                     break;
+
+                _ = updatedRun;
 
                 var beforeSolution = currentSolution;
                 currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
@@ -468,9 +488,12 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
             }
         }
 
+        // Highest SpanStart first so later pairs extract before earlier ones;
+        // after rewrite, re-collection then picks remaining earlier pairs instead
+        // of pairing the inserted call with the next original statement (Copilot).
         return results
-            .OrderBy(run => run[0].SpanStart)
-            .ThenBy(run => run[^1].Span.End)
+            .OrderByDescending(run => run[0].SpanStart)
+            .ThenByDescending(run => run[^1].Span.End)
             .ToList();
     }
 
@@ -506,8 +529,13 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
             return null;
         }
 
+        // Skip runs with non-local control flow (return/goto target the containing method).
+        if (ContainsNonLocalControlFlow(selectedNodes))
+            return null;
+
         var containingMethod = selectedNodes[0].Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault()
-            ?? selectedNodes[0].Ancestors().OfType<LocalFunctionStatementSyntax>().FirstOrDefault() as SyntaxNode;
+            ?? selectedNodes[0].Ancestors().OfType<LocalFunctionStatementSyntax>().FirstOrDefault() as SyntaxNode
+            ?? selectedNodes[0].Ancestors().OfType<AccessorDeclarationSyntax>().FirstOrDefault() as SyntaxNode;
         if (containingMethod == null)
             return null;
 
@@ -519,8 +547,15 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
         if (methodName == null)
             return null;
 
-        if (TypeHasMemberNamed(containingType, methodName))
+        if (TypeHasMemberNamed(containingType, methodName, semanticModel, cancellationToken))
             return null;
+
+        // Shared makeStatic option: skip sites that capture instance state.
+        if (bulkParams.MakeStatic == true &&
+            SelectionCapturesInstanceState(selectedNodes, semanticModel, cancellationToken))
+        {
+            return null;
+        }
 
         var namedParams = new ExtractMethodParams
         {
@@ -532,6 +567,16 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
         };
 
         var dataFlowAnalysis = AnalyzeDataFlow(selectedNodes, semanticModel, cancellationToken);
+        // Skip-not-throw when locals/parameters flow out — CreateNewRoot does not
+        // rewrite outbound locals into returns/out params safely for bulk.
+        if (dataFlowAnalysis.LocalsToHoist.Count > 0 ||
+            dataFlowAnalysis.VariablesWritten.Count > 0 ||
+            dataFlowAnalysis.RequiresRef ||
+            dataFlowAnalysis.ReturnType != null)
+        {
+            return null;
+        }
+
         var (extractedMethod, callExpression) = BuildExtractedMethod(
             namedParams,
             selectedNodes,
@@ -574,14 +619,110 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
         return FinalizeMethodName(seed);
     }
 
-    private static bool TypeHasMemberNamed(TypeDeclarationSyntax type, string methodName)
+    private static bool ContainsNonLocalControlFlow(IReadOnlyList<SyntaxNode> selectedNodes)
+    {
+        foreach (var node in selectedNodes)
+        {
+            foreach (var descendant in node.DescendantNodesAndSelf())
+            {
+                if (descendant is ReturnStatementSyntax or GotoStatementSyntax)
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TypeHasMemberNamed(
+        TypeDeclarationSyntax type,
+        string methodName,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         var bare = methodName.StartsWith('@') ? methodName[1..] : methodName;
-        return type.Members.Any(m => m switch
+
+        // Prefer semantic members so partials / other syntax parts collide too (Copilot).
+        if (semanticModel.GetDeclaredSymbol(type, cancellationToken) is INamedTypeSymbol typeSymbol &&
+            typeSymbol.GetMembers(bare).Length > 0)
         {
-            MethodDeclarationSyntax method => string.Equals(method.Identifier.ValueText, bare, StringComparison.Ordinal),
-            _ => false
-        });
+            return true;
+        }
+
+        foreach (var member in type.Members)
+        {
+            switch (member)
+            {
+                case MethodDeclarationSyntax method
+                    when string.Equals(method.Identifier.ValueText, bare, StringComparison.Ordinal):
+                case PropertyDeclarationSyntax property
+                    when string.Equals(property.Identifier.ValueText, bare, StringComparison.Ordinal):
+                case EventDeclarationSyntax @event
+                    when string.Equals(@event.Identifier.ValueText, bare, StringComparison.Ordinal):
+                case TypeDeclarationSyntax nested
+                    when string.Equals(nested.Identifier.ValueText, bare, StringComparison.Ordinal):
+                case DelegateDeclarationSyntax @delegate
+                    when string.Equals(@delegate.Identifier.ValueText, bare, StringComparison.Ordinal):
+                case EnumDeclarationSyntax @enum
+                    when string.Equals(@enum.Identifier.ValueText, bare, StringComparison.Ordinal):
+                    return true;
+                case FieldDeclarationSyntax field
+                    when field.Declaration.Variables.Any(v =>
+                        string.Equals(v.Identifier.ValueText, bare, StringComparison.Ordinal)):
+                case EventFieldDeclarationSyntax eventField
+                    when eventField.Declaration.Variables.Any(v =>
+                        string.Equals(v.Identifier.ValueText, bare, StringComparison.Ordinal)):
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when the selection references instance state (<c>this</c>/<c>base</c>
+    /// or an unqualified instance field/property/event/method) and therefore cannot
+    /// honor a shared <c>makeStatic: true</c> option.
+    /// </summary>
+    private static bool SelectionCapturesInstanceState(
+        IReadOnlyList<SyntaxNode> selectedNodes,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
+    {
+        foreach (var node in selectedNodes)
+        {
+            foreach (var descendant in node.DescendantNodesAndSelf())
+            {
+                if (descendant is ThisExpressionSyntax or BaseExpressionSyntax)
+                    return true;
+
+                if (descendant is not SimpleNameSyntax name)
+                    continue;
+
+                var symbol = semanticModel.GetSymbolInfo(name, cancellationToken).Symbol;
+                if (symbol == null || symbol.IsStatic)
+                    continue;
+
+                if (symbol.Kind is not (Microsoft.CodeAnalysis.SymbolKind.Field
+                    or Microsoft.CodeAnalysis.SymbolKind.Property
+                    or Microsoft.CodeAnalysis.SymbolKind.Event
+                    or Microsoft.CodeAnalysis.SymbolKind.Method))
+                {
+                    continue;
+                }
+
+                if (name.Parent is MemberAccessExpressionSyntax memberAccess &&
+                    memberAccess.Name == name)
+                {
+                    if (memberAccess.Expression is ThisExpressionSyntax or BaseExpressionSyntax)
+                        return true;
+                    continue;
+                }
+
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string? PreferInvokedName(InvocationExpressionSyntax invocation) =>
@@ -728,24 +869,32 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
+        _ = semanticModel;
+        _ = cancellationToken;
+
+        var returnCount = 0;
         foreach (var node in nodes)
         {
-            // Check for yield statements
-            if (node.DescendantNodes().Any(n => n is YieldStatementSyntax))
+            // Include the node itself so a top-level yield/return statement is detected (Copilot).
+            foreach (var descendant in node.DescendantNodesAndSelf())
             {
-                throw new RefactoringException(
-                    ErrorCodes.ContainsYield,
-                    "Cannot extract code containing yield statements.");
-            }
+                if (descendant is YieldStatementSyntax)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.ContainsYield,
+                        "Cannot extract code containing yield statements.");
+                }
 
-            // Check for multiple returns (simple heuristic)
-            var returns = node.DescendantNodes().OfType<ReturnStatementSyntax>().ToList();
-            if (returns.Count > 1)
-            {
-                throw new RefactoringException(
-                    ErrorCodes.MultipleExitPoints,
-                    "Selection has multiple return statements. Simplify before extraction.");
+                if (descendant is ReturnStatementSyntax)
+                    returnCount++;
             }
+        }
+
+        if (returnCount > 1)
+        {
+            throw new RefactoringException(
+                ErrorCodes.MultipleExitPoints,
+                "Selection has multiple return statements. Simplify before extraction.");
         }
     }
 
@@ -1167,6 +1316,8 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
         MethodDeclarationSyntax extractedMethod,
         ExpressionSyntax callExpression)
     {
+        _ = containingMethod;
+
         // Create the replacement statement
         StatementSyntax callStatement;
         if (extractedMethod.ReturnType is PredefinedTypeSyntax predefined &&
@@ -1180,24 +1331,40 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
             callStatement = SyntaxFactory.ExpressionStatement(callExpression);
         }
 
-        // Replace selected nodes with call
-        var firstNode = selectedNodes[0];
-        var lastNode = selectedNodes[^1];
+        // Annotate the containing type so AddMembers targets the original type node
+        // even when another type in the file shares the same identifier (Copilot).
+        var typeAnn = new SyntaxAnnotation("extract-method-type");
+        var stmtAnn = new SyntaxAnnotation("extract-method-stmt");
+        var annotatedRoot = root.ReplaceNodes(
+            selectedNodes,
+            (original, _) => original.WithAdditionalAnnotations(stmtAnn));
+        var typeSeed = annotatedRoot.GetAnnotatedNodes(stmtAnn).FirstOrDefault()
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to annotate extract_method selection.");
+        var typeToAnnotate = typeSeed.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault()
+            ?? annotatedRoot.GetCurrentNode(containingType)
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to locate containing type for extract_method.");
+        annotatedRoot = annotatedRoot.ReplaceNode(
+            typeToAnnotate,
+            typeToAnnotate.WithAdditionalAnnotations(typeAnn));
 
-        var newRoot = root;
+        var annotatedSelected = annotatedRoot.GetAnnotatedNodes(stmtAnn)
+            .OrderBy(n => n.SpanStart)
+            .ToList();
+        var firstNode = annotatedSelected[0];
+        var newRoot = annotatedRoot;
 
         // Remove all selected nodes except first, replace first with call
-        if (selectedNodes.Count == 1)
+        if (annotatedSelected.Count == 1)
         {
             if (firstNode is StatementSyntax)
             {
-                newRoot = root.ReplaceNode(firstNode, callStatement
+                newRoot = annotatedRoot.ReplaceNode(firstNode, callStatement
                     .WithLeadingTrivia(firstNode.GetLeadingTrivia())
                     .WithTrailingTrivia(firstNode.GetTrailingTrivia()));
             }
             else if (firstNode is ExpressionSyntax)
             {
-                newRoot = root.ReplaceNode(firstNode, callExpression);
+                newRoot = annotatedRoot.ReplaceNode(firstNode, callExpression);
             }
         }
         else
@@ -1206,12 +1373,13 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
             var parent = firstNode.Parent;
             if (parent is BlockSyntax block)
             {
+                var selectedSet = annotatedSelected.ToHashSet();
                 var newStatements = new List<StatementSyntax>();
                 bool replaced = false;
 
                 foreach (var stmt in block.Statements)
                 {
-                    if (selectedNodes.Contains(stmt))
+                    if (selectedSet.Contains(stmt))
                     {
                         if (!replaced)
                         {
@@ -1228,13 +1396,13 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
                 }
 
                 var newBlock = block.WithStatements(SyntaxFactory.List(newStatements));
-                newRoot = root.ReplaceNode(block, newBlock);
+                newRoot = annotatedRoot.ReplaceNode(block, newBlock);
             }
         }
 
-        // Add the extracted method to the type
-        var currentType = newRoot.DescendantNodes().OfType<TypeDeclarationSyntax>()
-            .First(t => t.Identifier.Text == containingType.Identifier.Text);
+        // Add the extracted method to the annotated type (not the first name match).
+        var currentType = newRoot.GetAnnotatedNodes(typeAnn).OfType<TypeDeclarationSyntax>().FirstOrDefault()
+            ?? throw new RefactoringException(ErrorCodes.RoslynError, "Failed to relocate containing type after extract_method rewrite.");
 
         var newType = currentType.AddMembers(extractedMethod
             .WithLeadingTrivia(SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed)
@@ -1243,6 +1411,119 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
         newRoot = newRoot.ReplaceNode(currentType, newType);
 
         return newRoot;
+    }
+
+    /// <summary>
+    /// Validates that every linked sibling document can apply an equivalent
+    /// extract for the same statement run before shared text is propagated.
+    /// Returns false (caller skips) when any editable sibling cannot honor the
+    /// rewrite or would produce divergent text.
+    /// </summary>
+    private async Task<bool> LinkedViewsCanHonorRewriteAsync(
+        IReadOnlyList<Document> linkedDocuments,
+        Document primary,
+        IReadOnlyList<StatementSyntax> primaryRun,
+        ExtractMethodParams bulkParams,
+        Solution beforeSolution,
+        Solution afterPrimary,
+        CancellationToken cancellationToken)
+    {
+        if (linkedDocuments.Count <= 1)
+            return true;
+
+        var primaryAfter = afterPrimary.GetDocument(primary.Id);
+        if (primaryAfter == null)
+            return false;
+        var primaryText = await primaryAfter.GetTextAsync(cancellationToken);
+
+        foreach (var linked in linkedDocuments)
+        {
+            if (linked.Id == primary.Id)
+                continue;
+
+            var sibling = beforeSolution.GetDocument(linked.Id) ?? linked;
+            if (sibling is SourceGeneratedDocument)
+                continue;
+            if (!DocumentEditableHelpers.IsDocumentEditable(sibling, Context.Workspace))
+                continue;
+
+            var root = await sibling.GetSyntaxRootAsync(cancellationToken);
+            var model = await sibling.GetSemanticModelAsync(cancellationToken);
+            if (root == null || model == null)
+                return false;
+
+            var rematched = RematchStatementRun(root, primaryRun);
+            if (rematched == null)
+                return false;
+
+            Solution? siblingUpdated;
+            try
+            {
+                siblingUpdated = TryExtractOne(
+                    sibling,
+                    root,
+                    model,
+                    rematched,
+                    bulkParams,
+                    cancellationToken);
+            }
+            catch (RefactoringException)
+            {
+                return false;
+            }
+
+            if (siblingUpdated == null)
+                return false;
+
+            var siblingDoc = siblingUpdated.GetDocument(sibling.Id);
+            if (siblingDoc == null)
+                return false;
+            var siblingText = await siblingDoc.GetTextAsync(cancellationToken);
+            if (!primaryText.ContentEquals(siblingText))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static IReadOnlyList<StatementSyntax>? RematchStatementRun(
+        SyntaxNode root,
+        IReadOnlyList<StatementSyntax> primaryRun)
+    {
+        if (primaryRun.Count == 0)
+            return null;
+
+        var matched = new List<StatementSyntax>(primaryRun.Count);
+        foreach (var primaryStmt in primaryRun)
+        {
+            var hit = root.DescendantNodes()
+                .OfType<StatementSyntax>()
+                .FirstOrDefault(s =>
+                    s.SpanStart == primaryStmt.SpanStart &&
+                    s.Span.Length == primaryStmt.Span.Length &&
+                    SyntaxFactory.AreEquivalent(s, primaryStmt));
+            if (hit == null)
+                return null;
+            matched.Add(hit);
+        }
+
+        if (matched[0].Parent is not BlockSyntax block)
+            return null;
+
+        var startIndex = block.Statements.IndexOf(matched[0]);
+        if (startIndex < 0)
+            return null;
+
+        for (var i = 0; i < matched.Count; i++)
+        {
+            if (startIndex + i >= block.Statements.Count ||
+                !ReferenceEquals(block.Statements[startIndex + i], matched[i]))
+            {
+                return null;
+            }
+        }
+
+        return matched;
     }
 
     /// <summary>

@@ -33,9 +33,9 @@ public class ExtractMethodAllFilesOperationTests
         {
             public int Compute()
             {
-                var a = 1;
-                var b = 2;
-                return a + b;
+                System.Console.WriteLine(1);
+                System.Console.WriteLine(2);
+                return 3;
             }
         }
         """;
@@ -118,11 +118,9 @@ public class ExtractMethodAllFilesOperationTests
         Assert.Contains("private void WriteLine()", updatedA, StringComparison.Ordinal);
         Assert.Contains("System.Console.WriteLine(\"three\");", updatedA, StringComparison.Ordinal);
 
-        Assert.Contains("return a + b;", updatedB, StringComparison.Ordinal);
-        Assert.True(
-            updatedB.Contains("private int ", StringComparison.Ordinal) ||
-            updatedB.Contains("int ", StringComparison.Ordinal),
-            updatedB);
+        Assert.Contains("return 3;", updatedB, StringComparison.Ordinal);
+        Assert.Contains("WriteLine()", updatedB, StringComparison.Ordinal);
+        Assert.Contains("private void WriteLine()", updatedB, StringComparison.Ordinal);
 
         Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
         Assert.True(result.Changes!.FilesModified.Count >= 2);
@@ -266,6 +264,136 @@ public class ExtractMethodAllFilesOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractMethod_AllFilesTrue_SkipsOutboundLocals()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public int Run()
+                {
+                    var a = 1;
+                    var b = 2;
+                    return a + b;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractMethodOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractMethodParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ExtractMethod_AllFilesTrue_SkipsReturnControlFlow()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public void Run(bool ok)
+                {
+                    if (!ok) return;
+                    System.Console.WriteLine(1);
+                    System.Console.WriteLine(2);
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractMethodOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractMethodParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        // First pair includes `if (!ok) return;` — skipped. Second pair WriteLine/WriteLine
+        // leaves nothing behind (n==3, only i=0 is valid) so the return pair is the only
+        // candidate and must be skipped → no rewrite.
+        Assert.DoesNotContain("private void", updated, StringComparison.Ordinal);
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ExtractMethod_AllFilesTrue_SkipsFieldNameCollision()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                private int Value;
+
+                public void Run()
+                {
+                    Value++;
+                    Value++;
+                    Value++;
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractMethodOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractMethodParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ExtractMethod_AllFilesTrue_ExtractsFromAccessorBody()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public int Prop
+                {
+                    get
+                    {
+                        System.Console.WriteLine(1);
+                        System.Console.WriteLine(2);
+                        return 3;
+                    }
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractMethodOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractMethodParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("WriteLine()", updated, StringComparison.Ordinal);
+        Assert.Contains("private void WriteLine()", updated, StringComparison.Ordinal);
+        Assert.Contains("return 3;", updated, StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
     public async Task ExtractMethod_AllFilesTrue_SkipsNameCollisionOnDerivedName()
     {
         await using var workspace = await TempWorkspace.CreateAsync(CollisionFile);
@@ -284,6 +412,75 @@ public class ExtractMethodAllFilesOperationTests
         Assert.Empty(result.Changes!.FilesModified);
     }
 
+    [SkippableFact]
+    public async Task ExtractMethod_AllFilesTrue_MakeStatic_SkipsInstanceCapture()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                private int _n;
+
+                public void Run()
+                {
+                    _n++;
+                    _n++;
+                    System.Console.WriteLine(_n);
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractMethodOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractMethodParams
+        {
+            AllFiles = true,
+            MakeStatic = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task ExtractMethod_AllFilesTrue_ExtractsMultipleRunsBottomUp()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Host
+            {
+                public void Run()
+                {
+                    System.Console.Write(1);
+                    System.Console.Write(2);
+                    System.Console.WriteLine(3);
+                    System.Console.WriteLine(4);
+                    System.Console.WriteLine(5);
+                }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractMethodOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractMethodParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        // Pairs: (Write,Write) -> Write; (WriteLine,WriteLine) -> WriteLine; leave WriteLine(5).
+        Assert.Contains("private void Write()", updated, StringComparison.Ordinal);
+        Assert.Contains("private void WriteLine()", updated, StringComparison.Ordinal);
+        Assert.Contains("System.Console.WriteLine(5);", updated, StringComparison.Ordinal);
+        Assert.Single(result.Changes!.FilesModified);
+    }
+
+
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
 
@@ -292,6 +489,7 @@ public class ExtractMethodAllFilesOperationTests
             Path.GetFullPath(left),
             Path.GetFullPath(right),
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
 
     private static (int StartLine, int StartColumn, int EndLine, int EndColumn) FindSpan(string source, string snippet)
     {
