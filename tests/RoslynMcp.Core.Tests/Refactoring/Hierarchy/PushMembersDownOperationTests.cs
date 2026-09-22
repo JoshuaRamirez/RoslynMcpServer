@@ -6138,6 +6138,184 @@ public class PushMembersDownOperationTests
         Assert.DoesNotContain("ref int", ExtractTypeBody(text, "Middle"));
     }
 
+    private const string TargetExistingGenericMethodConflictFile = """
+        namespace TestApp;
+
+        public class Root
+        {
+            public void M<T>(T value)
+            {
+            }
+
+            public virtual int Speak()
+            {
+                return 1;
+            }
+        }
+
+        public class Middle : Root
+        {
+            public void M<U>(U value)
+            {
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_TargetExistingGenericMethodConflict_Throws()
+    {
+        // Middle already declares M<U>(U); pushing Root.M<T>(T) would CS0111.
+        await using var workspace = await TempWorkspace.CreateAsync(TargetExistingGenericMethodConflictFile);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Root",
+                Members = ["M"]
+            }));
+
+        Assert.Equal(ErrorCodes.ConflictsWithExistingMember, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsTargetExistingGenericMethodConflict()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Root.cs", TargetExistingGenericMethodConflictFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        Assert.Contains("M<T>", ExtractTypeBody(text, "Root"));
+        Assert.Contains("Speak", ExtractTypeBody(text, "Root"));
+        Assert.Contains("M<U>", ExtractTypeBody(text, "Middle"));
+        Assert.Equal(1, CountOccurrences(ExtractTypeBody(text, "Middle"), "void M<"));
+    }
+
+    private const string LeaveAbstractPrivateSetterPropertyFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int Age { get; private set; }
+
+            public virtual int Speak()
+            {
+                return 1;
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_PrivateSetterProperty_Throws()
+    {
+        // Abstract property cannot keep a private setter (CS0442).
+        await using var workspace = await TempWorkspace.CreateAsync(LeaveAbstractPrivateSetterPropertyFile);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Age"],
+                LeaveAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_LeaveAbstractSkipsPrivateSetterProperty()
+    {
+        // leaveAbstract skips public int Age { get; private set; }; still abstracts Speak.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", LeaveAbstractPrivateSetterPropertyFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("private set", animal);
+        Assert.Contains("Age", animal);
+        Assert.DoesNotContain("abstract int Age", NormalizeNewlines(text));
+        Assert.Contains("abstract", animal);
+        Assert.Contains("Speak", animal);
+        Assert.Contains("Speak", dog);
+        Assert.Contains("override", dog);
+        Assert.DoesNotContain("Age", dog);
+    }
+
+    private const string LeaveAbstractInitializedPropertyFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int Age { get; set; } = 1;
+
+            public virtual int Speak()
+            {
+                return Age;
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_LeaveAbstractStripsPropertyInitializer()
+    {
+        // leaveAbstract must drop `= 1` when converting to abstract (same as
+        // HierarchyAbstractMemberRewriter.ToAbstractProperty).
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", LeaveAbstractInitializedPropertyFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            LeaveAbstract = true,
+            // Speak references Age; push Age alone so leaveAbstract applies to it.
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        // Interdependent Age+Speak move together; Age becomes abstract without
+        // initializer on the source (override may retain = 1 legally).
+        Assert.Contains("abstract", animal);
+        Assert.Contains("Age", animal);
+        Assert.DoesNotContain("= 1", animal);
+        Assert.DoesNotContain("abstract int Age { get; set; } =", NormalizeNewlines(animal));
+        Assert.Contains("Age", dog);
+        Assert.Contains("override", dog);
+    }
+
     private const string NestedGenericSiblingParamFile = """
         namespace TestApp;
 

@@ -2305,11 +2305,13 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         // Explicit-interface properties (int IFoo.P) cannot become abstract —
         // same as events/indexers (illegal explicit-interface + abstract).
         // Partial properties/indexers also cannot become abstract partial.
+        // Private accessors likewise cannot become abstract (CS0442) — same
+        // gate for ordinary properties as for indexers.
         IPropertySymbol property =>
             !property.IsStatic
             && property.ExplicitInterfaceImplementations.Length == 0
             && !IsPartialPropertySymbol(property)
-            && (!property.IsIndexer || CanPushIndexerAsAbstract(property)),
+            && CanPushPropertyAsAbstract(property),
         IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
         _ => false
     };
@@ -2324,20 +2326,22 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         property.PartialDefinitionPart != null ||
         property.PartialImplementationPart != null;
 
-    private static bool CanPushIndexerAsAbstract(IPropertySymbol indexer)
+    /// <summary>
+    /// True when a property/indexer can become abstract: wholly private is
+    /// lifted to protected, but an explicit private accessor on a more
+    /// visible member cannot become abstract (CS0442 / CS0621).
+    /// </summary>
+    private static bool CanPushPropertyAsAbstract(IPropertySymbol property)
     {
-        if (indexer.IsStatic || indexer.ExplicitInterfaceImplementations.Length > 0)
-            return false;
-
-        // A wholly private indexer is lifted to protected; implicit
+        // A wholly private property/indexer is lifted to protected; implicit
         // accessors follow. An explicit private accessor on a more
-        // visible indexer cannot become abstract (CS0621) and cannot
+        // visible member cannot become abstract (CS0442/CS0621) and cannot
         // stay on the override if the base drops it (CS0546).
-        if (indexer.DeclaredAccessibility == Accessibility.Private)
+        if (property.DeclaredAccessibility == Accessibility.Private)
             return true;
 
-        return indexer.GetMethod?.DeclaredAccessibility != Accessibility.Private
-            && indexer.SetMethod?.DeclaredAccessibility != Accessibility.Private;
+        return property.GetMethod?.DeclaredAccessibility != Accessibility.Private
+            && property.SetMethod?.DeclaredAccessibility != Accessibility.Private;
     }
 
     private static bool IsRequiredByAbstractBase(ISymbol member)
@@ -2677,6 +2681,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         return property
             .WithModifiers(ToAbstractModifiers(property.Modifiers))
             .WithExpressionBody(null)
+            .WithInitializer(null)
             .WithSemicolonToken(default)
             .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
             .NormalizeWhitespace();

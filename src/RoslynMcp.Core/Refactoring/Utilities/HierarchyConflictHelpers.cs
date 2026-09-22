@@ -57,7 +57,11 @@ internal static class HierarchyConflictHelpers
 
         for (var i = 0; i < left.Parameters.Length; i++)
         {
-            if (!SymbolEqualityComparer.Default.Equals(left.Parameters[i].Type, right.Parameters[i].Type))
+            // Method type parameters are distinct symbols across declarations
+            // (M<T>(T) vs M<U>(U)); compare structurally by ordinal so CS0111
+            // pairs collide — same as ParameterTypeMatchHelpers.
+            if (!ParameterTypeMatchHelpers.ParameterTypesMatch(
+                    left.Parameters[i].Type, right.Parameters[i].Type))
                 return false;
             if (!SameDeclarationRefMode(left.Parameters[i].RefKind, right.Parameters[i].RefKind))
                 return false;
@@ -78,7 +82,8 @@ internal static class HierarchyConflictHelpers
 
         for (var i = 0; i < left.Parameters.Length; i++)
         {
-            if (!SymbolEqualityComparer.Default.Equals(left.Parameters[i].Type, right.Parameters[i].Type))
+            if (!ParameterTypeMatchHelpers.ParameterTypesMatch(
+                    left.Parameters[i].Type, right.Parameters[i].Type))
                 return false;
             if (!SameDeclarationRefMode(left.Parameters[i].RefKind, right.Parameters[i].RefKind))
                 return false;
