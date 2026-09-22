@@ -4967,6 +4967,260 @@ public class PushMembersDownOperationTests
         Assert.DoesNotContain("M(", ExtractTypeBody(text, "Middle"));
     }
 
+    private const string GenericMethodTargetConflictFile = """
+        namespace TestApp;
+
+        public class Root<T>
+        {
+            public int M(T value)
+            {
+                return 0;
+            }
+        }
+
+        public class Middle : Root<int>
+        {
+            public int M(int value)
+            {
+                return 1;
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_GenericMethod_ConflictsWithSubstitutedSignature()
+    {
+        // Root<T>.M(T) becomes M(int) on Middle : Root<int>, which already
+        // declares M(int). MemberAsSeenFromTarget must substitute methods
+        // (not only indexers) so CanMoveMember rejects before CS0111.
+        await using var workspace = await TempWorkspace.CreateAsync(GenericMethodTargetConflictFile);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Root",
+                Members = ["M"]
+            }));
+
+        Assert.Equal(ErrorCodes.ConflictsWithExistingMember, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsGenericMethodTargetConflict()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Root.cs", GenericMethodTargetConflictFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        Assert.Contains("M(T", ExtractTypeBody(text, "Root"));
+        Assert.Contains("M(int", ExtractTypeBody(text, "Middle"));
+        // Only Middle's original M(int) — Root's M must not be copied.
+        Assert.Equal(1, CountOccurrences(ExtractTypeBody(text, "Middle"), "M(int"));
+    }
+
+    private const string PostSubstitutionRefOutCollisionFile = """
+        namespace TestApp;
+
+        public class Root<T, U>
+        {
+            public void M(ref T value)
+            {
+            }
+
+            public void M(out U value)
+            {
+                value = default!;
+            }
+        }
+
+        public class Middle : Root<int, int>
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsPostSubstitutionRefOutCollisions()
+    {
+        // M(ref T) + M(out U) both close to int on Middle : Root<int,int>.
+        // C# forbids overloads that differ only by ref/in/out (CS0663) —
+        // by-ref modes must share one collision key.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Root.cs", PostSubstitutionRefOutCollisionFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        Assert.Contains("ref T", ExtractTypeBody(text, "Root"));
+        Assert.Contains("out U", ExtractTypeBody(text, "Root"));
+        Assert.DoesNotContain("M(", ExtractTypeBody(text, "Middle"));
+    }
+
+    private const string DistinctGenericArityMethodsFile = """
+        namespace TestApp;
+
+        public class Root
+        {
+            public int M<T>(int value)
+            {
+                return value;
+            }
+
+            public int M<T, U>(int value)
+            {
+                return value;
+            }
+        }
+
+        public class Middle : Root
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_DistinctGenericArity_DoesNotConflict()
+    {
+        // M<T>(int) and M<T,U>(int) are distinct by arity; collision keys must
+        // include type-parameter count so both can be pushed together.
+        await using var workspace = await TempWorkspace.CreateAsync(DistinctGenericArityMethodsFile);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Root",
+            Members = ["M"]
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("M<", ExtractTypeBody(updated, "Root"));
+        Assert.Contains("M<T>(", ExtractTypeBody(updated, "Middle"));
+        Assert.Contains("M<T, U>(", ExtractTypeBody(updated, "Middle"));
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_PushesDistinctGenericArityMethods()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Root.cs", DistinctGenericArityMethodsFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        Assert.DoesNotContain("M<", ExtractTypeBody(text, "Root"));
+        Assert.Contains("M<T>(", ExtractTypeBody(text, "Middle"));
+        Assert.Contains("M<T, U>(", ExtractTypeBody(text, "Middle"));
+    }
+
+    private const string ExplicitElementAccessReceiverFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int this[int i] => i;
+
+            public int Read(Animal other)
+            {
+                return other[0];
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsExplicitElementAccessReceiverInBatch()
+    {
+        // Pushing indexer + Read together would leave Read(Animal other) =>
+        // other[0] on Dog after the indexer is removed from Animal —
+        // uncompilable. Element-access receivers must not fall through as
+        // implicit this.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", ExplicitElementAccessReceiverFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        Assert.Contains("this[", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("Read", ExtractTypeBody(text, "Animal"));
+        Assert.DoesNotContain("this[", ExtractTypeBody(text, "Dog"));
+        Assert.DoesNotContain("Read", ExtractTypeBody(text, "Dog"));
+    }
+
+    private const string ImplicitElementAccessReceiverFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int this[int i]
+            {
+                get => i;
+                set { }
+            }
+
+            public Animal Make()
+            {
+                return new Animal { [0] = 1 };
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsImplicitElementAccessReceiverInBatch()
+    {
+        // Pushing indexer + Make would leave `new Animal { [0] = 1 }` on Dog
+        // after the indexer leaves Animal. ImplicitElementAccess receivers
+        // must resolve like object-initializer member names.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", ImplicitElementAccessReceiverFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        Assert.Contains("this[", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("Make", ExtractTypeBody(text, "Animal"));
+        Assert.DoesNotContain("this[", ExtractTypeBody(text, "Dog"));
+        Assert.DoesNotContain("Make", ExtractTypeBody(text, "Dog"));
+    }
+
     private const string NestedObjectInitializerReceiverFile = """
         namespace TestApp;
 

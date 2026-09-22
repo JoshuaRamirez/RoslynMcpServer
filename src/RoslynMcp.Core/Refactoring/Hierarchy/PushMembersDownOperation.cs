@@ -1354,7 +1354,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     /// <summary>
     /// Ensures converted copies do not collide with each other after
     /// constructed-generic substitution under C# declaration identity
-    /// (name + parameter types/ref-kinds; not return type or <c>params</c>).
+    /// (name + arity + parameter types/by-ref mode; not return type or
+    /// <c>params</c>; ref/in/out share one by-ref mode).
     /// E.g. <c>string M(T)</c> + <c>int M(U)</c> onto <c>Root&lt;int,int&gt;</c>,
     /// or <c>M(params T[])</c> + <c>M(U[])</c>, both become duplicate
     /// <c>M(int)</c>/<c>M(int[])</c> → CS0111. Existing target members are
@@ -1386,8 +1387,9 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     /// <summary>
     /// C# declaration-identity key after constructed-base substitution.
-    /// Methods/indexers: name + parameter types with ref/out/in (no return
-    /// type, no <c>params</c> spelling). Other members: metadata name.
+    /// Methods: name + generic arity + parameter types with by-ref mode
+    /// (no return type, no <c>params</c> spelling). Indexers: same without
+    /// arity. Other members: metadata name.
     /// </summary>
     internal static string DeclarationCollisionKeyForTarget(
         ISymbol symbol,
@@ -1415,7 +1417,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     private static string DeclarationCollisionKey(ISymbol symbol) => symbol switch
     {
         IMethodSymbol method =>
-            method.Name + "(" + string.Join(", ", method.Parameters.Select(ParameterCollisionKey)) + ")",
+            method.Name + "`" + method.TypeParameters.Length + "("
+                + string.Join(", ", method.Parameters.Select(ParameterCollisionKey)) + ")",
         IPropertySymbol { IsIndexer: true } indexer =>
             "this[" + string.Join(", ", indexer.Parameters.Select(ParameterCollisionKey)) + "]",
         _ => symbol.Name
@@ -1423,14 +1426,10 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     private static string ParameterCollisionKey(IParameterSymbol parameter)
     {
-        // C# overload identity includes ref/out/in but not the params modifier.
-        var prefix = parameter.RefKind switch
-        {
-            RefKind.Ref => "ref ",
-            RefKind.Out => "out ",
-            RefKind.In => "in ",
-            _ => string.Empty
-        };
+        // C# forbids overloads that differ only by ref/in/out (CS0663).
+        // Distinguish by-value vs by-ref; treat Ref/Out/In as one mode.
+        // The params modifier is not part of declaration identity.
+        var prefix = parameter.RefKind == RefKind.None ? string.Empty : "ref ";
 
         return prefix + parameter.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
     }
@@ -1581,6 +1580,17 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return WillHaveMemberAfterPush(initializerReceiver, targets);
         }
 
+        // Indexer element-access (`other[0]`) and initializer implicit
+        // element-access (`new Animal { [0] = 1 }`) have no simple name
+        // binding to the indexer — resolve their receivers explicitly.
+        if (TryGetElementAccessReceiver(node, model, out var elementReceiver, out var isThisElement))
+        {
+            if (isThisElement)
+                return true;
+
+            return WillHaveMemberAfterPush(elementReceiver, targets);
+        }
+
         // Simple name / implicit this — moves with the containing batch member.
         return true;
     }
@@ -1605,7 +1615,98 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return initializerReceiver;
         }
 
+        if (TryGetElementAccessReceiver(node, model, out var elementReceiver, out _))
+            return elementReceiver;
+
         return model.GetEnclosingSymbol(node.SpanStart)?.ContainingType;
+    }
+
+    /// <summary>
+    /// True when <paramref name="node"/> is (or sits under) an
+    /// <see cref="ElementAccessExpressionSyntax"/> or initializer
+    /// <see cref="ImplicitElementAccessSyntax"/>. Sets
+    /// <paramref name="receiverType"/> to the indexed expression's type
+    /// (or the initializer object type for implicit access).
+    /// <paramref name="isThisReceiver"/> is true for <c>this[...]</c>.
+    /// </summary>
+    private static bool TryGetElementAccessReceiver(
+        SyntaxNode node,
+        SemanticModel model,
+        out ITypeSymbol? receiverType,
+        out bool isThisReceiver)
+    {
+        receiverType = null;
+        isThisReceiver = false;
+
+        // Walk only the indexer binding spine (element access / its bracket
+        // list / implicit access). Stop at ArgumentSyntax so identifiers used
+        // as indexer arguments (other[X]) are not misclassified as indexer refs.
+        for (var current = node; current != null; current = current.Parent)
+        {
+            if (current is MemberDeclarationSyntax or ArgumentSyntax)
+                break;
+
+            if (current is ElementAccessExpressionSyntax elementAccess)
+            {
+                if (elementAccess.Expression is ThisExpressionSyntax)
+                {
+                    isThisReceiver = true;
+                    receiverType = model.GetTypeInfo(elementAccess.Expression).Type;
+                    return true;
+                }
+
+                receiverType = model.GetTypeInfo(elementAccess.Expression).Type;
+                return receiverType != null;
+            }
+
+            if (current is ImplicitElementAccessSyntax implicitAccess)
+            {
+                return TryGetImplicitElementAccessReceiver(implicitAccess, model, out receiverType);
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Resolves the object / with / nested initializer that owns an
+    /// <see cref="ImplicitElementAccessSyntax"/> (<c>[0] = value</c>).
+    /// </summary>
+    private static bool TryGetImplicitElementAccessReceiver(
+        ImplicitElementAccessSyntax access,
+        SemanticModel model,
+        out ITypeSymbol? receiverType)
+    {
+        receiverType = null;
+
+        if (access.Parent is not AssignmentExpressionSyntax assignment ||
+            assignment.Left != access ||
+            assignment.Parent is not InitializerExpressionSyntax initializer)
+        {
+            return false;
+        }
+
+        switch (initializer.Parent)
+        {
+            case BaseObjectCreationExpressionSyntax creation:
+                receiverType = model.GetTypeInfo(creation).Type;
+                return receiverType != null;
+            case WithExpressionSyntax withExpression:
+                receiverType = model.GetTypeInfo(withExpression.Expression).Type;
+                return receiverType != null;
+            case AssignmentExpressionSyntax outer when outer.Right == initializer:
+                // Nested: Holder { Child = { [0] = 1 } } — receiver is Child's type.
+                var memberSymbol = model.GetSymbolInfo(outer.Left).Symbol;
+                receiverType = memberSymbol switch
+                {
+                    IFieldSymbol field => field.Type,
+                    IPropertySymbol property => property.Type,
+                    _ => model.GetTypeInfo(outer.Left).Type
+                };
+                return receiverType != null;
+            default:
+                return false;
+        }
     }
 
     /// <summary>
@@ -1792,13 +1893,15 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         whenNotNull is InvocationExpressionSyntax invocation && InvocationRaisesEvent(invocation);
 
     /// <summary>
-    /// For indexers, returns the member as constructed on <paramref name="target"/>'s
-    /// base / interface (so <c>this[T]</c> on <c>Box&lt;T&gt;</c> is <c>this[int]</c>
-    /// when the target is <c>Box&lt;int&gt;</c>). Other members are unchanged.
+    /// For methods and indexers, returns the member as constructed on
+    /// <paramref name="target"/>'s base / interface (so <c>M(T)</c> /
+    /// <c>this[T]</c> on <c>Root&lt;T&gt;</c> is <c>M(int)</c> /
+    /// <c>this[int]</c> when the target is <c>Root&lt;int&gt;</c>). Other
+    /// members are unchanged.
     /// </summary>
     private static ISymbol MemberAsSeenFromTarget(ISymbol member, INamedTypeSymbol source, INamedTypeSymbol target)
     {
-        if (member is not IPropertySymbol { IsIndexer: true })
+        if (member is not IMethodSymbol and not IPropertySymbol { IsIndexer: true })
             return member;
 
         var constructed = GetConstructedBase(source, target);
