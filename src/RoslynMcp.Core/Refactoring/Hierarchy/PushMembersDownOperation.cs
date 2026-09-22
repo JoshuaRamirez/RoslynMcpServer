@@ -1431,7 +1431,41 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         // The params modifier is not part of declaration identity.
         var prefix = parameter.RefKind == RefKind.None ? string.Empty : "ref ";
 
-        return prefix + parameter.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        return prefix + TypeCollisionKey(parameter.Type);
+    }
+
+    /// <summary>
+    /// C# declaration-signature type identity. <c>dynamic</c> is erased to
+    /// <c>object</c> (including inside arrays/generics) so
+    /// <c>M(dynamic)</c> and <c>M(object)</c> collide as CS0111.
+    /// </summary>
+    private static string TypeCollisionKey(ITypeSymbol type)
+    {
+        // dynamic and System.Object share declaration-signature identity.
+        if (type.TypeKind == TypeKind.Dynamic ||
+            type.SpecialType == SpecialType.System_Object)
+        {
+            return "object";
+        }
+
+        switch (type)
+        {
+            case IArrayTypeSymbol array:
+                var commas = array.Rank <= 1 ? string.Empty : new string(',', array.Rank - 1);
+                return TypeCollisionKey(array.ElementType) + "[" + commas + "]";
+            case IPointerTypeSymbol pointer:
+                return TypeCollisionKey(pointer.PointedAtType) + "*";
+            case INamedTypeSymbol { IsGenericType: true, IsUnboundGenericType: false } named
+                when named.TypeArguments.Length > 0:
+                var definition = named.OriginalDefinition.ToDisplayString(
+                    SymbolDisplayFormat.FullyQualifiedFormat);
+                var typeArgStart = definition.IndexOf('<');
+                var head = typeArgStart >= 0 ? definition[..typeArgStart] : definition;
+                var args = string.Join(", ", named.TypeArguments.Select(TypeCollisionKey));
+                return head + "<" + args + ">";
+            default:
+                return type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        }
     }
 
     private static void ValidateLeaveAbstractCoversConcreteDerived(
@@ -1512,6 +1546,69 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                         ErrorCodes.MemberRequiredByContract,
                         $"Cannot push '{member.Name}': it is still referenced through '{source.Name}' or a type that will not receive the member.");
                 }
+            }
+
+            // SymbolFinder misses conditional indexer accesses (`other?[0]`).
+            // Scan batch syntax for ElementBindingExpression under ConditionalAccess.
+            await ValidateConditionalElementAccessesInBatchAsync(
+                member, members, targets, solution, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Finds conditional indexer usages (<c>receiver?[i]</c>) inside the push
+    /// batch that bind to <paramref name="member"/> — these are invisible to
+    /// <c>SymbolFinder.FindReferencesAsync</c> — and rejects unsafe
+    /// receivers the same way as ordinary element-access references.
+    /// </summary>
+    private async Task ValidateConditionalElementAccessesInBatchAsync(
+        PushableMember member,
+        IReadOnlyList<PushableMember> batch,
+        IReadOnlyList<INamedTypeSymbol> targets,
+        Solution solution,
+        CancellationToken cancellationToken)
+    {
+        if (member.Symbol is not IPropertySymbol { IsIndexer: true })
+            return;
+
+        foreach (var batchMember in batch)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var model = await GetSemanticModelForSyntaxAsync(
+                solution, batchMember.Syntax, cancellationToken);
+            if (model == null)
+                continue;
+
+            foreach (var conditional in batchMember.Syntax
+                         .DescendantNodesAndSelf()
+                         .OfType<ConditionalAccessExpressionSyntax>())
+            {
+                if (conditional.WhenNotNull is not ElementBindingExpressionSyntax binding)
+                    continue;
+
+                var bound = model.GetSymbolInfo(binding, cancellationToken).Symbol
+                    ?? model.GetSymbolInfo(conditional, cancellationToken).Symbol;
+                if (bound == null ||
+                    !SymbolEqualityComparer.Default.Equals(
+                        bound.OriginalDefinition, member.Symbol.OriginalDefinition))
+                {
+                    continue;
+                }
+
+                if (conditional.Expression is ThisExpressionSyntax)
+                    continue;
+
+                if (WillHaveMemberAfterPush(
+                        model.GetTypeInfo(conditional.Expression, cancellationToken).Type,
+                        targets))
+                {
+                    continue;
+                }
+
+                throw new RefactoringException(
+                    ErrorCodes.MemberRequiredByContract,
+                    $"Cannot push '{member.Name}': it is still referenced through a type that will not receive the member.");
             }
         }
     }
@@ -1638,13 +1735,20 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         receiverType = null;
         isThisReceiver = false;
 
-        // Walk only the indexer binding spine (element access / its bracket
-        // list / implicit access). Stop at ArgumentSyntax so identifiers used
-        // as indexer arguments (other[X]) are not misclassified as indexer refs.
+        // Walk the indexer binding spine (element access / binding / bracket
+        // list / implicit access). Stop at non-indexer ArgumentSyntax so
+        // identifiers used as ordinary call arguments are not misclassified;
+        // keep walking through bracketed indexer args (other[X] / other?[X]).
         for (var current = node; current != null; current = current.Parent)
         {
-            if (current is MemberDeclarationSyntax or ArgumentSyntax)
+            if (current is MemberDeclarationSyntax)
                 break;
+
+            if (current is ArgumentSyntax &&
+                current.Parent is not BracketedArgumentListSyntax)
+            {
+                break;
+            }
 
             if (current is ElementAccessExpressionSyntax elementAccess)
             {
@@ -1656,6 +1760,30 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 }
 
                 receiverType = model.GetTypeInfo(elementAccess.Expression).Type;
+                return receiverType != null;
+            }
+
+            // Conditional indexer: other?[0] → ElementBindingExpression under
+            // ConditionalAccessExpression (reference span may land on either).
+            ConditionalAccessExpressionSyntax? conditionalIndexer = current switch
+            {
+                ElementBindingExpressionSyntax binding
+                    when binding.Parent is ConditionalAccessExpressionSyntax c => c,
+                ConditionalAccessExpressionSyntax c
+                    when c.WhenNotNull is ElementBindingExpressionSyntax => c,
+                _ => null
+            };
+
+            if (conditionalIndexer != null)
+            {
+                if (conditionalIndexer.Expression is ThisExpressionSyntax)
+                {
+                    isThisReceiver = true;
+                    receiverType = model.GetTypeInfo(conditionalIndexer.Expression).Type;
+                    return true;
+                }
+
+                receiverType = model.GetTypeInfo(conditionalIndexer.Expression).Type;
                 return receiverType != null;
             }
 
@@ -2487,7 +2615,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 SyntaxKind.OverrideKeyword,
                 SyntaxKind.SealedKeyword,
                 SyntaxKind.AbstractKeyword,
-                SyntaxKind.NewKeyword)
+                SyntaxKind.NewKeyword,
+                SyntaxKind.AsyncKeyword)
             .ToList();
 
         if (!AccessibilityModifiers.HasAccessibility(tokens))

@@ -4020,6 +4020,41 @@ public class PushMembersDownOperationTests
     }
 
     [Fact]
+    public void DeclarationCollisionKey_NormalizesDynamicAndObject()
+    {
+        var tree = CSharpSyntaxTree.ParseText("""
+            class Root<T, U>
+            {
+                public int M(T value) { return 0; }
+                public int M(U value) { return 1; }
+            }
+
+            class Middle : Root<dynamic, object>
+            {
+            }
+            """);
+        var compilation = CSharpCompilation.Create(
+            "DynObjCollisionKeyTest",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var rootType = model.GetDeclaredSymbol(
+            tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+                .First(c => c.Identifier.Text == "Root"))!;
+        var middleType = model.GetDeclaredSymbol(
+            tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+                .First(c => c.Identifier.Text == "Middle"))!;
+        var methods = rootType.GetMembers("M").OfType<IMethodSymbol>().ToList();
+        Assert.Equal(2, methods.Count);
+
+        var key0 = PushMembersDownOperation.DeclarationCollisionKeyForTarget(
+            methods[0], rootType, middleType);
+        var key1 = PushMembersDownOperation.DeclarationCollisionKeyForTarget(
+            methods[1], rootType, middleType);
+        Assert.Equal(key0, key1);
+    }
+
+    [Fact]
     public void MemberCascadeKeyForTarget_SubstitutesConstructedGenericSignature()
     {
         var tree = CSharpSyntaxTree.ParseText("""
@@ -5264,6 +5299,130 @@ public class PushMembersDownOperationTests
         Assert.Contains("Make", ExtractTypeBody(text, "Animal"));
         Assert.DoesNotContain("X", ExtractTypeBody(text, "Dog"));
         Assert.DoesNotContain("Make", ExtractTypeBody(text, "Dog"));
+    }
+
+    private const string LeaveAbstractAsyncMethodFile = """
+        namespace TestApp;
+        using System.Threading.Tasks;
+
+        public class Animal
+        {
+            public async Task SpeakAsync()
+            {
+                await Task.Yield();
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_LeaveAbstractStripsAsyncModifier()
+    {
+        // leaveAbstract must not emit `async abstract` (CS). Async is stripped
+        // from the retained abstract declaration on the base.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", LeaveAbstractAsyncMethodFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true,
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("abstract", animal);
+        Assert.Contains("SpeakAsync", animal);
+        Assert.DoesNotContain("async", animal);
+        Assert.Contains("SpeakAsync", dog);
+        Assert.Contains("override", dog);
+    }
+
+    private const string PostSubstitutionDynamicObjectCollisionFile = """
+        namespace TestApp;
+
+        public class Root<T, U>
+        {
+            public int M(T value)
+            {
+                return 0;
+            }
+
+            public int M(U value)
+            {
+                return 1;
+            }
+        }
+
+        public class Middle : Root<dynamic, object>
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsDynamicObjectPostSubstitutionCollisions()
+    {
+        // M(T)+M(U) onto Root<dynamic,object> become M(dynamic)+M(object),
+        // which C# treats as the same declaration signature (CS0111).
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Root.cs", PostSubstitutionDynamicObjectCollisionFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        Assert.Contains("M(T", ExtractTypeBody(text, "Root"));
+        Assert.Contains("M(U", ExtractTypeBody(text, "Root"));
+        Assert.DoesNotContain("M(", ExtractTypeBody(text, "Middle"));
+    }
+
+    private const string ConditionalElementAccessReceiverFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int this[int i] => i;
+
+            public int? Read(Animal other)
+            {
+                return other?[0];
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsConditionalElementAccessReceiverInBatch()
+    {
+        // Conditional indexer other?[0] must not be treated as implicit this.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", ConditionalElementAccessReceiverFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Animal.cs"]);
+        Assert.Contains("this[", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("Read", ExtractTypeBody(text, "Animal"));
+        Assert.DoesNotContain("this[", ExtractTypeBody(text, "Dog"));
+        Assert.DoesNotContain("Read", ExtractTypeBody(text, "Dog"));
     }
 
     #endregion
