@@ -1066,6 +1066,43 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_SkipsHideWhenUsingStaticImportWouldRebind()
+    {
+        // using static Values brings Values._42 into unqualified scope; inserting
+        // C._42 would silently rebind Existing (Codex P1).
+        const string source = """
+            using static TestApp.Values;
+
+            namespace TestApp;
+
+            public static class Values
+            {
+                public const int _42 = 7;
+            }
+
+            public class C
+            {
+                public int Existing => _42;
+
+                public int Run() => 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_Protected_AllowsProtectedEnumFromBaseType()
     {
         const string source = """

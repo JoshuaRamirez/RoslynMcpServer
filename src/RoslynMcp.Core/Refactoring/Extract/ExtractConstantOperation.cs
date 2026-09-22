@@ -976,7 +976,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
     /// <summary>
     /// True when declaring a new const named <paramref name="bareName"/> on
-    /// <paramref name="containingType"/> would hide an inherited/enclosing member
+    /// <paramref name="containingType"/> would hide an inherited/enclosing/imported member
     /// and rebind at least one existing use of that name inside the type — including
     /// other partial declarations (Codex P1). Hiding with no prior uses remains
     /// allowed. Stable qualified accesses (<c>base.</c>, <c>Base.</c>, or a receiver
@@ -1004,9 +1004,11 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                 continue;
             if (SymbolEqualityComparer.Default.Equals(symbol.ContainingType, containingTypeSymbol))
                 continue;
-            // Only inherited bases / enclosing outer types — nested-within still
-            // shadows via WouldBeShadowedAtSite (Codex P1/P2).
-            if (!IsBaseOrEnclosingTypeOf(symbol.ContainingType, containingTypeSymbol))
+            // Nested-within still shadows via WouldBeShadowedAtSite. Include
+            // inherited/enclosing owners AND using-static imports — otherwise
+            // Values._42 imported via `using static Values` is missed and a new
+            // C._42 silently rebinds Existing (Codex P1).
+            if (IsNamedTypeNestedWithin(symbol.ContainingType, containingTypeSymbol))
                 continue;
             hideTargets.Add(symbol);
         }
