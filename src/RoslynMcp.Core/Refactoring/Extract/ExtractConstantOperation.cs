@@ -180,9 +180,8 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         }
 
         // Interfaces remain valid single-site targets (public const is legal in
-        // default interface members). Bulk allFiles still skips interfaces via
-        // CollectEligibleLiterals / TryExtractOne — that skip must not regress
-        // omitted/false behavior (Codex P2).
+        // default interface members). Bulk allFiles allows public const into
+        // interfaces and skips non-public visibility there (Codex P2).
         if (IsSpecialMinValueUnaryOperand(literal))
         {
             throw new RefactoringException(
