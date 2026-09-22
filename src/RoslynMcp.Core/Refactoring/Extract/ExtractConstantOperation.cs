@@ -793,13 +793,25 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
     /// <summary>
     /// Prefers <see cref="TypeInfo.ConvertedType"/> when the literal is
-    /// contextually converted to an enum (e.g. <c>State value = 0</c>) so the
-    /// extracted constant keeps enum type rather than <c>int</c> (Codex P1).
+    /// contextually converted to an enum (e.g. <c>State value = 0</c>) or a
+    /// nullable enum (<c>State? value = 0</c>) so the extracted constant keeps
+    /// the underlying enum type rather than <c>int</c> (Codex P1).
     /// </summary>
     private static ITypeSymbol? ResolveConstantType(TypeInfo typeInfo)
     {
         if (typeInfo.ConvertedType is { TypeKind: TypeKind.Enum } converted)
             return converted;
+
+        // Nullable&lt;TEnum&gt;: ConvertedType.TypeKind is Struct, not Enum.
+        if (typeInfo.ConvertedType is INamedTypeSymbol
+            {
+                OriginalDefinition.SpecialType: SpecialType.System_Nullable_T,
+                TypeArguments: [{ TypeKind: TypeKind.Enum } underlying]
+            })
+        {
+            return underlying;
+        }
+
         return typeInfo.Type;
     }
 

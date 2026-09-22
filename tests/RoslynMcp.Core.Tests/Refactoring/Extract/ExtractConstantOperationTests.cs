@@ -419,6 +419,39 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_UsesNullableEnumConvertedTypeForZeroLiteral()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public enum State { Off = 0, On = 1 }
+
+            public class Host
+            {
+                public State? Run()
+                {
+                    State? value = 0;
+                    return value;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("State _0", updated, StringComparison.Ordinal);
+        Assert.Contains("State? value = _0;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("const int _0", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_ReplaceAll_SkipsNestedTypeMemberShadowedSites()
     {
         const string source = """
