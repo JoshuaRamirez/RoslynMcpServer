@@ -933,9 +933,9 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
     /// <summary>
     /// True for the operand of the special minimum-value unary forms
-    /// <c>-2147483648</c> / <c>-9223372036854775808</c>, where the literal is
-    /// typed as unsigned and replacing only the operand changes semantics
-    /// (Codex P2).
+    /// <c>-2147483648</c> / <c>-9223372036854775808</c> (including digit
+    /// separators), where the literal is typed as unsigned and replacing only
+    /// the operand changes semantics (Codex P2).
     /// </summary>
     internal static bool IsSpecialMinValueUnaryOperand(LiteralExpressionSyntax literal)
     {
@@ -946,14 +946,21 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             return false;
         }
 
-        var text = literal.Token.Text;
-        return text is "2147483648" or "9223372036854775808";
+        // Use the token's numeric value so spellings with digit separators
+        // (e.g. -2_147_483_648) still match — Token.Text alone misses those.
+        return literal.Token.Value switch
+        {
+            uint u when u == 2147483648u => true,
+            ulong ul when ul == 9223372036854775808ul => true,
+            _ => false
+        };
     }
 
     /// <summary>
-    /// True when <paramref name="constantType"/> is less accessible than the
-    /// requested member <paramref name="visibility"/> (e.g. private nested enum
-    /// with public const) — bulk must skip those sites (Codex P2).
+    /// True when <paramref name="constantType"/> is not at least as accessible
+    /// as the requested member <paramref name="visibility"/> (e.g. private
+    /// nested enum with public const, or internal enum with protected const —
+    /// protected/internal are incomparable) — bulk must skip (Codex P2).
     /// </summary>
     internal static bool IsConstantTypeLessAccessibleThanVisibility(
         ITypeSymbol constantType,
@@ -972,34 +979,58 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (memberAccessibility == Accessibility.Private)
             return false;
 
-        return TypeIsLessAccessibleThan(constantType, memberAccessibility);
+        return !TypeIsAtLeastAsAccessibleAs(constantType, memberAccessibility);
     }
 
-    private static bool TypeIsLessAccessibleThan(ITypeSymbol type, Accessibility required)
+    /// <summary>
+    /// C# accessibility lattice: public &gt; protected internal &gt; {protected,
+    /// internal} (incomparable siblings) &gt; private protected &gt; private.
+    /// A total ordinal rank wrongly treats internal as more accessible than
+    /// protected (Codex P2).
+    /// </summary>
+    internal static bool IsAtLeastAsAccessible(Accessibility typeAccess, Accessibility memberAccess)
+    {
+        if (memberAccess is Accessibility.Private or Accessibility.NotApplicable)
+            return true;
+        if (typeAccess == Accessibility.Public)
+            return true;
+        if (typeAccess == memberAccess)
+            return true;
+
+        return memberAccess switch
+        {
+            Accessibility.ProtectedOrInternal => false, // only public (handled) or same
+            Accessibility.Protected => typeAccess == Accessibility.ProtectedOrInternal,
+            Accessibility.Internal => typeAccess == Accessibility.ProtectedOrInternal,
+            Accessibility.ProtectedAndInternal => typeAccess is Accessibility.ProtectedOrInternal
+                or Accessibility.Protected
+                or Accessibility.Internal,
+            _ => false
+        };
+    }
+
+    private static bool TypeIsAtLeastAsAccessibleAs(ITypeSymbol type, Accessibility required)
     {
         if (type is IArrayTypeSymbol array)
-            return TypeIsLessAccessibleThan(array.ElementType, required);
+            return TypeIsAtLeastAsAccessibleAs(array.ElementType, required);
 
         if (type is IPointerTypeSymbol pointer)
-            return TypeIsLessAccessibleThan(pointer.PointedAtType, required);
+            return TypeIsAtLeastAsAccessibleAs(pointer.PointedAtType, required);
 
         if (type is INamedTypeSymbol named)
         {
             var effective = ContextValidTypeHelpers.GetEffectiveAccessibility(named);
-            if (AccessibilityRankHelpers.AccessibilityRank(effective) <
-                AccessibilityRankHelpers.AccessibilityRank(required))
-            {
-                return true;
-            }
+            if (!IsAtLeastAsAccessible(effective, required))
+                return false;
 
             foreach (var argument in named.TypeArguments)
             {
-                if (TypeIsLessAccessibleThan(argument, required))
-                    return true;
+                if (!TypeIsAtLeastAsAccessibleAs(argument, required))
+                    return false;
             }
         }
 
-        return false;
+        return true;
     }
 
     /// <summary>
