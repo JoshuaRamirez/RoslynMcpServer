@@ -32,13 +32,14 @@ public sealed class ExtractBaseClassTool : IToolHandler
     public string Name => "extract_base_class";
 
     /// <inheritdoc />
-    public string Description => "Extract members to a new base class, including indexers as this[...] declarations. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. When makeAbstract is true, extracted methods, properties, events, and indexers become abstract on the new base and the derived type keeps override implementations. When separateFile is true and targetFile is omitted, the base class is written to {BaseClassName}.cs next to the source file.";
+    public string Description =>
+        "Extract members to a new base class, including indexers as this[...] declarations. allFiles: true walks every C# file and extracts {TypeName}Base for every eligible non-static class with extractable members into a sibling {TypeName}Base.cs (sourceFile optional when true; cannot be combined with typeName, line, column, baseClassName, members, or targetFile). line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. When makeAbstract is true, extracted methods, properties, events, and indexers become abstract on the new base and the derived type keeps override implementations. When separateFile is true and targetFile is omitted (single-site), the base class is written to {BaseClassName}.cs next to the source file. makeAbstract / preview remain valid with allFiles.";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "typeName", "baseClassName", "members" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -49,58 +50,101 @@ public sealed class ExtractBaseClassTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the type"
+                description = "Absolute path to the source file containing the type. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with typeName, line, column, baseClassName, members, or targetFile. Each eligible class gets {TypeName}Base written to a sibling {TypeName}Base.cs.",
+                @default = false
             },
             typeName = new
             {
                 type = "string",
-                description = "Name of the type to extract base class from"
+                description = "Name of the type to extract base class from. Required when allFiles is false. Single-site only; cannot be combined with allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick.",
+                description = "1-based line number for disambiguation when several types share the name. When set, selects the type whose identifier or declaration span covers that line (identifier preferred, then smallest containing type). Omitted keeps today's typeName FirstOrDefault pick. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter.",
+                description = "1-based column for disambiguation. When set with line, selects the type whose identifier or declaration span covers that column (identifier preferred, then smallest containing type). Omitted keeps today's typeName + optional line pick. Column without line keeps today's first-match after the typeName filter. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             baseClassName = new
             {
                 type = "string",
-                description = "Name for the new base class"
+                description = "Name for the new base class. Required when allFiles is false. Single-site only; cannot be combined with allFiles. When allFiles is true, each base class is named {TypeName}Base."
             },
             members = new
             {
                 type = "array",
                 items = new { type = "string" },
-                description = "Names of members to move to base class. Indexers match Item, this[], and this[int i]."
+                description = "Names of members to move to base class. Indexers match Item, this[], and this[int i]. Required when allFiles is false. Single-site only; cannot be combined with allFiles."
             },
             targetFile = new
             {
                 type = "string",
-                description = "Absolute path for the base class file. If set, wins over separateFile. If neither is set, creates in the same file."
+                description = "Absolute path for the base class file. If set, wins over separateFile. If neither is set, creates in the same file. Single-site only; cannot be combined with allFiles."
             },
             separateFile = new
             {
                 type = "boolean",
-                description = "When true and targetFile is omitted, write the base class to {BaseClassName}.cs next to the source file.",
+                description = "When true and targetFile is omitted (single-site), write the base class to {BaseClassName}.cs next to the source file. allFiles always writes sibling {TypeName}Base.cs files.",
                 @default = false
             },
             makeAbstract = new
             {
                 type = "boolean",
-                description = "When true, extracted methods, properties, events, and indexers become abstract on the new base and the derived type keeps override implementations. Fields still move as concrete. The new class is marked abstract.",
+                description = "When true, extracted methods, properties, events, and indexers become abstract on the new base and the derived type keeps override implementations. Fields still move as concrete. The new class is marked abstract. Valid with allFiles.",
                 @default = false
             },
             preview = new
             {
                 type = "boolean",
-                description = "Return computed changes without applying",
+                description = "Return computed changes without applying. Valid with allFiles.",
                 @default = false
+            }
+        },
+        oneOf = new object[]
+        {
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @enum = new[] { false }
+                    }
+                },
+                required = new[] { "solutionPath", "sourceFile", "typeName", "baseClassName", "members" }
+            },
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @const = true
+                    }
+                },
+                required = new[] { "solutionPath", "allFiles" },
+                not = new
+                {
+                    anyOf = new object[]
+                    {
+                        new { required = new[] { "typeName" } },
+                        new { required = new[] { "line" } },
+                        new { required = new[] { "column" } },
+                        new { required = new[] { "baseClassName" } },
+                        new { required = new[] { "members" } },
+                        new { required = new[] { "targetFile" } }
+                    }
+                }
             }
         },
         additionalProperties = false
@@ -130,11 +174,12 @@ public sealed class ExtractBaseClassTool : IToolHandler
             var @params = new ExtractBaseClassParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 TypeName = args.TypeName,
                 Line = args.Line,
                 Column = args.Column,
                 BaseClassName = args.BaseClassName,
-                Members = args.Members ?? new List<string>(),
+                Members = args.Members,
                 TargetFile = args.TargetFile,
                 SeparateFile = args.SeparateFile ?? false,
                 MakeAbstract = args.MakeAbstract ?? false,
@@ -166,11 +211,12 @@ public sealed class ExtractBaseClassTool : IToolHandler
     private sealed class ExtractBaseClassArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string TypeName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? TypeName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
-        public string BaseClassName { get; init; } = "";
+        public string? BaseClassName { get; init; }
         public List<string>? Members { get; init; }
         public string? TargetFile { get; init; }
         public bool? SeparateFile { get; init; }

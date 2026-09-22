@@ -15,7 +15,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Extract;
 
 /// <summary>
 /// Operation-level tests for <see cref="ExtractBaseClassOperation"/>, including optional
-/// <c>line</c>, <c>column</c>, <c>separateFile</c>, <c>targetFile</c>, and <c>makeAbstract</c>.
+/// <c>line</c>, <c>column</c>, <c>separateFile</c>, <c>targetFile</c>, <c>makeAbstract</c>,
+/// and <c>allFiles</c>.
 /// </summary>
 public class ExtractBaseClassOperationTests
 {
@@ -2969,6 +2970,464 @@ public class ExtractBaseClassOperationTests
         Assert.Equal(xml.ReplaceLineEndings(), updated.ReplaceLineEndings());
     }
 
+    [Fact]
+    public void AddExplicitCompileItemIfNeeded_AccumulatesFromPriorUpdatedText()
+    {
+        // Bulk allFiles walks must chain updates from the latest pending project
+        // text so a second destination is not lost when the first already
+        // rewrote the in-memory project XML (Copilot on #1374).
+        const string xml = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+              </PropertyGroup>
+              <ItemGroup>
+                <Compile Include="Employee.cs" />
+              </ItemGroup>
+            </Project>
+            """;
+        var projectDir = Path.DirectorySeparatorChar == '/' ? "/tmp/proj" : @"C:\tmp\proj";
+        var once = ExtractBaseClassOperation.AddExplicitCompileItemIfNeeded(
+            xml,
+            projectDir,
+            Path.Combine(projectDir, "EmployeeBase.cs"));
+        var twice = ExtractBaseClassOperation.AddExplicitCompileItemIfNeeded(
+            once,
+            projectDir,
+            Path.Combine(projectDir, "ManagerBase.cs"));
+
+        Assert.Contains("Include=\"Employee.cs\"", twice);
+        Assert.Contains("Include=\"EmployeeBase.cs\"", twice);
+        Assert.Contains("Include=\"ManagerBase.cs\"", twice);
+    }
+
+    [Fact]
+    public void CollectExtractableMemberNames_IncludesEveryFieldDeclarator()
+    {
+        const string source = """
+            namespace TestApp;
+            public class FileA
+            {
+                private int first, second;
+                public void Work() { }
+            }
+            """;
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+            "CollectFields",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var type = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().First();
+        var names = ExtractBaseClassOperation.CollectExtractableMemberNames(type, model);
+        Assert.Contains("first", names);
+        Assert.Contains("second", names);
+        Assert.Contains("Work", names);
+    }
+
+    [Fact]
+    public void CollectExtractableMemberNames_SkipsExplicitInterfaceMembers()
+    {
+        const string source = """
+            namespace TestApp;
+            public interface IFoo { void M(); }
+            public class FileA : IFoo
+            {
+                void IFoo.M() { }
+                public void Work() { }
+            }
+            """;
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+            "CollectExplicit",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var type = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().First();
+        var names = ExtractBaseClassOperation.CollectExtractableMemberNames(type, model);
+        Assert.DoesNotContain("M", names);
+        Assert.Contains("Work", names);
+    }
+
+
+    #region allFiles
+
+    private const string EligibleFileA = """
+        namespace TestApp;
+
+        public class FileA
+        {
+            public int Add(int a, int b) => a + b;
+        }
+        """;
+
+    private const string EligibleFileB = """
+        namespace TestApp;
+
+        public class FileB
+        {
+            public string Name { get; set; }
+        }
+        """;
+
+    private const string IneligibleStaticFile = """
+        namespace TestApp;
+
+        public static class FileC
+        {
+            public static int Add(int a, int b) => a + b;
+        }
+        """;
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrTypeName_DoesNotThrow()
+    {
+        ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+            {
+                AllFiles = true,
+                TypeName = "FileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithBaseClassName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+            {
+                AllFiles = true,
+                BaseClassName = "FileABase"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+            {
+                AllFiles = true,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithEmptyMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+            {
+                AllFiles = true,
+                Members = Array.Empty<string>()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTargetFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+            {
+                AllFiles = true,
+                TargetFile = AbsoluteTestPath()
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void BuildBaseClassKey_GlobalAndNamespaced()
+    {
+        const string source = """
+            namespace TestApp;
+            public class FileA { public int X { get; set; } }
+            """;
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+            "KeyTest",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var type = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().First();
+        var symbol = (INamedTypeSymbol)model.GetDeclaredSymbol(type)!;
+        Assert.Equal("TestApp.FileABase", ExtractBaseClassOperation.BuildBaseClassKey(symbol, "FileABase"));
+    }
+
+    [Fact]
+    public void BuildClaimedBaseClassKey_IncludesProjectId()
+    {
+        const string source = """
+            namespace TestApp;
+            public class FileA { public int X { get; set; } }
+            """;
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+            "ClaimKeyTest",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var type = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().First();
+        var symbol = (INamedTypeSymbol)model.GetDeclaredSymbol(type)!;
+        var projectA = ProjectId.CreateNewId();
+        var projectB = ProjectId.CreateNewId();
+        var keyA = ExtractBaseClassOperation.BuildClaimedBaseClassKey(projectA, symbol, "FileABase");
+        var keyB = ExtractBaseClassOperation.BuildClaimedBaseClassKey(projectB, symbol, "FileABase");
+        Assert.NotEqual(keyA, keyB);
+        Assert.Contains("TestApp.FileABase", keyA, StringComparison.Ordinal);
+        Assert.StartsWith(projectA.Id.ToString("D"), keyA, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_RelativeSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+            {
+                AllFiles = true,
+                SourceFile = "relative.cs"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ExtractBaseClassOperation.Validate(new ExtractBaseClassParams
+            {
+                AllFiles = false,
+                TypeName = "FileA",
+                BaseClassName = "FileABase",
+                Members = new[] { "Add" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Extract base class", ExtractBaseClassOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Extract 2 base classes", ExtractBaseClassOperation.BuildAllFilesDescription(2));
+    }
+
+    [Fact]
+    public void DeriveBaseClassName_SuffixesBase()
+    {
+        Assert.Equal("FileABase", ExtractBaseClassOperation.DeriveBaseClassName("FileA"));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_OmittedAllFiles_KeepsSingleSiteExtract()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EmployeeSource);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Employee",
+            BaseClassName = "EmployeeBase",
+            Members = new[] { "Name", "Work" },
+            SeparateFile = true
+        });
+
+        Assert.True(result.Success);
+        var sibling = Path.Combine(workspace.DirectoryPath, "EmployeeBase.cs");
+        Assert.True(File.Exists(sibling));
+        var source = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertInheritsFrom(source, "Employee", "EmployeeBase");
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_AllFilesTrue_ExtractsEligibleTypesAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleStaticFile));
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        AssertInheritsFrom(updatedA, "FileA", "FileABase");
+        AssertInheritsFrom(updatedB, "FileB", "FileBBase");
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "FileABase.cs")));
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "FileBBase.cs")));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "FileCBase.cs")));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.True(result.Changes!.FilesCreated.Count >= 2);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_AllFilesTrue_WithoutSourceFileOrTypeName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Changes!.FilesCreated.Count >= 2);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractBaseClassParams
+            {
+                AllFiles = false,
+                TypeName = "FileA",
+                BaseClassName = "FileABase",
+                Members = new[] { "Add" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_AllFilesTrue_WithTypeName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractBaseClassParams
+            {
+                AllFiles = true,
+                TypeName = "FileA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_AllFilesTrue_WithBaseClassName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ExtractBaseClassParams
+            {
+                AllFiles = true,
+                BaseClassName = "FileABase"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleStaticFile));
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.True(result.PendingChanges!.Count >= 2);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "FileABase.cs")));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", IneligibleStaticFile));
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Empty(result.Changes.FilesCreated);
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "FileCBase.cs")));
+    }
+
+    [SkippableFact]
+    public async Task ExtractBaseClass_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ExtractBaseClassOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new ExtractBaseClassParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "FileABase.cs")));
+        Assert.False(File.Exists(Path.Combine(workspace.DirectoryPath, "FileBBase.cs")));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+    }
+
+    #endregion
+
+
     private const string NestedEmployeeSource = """
         namespace TestApp;
 
@@ -2982,6 +3441,14 @@ public class ExtractBaseClassOperationTests
             }
         }
         """;
+
+
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
@@ -3106,17 +3573,11 @@ public class ExtractBaseClassOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Employee.cs") =>
-            CreateAsync("""
-                <Project Sdk="Microsoft.NET.Sdk">
-                  <PropertyGroup>
-                    <TargetFramework>net9.0</TargetFramework>
-                    <Nullable>enable</Nullable>
-                  </PropertyGroup>
-                </Project>
-                """, source, fileName);
+            CreateWithFilesAsync((fileName, source));
 
         public static Task<TempWorkspace> CreateWithExplicitCompileItemsAsync(
             string source,
@@ -3134,6 +3595,75 @@ public class ExtractBaseClassOperationTests
                   </ItemGroup>
                 </Project>
                 """, source, fileName);
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpExtractBaseClass_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var projectPath = Path.Combine(directory, "TestApp.csproj");
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            await File.WriteAllTextAsync(projectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                  </PropertyGroup>
+                </Project>
+                """);
+
+            string? firstSource = null;
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+                firstSource ??= sourcePath;
+            }
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(projectPath);
+                foreach (var sourcePath in sourcePaths.Values)
+                {
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = projectPath,
+                    SourcePath = firstSource!,
+                    SourcePaths = sourcePaths,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
 
         public static async Task<TempWorkspace> CreateAsync(string projectXml, string source, string fileName)
         {
@@ -3163,6 +3693,10 @@ public class ExtractBaseClassOperationTests
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
                     SourcePath = sourcePath,
+                    SourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        [fileName] = sourcePath
+                    },
                     Context = context
                 };
             }
