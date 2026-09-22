@@ -192,6 +192,13 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
                 "Cannot extract the operand of a special minimum-value unary expression (-2147483648 / -9223372036854775808); extract the full expression or choose another literal.");
         }
 
+        if (IsVisibilityIncompatibleWithContainingType(@params.Visibility, containingType))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidVisibility,
+                $"Visibility '{@params.Visibility}' is not valid for containing type '{containingType.Identifier.Text}'.");
+        }
+
         var bareName = SyntaxIdentifierValidation.NormalizeIdentifier(constantName);
         var containingTypeSymbolForShadow = semanticModel.GetDeclaredSymbol(containingType, cancellationToken) as INamedTypeSymbol;
 
