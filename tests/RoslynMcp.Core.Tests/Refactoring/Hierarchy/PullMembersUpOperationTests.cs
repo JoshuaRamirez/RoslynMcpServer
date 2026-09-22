@@ -14,7 +14,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Hierarchy;
 
 /// <summary>
 /// Operation-level tests for <see cref="PullMembersUpOperation"/>, including optional
-/// <c>line</c>, <c>column</c>, <c>targetBaseType</c>, <c>makeAbstract</c>, and <c>members</c>.
+/// <c>line</c>, <c>column</c>, <c>targetBaseType</c>, <c>makeAbstract</c>, <c>members</c>,
+/// and <c>allFiles</c>.
 /// </summary>
 public class PullMembersUpOperationTests
 {
@@ -3645,11 +3646,431 @@ public class PullMembersUpOperationTests
 
     #region Helpers
 
-    private static string AbsoluteTestPath() =>
-        OperatingSystem.IsWindows() ? @"C:\test\file.cs" : "/test/file.cs";
+
+    #region allFiles
+
+    private const string EligiblePullFileA = """
+        namespace TestApp;
+
+        public class AnimalA
+        {
+        }
+
+        public class DogA : AnimalA
+        {
+            public int Speak()
+            {
+                return 1;
+            }
+        }
+        """;
+
+    private const string EligiblePullFileB = """
+        namespace TestApp;
+
+        public class AnimalB
+        {
+        }
+
+        public class DogB : AnimalB
+        {
+            public string Name { get; set; }
+        }
+        """;
+
+    private const string IneligibleNoBaseFile = """
+        namespace TestApp;
+
+        public class Standalone
+        {
+            public int Speak()
+            {
+                return 1;
+            }
+        }
+        """;
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrTypeName_DoesNotThrow()
+    {
+        PullMembersUpOperation.Validate(new PullMembersUpParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PullMembersUpOperation.Validate(new PullMembersUpParams
+            {
+                AllFiles = true,
+                TypeName = "DogA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMembers_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PullMembersUpOperation.Validate(new PullMembersUpParams
+            {
+                AllFiles = true,
+                Members = new[] { "Speak" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PullMembersUpOperation.Validate(new PullMembersUpParams
+            {
+                AllFiles = true,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithTargetBaseType_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PullMembersUpOperation.Validate(new PullMembersUpParams
+            {
+                AllFiles = true,
+                TargetBaseType = "AnimalA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_RelativeSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PullMembersUpOperation.Validate(new PullMembersUpParams
+            {
+                AllFiles = true,
+                SourceFile = "relative.cs"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            PullMembersUpOperation.Validate(new PullMembersUpParams
+            {
+                AllFiles = false,
+                TypeName = "DogA",
+                Members = new[] { "Speak" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Pull members up", PullMembersUpOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Pull members up from 2 types", PullMembersUpOperation.BuildAllFilesDescription(2));
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_OmittedAllFiles_KeepsSingleSitePull()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligiblePullFileA);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "DogA",
+            Members = new[] { "Speak" }
+        });
+
+        Assert.True(result.Success);
+        var text = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("virtual", text, StringComparison.Ordinal);
+        Assert.Contains("class AnimalA", text, StringComparison.Ordinal);
+        Assert.Contains("Speak", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_AllFilesTrue_PullsEligibleTypesAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligiblePullFileA),
+            ("FileB.cs", EligiblePullFileB),
+            ("FileC.cs", IneligibleNoBaseFile));
+        var operation = new PullMembersUpOperation(workspace.Context);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains("Speak", updatedA, StringComparison.Ordinal);
+        Assert.Contains("virtual", updatedA, StringComparison.Ordinal);
+        Assert.Contains("Name", updatedB, StringComparison.Ordinal);
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_AllFilesTrue_WithoutSourceFileOrTypeName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligiblePullFileA),
+            ("FileB.cs", EligiblePullFileB));
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Changes!.FilesModified.Count >= 1);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligiblePullFileA);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PullMembersUpParams
+            {
+                AllFiles = false,
+                TypeName = "DogA",
+                Members = new[] { "Speak" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_AllFilesTrue_WithTypeName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligiblePullFileA);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PullMembersUpParams
+            {
+                AllFiles = true,
+                TypeName = "DogA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_AllFilesTrue_WithMembers_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligiblePullFileA);
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PullMembersUpParams
+            {
+                AllFiles = true,
+                Members = new[] { "Speak" }
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligiblePullFileA),
+            ("FileB.cs", EligiblePullFileB),
+            ("FileC.cs", IneligibleNoBaseFile));
+        var operation = new PullMembersUpOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.True(result.PendingChanges!.Count >= 1);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", IneligibleNoBaseFile));
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Empty(result.Changes.FilesCreated);
+    }
+
+    [SkippableFact]
+    public async Task PullMembersUp_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligiblePullFileA),
+            ("FileB.cs", EligiblePullFileB));
+        var operation = new PullMembersUpOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+    }
+
+    private const string CascadeDerivedFile = """
+        namespace TestApp;
+
+        public class Derived : Middle
+        {
+            public int Cascaded()
+            {
+                return 1;
+            }
+        }
+        """;
+
+    private const string CascadeMiddleFile = """
+        namespace TestApp;
+
+        public class Root
+        {
+        }
+
+        public class Middle : Root
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PullMembersUp_AllFilesTrue_DoesNotCascadeThroughMiddleBase()
+    {
+        // Derived.cs sorts before Middle.cs. Without original-membership,
+        // Cascaded would land on Root after Middle is processed.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Derived.cs", CascadeDerivedFile),
+            ("Middle.cs", CascadeMiddleFile));
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var derived = await File.ReadAllTextAsync(workspace.SourcePaths["Derived.cs"]);
+        var middle = await File.ReadAllTextAsync(workspace.SourcePaths["Middle.cs"]);
+        Assert.DoesNotContain("Cascaded", ExtractTypeBody(derived, "Derived"));
+        Assert.Contains("Cascaded", ExtractTypeBody(middle, "Middle"));
+        Assert.DoesNotContain("Cascaded", ExtractTypeBody(middle, "Root"));
+    }
+
+    private const string PartialDerivedPartA = """
+        namespace TestApp;
+
+        public class Animal
+        {
+        }
+
+        public partial class Dog : Animal
+        {
+            public int Speak()
+            {
+                return 1;
+            }
+        }
+        """;
+
+    private const string PartialDerivedPartB = """
+        namespace TestApp;
+
+        public partial class Dog
+        {
+            public string Name { get; set; }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PullMembersUp_AllFilesTrue_PullsMembersFromEveryPartialDeclaration()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("DogA.cs", PartialDerivedPartA),
+            ("DogB.cs", PartialDerivedPartB));
+        var operation = new PullMembersUpOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PullMembersUpParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var animal = await File.ReadAllTextAsync(workspace.SourcePaths["DogA.cs"]);
+        var dogB = await File.ReadAllTextAsync(workspace.SourcePaths["DogB.cs"]);
+        Assert.Contains("Speak", ExtractTypeBody(animal, "Animal"));
+        Assert.Contains("Name", ExtractTypeBody(animal, "Animal"));
+        Assert.DoesNotContain("Speak", ExtractTypeBody(animal, "Dog"));
+        Assert.DoesNotContain("Name", ExtractTypeBody(dogB, "Dog"));
+    }
+
+    #endregion
+
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
+
+    private static string AbsoluteTestPath() =>
+        OperatingSystem.IsWindows() ? @"C:\test\file.cs" : "/test/file.cs";
 
     private static string ExtractTypeBody(string source, string typeName)
     {
@@ -3787,11 +4208,16 @@ public class PullMembersUpOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public IReadOnlyDictionary<string, string> SourcePaths { get; init; } =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public string LibraryPath { get; init; } = "";
         public string DerivedPath { get; init; } = "";
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateWithFilesAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -3799,33 +4225,48 @@ public class PullMembersUpOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            string? firstSource = null;
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+                firstSource ??= sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = firstSource!,
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }

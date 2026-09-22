@@ -45,6 +45,25 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
     /// </summary>
     internal static void Validate(PullMembersUpParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.TypeName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue ||
+                @params.Members != null ||
+                !string.IsNullOrWhiteSpace(@params.TargetBaseType))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with typeName, line, column, members, or targetBaseType.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
@@ -54,11 +73,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         if (@params.Members == null || @params.Members.Count == 0 || @params.Members.All(string.IsNullOrWhiteSpace))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "members is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        ValidateSourceFilePath(@params.SourceFile!);
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
@@ -66,8 +81,17 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!File.Exists(@params.SourceFile))
+        if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+    }
+
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
     }
 
     /// <inheritdoc />
@@ -76,7 +100,10 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         PullMembersUpParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -88,7 +115,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         // pick (enum and DelegateDeclarationSyntax do not participate).
         // Line set also includes a covering enum or delegate so it
         // reaches InvalidSymbolKind instead of retargeting a later class.
-        var found = FindTypeDeclaration(root, @params.TypeName, @params.Line, @params.Column);
+        var found = FindTypeDeclaration(root, @params.TypeName!, @params.Line, @params.Column);
         if (found == null)
         {
             throw new RefactoringException(
@@ -110,7 +137,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         var target = GetTargetBaseType(derivedSymbol, @params.TargetBaseType);
         ValidateTarget(target);
 
-        var members = FindMembersToPull(derivedDecl, @params.Members, semanticModel, target, cancellationToken);
+        var members = FindMembersToPull(derivedDecl, @params.Members!, semanticModel, target, cancellationToken);
         ValidateMembersForPull(members, derivedSymbol, target, semanticModel, @params.MakeAbstract);
 
         var pulledNames = members.Select(m => m.Name).ToList();
@@ -155,14 +182,14 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         // look up by file path and rematch by span (same as
         // extract_base_class / implement_abstract).
         document = annotatedSolution.GetDocument(previousTree)
-            ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName);
+            ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName!);
         root = await document.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
         derivedDecl = RecoverAnnotatedType(
             root,
             targetTypeAnnotation,
             derivedDecl,
-            @params.TypeName);
+            @params.TypeName!);
 
         // Strip the per-execution annotation so it does not linger in the
         // workspace after commit.
@@ -197,6 +224,401 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             },
             0,
             0);
+    }
+
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// helpers as <c>ExtractBaseClassOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ExtractInterfaceOperation.ExecuteAllFilesAsync</c>) and pulls every
+    /// pullable member from each eligible derived type onto its default target
+    /// (nearest class base, or the single implemented interface — same as
+    /// omitted <c>targetBaseType</c>). Optional <c>sourceFile</c> limits via
+    /// <see cref="DocumentSourceFileFilter"/>. Linked documents that share a
+    /// physical path are rewritten once and sibling text is coalesced via
+    /// <see cref="AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync"/>.
+    /// Types with no base/interface, multiple interfaces requiring an explicit
+    /// target, sealed class bases, non-editable / external bases, empty
+    /// pullable member sets, unsupported kinds, uneditable / source-generated
+    /// docs, and linked multi-views are skipped rather than failing the walk.
+    /// Members inserted onto a base by an earlier pull in this walk are
+    /// tracked and skipped when that base is later visited, so they are not
+    /// cascaded further up the hierarchy (Codex P1 on #1380). De-duplication
+    /// is per declaration (<c>TypeWalkKey</c> + document), so partial types
+    /// with pullable members in multiple files are all visited (Codex P2).
+    /// Deterministic <c>SpanStart</c> order within a file. When every file is
+    /// a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        PullMembersUpParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+        var pulledCountByDoc = new Dictionary<DocumentId, int>();
+        // Per-declaration keys (type + document), not type-wide: partials that
+        // declare pullable members in multiple files must each be visited
+        // (Codex P2 on #1380). Claim after success so a no-member partial does
+        // not block another partial of the same type.
+        var processedDeclarations = new HashSet<string>(StringComparer.Ordinal);
+        var insertedMembersByType = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Linked multi-project views of the same path can diverge under
+            // preprocessor symbols; skip rather than coalescing a pull that
+            // only one compilation can honor. Same contract as
+            // extract_base_class / extract_interface allFiles.
+            if (linkedDocuments.Count > 1)
+                continue;
+
+            var primary = linkedDocuments.FirstOrDefault(d =>
+                d is not SourceGeneratedDocument &&
+                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+            if (primary == null)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(primary.Id);
+                if (currentDocument == null ||
+                    currentDocument is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                {
+                    break;
+                }
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var typeNode in TypeDeclarationHelpers.CollectTypeDeclarations(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    if (typeNode is not TypeDeclarationSyntax typeDeclaration)
+                        continue;
+
+                    var typeSymbol = semanticModel.GetDeclaredSymbol(typeDeclaration, cancellationToken) as INamedTypeSymbol;
+                    if (typeSymbol == null)
+                        continue;
+
+                    var typeKey = TypeWalkKeyHelpers.TypeWalkKey(currentDocument.Project.Id, typeSymbol);
+                    var declarationKey = typeKey + "|" + currentDocument.Id.Id;
+                    if (processedDeclarations.Contains(declarationKey))
+                        continue;
+
+                    if (!TryGetDefaultTarget(typeSymbol, out var target))
+                        continue;
+
+                    var memberNames = CollectPullableMemberNames(
+                        typeDeclaration, semanticModel, target, @params.MakeAbstract, cancellationToken);
+                    // Skip members this walk already inserted onto this type
+                    // (cascade prevention — Codex P1 on #1380).
+                    if (insertedMembersByType.TryGetValue(typeKey, out var insertedHere) &&
+                        insertedHere.Count > 0)
+                    {
+                        memberNames = memberNames
+                            .Where(name => !insertedHere.Contains(name))
+                            .ToList();
+                    }
+
+                    if (memberNames.Count == 0)
+                        continue;
+
+                    try
+                    {
+                        var members = FindMembersToPull(
+                            typeDeclaration, memberNames, semanticModel, target, cancellationToken);
+                        if (members.Count == 0)
+                            continue;
+
+                        ValidateMembersForPull(
+                            members, typeSymbol, target, semanticModel, @params.MakeAbstract);
+
+                        var targetMembers = members
+                            .Select(m => ConvertForTarget(m.Syntax, m.Name, target, @params.MakeAbstract))
+                            .ToList();
+                        var derivedReplacement = BuildDerivedReplacement(
+                            typeDeclaration, members, target, @params.MakeAbstract);
+
+                        updated = await ApplyChangesAsync(
+                            currentDocument,
+                            typeDeclaration,
+                            derivedReplacement,
+                            target,
+                            targetMembers,
+                            @params.MakeAbstract,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        updated = null;
+                        continue;
+                    }
+
+                    if (updated == null)
+                        continue;
+
+                    // Record names inserted onto the target so a later visit
+                    // of that base does not cascade them further.
+                    var targetProjectId = ResolveSymbolProjectId(currentSolution, target)
+                        ?? currentDocument.Project.Id;
+                    var targetKey = TypeWalkKeyHelpers.TypeWalkKey(targetProjectId, target);
+                    if (!insertedMembersByType.TryGetValue(targetKey, out var insertedOnTarget))
+                    {
+                        insertedOnTarget = new HashSet<string>(StringComparer.Ordinal);
+                        insertedMembersByType[targetKey] = insertedOnTarget;
+                    }
+
+                    foreach (var name in memberNames)
+                        insertedOnTarget.Add(name);
+
+                    processedDeclarations.Add(declarationKey);
+                    break;
+                }
+
+                if (updated == null)
+                    break;
+
+                var beforeSolution = currentSolution;
+                currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                    beforeSolution,
+                    updated,
+                    Context.Workspace,
+                    cancellationToken);
+
+                pulledCountByDoc[primary.Id] =
+                    pulledCountByDoc.GetValueOrDefault(primary.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution)
+            .Concat(
+                currentSolution.Projects
+                    .SelectMany(p => p.Documents)
+                    .Where(d => d.FilePath != null &&
+                                d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
+                                originalSolution.GetDocument(d.Id) == null))
+            .GroupBy(d => d.Id)
+            .Select(g => g.First())
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (currentDocument == null || originalDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var pulledCount = pulledCountByDoc.GetValueOrDefault(document.Id);
+                if (pulledCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        pulledCount = Math.Max(pulledCount, pulledCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = pulledCount > 0
+                        ? BuildAllFilesDescription(pulledCount)
+                        : "Update pull_members_up rewrites",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Resolves the <see cref="ProjectId"/> that owns
+    /// <paramref name="symbol"/>'s declaring syntax, when available.
+    /// </summary>
+    private static ProjectId? ResolveSymbolProjectId(Solution solution, ISymbol symbol)
+    {
+        foreach (var reference in symbol.DeclaringSyntaxReferences)
+        {
+            var document = solution.GetDocument(reference.SyntaxTree);
+            if (document != null)
+                return document.Project.Id;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Preview description for a file that pulled members from
+    /// <paramref name="pulledCount"/> derived types.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int pulledCount) =>
+        pulledCount == 1
+            ? "Pull members up"
+            : $"Pull members up from {pulledCount} types";
+
+    private static bool TryGetDefaultTarget(INamedTypeSymbol derived, out INamedTypeSymbol target)
+    {
+        try
+        {
+            target = GetTargetBaseType(derived, null);
+            ValidateTarget(target);
+            return true;
+        }
+        catch (RefactoringException)
+        {
+            target = null!;
+            return false;
+        }
+    }
+
+    private static List<string> CollectPullableMemberNames(
+        TypeDeclarationSyntax typeDeclaration,
+        SemanticModel semanticModel,
+        INamedTypeSymbol target,
+        bool makeAbstract,
+        CancellationToken cancellationToken)
+    {
+        var names = new List<string>();
+        foreach (var (name, symbol, syntax) in EnumerateDeclaredMembers(
+                     typeDeclaration, semanticModel, cancellationToken))
+        {
+            if (symbol == null || !IsSupportedMember(symbol))
+                continue;
+
+            if (symbol is IPropertySymbol { IsIndexer: true } indexer)
+            {
+                if (IsExplicitInterfaceIndexer(indexer, syntax)
+                    && !TargetSupportsExplicitInterface(target, indexer))
+                {
+                    continue;
+                }
+
+                if (makeAbstract &&
+                    target.TypeKind != TypeKind.Interface &&
+                    !CanPullAsAbstract(indexer))
+                {
+                    continue;
+                }
+
+                names.Add(name);
+                continue;
+            }
+
+            if (makeAbstract &&
+                target.TypeKind != TypeKind.Interface &&
+                !CanPullAsAbstract(symbol))
+            {
+                continue;
+            }
+
+            if (target.TypeKind == TypeKind.Interface && !IsInterfaceCompatible(symbol))
+                continue;
+
+            names.Add(name);
+        }
+
+        return names;
+    }
+
+    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var exactMatches = documents
+            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
+            .ToList();
+        if (exactMatches.Count > 0)
+        {
+            var exactKeys = exactMatches
+                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+                .ToHashSet(StringComparer.Ordinal);
+            return documents
+                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
+                .ToList();
+        }
+
+        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
+        var distinctPaths = matchedDocuments
+            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return distinctPaths.Count switch
+        {
+            0 when !File.Exists(sourceFile) => throw new RefactoringException(
+                ErrorCodes.SourceFileNotFound,
+                $"Source file not found: {sourceFile}"),
+            0 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"File not found in workspace: {sourceFile}"),
+            > 1 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ => matchedDocuments
+        };
     }
 
     /// <summary>
@@ -1118,7 +1540,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             targetMembers.Select(m => m.NormalizeWhitespace().ToFullString()));
 
         var targetLocation = target.Locations.FirstOrDefault(l => l.IsInSource);
-        var targetFile = targetLocation?.SourceTree?.FilePath ?? @params.SourceFile;
+        var targetFile = targetLocation?.SourceTree?.FilePath ?? @params.SourceFile!;
 
         var pendingChanges = new List<PendingChange>
         {
@@ -1132,7 +1554,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             },
             new()
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = target.TypeKind == TypeKind.Interface
                     ? $"Keep {memberList} on {@params.TypeName} to implement {target.Name}"
