@@ -214,7 +214,10 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
     /// <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
     /// Linked documents that share a physical path are rewritten once and the
     /// same text is applied to every sibling <see cref="DocumentId"/> via
-    /// <see cref="AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync"/>.
+    /// <see cref="AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync"/>
+    /// only when every editable sibling can honor an identical rewrite; divergent
+    /// linked views (conditional compilation / project-specific aliases) are
+    /// skipped rather than overwriting (ExtractConstant / Copilot).
     /// Methods that fail existing single-site safety checks (SameLocation,
     /// async/Task-like, incompatible returns, uneditable contracts, overload
     /// collisions, iterators, unsupported call sites), uneditable /
@@ -281,6 +284,23 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                     {
                         // Skip ineligible methods rather than failing the walk.
                         updated = null;
+                    }
+
+                    if (updated != null &&
+                        !await LinkedViewsCanHonorRewriteAsync(
+                            linkedDocuments,
+                            currentDocument,
+                            methodDecl,
+                            @params,
+                            currentSolution,
+                            updated,
+                            cancellationToken))
+                    {
+                        // Sibling linked project cannot accept the same rewrite
+                        // (overload collision / divergent text under aliases) —
+                        // skip-not-throw rather than copying invalid text (Copilot).
+                        updated = null;
+                        continue;
                     }
 
                     if (updated != null)
@@ -990,53 +1010,214 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         return false;
     }
 
+    /// <summary>
+    /// Validates that every editable linked sibling can apply an equivalent
+    /// return-type rewrite for the same method before shared text is
+    /// coalesced. Returns false (caller skips) when any sibling cannot honor
+    /// the rewrite or would produce divergent text (ExtractConstant / Copilot).
+    /// </summary>
+    private async Task<bool> LinkedViewsCanHonorRewriteAsync(
+        IReadOnlyList<Document> linkedDocuments,
+        Document primary,
+        MethodDeclarationSyntax primaryMethod,
+        ChangeReturnTypeParams bulkParams,
+        Solution beforeSolution,
+        Solution afterPrimary,
+        CancellationToken cancellationToken)
+    {
+        if (linkedDocuments.Count <= 1)
+            return true;
+
+        var primaryAfter = afterPrimary.GetDocument(primary.Id);
+        if (primaryAfter == null)
+            return false;
+        var primaryText = await primaryAfter.GetTextAsync(cancellationToken);
+
+        foreach (var linked in linkedDocuments)
+        {
+            if (linked.Id == primary.Id)
+                continue;
+
+            var sibling = beforeSolution.GetDocument(linked.Id) ?? linked;
+            if (sibling is SourceGeneratedDocument)
+                continue;
+            if (!DocumentEditableHelpers.IsDocumentEditable(sibling, Context.Workspace))
+                continue;
+
+            var root = await sibling.GetSyntaxRootAsync(cancellationToken);
+            var model = await sibling.GetSemanticModelAsync(cancellationToken);
+            if (root == null || model == null)
+                return false;
+
+            var rematched = RematchMethod(root, primaryMethod);
+            if (rematched == null)
+                return false;
+
+            Solution? siblingUpdated;
+            try
+            {
+                siblingUpdated = await TryChangeOneAsync(
+                    sibling,
+                    model,
+                    rematched,
+                    bulkParams,
+                    cancellationToken);
+            }
+            catch (RefactoringException)
+            {
+                return false;
+            }
+
+            if (siblingUpdated == null)
+                return false;
+
+            var siblingDoc = siblingUpdated.GetDocument(sibling.Id);
+            if (siblingDoc == null)
+                return false;
+            var siblingText = await siblingDoc.GetTextAsync(cancellationToken);
+            if (!primaryText.ContentEquals(siblingText))
+                return false;
+        }
+
+        return true;
+    }
+
     private async Task ValidateReferencesAsync(
         IReadOnlyList<IMethodSymbol> methods,
         ITypeSymbol newReturnType,
         Solution solution,
         CancellationToken cancellationToken)
     {
+        var seen = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
         foreach (var method in methods)
         {
-            var references = await SymbolFinder.FindReferencesAsync(method, solution, cancellationToken);
-            foreach (var referenced in references)
+            if (!seen.Add(method))
+                continue;
+
+            await ValidateReferencesForSymbolAsync(method, newReturnType, solution, cancellationToken);
+
+            // Linked sibling DocumentIds bind a distinct IMethodSymbol for the
+            // same physical declaration. FindReferences on the primary symbol
+            // misses callers that bind only under those sibling compilations
+            // (ChangeSignature / IntroduceParameter / Copilot).
+            foreach (var siblingSymbol in await CollectLinkedSiblingMethodSymbolsAsync(
+                method, solution, cancellationToken))
             {
-                foreach (var location in referenced.Locations)
+                if (!seen.Add(siblingSymbol))
+                    continue;
+                await ValidateReferencesForSymbolAsync(
+                    siblingSymbol, newReturnType, solution, cancellationToken);
+            }
+        }
+    }
+
+    private static async Task<IReadOnlyList<IMethodSymbol>> CollectLinkedSiblingMethodSymbolsAsync(
+        IMethodSymbol method,
+        Solution solution,
+        CancellationToken cancellationToken)
+    {
+        var siblings = new List<IMethodSymbol>();
+
+        foreach (var syntaxRef in method.DeclaringSyntaxReferences)
+        {
+            if (await syntaxRef.GetSyntaxAsync(cancellationToken) is not MethodDeclarationSyntax methodSyntax)
+                continue;
+
+            var declaringDocument = solution.GetDocument(syntaxRef.SyntaxTree);
+            if (declaringDocument?.FilePath == null)
+                continue;
+
+            var declaringPathKey = PathResolver.GetPathComparisonKey(declaringDocument.FilePath);
+
+            foreach (var project in solution.Projects)
+            {
+                foreach (var siblingDoc in project.Documents)
                 {
-                    if (location.Location.Kind != LocationKind.SourceFile)
+                    if (siblingDoc.Id == declaringDocument.Id || siblingDoc.FilePath == null)
+                        continue;
+                    if (PathResolver.GetPathComparisonKey(siblingDoc.FilePath) != declaringPathKey)
                         continue;
 
-                    var document = location.Document;
-                    var root = await document.GetSyntaxRootAsync(cancellationToken);
-                    if (root == null)
+                    var siblingRoot = await siblingDoc.GetSyntaxRootAsync(cancellationToken);
+                    var siblingModel = await siblingDoc.GetSemanticModelAsync(cancellationToken);
+                    if (siblingRoot == null || siblingModel == null)
                         continue;
 
-                    var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
-                    if (SignatureReferenceHelpers.IsDeclarationName(node, location.Location.SourceSpan))
+                    var rematched = RematchMethod(siblingRoot, methodSyntax);
+                    if (rematched == null)
                         continue;
 
-                    var model = await document.GetSemanticModelAsync(cancellationToken)
-                        ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
-
-                    var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-                    if (invocation != null && SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
-                    {
-                        ValidateInvocationResultContext(invocation, newReturnType, model);
-                        continue;
-                    }
-
-                    if (SignatureReferenceHelpers.IsNameOfArgument(node))
-                        continue;
-
-                    if (MethodGroupStillCompatible(node, newReturnType, model))
-                        continue;
-
-                    throw new RefactoringException(
-                        ErrorCodes.UnsupportedCallSite,
-                        $"Method '{method.Name}' is used as a method group or other unsupported reference and cannot be updated automatically.");
+                    var siblingSymbol = siblingModel.GetDeclaredSymbol(rematched, cancellationToken) as IMethodSymbol;
+                    if (siblingSymbol != null)
+                        siblings.Add(siblingSymbol);
                 }
             }
         }
+
+        return siblings;
+    }
+
+    private async Task ValidateReferencesForSymbolAsync(
+        IMethodSymbol method,
+        ITypeSymbol newReturnType,
+        Solution solution,
+        CancellationToken cancellationToken)
+    {
+        var references = await SymbolFinder.FindReferencesAsync(method, solution, cancellationToken);
+        foreach (var referenced in references)
+        {
+            foreach (var location in referenced.Locations)
+            {
+                if (location.Location.Kind != LocationKind.SourceFile)
+                    continue;
+
+                var document = solution.GetDocument(location.Document.Id) ?? location.Document;
+                var root = await document.GetSyntaxRootAsync(cancellationToken);
+                if (root == null)
+                    continue;
+
+                var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
+                if (SignatureReferenceHelpers.IsDeclarationName(node, location.Location.SourceSpan))
+                    continue;
+
+                var model = await document.GetSemanticModelAsync(cancellationToken)
+                    ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
+
+                var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
+                if (invocation != null && SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
+                {
+                    ValidateInvocationResultContext(invocation, newReturnType, model);
+                    continue;
+                }
+
+                if (SignatureReferenceHelpers.IsNameOfArgument(node))
+                    continue;
+
+                if (MethodGroupStillCompatible(node, newReturnType, model))
+                    continue;
+
+                throw new RefactoringException(
+                    ErrorCodes.UnsupportedCallSite,
+                    $"Method '{method.Name}' is used as a method group or other unsupported reference and cannot be updated automatically.");
+            }
+        }
+    }
+
+    private static MethodDeclarationSyntax? RematchMethod(SyntaxNode root, MethodDeclarationSyntax original)
+    {
+        var candidates = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == original.Identifier.Text)
+            .ToList();
+        if (candidates.Count == 0)
+            return null;
+        if (candidates.Count == 1)
+            return candidates[0];
+
+        return candidates
+            .OrderBy(m => Math.Abs(m.SpanStart - original.SpanStart))
+            .ThenBy(m => m.Span.Length)
+            .FirstOrDefault();
     }
 
     internal static void ValidateInvocationResultContext(

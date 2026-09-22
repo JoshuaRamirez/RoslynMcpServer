@@ -1756,6 +1756,177 @@ public class ChangeReturnTypeOperationTests
         Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathB));
     }
 
+    [SkippableFact]
+    public async Task ChangeReturnType_AllFilesTrue_LinkedDocument_CoalescesIdenticalRewrites()
+    {
+        const string sharedSource = """
+            namespace TestApp;
+
+            public static class Shared
+            {
+                public static int Process() => 1;
+            }
+            """;
+        const string anchorASource = """
+            namespace TestApp;
+
+            public static class AnchorA
+            {
+            }
+            """;
+        const string anchorBSource = """
+            namespace TestApp;
+
+            public static class AnchorB
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorASource, anchorBSource);
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathsEqual(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            AllFiles = true,
+            NewReturnType = "long"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, workspace.SourcePaths["Shared.cs"]));
+        var updated = await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]);
+        Assert.Equal("long", ReturnTypeText(GetMethods(updated, "Process").Single()));
+
+        var texts = new List<string>();
+        foreach (var document in linkedDocuments)
+        {
+            var current = workspace.Context.Solution.GetDocument(document.Id);
+            Assert.NotNull(current);
+            texts.Add((await current!.GetTextAsync()).ToString());
+        }
+
+        Assert.Equal(2, texts.Count);
+        Assert.Equal(texts[0], texts[1], StringComparer.Ordinal);
+        Assert.Equal("long", ReturnTypeText(GetMethods(texts[0], "Process").Single()));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_AllFilesTrue_LinkedDocument_SkipsWhenSiblingCannotHonor()
+    {
+        // Shared physical file linked into two projects with different defines.
+        // ProjectA sees int Process(); ProjectB already sees long Process() via
+        // #else — primary could rewrite int→long, but sibling TryChangeOne is a
+        // no-op (TypesEquivalent), so LinkedViewsCanHonor must skip coalesce.
+        const string sharedSource = """
+            namespace TestApp;
+
+            public static class Shared
+            {
+            #if PROJ_A
+                public static int Process() => 1;
+            #else
+                public static long Process() => 1L;
+            #endif
+            }
+            """;
+        const string anchorASource = """
+            namespace TestApp;
+
+            public static class AnchorA
+            {
+            }
+            """;
+        const string anchorBSource = """
+            namespace TestApp;
+
+            public static class AnchorB
+            {
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorASource, anchorBSource,
+            projectADefineConstants: "PROJ_A",
+            projectBDefineConstants: "PROJ_B");
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathsEqual(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var before = await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            AllFiles = true,
+            NewReturnType = "long"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]));
+        Assert.DoesNotContain(result.Changes!.FilesModified, p => PathsEqual(p, workspace.SourcePaths["Shared.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ChangeReturnType_AllFilesTrue_LinkedDocument_SkipsWhenSiblingCallerIncompatible()
+    {
+        // Caller lives only in ProjectB's compilation and binds the sibling
+        // IMethodSymbol. FindReferences on the primary linked symbol misses it;
+        // sibling rematch must reject changing int→string.
+        const string sharedSource = """
+            namespace TestApp;
+
+            public static class Shared
+            {
+                public static int Process() => 1;
+            }
+            """;
+        const string anchorASource = """
+            namespace TestApp;
+
+            public static class AnchorA
+            {
+            }
+            """;
+        const string anchorBSource = """
+            namespace TestApp;
+
+            public static class AnchorB
+            {
+                public static int Use()
+                {
+                    int x = Shared.Process();
+                    return x;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorASource, anchorBSource);
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathsEqual(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var before = await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]);
+        var operation = new ChangeReturnTypeOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new ChangeReturnTypeParams
+        {
+            AllFiles = true,
+            NewReturnType = "string"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]));
+        Assert.DoesNotContain(result.Changes!.FilesModified, p => PathsEqual(p, workspace.SourcePaths["Shared.cs"]));
+    }
+
     private static bool PathsEqual(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
@@ -1817,6 +1988,7 @@ public class ChangeReturnTypeOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public Dictionary<string, string> SourcePaths { get; init; } = new(StringComparer.Ordinal);
         public required WorkspaceContext Context { get; init; }
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Worker.cs") =>
@@ -1864,6 +2036,138 @@ public class ChangeReturnTypeOperationTests
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
                     SourcePath = sourcePath,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        public static async Task<TempWorkspace> CreateWithLinkedProjectsAsync(
+            string sharedSource,
+            string anchorASource,
+            string anchorBSource,
+            string? projectADefineConstants = null,
+            string? projectBDefineConstants = null)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpChangeReturnTypeLinked_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            var sharedPath = Path.Combine(directory, "Shared.cs");
+            var rootProjectPath = Path.Combine(directory, "ProjectA.csproj");
+            var referencedProjectPath = Path.Combine(directory, "ProjectB.csproj");
+            var anchorAPath = Path.Combine(directory, "AnchorA.cs");
+            var anchorBPath = Path.Combine(directory, "AnchorB.cs");
+            var projectTypeGuid = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
+            var projectAGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+            var projectBGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+
+            await File.WriteAllTextAsync(sharedPath, sharedSource);
+            await File.WriteAllTextAsync(anchorAPath, anchorASource);
+            await File.WriteAllTextAsync(anchorBPath, anchorBSource);
+            await File.WriteAllTextAsync(solutionPath, $$"""
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                VisualStudioVersion = 17.0.31903.59
+                MinimumVisualStudioVersion = 10.0.40219.1
+                Project("{{projectTypeGuid}}") = "ProjectA", "ProjectA.csproj", "{{projectAGuid}}"
+                EndProject
+                Project("{{projectTypeGuid}}") = "ProjectB", "ProjectB.csproj", "{{projectBGuid}}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                		Release|Any CPU = Release|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{{projectAGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectAGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            string ProjectXml(string anchorFile, string? defineConstants)
+            {
+                var defineLine = string.IsNullOrWhiteSpace(defineConstants)
+                    ? ""
+                    : $"\n                    <DefineConstants>{defineConstants}</DefineConstants>";
+                return $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>{defineLine}
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="{anchorFile}" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """;
+            }
+
+            await File.WriteAllTextAsync(rootProjectPath, ProjectXml("AnchorA.cs", projectADefineConstants));
+            await File.WriteAllTextAsync(referencedProjectPath, ProjectXml("AnchorB.cs", projectBDefineConstants));
+
+            var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Shared.cs"] = sharedPath,
+                ["AnchorA.cs"] = anchorAPath,
+                ["AnchorB.cs"] = anchorBPath
+            };
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                foreach (var sourcePath in sourcePaths.Values)
+                {
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
+                }
+
+                var linkedCount = context.Solution.Projects
+                    .SelectMany(proj => proj.Documents)
+                    .Count(d => d.FilePath != null &&
+                                string.Equals(Path.GetFullPath(d.FilePath), Path.GetFullPath(sharedPath), StringComparison.OrdinalIgnoreCase));
+                if (linkedCount < 2)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException($"Expected linked document in both projects, found {linkedCount}.");
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = rootProjectPath,
+                    SourcePath = sharedPath,
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }
