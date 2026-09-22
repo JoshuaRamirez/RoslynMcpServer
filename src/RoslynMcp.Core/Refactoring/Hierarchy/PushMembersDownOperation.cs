@@ -1353,9 +1353,12 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     /// <summary>
     /// Ensures converted copies do not collide with each other after
-    /// constructed-generic substitution (e.g. <c>M(T)</c> + <c>M(U)</c>
-    /// onto <c>Root&lt;int,int&gt;</c> both become <c>M(int)</c> → CS0111).
-    /// Existing target members are already covered by <see cref="CanMoveMember"/>.
+    /// constructed-generic substitution under C# declaration identity
+    /// (name + parameter types/ref-kinds; not return type or <c>params</c>).
+    /// E.g. <c>string M(T)</c> + <c>int M(U)</c> onto <c>Root&lt;int,int&gt;</c>,
+    /// or <c>M(params T[])</c> + <c>M(U[])</c>, both become duplicate
+    /// <c>M(int)</c>/<c>M(int[])</c> → CS0111. Existing target members are
+    /// already covered by <see cref="CanMoveMember"/>.
     /// </summary>
     private static void ValidateNoPostSubstitutionCollisions(
         IReadOnlyList<PushableMember> members,
@@ -1370,7 +1373,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var member in members)
             {
-                var key = MemberCascadeKeyForTarget(member.Symbol, source, target);
+                var key = DeclarationCollisionKeyForTarget(member.Symbol, source, target);
                 if (!seen.Add(key))
                 {
                     throw new RefactoringException(
@@ -1379,6 +1382,57 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// C# declaration-identity key after constructed-base substitution.
+    /// Methods/indexers: name + parameter types with ref/out/in (no return
+    /// type, no <c>params</c> spelling). Other members: metadata name.
+    /// </summary>
+    internal static string DeclarationCollisionKeyForTarget(
+        ISymbol symbol,
+        INamedTypeSymbol source,
+        INamedTypeSymbol target)
+    {
+        var effective = symbol;
+        var constructed = GetConstructedBase(source, target);
+        if (constructed != null && constructed.TypeArguments.Length > 0)
+        {
+            foreach (var candidate in constructed.GetMembers(symbol.Name))
+            {
+                if (SymbolEqualityComparer.Default.Equals(
+                        candidate.OriginalDefinition, symbol.OriginalDefinition))
+                {
+                    effective = candidate;
+                    break;
+                }
+            }
+        }
+
+        return DeclarationCollisionKey(effective);
+    }
+
+    private static string DeclarationCollisionKey(ISymbol symbol) => symbol switch
+    {
+        IMethodSymbol method =>
+            method.Name + "(" + string.Join(", ", method.Parameters.Select(ParameterCollisionKey)) + ")",
+        IPropertySymbol { IsIndexer: true } indexer =>
+            "this[" + string.Join(", ", indexer.Parameters.Select(ParameterCollisionKey)) + "]",
+        _ => symbol.Name
+    };
+
+    private static string ParameterCollisionKey(IParameterSymbol parameter)
+    {
+        // C# overload identity includes ref/out/in but not the params modifier.
+        var prefix = parameter.RefKind switch
+        {
+            RefKind.Ref => "ref ",
+            RefKind.Out => "out ",
+            RefKind.In => "in ",
+            _ => string.Empty
+        };
+
+        return prefix + parameter.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
     }
 
     private static void ValidateLeaveAbstractCoversConcreteDerived(
@@ -1518,14 +1572,13 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             return WillHaveMemberAfterPush(model.GetTypeInfo(conditional.Expression).Type, targets);
         }
 
-        // Object / with-initializer member names look like simple identifiers
-        // (`new Animal { X = 1 }`) but bind to the initialized object's type,
-        // not implicit this. Reject when that type will not receive the member.
+        // Object / with / nested member-initializer names look like simple
+        // identifiers (`new Animal { X = 1 }`, `new Holder { Child = { X = 1 } }`)
+        // but bind to the initialized object's type, not implicit this.
         if (name != null &&
-            TryGetObjectOrWithInitializerTarget(name, out var initializedExpression))
+            TryGetObjectOrWithInitializerReceiver(name, model, out var initializerReceiver))
         {
-            return WillHaveMemberAfterPush(
-                model.GetTypeInfo(initializedExpression).Type, targets);
+            return WillHaveMemberAfterPush(initializerReceiver, targets);
         }
 
         // Simple name / implicit this — moves with the containing batch member.
@@ -1547,25 +1600,26 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
 
         if (name != null &&
-            TryGetObjectOrWithInitializerTarget(name, out var initializedExpression))
+            TryGetObjectOrWithInitializerReceiver(name, model, out var initializerReceiver))
         {
-            return model.GetTypeInfo(initializedExpression).Type;
+            return initializerReceiver;
         }
 
         return model.GetEnclosingSymbol(node.SpanStart)?.ContainingType;
     }
 
     /// <summary>
-    /// True when <paramref name="name"/> is the left-hand member of an
-    /// object or <c>with</c> initializer assignment (<c>new T { X = … }</c>
-    /// / <c>expr with { X = … }</c>). Sets <paramref name="initializedExpression"/>
-    /// to the creation or with-source expression whose type owns the member.
+    /// True when <paramref name="name"/> is the left-hand member of an object,
+    /// <c>with</c>, or nested member initializer assignment. Sets
+    /// <paramref name="receiverType"/> to the type that owns the member
+    /// (creation type, with-source type, or nested member's type).
     /// </summary>
-    private static bool TryGetObjectOrWithInitializerTarget(
+    private static bool TryGetObjectOrWithInitializerReceiver(
         SimpleNameSyntax name,
-        out ExpressionSyntax initializedExpression)
+        SemanticModel model,
+        out ITypeSymbol? receiverType)
     {
-        initializedExpression = null!;
+        receiverType = null;
 
         if (name.Parent is not AssignmentExpressionSyntax assignment ||
             assignment.Left != name ||
@@ -1577,11 +1631,22 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         switch (initializer.Parent)
         {
             case BaseObjectCreationExpressionSyntax creation:
-                initializedExpression = creation;
-                return true;
+                receiverType = model.GetTypeInfo(creation).Type;
+                return receiverType != null;
             case WithExpressionSyntax withExpression:
-                initializedExpression = withExpression.Expression;
-                return true;
+                receiverType = model.GetTypeInfo(withExpression.Expression).Type;
+                return receiverType != null;
+            case AssignmentExpressionSyntax outer when outer.Right == initializer:
+                // Nested member initializer: `new Holder { Child = { X = 1 } }`.
+                // X is initialized on the type of Child, not on Holder / this.
+                var memberSymbol = model.GetSymbolInfo(outer.Left).Symbol;
+                receiverType = memberSymbol switch
+                {
+                    IFieldSymbol field => field.Type,
+                    IPropertySymbol property => property.Type,
+                    _ => model.GetTypeInfo(outer.Left).Type
+                };
+                return receiverType != null;
             default:
                 return false;
         }

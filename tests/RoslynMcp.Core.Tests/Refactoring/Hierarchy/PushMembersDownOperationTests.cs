@@ -4886,9 +4886,9 @@ public class PushMembersDownOperationTests
 
         public class Root<T, U>
         {
-            public int M(T value)
+            public string M(T value)
             {
-                return 0;
+                return "t";
             }
 
             public int M(U value)
@@ -4905,9 +4905,9 @@ public class PushMembersDownOperationTests
     [SkippableFact]
     public async Task PushMembersDown_AllFilesTrue_RejectsPostSubstitutionBatchCollisions()
     {
-        // Root<T,U>.M(T) + M(U) are distinct on the source, but both become
-        // M(int) on Middle : Root<int,int>. The batch must reject rather than
-        // emit duplicate declarations (CS0111).
+        // string M(T) + int M(U) differ by return type (cascade keys differ) but
+        // both become M(int) on Middle : Root<int,int>. Declaration-identity
+        // collision check must reject (CS0111), not cascade keys.
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
             ("Root.cs", PostSubstitutionCollisionFile));
         var operation = new PushMembersDownOperation(workspace.Context);
@@ -4923,6 +4923,93 @@ public class PushMembersDownOperationTests
         Assert.Contains("M(U", ExtractTypeBody(text, "Root"));
         Assert.DoesNotContain("M(int", ExtractTypeBody(text, "Middle"));
         Assert.DoesNotContain("M(", ExtractTypeBody(text, "Middle"));
+    }
+
+    private const string PostSubstitutionParamsCollisionFile = """
+        namespace TestApp;
+
+        public class Root<T, U>
+        {
+            public int M(params T[] values)
+            {
+                return values.Length;
+            }
+
+            public int M(U[] values)
+            {
+                return values.Length;
+            }
+        }
+
+        public class Middle : Root<int, int>
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsPostSubstitutionParamsArrayCollisions()
+    {
+        // params T[] and U[] both become int[] on Middle : Root<int,int>.
+        // C# declaration identity ignores the params modifier → CS0111.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Root.cs", PostSubstitutionParamsCollisionFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Root.cs"]);
+        Assert.Contains("params T", ExtractTypeBody(text, "Root"));
+        Assert.Contains("U[]", ExtractTypeBody(text, "Root"));
+        Assert.DoesNotContain("M(", ExtractTypeBody(text, "Middle"));
+    }
+
+    private const string NestedObjectInitializerReceiverFile = """
+        namespace TestApp;
+
+        public class Holder
+        {
+            public Animal Child = new Animal();
+        }
+
+        public class Animal
+        {
+            public int X;
+
+            public Holder Make()
+            {
+                return new Holder { Child = { X = 1 } };
+            }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_AllFilesTrue_RejectsNestedObjectInitializerReceiverInBatch()
+    {
+        // Nested member initializer `Child = { X = 1 }` binds X to Animal via
+        // Holder.Child, not implicit this. A batch of X + Make must still reject.
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Types.cs", NestedObjectInitializerReceiverFile));
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePaths["Types.cs"]);
+        Assert.Contains("X", ExtractTypeBody(text, "Animal"));
+        Assert.Contains("Make", ExtractTypeBody(text, "Animal"));
+        Assert.DoesNotContain("X", ExtractTypeBody(text, "Dog"));
+        Assert.DoesNotContain("Make", ExtractTypeBody(text, "Dog"));
     }
 
     #endregion
