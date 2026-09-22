@@ -112,7 +112,7 @@ public class ExtractVariableAllFilesOperationTests
         Assert.Contains("return getAnswer;", updatedA, StringComparison.Ordinal);
         Assert.Contains("var hello = $\"hello\";", updatedB, StringComparison.Ordinal);
         Assert.Contains("return hello;", updatedB, StringComparison.Ordinal);
-        
+
         Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
         Assert.True(result.Changes!.FilesModified.Count >= 2);
         Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
