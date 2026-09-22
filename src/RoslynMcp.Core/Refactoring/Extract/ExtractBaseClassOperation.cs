@@ -1157,10 +1157,27 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 continue;
             }
 
+            // Explicit interface implementations: skip ordinary extract (CS0540
+            // if moved onto a base that does not declare the interface). When
+            // makeAbstract and the member was requested, throw MemberNotMoveable
+            // — same contract as explicit indexers.
             if (member is MethodDeclarationSyntax { ExplicitInterfaceSpecifier: not null }
                 or PropertyDeclarationSyntax { ExplicitInterfaceSpecifier: not null }
                 or EventDeclarationSyntax { ExplicitInterfaceSpecifier: not null })
             {
+                var explicitName = GetMemberName(member);
+                if (explicitName != null && requestedSet.Contains(explicitName))
+                {
+                    if (makeAbstract)
+                    {
+                        throw new RefactoringException(
+                            ErrorCodes.MemberNotMoveable,
+                            $"Member '{explicitName}' cannot be extracted as an abstract member.");
+                    }
+
+                    unmatched.Remove(explicitName);
+                }
+
                 continue;
             }
 
