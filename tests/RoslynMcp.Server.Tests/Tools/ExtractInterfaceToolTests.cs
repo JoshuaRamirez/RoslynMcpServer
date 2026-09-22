@@ -34,61 +34,91 @@ public class ExtractInterfaceToolTests
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
         Assert.Contains("indexer", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public void GetDefinition_ReturnsCorrectSchema()
     {
-        // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        // Assert
         Assert.Equal("object", root.GetProperty("type").GetString());
         Assert.True(root.TryGetProperty("properties", out _));
         Assert.True(root.TryGetProperty("required", out _));
+        Assert.True(root.TryGetProperty("oneOf", out _));
     }
 
     [Fact]
-    public void GetDefinition_HasRequiredFields()
+    public void GetDefinition_UsesConditionalRequiredFields()
     {
-        // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
-        var required = doc.RootElement.GetProperty("required");
+        var root = doc.RootElement;
+        var required = root.GetProperty("required");
 
         var requiredFields = new List<string>();
         foreach (var item in required.EnumerateArray())
-        {
             requiredFields.Add(item.GetString()!);
-        }
 
-        // Assert
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("typeName", requiredFields);
-        Assert.Contains("interfaceName", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+        Assert.DoesNotContain("typeName", requiredFields);
+        Assert.DoesNotContain("interfaceName", requiredFields);
+
+        var branches = root.GetProperty("oneOf");
+        Assert.Equal(2, branches.GetArrayLength());
+
+        var singleSiteRequired = ReadStrings(branches[0].GetProperty("required"));
+        Assert.Contains("solutionPath", singleSiteRequired);
+        Assert.Contains("sourceFile", singleSiteRequired);
+        Assert.Contains("typeName", singleSiteRequired);
+        Assert.Contains("interfaceName", singleSiteRequired);
+
+        var allFilesRequired = ReadStrings(branches[1].GetProperty("required"));
+        Assert.Contains("solutionPath", allFilesRequired);
+        Assert.Contains("allFiles", allFilesRequired);
+        Assert.DoesNotContain("sourceFile", allFilesRequired);
+        Assert.DoesNotContain("typeName", allFilesRequired);
+        Assert.DoesNotContain("interfaceName", allFilesRequired);
+        Assert.Equal(
+            JsonValueKind.True,
+            branches[1].GetProperty("properties").GetProperty("allFiles").GetProperty("const").ValueKind);
     }
 
     [Fact]
-    public void GetDefinition_HasProperties_ForAllParameters()
+    public void GetDefinition_HasOptionalAllFiles()
     {
-        // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
         var properties = doc.RootElement.GetProperty("properties");
 
-        // Assert - Required properties
+        Assert.True(properties.TryGetProperty("allFiles", out var allFiles));
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("sourceFile", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("typeName", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("interfaceName", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_HasProperties_ForAllParameters()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.True(properties.TryGetProperty("typeName", out _));
         Assert.True(properties.TryGetProperty("interfaceName", out _));
-
-        // Assert - Optional properties
         Assert.True(properties.TryGetProperty("members", out _));
         Assert.True(properties.TryGetProperty("targetFile", out _));
         Assert.True(properties.TryGetProperty("separateFile", out _));
@@ -107,13 +137,11 @@ public class ExtractInterfaceToolTests
     [Fact]
     public void GetDefinition_SeparateFileProperty_DefaultsToFalse()
     {
-        // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
         var separateFile = doc.RootElement.GetProperty("properties").GetProperty("separateFile");
 
-        // Assert
         Assert.Equal("boolean", separateFile.GetProperty("type").GetString());
         Assert.False(separateFile.GetProperty("default").GetBoolean());
     }
@@ -121,13 +149,11 @@ public class ExtractInterfaceToolTests
     [Fact]
     public void GetDefinition_AddInterfaceToTypeProperty_DefaultsToTrue()
     {
-        // Act
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
         var addInterfaceToType = doc.RootElement.GetProperty("properties").GetProperty("addInterfaceToType");
 
-        // Assert
         Assert.Equal("boolean", addInterfaceToType.GetProperty("type").GetString());
         Assert.True(addInterfaceToType.GetProperty("default").GetBoolean());
     }
@@ -217,7 +243,6 @@ public class ExtractInterfaceToolTests
     [Fact]
     public async Task ExecuteAsync_MissingRequiredField_ReturnsError()
     {
-        // Arrange - Missing interfaceName
         var args = JsonDocument.Parse(@"{
             ""solutionPath"": ""C:/test/test.sln"",
             ""sourceFile"": ""C:/test/Test.cs"",
@@ -229,9 +254,34 @@ public class ExtractInterfaceToolTests
         Assert.True(result.IsError);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        // ThrowingWorkspaceProvider rejects workspace creation; args including allFiles parsed.
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Arguments required", GetResultText(result), StringComparison.Ordinal);
+    }
+
     #endregion
 
     #region Helper Methods
+
+    private static List<string> ReadStrings(JsonElement array)
+    {
+        var values = new List<string>();
+        foreach (var item in array.EnumerateArray())
+            values.Add(item.GetString()!);
+        return values;
+    }
 
     private static string GetResultText(ToolResult result)
     {
