@@ -2970,6 +2970,85 @@ public class ExtractBaseClassOperationTests
         Assert.Equal(xml.ReplaceLineEndings(), updated.ReplaceLineEndings());
     }
 
+    [Fact]
+    public void AddExplicitCompileItemIfNeeded_AccumulatesFromPriorUpdatedText()
+    {
+        // Bulk allFiles walks must chain updates from the latest pending project
+        // text so a second destination is not lost when the first already
+        // rewrote the in-memory project XML (Copilot on #1374).
+        const string xml = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+              </PropertyGroup>
+              <ItemGroup>
+                <Compile Include="Employee.cs" />
+              </ItemGroup>
+            </Project>
+            """;
+        var projectDir = Path.DirectorySeparatorChar == '/' ? "/tmp/proj" : @"C:\tmp\proj";
+        var once = ExtractBaseClassOperation.AddExplicitCompileItemIfNeeded(
+            xml,
+            projectDir,
+            Path.Combine(projectDir, "EmployeeBase.cs"));
+        var twice = ExtractBaseClassOperation.AddExplicitCompileItemIfNeeded(
+            once,
+            projectDir,
+            Path.Combine(projectDir, "ManagerBase.cs"));
+
+        Assert.Contains("Include=\"Employee.cs\"", twice);
+        Assert.Contains("Include=\"EmployeeBase.cs\"", twice);
+        Assert.Contains("Include=\"ManagerBase.cs\"", twice);
+    }
+
+    [Fact]
+    public void CollectExtractableMemberNames_IncludesEveryFieldDeclarator()
+    {
+        const string source = """
+            namespace TestApp;
+            public class FileA
+            {
+                private int first, second;
+                public void Work() { }
+            }
+            """;
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+            "CollectFields",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var type = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().First();
+        var names = ExtractBaseClassOperation.CollectExtractableMemberNames(type, model);
+        Assert.Contains("first", names);
+        Assert.Contains("second", names);
+        Assert.Contains("Work", names);
+    }
+
+    [Fact]
+    public void CollectExtractableMemberNames_SkipsExplicitInterfaceMembers()
+    {
+        const string source = """
+            namespace TestApp;
+            public interface IFoo { void M(); }
+            public class FileA : IFoo
+            {
+                void IFoo.M() { }
+                public void Work() { }
+            }
+            """;
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+            "CollectExplicit",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var type = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().First();
+        var names = ExtractBaseClassOperation.CollectExtractableMemberNames(type, model);
+        Assert.DoesNotContain("M", names);
+        Assert.Contains("Work", names);
+    }
+
 
     #region allFiles
 
@@ -3091,6 +3170,30 @@ public class ExtractBaseClassOperationTests
         var type = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().First();
         var symbol = (INamedTypeSymbol)model.GetDeclaredSymbol(type)!;
         Assert.Equal("TestApp.FileABase", ExtractBaseClassOperation.BuildBaseClassKey(symbol, "FileABase"));
+    }
+
+    [Fact]
+    public void BuildClaimedBaseClassKey_IncludesProjectId()
+    {
+        const string source = """
+            namespace TestApp;
+            public class FileA { public int X { get; set; } }
+            """;
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create(
+            "ClaimKeyTest",
+            new[] { tree },
+            new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+        var model = compilation.GetSemanticModel(tree);
+        var type = tree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().First();
+        var symbol = (INamedTypeSymbol)model.GetDeclaredSymbol(type)!;
+        var projectA = ProjectId.CreateNewId();
+        var projectB = ProjectId.CreateNewId();
+        var keyA = ExtractBaseClassOperation.BuildClaimedBaseClassKey(projectA, symbol, "FileABase");
+        var keyB = ExtractBaseClassOperation.BuildClaimedBaseClassKey(projectB, symbol, "FileABase");
+        Assert.NotEqual(keyA, keyB);
+        Assert.Contains("TestApp.FileABase", keyA, StringComparison.Ordinal);
+        Assert.StartsWith(projectA.Id.ToString("D"), keyA, StringComparison.Ordinal);
     }
 
     [Fact]

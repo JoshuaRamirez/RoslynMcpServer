@@ -429,7 +429,9 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
             // Linked multi-project views of the same path can diverge under
             // preprocessor symbols; skip rather than coalescing a base-class
-            // rewrite that only one compilation can honor (Copilot / #1366).
+            // rewrite that only one compilation can honor. Same contract as
+            // extract_interface allFiles (#1366) — comparing every sibling
+            // rewrite (extract_constant style) is out of leftover scope.
             if (linkedDocuments.Count > 1)
                 continue;
 
@@ -482,18 +484,27 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                     }
 
                     var typeKey = TypeWalkKeyHelpers.TypeWalkKey(currentDocument.Project.Id, typeSymbol);
-                    if (!processedTypes.Add(typeKey))
+                    // Delay claim until a successful extract so a partial
+                    // declaration with no extractable members does not block a
+                    // later partial that has members (Codex on #1374).
+                    if (processedTypes.Contains(typeKey))
                         continue;
 
                     var baseClassName = DeriveBaseClassName(typeSymbol.Name);
                     if (!IdentifierValidation.IsValidIdentifier(baseClassName))
                         continue;
 
-                    var baseClassKey = BuildBaseClassKey(typeSymbol, baseClassName);
+                    var baseClassKey = BuildClaimedBaseClassKey(
+                        currentDocument.Project.Id, typeSymbol, baseClassName);
                     if (!claimedBaseClasses.Add(baseClassKey))
                         continue;
 
-                    if (await TypeExistsInSolutionAsync(currentSolution, typeSymbol, baseClassName, cancellationToken))
+                    if (await TypeExistsInSolutionAsync(
+                            currentSolution,
+                            currentDocument.Project,
+                            typeSymbol,
+                            baseClassName,
+                            cancellationToken))
                     {
                         claimedBaseClasses.Remove(baseClassKey);
                         continue;
@@ -556,7 +567,8 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                     try
                     {
                         (projectPathForCompile, updatedProjectText) =
-                            TryPrepareExplicitCompileItemUpdate(currentDocument.Project, targetFile);
+                            TryPrepareExplicitCompileItemUpdate(
+                                currentDocument.Project, targetFile, pendingProjectUpdates);
                     }
                     catch (RefactoringException)
                     {
@@ -594,6 +606,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                     if (updatedProjectText != null && !string.IsNullOrWhiteSpace(projectPathForCompile))
                         pendingProjectUpdates[projectPathForCompile!] = updatedProjectText;
 
+                    processedTypes.Add(typeKey);
                     break;
                 }
 
@@ -745,9 +758,8 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
     }
 
     /// <summary>
-    /// Namespace-qualified base-class key used to claim bulk destinations
-    /// across the walk (avoids relying on <c>TypeResolver</c> bound to the
-    /// original <c>Context.Solution</c>).
+    /// Namespace-qualified metadata name for a derived base class
+    /// (<c>Ns.TypeBase</c> / <c>TypeBase</c> in the global namespace).
     /// </summary>
     internal static string BuildBaseClassKey(INamedTypeSymbol typeSymbol, string baseClassName)
     {
@@ -757,31 +769,45 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         return typeSymbol.ContainingNamespace.ToDisplayString() + "." + baseClassName;
     }
 
+    /// <summary>
+    /// Project-scoped claim key so unrelated projects that both declare
+    /// <c>N.Widget</c> do not collide on a solution-global <c>N.WidgetBase</c>
+    /// reservation (Codex on #1374). Uses the same project-id prefix shape as
+    /// <see cref="TypeWalkKeyHelpers.TypeWalkKey(ProjectId, string)"/>.
+    /// </summary>
+    internal static string BuildClaimedBaseClassKey(
+        ProjectId projectId,
+        INamedTypeSymbol typeSymbol,
+        string baseClassName) =>
+        $"{projectId.Id:D}\0{BuildBaseClassKey(typeSymbol, baseClassName)}";
+
+    /// <summary>
+    /// Collision check scoped to the source project's compilation (and its
+    /// references via <see cref="Compilation.GetTypeByMetadataName"/>), not
+    /// every solution project — types in unreferenced assemblies are not
+    /// collisions (Codex on #1374).
+    /// </summary>
     private static async Task<bool> TypeExistsInSolutionAsync(
         Solution solution,
+        Project sourceProject,
         INamedTypeSymbol sourceType,
         string typeName,
         CancellationToken cancellationToken)
     {
         var wantedKey = BuildBaseClassKey(sourceType, typeName);
-        foreach (var project in solution.Projects)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var compilation = await project.GetCompilationAsync(cancellationToken);
-            if (compilation == null)
-                continue;
+        var project = solution.GetProject(sourceProject.Id) ?? sourceProject;
+        cancellationToken.ThrowIfCancellationRequested();
+        var compilation = await project.GetCompilationAsync(cancellationToken);
+        if (compilation == null)
+            return false;
 
-            var existing = compilation.GetTypeByMetadataName(wantedKey);
-            if (existing != null)
-                return true;
-        }
-
-        return false;
+        return compilation.GetTypeByMetadataName(wantedKey) != null;
     }
 
     private static (string? ProjectPath, string? UpdatedText) TryPrepareExplicitCompileItemUpdate(
         Project project,
-        string targetFile)
+        string targetFile,
+        IReadOnlyDictionary<string, string> pendingProjectUpdates)
     {
         var projectPath = project.FilePath;
         if (string.IsNullOrWhiteSpace(projectPath) || !File.Exists(projectPath))
@@ -791,9 +817,14 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         if (string.IsNullOrEmpty(projectDirectory))
             return (null, null);
 
-        var original = File.ReadAllText(projectPath);
-        var updated = AddExplicitCompileItemIfNeeded(original, projectDirectory, targetFile);
-        if (string.Equals(original, updated, StringComparison.Ordinal))
+        // Prefer the latest pending project text so multiple extracts in one
+        // bulk walk accumulate Compile Include entries instead of each read
+        // overwriting the previous pending update from disk (Copilot).
+        var baseline = pendingProjectUpdates.TryGetValue(projectPath, out var pending)
+            ? pending
+            : File.ReadAllText(projectPath);
+        var updated = AddExplicitCompileItemIfNeeded(baseline, projectDirectory, targetFile);
+        if (string.Equals(baseline, updated, StringComparison.Ordinal))
             return (projectPath, null);
 
         if (new FileInfo(projectPath).IsReadOnly)
@@ -965,8 +996,8 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
     /// Collects every member name that single-site
     /// <see cref="FindMembersToExtract"/> would accept when the members
     /// list covers the type's extractable set (methods, properties,
-    /// fields, events, non-explicit indexers). Explicit-interface indexers
-    /// are omitted (same as single-site skip).
+    /// fields, events, non-explicit indexers). Explicit-interface members
+    /// (methods / properties / events / indexers) are omitted (CS0540).
     /// </summary>
     internal static IReadOnlyList<string> CollectExtractableMemberNames(
         ClassDeclarationSyntax typeDeclaration,
@@ -982,6 +1013,13 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 continue;
             }
 
+            if (member is FieldDeclarationSyntax fieldDecl)
+            {
+                foreach (var variable in fieldDecl.Declaration.Variables)
+                    names.Add(variable.Identifier.Text);
+                continue;
+            }
+
             if (member is IndexerDeclarationSyntax indexerDecl
                 && semanticModel.GetDeclaredSymbol(indexerDecl) is IPropertySymbol { IsIndexer: true } indexer)
             {
@@ -992,6 +1030,16 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 }
 
                 names.Add("this[]");
+                continue;
+            }
+
+            // Explicit interface implementations cannot move onto a base that
+            // does not declare the interface (CS0540) — same skip as indexers
+            // (Codex on #1374).
+            if (member is MethodDeclarationSyntax { ExplicitInterfaceSpecifier: not null }
+                or PropertyDeclarationSyntax { ExplicitInterfaceSpecifier: not null }
+                or EventDeclarationSyntax { ExplicitInterfaceSpecifier: not null })
+            {
                 continue;
             }
 
@@ -1050,6 +1098,26 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 continue;
             }
 
+            if (member is FieldDeclarationSyntax fieldDecl)
+            {
+                var selected = fieldDecl.Declaration.Variables
+                    .Where(v => requestedSet.Contains(v.Identifier.Text))
+                    .ToList();
+                if (selected.Count == 0)
+                    continue;
+
+                foreach (var variable in selected)
+                {
+                    unmatched.Remove(variable.Identifier.Text);
+                    if (semanticModel.GetDeclaredSymbol(variable) is ISymbol fieldSymbol)
+                        symbols[variable.Identifier.Text] = fieldSymbol;
+                }
+
+                result.Add(fieldDecl.WithDeclaration(
+                    fieldDecl.Declaration.WithVariables(SyntaxFactory.SeparatedList(selected))));
+                continue;
+            }
+
             // Indexers match metadata name (Item), Roslyn name (this[]), and
             // conventional display (this[int i]) — same identity forms as
             // implement_interface / extract_interface. Explicit interface
@@ -1086,6 +1154,13 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                     }
                 }
 
+                continue;
+            }
+
+            if (member is MethodDeclarationSyntax { ExplicitInterfaceSpecifier: not null }
+                or PropertyDeclarationSyntax { ExplicitInterfaceSpecifier: not null }
+                or EventDeclarationSyntax { ExplicitInterfaceSpecifier: not null })
+            {
                 continue;
             }
 
@@ -1162,6 +1237,13 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             yield break;
         }
 
+        if (member is FieldDeclarationSyntax fieldDecl)
+        {
+            foreach (var variable in fieldDecl.Declaration.Variables)
+                yield return variable.Identifier.Text;
+            yield break;
+        }
+
         var name = GetMemberName(member);
         if (name != null)
             yield return name;
@@ -1225,6 +1307,32 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                     }
                 }
 
+                continue;
+            }
+
+            // Multi-variable fields: extract selected declarators and keep the
+            // rest on the derived type (same shape as event fields; Copilot).
+            if (member is FieldDeclarationSyntax fieldDecl)
+            {
+                var remaining = fieldDecl.Declaration.Variables
+                    .Where(v => !extractedNames.Contains(v.Identifier.Text))
+                    .ToList();
+                var selected = fieldDecl.Declaration.Variables
+                    .Where(v => extractedNames.Contains(v.Identifier.Text))
+                    .ToList();
+                if (selected.Count == 0)
+                {
+                    result.Add(member);
+                    continue;
+                }
+
+                if (remaining.Count > 0)
+                {
+                    result.Add(fieldDecl.WithDeclaration(
+                        fieldDecl.Declaration.WithVariables(SyntaxFactory.SeparatedList(remaining))));
+                }
+
+                // Fields always move (never stay as override when makeAbstract).
                 continue;
             }
 
