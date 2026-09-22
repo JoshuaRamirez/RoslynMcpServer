@@ -107,6 +107,42 @@ public sealed class ExtractConstantTool : IToolHandler
                 @default = false
             }
         },
+        oneOf = new object[]
+        {
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @enum = new[] { false }
+                    }
+                },
+                required = new[] { "solutionPath", "sourceFile", "startLine", "startColumn", "endLine", "endColumn", "constantName" }
+            },
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @const = true
+                    }
+                },
+                required = new[] { "solutionPath", "allFiles" },
+                not = new
+                {
+                    anyOf = new object[]
+                    {
+                        new { required = new[] { "startLine" } },
+                        new { required = new[] { "startColumn" } },
+                        new { required = new[] { "endLine" } },
+                        new { required = new[] { "endColumn" } },
+                        new { required = new[] { "constantName" } }
+                    }
+                }
+            }
+        },
         additionalProperties = false
     };
 

@@ -47,15 +47,17 @@ public class ExtractConstantToolTests
         Assert.Equal("object", root.GetProperty("type").GetString());
         Assert.True(root.TryGetProperty("properties", out _));
         Assert.True(root.TryGetProperty("required", out _));
+        Assert.True(root.TryGetProperty("oneOf", out _));
     }
 
     [Fact]
-    public void GetDefinition_HasRequiredFields()
+    public void GetDefinition_UsesConditionalRequiredFields()
     {
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
-        var required = doc.RootElement.GetProperty("required");
+        var root = doc.RootElement;
+        var required = root.GetProperty("required");
 
         var requiredFields = new List<string>();
         foreach (var item in required.EnumerateArray())
@@ -65,12 +67,27 @@ public class ExtractConstantToolTests
 
         Assert.Contains("solutionPath", requiredFields);
         Assert.DoesNotContain("sourceFile", requiredFields);
-        Assert.DoesNotContain("startLine", requiredFields);
-        Assert.DoesNotContain("startColumn", requiredFields);
-        Assert.DoesNotContain("endLine", requiredFields);
-        Assert.DoesNotContain("endColumn", requiredFields);
-        Assert.DoesNotContain("constantName", requiredFields);
-        Assert.DoesNotContain("allFiles", requiredFields);
+
+        var branches = root.GetProperty("oneOf");
+        Assert.Equal(2, branches.GetArrayLength());
+
+        var singleSiteRequired = ReadStrings(branches[0].GetProperty("required"));
+        Assert.Contains("solutionPath", singleSiteRequired);
+        Assert.Contains("sourceFile", singleSiteRequired);
+        Assert.Contains("startLine", singleSiteRequired);
+        Assert.Contains("startColumn", singleSiteRequired);
+        Assert.Contains("endLine", singleSiteRequired);
+        Assert.Contains("endColumn", singleSiteRequired);
+        Assert.Contains("constantName", singleSiteRequired);
+
+        var allFilesRequired = ReadStrings(branches[1].GetProperty("required"));
+        Assert.Contains("solutionPath", allFilesRequired);
+        Assert.Contains("allFiles", allFilesRequired);
+        Assert.DoesNotContain("sourceFile", allFilesRequired);
+        Assert.DoesNotContain("constantName", allFilesRequired);
+        Assert.Equal(
+            JsonValueKind.True,
+            branches[1].GetProperty("properties").GetProperty("allFiles").GetProperty("const").ValueKind);
     }
 
     [Fact]
@@ -200,6 +217,17 @@ public class ExtractConstantToolTests
     private static string GetResultText(ToolResult result)
     {
         return result.Content.FirstOrDefault()?.Text ?? string.Empty;
+    }
+
+    private static List<string> ReadStrings(JsonElement array)
+    {
+        var values = new List<string>();
+        foreach (var item in array.EnumerateArray())
+        {
+            values.Add(item.GetString()!);
+        }
+
+        return values;
     }
 
     #endregion
