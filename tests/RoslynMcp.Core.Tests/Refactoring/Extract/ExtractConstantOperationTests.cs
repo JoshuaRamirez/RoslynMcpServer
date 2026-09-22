@@ -375,6 +375,32 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_OptionalSourceFile_WrongCasedPathStillMatches()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("HostFile.cs", EligibleFileA),
+            ("OtherFile.cs", EligibleFileB));
+        var operation = new ExtractConstantOperation(workspace.Context);
+        var beforeOther = await File.ReadAllTextAsync(workspace.SourcePaths["OtherFile.cs"]);
+        var wrongCased = Path.Combine(
+            Path.GetDirectoryName(workspace.SourcePaths["HostFile.cs"])!,
+            FlipAsciiCase(Path.GetFileName(workspace.SourcePaths["HostFile.cs"])));
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            SourceFile = wrongCased
+        });
+
+        Assert.True(result.Success);
+        var updatedHost = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["HostFile.cs"]));
+        Assert.Contains("const int _42", updatedHost, StringComparison.Ordinal);
+        Assert.Equal(beforeOther, await File.ReadAllTextAsync(workspace.SourcePaths["OtherFile.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["HostFile.cs"]));
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_SkipsNameCollision()
     {
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
@@ -1429,6 +1455,34 @@ public class ExtractConstantOperationTests
     }
 
     [SkippableFact]
+    public async Task ExtractConstant_AllFilesTrue_Public_ExtractsInterfaceDefaultMemberLiterals()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public interface IHost
+            {
+                int Run() => 42;
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ExtractConstantOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ExtractConstantParams
+        {
+            AllFiles = true,
+            Visibility = "public"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("public const int _42 = 42;", updated, StringComparison.Ordinal);
+        Assert.Contains("int Run() => _42;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("int Run() => 42;", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task ExtractConstant_AllFilesTrue_ReplaceAll_ReplacesMatchingLiteralsInType()
     {
         const string source = """
@@ -1760,6 +1814,20 @@ public class ExtractConstantOperationTests
         }
 
         return count;
+    }
+
+    private static string FlipAsciiCase(string value)
+    {
+        var chars = value.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (chars[i] is >= 'a' and <= 'z')
+                chars[i] = char.ToUpperInvariant(chars[i]);
+            else if (chars[i] is >= 'A' and <= 'Z')
+                chars[i] = char.ToLowerInvariant(chars[i]);
+        }
+
+        return new string(chars);
     }
 
     private static (int StartLine, int StartColumn, int EndLine, int EndColumn) FindSpan(string source, string snippet)

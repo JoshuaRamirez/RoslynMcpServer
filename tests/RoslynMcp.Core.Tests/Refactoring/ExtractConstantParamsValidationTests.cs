@@ -83,16 +83,13 @@ public class ExtractConstantParamsValidationTests
     }
 
     [Fact]
-    public void Validate_AllFilesTrue_MissingSourceFile_Throws()
+    public void Validate_AllFilesTrue_MissingSourceFile_DoesNotThrow()
     {
-        var ex = Assert.Throws<RefactoringException>(() =>
-            ExtractConstantOperation.Validate(new ExtractConstantParams
-            {
-                AllFiles = true,
-                SourceFile = AbsoluteTestPath()
-            }));
-
-        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+        ExtractConstantOperation.Validate(new ExtractConstantParams
+        {
+            AllFiles = true,
+            SourceFile = AbsoluteTestPath()
+        });
     }
 
     [Fact]

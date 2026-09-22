@@ -60,8 +60,6 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             if (!string.IsNullOrWhiteSpace(@params.SourceFile))
             {
                 ValidateSourceFilePath(@params.SourceFile!);
-                if (!File.Exists(@params.SourceFile!))
-                    throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
             }
 
             if (!ValidVisibilities.Contains(@params.Visibility))
@@ -618,10 +616,6 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             > 1 => throw new RefactoringException(
                 ErrorCodes.SourceNotInWorkspace,
                 $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
-            _ when !string.Equals(distinctPaths[0], sourceFileKey, StringComparison.Ordinal) && !File.Exists(sourceFile) =>
-                throw new RefactoringException(
-                    ErrorCodes.SourceFileNotFound,
-                    $"Source file not found: {sourceFile}"),
             _ => matchedDocuments
         };
     }
@@ -651,7 +645,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             .Where(literal =>
             {
                 var containingType = literal.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
-                if (containingType == null || containingType is InterfaceDeclarationSyntax)
+                if (containingType == null)
                     return false;
 
                 // Enum member initializers are not const-field extract targets.
@@ -714,8 +708,14 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             return null;
 
         var containingType = literal.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
-        if (containingType == null || containingType is InterfaceDeclarationSyntax)
+        if (containingType == null)
             return null;
+
+        if (containingType is InterfaceDeclarationSyntax &&
+            !string.Equals(bulkParams.Visibility, "public", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
 
         if (literal.Ancestors().OfType<EnumDeclarationSyntax>().Any())
             return null;
