@@ -2009,6 +2009,98 @@ public class IntroduceFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task IntroduceField_AllFilesTrue_PromotesLocalsWithNestedLocalFunctionTypeParameter()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public System.Action CaptureNested()
+                {
+                    System.Action action = () =>
+                    {
+                        static void F<T>()
+                        {
+                            _ = typeof(T);
+                        }
+
+                        F<int>();
+                    };
+                    return action;
+                }
+
+                public int Clean()
+                {
+                    int total = 1 + 2;
+                    return total;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private System.Action action = () =>", updated, StringComparison.Ordinal);
+        Assert.Contains("static void F<T>()", updated, StringComparison.Ordinal);
+        Assert.Contains("private int total = 1 + 2;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("                    System.Action action = () =>", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task IntroduceField_LocalWithNestedLocalFunctionTypeParameter_Promotes()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Calculator
+            {
+                public System.Action CaptureNested()
+                {
+                    System.Action action = () =>
+                    {
+                        static void F<T>()
+                        {
+                            _ = typeof(T);
+                        }
+
+                        F<int>();
+                    };
+                    return action;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new IntroduceFieldOperation(workspace.Context);
+        var span = FindSpan(source, "action = () =>");
+
+        var result = await operation.ExecuteAsync(new IntroduceFieldParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            FieldName = "_action"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private System.Action _action = () =>", updated, StringComparison.Ordinal);
+        Assert.Contains("static void F<T>()", updated, StringComparison.Ordinal);
+        Assert.Contains("return this._action;", updated, StringComparison.Ordinal);
+        Assert.DoesNotContain("                    System.Action action = () =>", updated, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task IntroduceField_AllFilesTrue_PromotesLocalsWithPropertyPattern()
     {
         const string source = """

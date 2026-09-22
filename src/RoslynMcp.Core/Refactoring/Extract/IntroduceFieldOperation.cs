@@ -1110,8 +1110,11 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
     /// <summary>
     /// True when <paramref name="node"/> references a method type parameter
-    /// (e.g. <c>typeof(T)</c> inside <c>void M&lt;T&gt;()</c>), including nested
-    /// in constructed type names. Class type parameters return false.
+    /// declared outside <paramref name="node"/> (e.g. <c>typeof(T)</c> inside
+    /// <c>void M&lt;T&gt;()</c>), including nested in constructed type names.
+    /// Class type parameters return false. Method type parameters declared by
+    /// local functions / nested methods inside the initializer remain in scope
+    /// after promotion and are ignored (Codex P2 on #1316).
     /// </summary>
     private static bool ReferencesMethodTypeParameter(
         SyntaxNode node,
@@ -1122,7 +1125,28 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         {
             var symbol = semanticModel.GetSymbolInfo(ident, cancellationToken).Symbol
                 ?? semanticModel.GetTypeInfo(ident, cancellationToken).Type;
-            if (symbol is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method })
+            if (symbol is not ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } typeParam)
+                continue;
+
+            // Nested local-function / lambda method type params stay valid in a
+            // field initializer; only enclosing-method params escape scope.
+            if (!IsDeclaredWithinNode(typeParam, node))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when any declaring syntax for <paramref name="symbol"/> lies inside
+    /// <paramref name="node"/> (inclusive).
+    /// </summary>
+    private static bool IsDeclaredWithinNode(ISymbol symbol, SyntaxNode node)
+    {
+        foreach (var reference in symbol.DeclaringSyntaxReferences)
+        {
+            var declared = reference.GetSyntax();
+            if (declared == node || node.Contains(declared))
                 return true;
         }
 
