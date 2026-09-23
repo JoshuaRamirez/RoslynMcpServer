@@ -137,6 +137,42 @@ public class RenameNamespaceOperationTests
     }
 
     [Fact]
+    public void FoldersOverlap_SameOrNested_True()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameNsOverlapRoot");
+        var child = Path.Combine(root, "Child");
+        Directory.CreateDirectory(child);
+        try
+        {
+            Assert.True(RenameNamespaceOperation.FoldersOverlap(root, root));
+            Assert.True(RenameNamespaceOperation.FoldersOverlap(root, child));
+            Assert.True(RenameNamespaceOperation.FoldersOverlap(child, root));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void FoldersOverlap_Siblings_False()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameNsOverlapSiblings");
+        var left = Path.Combine(root, "Left");
+        var right = Path.Combine(root, "Right");
+        Directory.CreateDirectory(left);
+        Directory.CreateDirectory(right);
+        try
+        {
+            Assert.False(RenameNamespaceOperation.FoldersOverlap(left, right));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void FoldersOverlap_DetectsNestedAndEqualPaths()
     {
         var root = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameNsOverlap");
@@ -1826,12 +1862,12 @@ public class RenameNamespaceOperationTests
         Assert.True(result.Success);
         Assert.False(result.Preview);
         Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(pathA));
-        // Second distinct namespace may rename or skip on collision with NewNs from first rename.
-        var textB = await File.ReadAllTextAsync(pathB);
-        Assert.True(textB.Contains("namespace NewNs") || textB.Contains("namespace OldB"));
+        // Distinct types (FileA/FileB) so both OldA and OldB are eligible for NewNs.
+        Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(pathB));
         Assert.Equal(beforeC, await File.ReadAllTextAsync(pathC));
-        Assert.True(result.Changes!.FilesModified.Count >= 1);
+        Assert.True(result.Changes!.FilesModified.Count >= 2);
         Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, pathA));
+        Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, pathB));
         Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathC));
     }
 
@@ -1850,7 +1886,11 @@ public class RenameNamespaceOperationTests
         });
 
         Assert.True(result.Success);
-        Assert.True(result.Changes!.FilesModified.Count >= 1);
+        Assert.True(result.Changes!.FilesModified.Count >= 2);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(pathA));
+        Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(pathB));
     }
 
     [SkippableFact]
