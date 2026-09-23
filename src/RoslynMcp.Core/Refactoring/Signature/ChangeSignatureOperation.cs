@@ -473,11 +473,11 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             return false;
 
         // UnmanagedCallersOnly: unmanaged ABI contract even when IsExtern is false (Codex).
-        if (HasUnmanagedCallersOnlyAttribute(method))
+        if (AllFilesMethodEligibilityHelpers.HasUnmanagedCallersOnlyAttribute(method))
             return false;
 
         // ModuleInitializer: must remain parameterless (CS8815) (Codex).
-        if (HasModuleInitializerAttribute(method))
+        if (AllFilesMethodEligibilityHelpers.HasModuleInitializerAttribute(method))
             return false;
 
         // Overrides / interface implementations: changing the signature while
@@ -916,78 +916,6 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         };
     }
 
-
-    /// <summary>
-    /// True when <paramref name="method"/> has
-    /// <c>System.Runtime.CompilerServices.ModuleInitializerAttribute</c>
-    /// (bound attribute or unbound syntax fallback) (Codex).
-    /// </summary>
-    private static bool HasModuleInitializerAttribute(IMethodSymbol method)
-    {
-        if (method.GetAttributes().Any(attr =>
-        {
-            var type = attr.AttributeClass;
-            if (type == null)
-                return false;
-            if (type.Name is not ("ModuleInitializerAttribute" or "ModuleInitializer"))
-                return false;
-            return type.ContainingNamespace?.ToDisplayString() == "System.Runtime.CompilerServices";
-        }))
-        {
-            return true;
-        }
-
-        // Attribute may not bind without a complete reference; fall back to syntax.
-        foreach (var syntaxRef in method.DeclaringSyntaxReferences)
-        {
-            if (syntaxRef.GetSyntax() is not MethodDeclarationSyntax methodDecl)
-                continue;
-            if (methodDecl.AttributeLists
-                .SelectMany(list => list.Attributes)
-                .Any(attr => attr.Name.ToString().Contains("ModuleInitializer", StringComparison.Ordinal)))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// True when <paramref name="method"/> has
-    /// <c>System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute</c>
-    /// (bound attribute or unbound syntax fallback) (Codex).
-    /// </summary>
-    private static bool HasUnmanagedCallersOnlyAttribute(IMethodSymbol method)
-    {
-        if (method.GetAttributes().Any(attr =>
-        {
-            var type = attr.AttributeClass;
-            if (type == null)
-                return false;
-            if (type.Name is not ("UnmanagedCallersOnlyAttribute" or "UnmanagedCallersOnly"))
-                return false;
-            return type.ContainingNamespace?.ToDisplayString() == "System.Runtime.InteropServices";
-        }))
-        {
-            return true;
-        }
-
-        // Attribute may not bind without a complete reference; fall back to syntax.
-        foreach (var syntaxRef in method.DeclaringSyntaxReferences)
-        {
-            if (syntaxRef.GetSyntax() is not MethodDeclarationSyntax methodDecl)
-                continue;
-            if (methodDecl.AttributeLists
-                .SelectMany(list => list.Attributes)
-                .Any(attr => attr.Name.ToString().Contains("UnmanagedCallersOnly", StringComparison.Ordinal)))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
 
     /// <summary>
     /// True when every type in <paramref name="type"/> (arrays, pointers, type

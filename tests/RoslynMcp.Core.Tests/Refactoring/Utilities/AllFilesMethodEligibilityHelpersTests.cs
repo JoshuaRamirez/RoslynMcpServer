@@ -250,6 +250,78 @@ public class AllFilesMethodEligibilityHelpersTests
         Assert.True(AllFilesMethodEligibilityHelpers.HasUnmanagedCallersOnlyAttribute(method, decl));
     }
 
+    [Fact]
+    public void HasModuleInitializerAttribute_MethodOnly_Bound_ReturnsTrue()
+    {
+        var (method, _) = GetMethodAndDecl("""
+            using System.Runtime.CompilerServices;
+            public static class C
+            {
+                [ModuleInitializer]
+                public static void M() { }
+            }
+            """, "C", "M");
+
+        Assert.True(AllFilesMethodEligibilityHelpers.HasModuleInitializerAttribute(method));
+    }
+
+    [Fact]
+    public void HasUnmanagedCallersOnlyAttribute_MethodOnly_Bound_ReturnsTrue()
+    {
+        var (method, _) = GetMethodAndDecl("""
+            using System.Runtime.InteropServices;
+            public static class C
+            {
+                [UnmanagedCallersOnly]
+                public static void M() { }
+            }
+            """, "C", "M");
+
+        Assert.True(AllFilesMethodEligibilityHelpers.HasUnmanagedCallersOnlyAttribute(method));
+    }
+
+    [Fact]
+    public void HasModuleInitializerAttribute_MethodOnly_SyntacticOnly_ReturnsTrue()
+    {
+        var tree = CSharpSyntaxTree.ParseText("""
+            public static class C
+            {
+                [ModuleInitializer]
+                public static void M() { }
+            }
+            """);
+        var compilation = CSharpCompilation.Create(
+            "AllFilesMethodEligibilityHelpersTests_SynModInitMethodOnly",
+            [tree],
+            [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var type = compilation.GetTypeByMetadataName("C")!;
+        var method = type.GetMembers("M").OfType<IMethodSymbol>().Single();
+
+        Assert.True(AllFilesMethodEligibilityHelpers.HasModuleInitializerAttribute(method));
+    }
+
+    [Fact]
+    public void HasUnmanagedCallersOnlyAttribute_MethodOnly_SyntacticOnly_ReturnsTrue()
+    {
+        var tree = CSharpSyntaxTree.ParseText("""
+            public static class C
+            {
+                [UnmanagedCallersOnly]
+                public static void M() { }
+            }
+            """);
+        var compilation = CSharpCompilation.Create(
+            "AllFilesMethodEligibilityHelpersTests_SynUcoMethodOnly",
+            [tree],
+            [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)],
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var type = compilation.GetTypeByMetadataName("C")!;
+        var method = type.GetMembers("M").OfType<IMethodSymbol>().Single();
+
+        Assert.True(AllFilesMethodEligibilityHelpers.HasUnmanagedCallersOnlyAttribute(method));
+    }
+
     private static (IMethodSymbol Method, MethodDeclarationSyntax Decl) GetMethodAndDecl(
         string source,
         string typeName,
