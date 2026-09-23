@@ -394,7 +394,8 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         OperatorDeclarationSyntax => true,
         ConversionOperatorDeclarationSyntax => true,
         // Static constructors are runtime-invoked with no source refs; never
-        // bulk-delete them (Codex P1). Instance constructors remain eligible.
+        // collect them. Instance constructors are collected here but rejected
+        // by IsSafeForAllFilesBulkDelete (would synthesize a public ctor).
         ConstructorDeclarationSyntax constructor when
             !constructor.Modifiers.Any(SyntaxKind.StaticKeyword) => true,
         DestructorDeclarationSyntax => true,
