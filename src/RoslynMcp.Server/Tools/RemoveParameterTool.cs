@@ -32,13 +32,14 @@ public sealed class RemoveParameterTool : IToolHandler
     public string Name => "remove_parameter";
 
     /// <inheritdoc />
-    public string Description => "Remove a named parameter from a method and update call sites, overrides, and interface implementations.";
+    public string Description =>
+        "Remove a named parameter from a method and update call sites, overrides, and interface implementations. column (optional) picks the smallest method whose identifier or declaration span covers that column; omitted keeps today's methodName and/or line start-line pick. sourceFile and methodName are required when allFiles is omitted or false. allFiles: true walks every C# file and removes the same parameterName from every eligible method under today's single-site validation (sourceFile optional when true; cannot be combined with methodName, line, or column; parameterName remains required). force / updateOverrides / updateImplementations / preview remain valid with allFiles.";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "methodName", "parameterName" },
+        required = new[] { "solutionPath", "parameterName" },
         properties = new
         {
             solutionPath = new
@@ -49,51 +50,91 @@ public sealed class RemoveParameterTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the method"
+                description = "Absolute path to the source file containing the method. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "When true, walk every C# document (or the optional single sourceFile) and remove the named parameter from every eligible method. Cannot be combined with methodName, line, or column. Default false.",
+                @default = false
             },
             methodName = new
             {
                 type = "string",
-                description = "Name of the method to modify"
+                description = "Name of the method to modify. Single-site only; cannot be combined with allFiles."
             },
             parameterName = new
             {
                 type = "string",
-                description = "Name of the parameter to remove"
+                description = "Name of the parameter to remove. Required for both single-site and allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "Line number for disambiguation if multiple methods have the same name (1-based)"
+                description = "Line number for disambiguation if multiple methods have the same name (1-based). Single-site only; cannot be combined with allFiles."
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set, selects the smallest method whose identifier or declaration span covers that column. Omitted keeps today's MethodName and/or Line start-line pick."
+                description = "1-based column for disambiguation. When set, selects the smallest method whose identifier or declaration span covers that column. Omitted keeps today's MethodName and/or Line start-line pick. Single-site only; cannot be combined with allFiles."
             },
             force = new
             {
                 type = "boolean",
-                description = "Remove the parameter even if it is referenced in the method body",
+                description = "Remove the parameter even if it is referenced in the method body. Valid with allFiles.",
                 @default = false
             },
             updateOverrides = new
             {
                 type = "boolean",
-                description = "Update the virtual/override chain together",
+                description = "Update the virtual/override chain together. Valid with allFiles.",
                 @default = true
             },
             updateImplementations = new
             {
                 type = "boolean",
-                description = "Update interface declarations and implementations together",
+                description = "Update interface declarations and implementations together. Valid with allFiles.",
                 @default = true
             },
             preview = new
             {
                 type = "boolean",
-                description = "Return computed changes without applying",
+                description = "Return computed changes without applying. Valid with allFiles.",
                 @default = false
+            }
+        },
+        oneOf = new object[]
+        {
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @enum = new[] { false }
+                    }
+                },
+                required = new[] { "solutionPath", "sourceFile", "methodName", "parameterName" }
+            },
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @const = true
+                    }
+                },
+                required = new[] { "solutionPath", "allFiles", "parameterName" },
+                not = new
+                {
+                    anyOf = new object[]
+                    {
+                        new { required = new[] { "methodName" } },
+                        new { required = new[] { "line" } },
+                        new { required = new[] { "column" } }
+                    }
+                }
             }
         },
         additionalProperties = false
@@ -123,6 +164,7 @@ public sealed class RemoveParameterTool : IToolHandler
             var @params = new RemoveParameterParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 MethodName = args.MethodName,
                 ParameterName = args.ParameterName,
                 Line = args.Line,
@@ -158,8 +200,9 @@ public sealed class RemoveParameterTool : IToolHandler
     private sealed class RemoveParameterArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string MethodName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? MethodName { get; init; }
         public string ParameterName { get; init; } = "";
         public int? Line { get; init; }
         public int? Column { get; init; }

@@ -65,6 +65,119 @@ public class RemoveParameterOperationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RemoveParameterOperation.Validate(new RemoveParameterParams
+            {
+                AllFiles = false,
+                MethodName = "Process",
+                ParameterName = "unused"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrMethodName_DoesNotThrow()
+    {
+        RemoveParameterOperation.Validate(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithRelativeSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RemoveParameterOperation.Validate(new RemoveParameterParams
+            {
+                AllFiles = true,
+                SourceFile = "Worker.cs",
+                ParameterName = "unused"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithNonCSharpSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RemoveParameterOperation.Validate(new RemoveParameterParams
+            {
+                AllFiles = true,
+                SourceFile = Path.Combine(Path.GetTempPath(), "Worker.txt"),
+                ParameterName = "unused"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMissingSourceFile_DoesNotThrow()
+    {
+        RemoveParameterOperation.Validate(new RemoveParameterParams
+        {
+            AllFiles = true,
+            SourceFile = Path.Combine(Path.GetTempPath(), "RoslynMcpRemoveParameterMissingAllFiles.cs"),
+            ParameterName = "unused"
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMethodName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RemoveParameterOperation.Validate(new RemoveParameterParams
+            {
+                AllFiles = true,
+                MethodName = "Process",
+                ParameterName = "unused"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RemoveParameterOperation.Validate(new RemoveParameterParams
+            {
+                AllFiles = true,
+                Line = 1,
+                ParameterName = "unused"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RemoveParameterOperation.Validate(new RemoveParameterParams
+            {
+                AllFiles = true,
+                Column = 1,
+                ParameterName = "unused"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Remove parameter", RemoveParameterOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Remove 2 parameters", RemoveParameterOperation.BuildAllFilesDescription(2));
+    }
+
     #endregion
 
     #region Happy Path
@@ -1122,7 +1235,573 @@ public class RemoveParameterOperationTests
 
     #endregion
 
+    #region allFiles
+
+    private const string EligibleFileA = """
+        public class FileA
+        {
+            public void Process(int count, int unused) { }
+            public void Other(int unused) { }
+            public void AlreadyGone(int count) { }
+        }
+        """;
+
+    private const string EligibleFileB = """
+        public class FileB
+        {
+            public void Process(int count, int unused) { }
+        }
+        """;
+
+    private const string IneligibleFileC = """
+        public class FileC
+        {
+            public void AlreadyGone(int count) { }
+            public void AlsoGone(string name) { }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task RemoveParameter_OmittedAllFiles_KeepsSingleSiteRewrite()
+    {
+        const string source = """
+            public class Worker
+            {
+                public void Process(int count, int unused) { }
+                public void Other(int count, int unused) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updated, "Process").Single()));
+        Assert.Contains("unused", ParameterNames(GetMethods(updated, "Other").Single()));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_AppliesToEligibleMethodsAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var pathC = Path.Combine(workspace.DirectoryPath, "FileC.cs");
+        var beforeC = await File.ReadAllTextAsync(pathC);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = await File.ReadAllTextAsync(pathA);
+        var updatedB = await File.ReadAllTextAsync(pathB);
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updatedA, "Process").Single()));
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updatedA, "Other").Single()));
+        Assert.Equal(["count"], ParameterNames(GetMethods(updatedA, "AlreadyGone").Single()));
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updatedB, "Process").Single()));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(pathC));
+        Assert.True(result.Changes!.FilesModified.Count >= 2);
+        Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, pathA));
+        Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathC));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_WithoutSourceFileOrMethodName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Changes!.FilesModified.Count >= 2);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RemoveParameterParams
+            {
+                AllFiles = false,
+                MethodName = "Process",
+                ParameterName = "unused"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_WithMethodName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RemoveParameterParams
+            {
+                AllFiles = true,
+                MethodName = "Process",
+                ParameterName = "unused"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var pathC = Path.Combine(workspace.DirectoryPath, "FileC.cs");
+        var beforeA = await File.ReadAllTextAsync(pathA);
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var beforeC = await File.ReadAllTextAsync(pathC);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => PathsEqual(c.File, pathA));
+        Assert.Contains(result.PendingChanges, c => PathsEqual(c.File, pathB));
+        Assert.DoesNotContain(result.PendingChanges, c => PathsEqual(c.File, pathC));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(pathA));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(pathC));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileC.cs", IneligibleFileC),
+            ("FileC2.cs", IneligibleFileC));
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            SourceFile = pathA,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        var updatedA = await File.ReadAllTextAsync(pathA);
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updatedA, "Process").Single()));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, pathA));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_SkipsWhenTargetWouldCollapseOverloads()
+    {
+        const string source = """
+            public class Worker
+            {
+                public void Process(int unused) { }
+                public void Process() { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_SkipsOverrideEqualsRatherThanBreakingContract()
+    {
+        const string source = """
+            public class Worker
+            {
+                public override bool Equals(object? unused) => false;
+                public void NeedsIt(int count, int unused) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("Equals(object? unused)", updated.Replace("\r", ""));
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updated, "NeedsIt").Single()));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_SkipsVirtualBaseWithOverrides()
+    {
+        const string source = """
+            public class Base
+            {
+                public virtual void Process(int count, int unused) { }
+            }
+
+            public class Derived : Base
+            {
+                public override void Process(int count, int unused) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_SkipsWhenParameterMissing()
+    {
+        const string source = """
+            public class Worker
+            {
+                public void AlreadyGone(int count) { }
+                public void NeedsIt(int count, int unused) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(["count"], ParameterNames(GetMethods(updated, "AlreadyGone").Single()));
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updated, "NeedsIt").Single()));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_SkipsModuleInitializer()
+    {
+        // ModuleInitializer must remain parameterless; eligibility gate skips it
+        // so a bulk remove cannot leave CS8815 if callers later re-add params.
+        const string source = """
+            namespace TestApp;
+            using System.Runtime.CompilerServices;
+            public static class Startup
+            {
+                [ModuleInitializer]
+                public static void Init() { }
+                public static void NeedsIt(int count, int unused) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("voidInit()", updated.Replace(" ", "").Replace("\r", ""));
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updated, "NeedsIt").Single()));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_SkipsUnmanagedCallersOnly()
+    {
+        const string source = """
+            namespace TestApp;
+            using System.Runtime.InteropServices;
+            public static class Native
+            {
+                [UnmanagedCallersOnly]
+                public static void Entry(int unused) { }
+                public static void NeedsIt(int count, int unused) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("Entry(int unused)", updated.Replace("\r", ""));
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updated, "NeedsIt").Single()));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_SkipsExtern()
+    {
+        const string source = """
+            using System.Runtime.InteropServices;
+            public static class Native
+            {
+                [DllImport("demo")]
+                public static extern void Import(int unused);
+                public static void NeedsIt(int count, int unused) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("Import(int unused)", updated.Replace("\r", ""));
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updated, "NeedsIt").Single()));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_SkipsInterfaceImplementation()
+    {
+        const string source = """
+            public interface IWorker
+            {
+                void Process(int unused);
+            }
+
+            public class Worker : IWorker
+            {
+                public void Process(int unused) { }
+                public void NeedsIt(int count, int unused) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("void Process(int unused);", updated);
+        Assert.Contains("public void Process(int unused)", updated);
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updated, "NeedsIt").Single()));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_SkipsPartial()
+    {
+        const string source = """
+            public partial class Worker
+            {
+                public partial void Process(int unused);
+            }
+
+            public partial class Worker
+            {
+                public partial void Process(int unused) { }
+                public void NeedsIt(int count, int unused) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new RemoveParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("partial void Process(int unused)", updated);
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updated, "NeedsIt").Single()));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_CascadesWhenLaterRewriteUnlocksEarlierMethod()
+    {
+        // A uses unused only by forwarding to B(unused). Removing B first updates
+        // A's call site; a second document-group pass then removes A's unused.
+        const string fileA = """
+            public static class FileA
+            {
+                public static void A(int unused) => FileB.B(unused);
+            }
+            """;
+        const string fileB = """
+            public static class FileB
+            {
+                public static void B(int unused) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", fileA),
+            ("FileB.cs", fileB));
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        var updatedA = await File.ReadAllTextAsync(pathA);
+        var updatedB = await File.ReadAllTextAsync(pathB);
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updatedA, "A").Single()));
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updatedB, "B").Single()));
+        Assert.Contains("FileB.B()", updatedA.Replace(" ", ""));
+    }
+
+    [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_SkipsWhenCallSiteOnLinkedMultiViewPath()
+    {
+        const string sharedSource = """
+            namespace TestApp;
+
+            public static class Caller
+            {
+                public static void Use() => Worker.Process(1);
+            }
+            """;
+        const string anchorASource = """
+            namespace TestApp;
+
+            public static class Worker
+            {
+                public static void Process(int unused) { }
+            }
+            """;
+        const string anchorBSource = """
+            namespace TestApp;
+
+            public static class Worker
+            {
+                public static void Process(int unused) { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorASource, anchorBSource);
+        var counts = RemoveParameterOperation.BuildLinkedPathCounts(workspace.Context.Solution);
+        var sharedKey = RoslynMcp.Core.FileSystem.PathResolver.GetPathComparisonKey(
+            workspace.SourcePaths["Shared.cs"]);
+        Assert.True(counts.TryGetValue(sharedKey, out var sharedCount) && sharedCount > 1);
+
+        var beforeShared = await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["AnchorA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["AnchorB.cs"]);
+
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeShared, await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["AnchorA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["AnchorB.cs"]));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    #endregion
+
     #region Helpers
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left).Replace('\\', '/'),
+            Path.GetFullPath(right).Replace('\\', '/'),
+            StringComparison.OrdinalIgnoreCase);
 
     private static RemoveParameterParams ValidParams(
         string? sourceFile = null,
@@ -1175,9 +1854,13 @@ public class RemoveParameterOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public Dictionary<string, string> SourcePaths { get; init; } = new(StringComparer.Ordinal);
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Worker.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Worker.cs") =>
+            CreateAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1194,8 +1877,15 @@ public class RemoveParameterOperationTests
                 </Project>
                 """);
 
-            var sourcePath = Path.Combine(directory, fileName);
-            await File.WriteAllTextAsync(sourcePath, source);
+            string? sourcePath = null;
+            foreach (var (fileName, source) in files)
+            {
+                var path = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(path, source);
+                sourcePath ??= path;
+            }
+
+            sourcePath ??= Path.Combine(directory, "Worker.cs");
 
             try
             {
@@ -1231,6 +1921,143 @@ public class RemoveParameterOperationTests
             }
         }
 
+        public static async Task<TempWorkspace> CreateWithLinkedProjectsAsync(
+            string sharedSource,
+            string anchorASource,
+            string anchorBSource)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpRemoveParameterLinked_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            var sharedPath = Path.Combine(directory, "Shared.cs");
+            var rootProjectPath = Path.Combine(directory, "ProjectA.csproj");
+            var referencedProjectPath = Path.Combine(directory, "ProjectB.csproj");
+            var anchorAPath = Path.Combine(directory, "AnchorA.cs");
+            var anchorBPath = Path.Combine(directory, "AnchorB.cs");
+            var projectTypeGuid = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
+            var projectAGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+            var projectBGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+
+            await File.WriteAllTextAsync(sharedPath, sharedSource);
+            await File.WriteAllTextAsync(anchorAPath, anchorASource);
+            await File.WriteAllTextAsync(anchorBPath, anchorBSource);
+            await File.WriteAllTextAsync(solutionPath, $$"""
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                VisualStudioVersion = 17.0.31903.59
+                MinimumVisualStudioVersion = 10.0.40219.1
+                Project("{{projectTypeGuid}}") = "ProjectA", "ProjectA.csproj", "{{projectAGuid}}"
+                EndProject
+                Project("{{projectTypeGuid}}") = "ProjectB", "ProjectB.csproj", "{{projectBGuid}}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                		Release|Any CPU = Release|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{{projectAGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectAGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            await File.WriteAllTextAsync(rootProjectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="AnchorA.cs" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            await File.WriteAllTextAsync(referencedProjectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="AnchorB.cs" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Shared.cs"] = sharedPath,
+                ["AnchorA.cs"] = anchorAPath,
+                ["AnchorB.cs"] = anchorBPath
+            };
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                foreach (var sourcePath in sourcePaths.Values)
+                {
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
+                }
+
+                var linkedCount = context.Solution.Projects
+                    .SelectMany(proj => proj.Documents)
+                    .Count(d => d.FilePath != null &&
+                                string.Equals(Path.GetFullPath(d.FilePath), Path.GetFullPath(sharedPath), StringComparison.OrdinalIgnoreCase));
+                if (linkedCount < 2)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException($"Expected linked document in both projects, found {linkedCount}.");
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = rootProjectPath,
+                    SourcePath = sharedPath,
+                    SourcePaths = sourcePaths,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
         public async ValueTask DisposeAsync()
         {
             Context.Dispose();
@@ -1247,6 +2074,7 @@ public class RemoveParameterOperationTests
             });
         }
     }
+
 
     #endregion
 
