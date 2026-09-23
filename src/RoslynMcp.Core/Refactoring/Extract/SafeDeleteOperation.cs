@@ -380,6 +380,7 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
     internal static IReadOnlyList<SyntaxNode> CollectDeletableDeclarations(SyntaxNode root) =>
         root.DescendantNodes()
             .Where(IsDeletableDeclarationNode)
+            .Where(IsSafeForAllFilesBulkDelete)
             .OrderByDescending(node => node.SpanStart)
             .ThenByDescending(node => node.Span.Length)
             .ToList();
