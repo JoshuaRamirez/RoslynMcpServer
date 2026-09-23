@@ -175,7 +175,7 @@ public sealed class ToolRegistry
 
         // ── Refactoring: Rename (3) ───────────────────────────────────
         r.RegisterRefactoring<RenameSymbolOperation, RenameSymbolParams>(
-            "rename-symbol", "Rename any C# symbol with automatic reference updates");
+            "rename-symbol", "Rename any C# symbol with automatic reference updates; sourceFile, symbolName, and newName are required when allFiles is omitted or false; allFiles (default false) renames every eligible declaration whose simple name equals symbolName to newName in every C# file (sourceFile optional when true; cannot be combined with line or column); symbolName / newName remain required; renameOverloads / renameImplementations / renameFile / preview remain valid with allFiles");
         r.RegisterRefactoring<RenameFileToMatchTypeOperation, RenameFileToMatchTypeParams>(
             "rename-file-to-match-type", "Rename a file so its name matches the primary type declared in it; column (optional) picks the smallest type whose identifier or declaration span covers that column when set with line; omitted keeps today's typeName + optional line pick; column without line keeps today's omitted-line path; allFiles (default false) renames every unambiguous mismatched single-type C# file (sourceFile optional when true; cannot be combined with typeName, line, or column)");
         r.RegisterRefactoring<RenameNamespaceOperation, RenameNamespaceParams>(

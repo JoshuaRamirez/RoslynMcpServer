@@ -10,6 +10,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -17,6 +18,10 @@ namespace RoslynMcp.Core.Refactoring.Rename;
 
 /// <summary>
 /// Renames any symbol with automatic reference updates across the solution.
+/// Optional <c>allFiles</c> walks every C# document (or the optional single
+/// <c>sourceFile</c>) and renames every eligible declaration whose simple name
+/// equals <c>symbolName</c> to <c>newName</c>, skipping ineligible targets
+/// rather than throwing.
 /// </summary>
 public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbolParams>
 {
@@ -33,40 +38,70 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
     }
 
     /// <inheritdoc />
-    protected override void ValidateParams(RenameSymbolParams @params)
-    {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+    protected override void ValidateParams(RenameSymbolParams @params) => Validate(@params);
 
+    /// <summary>
+    /// Validates rename-symbol inputs. Internal so tests can exercise rules
+    /// without loading a workspace.
+    /// </summary>
+    internal static void Validate(RenameSymbolParams @params)
+    {
         if (string.IsNullOrWhiteSpace(@params.SymbolName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "symbolName is required.");
 
         if (string.IsNullOrWhiteSpace(@params.NewName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "newName is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
-
         if (!IdentifierPattern.IsMatch(@params.NewName))
             throw new RefactoringException(ErrorCodes.InvalidNewName, $"'{@params.NewName}' is not a valid C# identifier.");
 
-        if (SyntaxFacts.GetKeywordKind(@params.NewName) != SyntaxKind.None)
+        // Verbatim identifiers escape keywords; bare keywords remain reserved.
+        if (!@params.NewName.StartsWith("@", StringComparison.Ordinal)
+            && SyntaxFacts.GetKeywordKind(@params.NewName) != SyntaxKind.None)
+        {
             throw new RefactoringException(ErrorCodes.ReservedKeyword, $"'{@params.NewName}' is a C# reserved keyword.");
+        }
+
+        if (@params.SymbolName == @params.NewName)
+            throw new RefactoringException(ErrorCodes.SameLocation, "New name is the same as current name.");
+
+        if (@params.AllFiles)
+        {
+            if (@params.Line.HasValue || @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with line or column.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+
+        ValidateSourceFilePath(@params.SourceFile!);
+
+        if (!File.Exists(@params.SourceFile!))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
+    }
 
-        if (@params.SymbolName == @params.NewName)
-            throw new RefactoringException(ErrorCodes.SameLocation, "New name is the same as current name.");
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
     }
 
     /// <inheritdoc />
@@ -75,6 +110,9 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         RenameSymbolParams @params,
         CancellationToken cancellationToken)
     {
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
         // Find the symbol
         var (symbol, document) = await FindSymbolAsync(@params, cancellationToken);
 
@@ -216,11 +254,487 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         return result;
     }
 
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>RenameNamespaceOperation.ExecuteAllFilesAsync</c>)
+    /// and renames every eligible declaration whose simple name equals
+    /// <paramref name="params"/>.SymbolName to <paramref name="params"/>.NewName.
+    /// Optional <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
+    /// Linked multi-project views of the same path are skipped rather than
+    /// coalescing (same contract as <c>SafeDeleteOperation.ExecuteAllFilesAsync</c> /
+    /// rename_namespace / remove_parameter allFiles). Symbols already at
+    /// <c>newName</c>, name-conflict cases, constructors/destructors/operators,
+    /// uneditable / source-generated docs, colliding <c>renameFile</c>
+    /// destinations, and otherwise inapplicable declarations are skipped rather
+    /// than failing the walk. Deduplicates by symbol identity (and overload group
+    /// when <c>renameOverloads</c> expands the set) so partials / linked views
+    /// are not double-applied. Deterministic <c>SpanStart</c> order within a file.
+    /// The document-group walk repeats until a full pass makes no progress.
+    /// When every file is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        RenameSymbolParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+        var linkedPathCounts = AllFilesDocumentHelpers.BuildLinkedPathCounts(originalSolution);
+        var renamedSymbols = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        var claimedFileDestinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var plannedFileRenames = new List<(string SourcePath, string DestinationPath)>();
+        var changedCountByDoc = new Dictionary<DocumentId, int>();
+
+        bool madeProgress;
+        do
+        {
+            madeProgress = false;
+
+            foreach (var linkedDocuments in documentGroups)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (linkedDocuments.Count > 1)
+                    continue;
+
+                var primary = linkedDocuments.FirstOrDefault(d =>
+                    d is not SourceGeneratedDocument &&
+                    DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+                if (primary == null)
+                    continue;
+
+                while (true)
+                {
+                    Context.UpdateSolution(currentSolution);
+
+                    var currentDocument = currentSolution.GetDocument(primary.Id);
+                    if (currentDocument == null ||
+                        currentDocument is SourceGeneratedDocument ||
+                        !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                    {
+                        break;
+                    }
+
+                    var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                    var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                    if (root == null || semanticModel == null)
+                        break;
+
+                    Solution? updated = null;
+                    (string SourcePath, string DestinationPath)? fileRename = null;
+                    foreach (var decl in CollectNamedDeclarations(root, semanticModel, @params.SymbolName, cancellationToken))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        try
+                        {
+                            (updated, fileRename) = await TryRenameOneAsync(
+                                currentDocument,
+                                semanticModel,
+                                decl,
+                                @params,
+                                renamedSymbols,
+                                claimedFileDestinations,
+                                linkedPathCounts,
+                                cancellationToken);
+                        }
+                        catch (RefactoringException)
+                        {
+                            updated = null;
+                            fileRename = null;
+                        }
+
+                        if (updated != null)
+                            break;
+                    }
+
+                    if (updated == null)
+                        break;
+
+                    var beforeSolution = currentSolution;
+                    currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                        beforeSolution,
+                        updated,
+                        Context.Workspace,
+                        cancellationToken);
+                    Context.UpdateSolution(currentSolution);
+
+                    if (fileRename is { } rename)
+                    {
+                        plannedFileRenames.Add(rename);
+                        claimedFileDestinations.Add(PathResolver.GetPathComparisonKey(rename.DestinationPath));
+                    }
+
+                    changedCountByDoc[primary.Id] =
+                        changedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+                    madeProgress = true;
+                }
+            }
+        } while (madeProgress);
+
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var changedCount = changedCountByDoc.GetValueOrDefault(document.Id);
+                if (changedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        changedCount = Math.Max(changedCount, changedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = changedCount > 0
+                        ? BuildAllFilesDescription(changedCount, @params.SymbolName, @params.NewName)
+                        : $"Rename '{@params.SymbolName}' to '{@params.NewName}'"
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+        {
+            foreach (var (sourcePath, destinationPath) in plannedFileRenames)
+            {
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = destinationPath,
+                    ChangeType = ChangeKind.Create,
+                    Description = "Rename file to match type name"
+                });
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = sourcePath,
+                    ChangeType = ChangeKind.Delete,
+                    Description = $"Rename '{Path.GetFileName(sourcePath)}' to '{Path.GetFileName(destinationPath)}'"
+                });
+            }
+
+            Context.UpdateSolution(originalSolution);
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+        }
+
+        Context.UpdateSolution(originalSolution);
+
+        if (!anyChanged && plannedFileRenames.Count == 0)
+        {
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+                null, 0, 0);
+        }
+
+        var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+        var filesModified = commitResult.FilesModified.ToList();
+        var filesCreated = commitResult.FilesCreated.ToList();
+        var filesDeleted = commitResult.FilesDeleted.ToList();
+
+        foreach (var (sourcePath, destinationPath) in plannedFileRenames)
+        {
+            try
+            {
+                if (File.Exists(sourcePath) && !File.Exists(destinationPath))
+                {
+                    File.Move(sourcePath, destinationPath);
+                    filesCreated.Add(destinationPath);
+                    filesDeleted.Add(sourcePath);
+                }
+            }
+            catch (IOException)
+            {
+                // Skip failed physical renames; code references already updated.
+            }
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges
+            {
+                FilesModified = filesModified,
+                FilesCreated = filesCreated,
+                FilesDeleted = filesDeleted
+            },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that renamed
+    /// <paramref name="changedCount"/> symbols from
+    /// <paramref name="symbolName"/> to <paramref name="newName"/>.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int changedCount, string symbolName, string newName) =>
+        changedCount == 1
+            ? $"Rename '{symbolName}' to '{newName}'"
+            : $"Rename {changedCount} symbols '{symbolName}' to '{newName}'";
+
+    /// <summary>
+    /// Declarations in <paramref name="root"/> whose declared symbol simple
+    /// name equals <paramref name="symbolName"/>, in deterministic
+    /// <c>SpanStart</c> then span-length order.
+    /// </summary>
+    internal static IReadOnlyList<SyntaxNode> CollectNamedDeclarations(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        string symbolName,
+        CancellationToken cancellationToken)
+    {
+        var results = new List<(SyntaxNode Node, int SpanStart, int Length)>();
+        foreach (var node in root.DescendantNodes())
+        {
+            var symbol = semanticModel.GetDeclaredSymbol(node, cancellationToken);
+            if (symbol != null && symbol.Name == symbolName)
+                results.Add((node, node.SpanStart, node.Span.Length));
+        }
+
+        return results
+            .OrderBy(r => r.SpanStart)
+            .ThenBy(r => r.Length)
+            .Select(r => r.Node)
+            .ToList();
+    }
+
+    private async Task<(Solution? Solution, (string SourcePath, string DestinationPath)? FileRename)> TryRenameOneAsync(
+        Document document,
+        SemanticModel semanticModel,
+        SyntaxNode declaration,
+        RenameSymbolParams @params,
+        HashSet<ISymbol> renamedSymbols,
+        HashSet<string> claimedFileDestinations,
+        IReadOnlyDictionary<string, int> linkedPathCounts,
+        CancellationToken cancellationToken)
+    {
+        var symbol = semanticModel.GetDeclaredSymbol(declaration, cancellationToken);
+        if (symbol == null || symbol.Name != @params.SymbolName)
+            return (null, null);
+
+        if (renamedSymbols.Contains(symbol))
+            return (null, null);
+
+        if (string.Equals(symbol.Name, @params.NewName, StringComparison.Ordinal))
+            return (null, null);
+
+        try
+        {
+            ValidateRename(symbol, @params);
+        }
+        catch (RefactoringException)
+        {
+            return (null, null);
+        }
+
+        if (HasSimpleNameConflict(symbol, @params.NewName))
+            return (null, null);
+
+        var options = new SymbolRenameOptions(
+            RenameOverloads: @params.RenameOverloads,
+            RenameInStrings: false,
+            RenameInComments: false,
+            RenameFile: false);
+
+        IReadOnlyList<MemberIdentity> interfaceMembersToPreserve = [];
+        MemberIdentity? selectedImplementation = null;
+        if (!@params.RenameImplementations)
+        {
+            interfaceMembersToPreserve = CollectInterfaceMembers(
+                symbol,
+                @params.RenameOverloads,
+                Context.Solution);
+            if (interfaceMembersToPreserve.Count > 0
+                && symbol.ContainingType?.TypeKind != TypeKind.Interface)
+            {
+                selectedImplementation = MemberIdentity.From(symbol, Context.Solution);
+            }
+        }
+
+        var beforeSolution = document.Project.Solution;
+        Solution newSolution;
+        try
+        {
+            newSolution = await Renamer.RenameSymbolAsync(
+                beforeSolution,
+                symbol,
+                options,
+                @params.NewName,
+                cancellationToken);
+        }
+        catch (ArgumentException)
+        {
+            return (null, null);
+        }
+
+        if (!@params.RenameImplementations && interfaceMembersToPreserve.Count > 0)
+        {
+            newSolution = await RestoreImplementationNamesAsync(
+                newSolution,
+                interfaceMembersToPreserve,
+                selectedImplementation,
+                GetRestoreName(symbol),
+                @params.NewName,
+                cancellationToken);
+        }
+
+        if (ChangedDocumentsTouchLinkedMultiView(beforeSolution, newSolution, linkedPathCounts))
+            return (null, null);
+
+        ValidateAllFilesChangedDocumentsAreEditable(beforeSolution, newSolution);
+
+        // Mark after a successful rewrite so renameOverloads expansion and
+        // partials of this symbol are not selected again on later passes.
+        MarkRenamed(renamedSymbols, symbol, @params.RenameOverloads);
+
+        (string SourcePath, string DestinationPath)? fileRename = null;
+        if (@params.RenameFile
+            && symbol is INamedTypeSymbol
+            && document.FilePath != null)
+        {
+            var fileName = Path.GetFileNameWithoutExtension(document.FilePath);
+            if (fileName == symbol.Name)
+            {
+                var newFilePath = Path.Combine(
+                    Path.GetDirectoryName(document.FilePath)!,
+                    @params.NewName + ".cs");
+                var destKey = PathResolver.GetPathComparisonKey(newFilePath);
+                if (!claimedFileDestinations.Contains(destKey)
+                    && !File.Exists(newFilePath)
+                    && !string.Equals(
+                        PathResolver.GetPathComparisonKey(document.FilePath),
+                        destKey,
+                        StringComparison.Ordinal))
+                {
+                    var doc = newSolution.GetDocument(document.Id);
+                    if (doc != null)
+                    {
+                        newSolution = newSolution.WithDocumentFilePath(document.Id, newFilePath);
+                        fileRename = (document.FilePath, newFilePath);
+                    }
+                }
+            }
+        }
+
+        return (newSolution, fileRename);
+    }
+
+    private static void MarkRenamed(HashSet<ISymbol> renamedSymbols, ISymbol symbol, bool renameOverloads)
+    {
+        renamedSymbols.Add(symbol);
+        if (!renameOverloads || symbol is not IMethodSymbol method || method.ContainingType == null)
+            return;
+
+        foreach (var overload in method.ContainingType.GetMembers(method.Name).OfType<IMethodSymbol>())
+            renamedSymbols.Add(overload);
+    }
+
+    /// <summary>
+    /// True when a sibling member / type already uses <paramref name="newName"/>
+    /// in the same container (cases single-site Renamer would leave conflicted).
+    /// </summary>
+    internal static bool HasSimpleNameConflict(ISymbol symbol, string newName)
+    {
+        if (symbol.ContainingType != null)
+        {
+            foreach (var member in symbol.ContainingType.GetMembers(newName))
+            {
+                if (!SymbolEqualityComparer.Default.Equals(member, symbol))
+                    return true;
+            }
+
+            return false;
+        }
+
+        if (symbol is INamedTypeSymbol namedType && namedType.ContainingNamespace != null)
+        {
+            foreach (var member in namedType.ContainingNamespace.GetMembers(newName))
+            {
+                if (member is INamedTypeSymbol existing
+                    && !SymbolEqualityComparer.Default.Equals(existing, namedType))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when the rename rewrite touches any document whose path has
+    /// multiple linked views (so Coalesce would overwrite siblings).
+    /// </summary>
+    internal static bool ChangedDocumentsTouchLinkedMultiView(
+        Solution beforeSolution,
+        Solution afterSolution,
+        IReadOnlyDictionary<string, int> linkedPathCounts)
+    {
+        foreach (var projectChange in afterSolution.GetChanges(beforeSolution).GetProjectChanges())
+        {
+            foreach (var documentId in projectChange.GetChangedDocuments())
+            {
+                var document = beforeSolution.GetDocument(documentId)
+                    ?? afterSolution.GetDocument(documentId);
+                if (document != null && AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(document, linkedPathCounts))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void ValidateAllFilesChangedDocumentsAreEditable(Solution oldSolution, Solution newSolution)
+    {
+        foreach (var projectChange in newSolution.GetChanges(oldSolution).GetProjectChanges())
+        {
+            foreach (var documentId in projectChange.GetChangedDocuments())
+            {
+                var document = newSolution.GetDocument(documentId)
+                    ?? oldSolution.GetDocument(documentId);
+                if (document == null)
+                    continue;
+
+                DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
+            }
+        }
+    }
+
     private async Task<(ISymbol Symbol, Document Document)> FindSymbolAsync(
         RenameSymbolParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         var root = await document.GetSyntaxRootAsync(cancellationToken);
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
@@ -431,7 +945,7 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         {
             new()
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = $"Rename '{symbol.Name}' to '{@params.NewName}'"
             }
