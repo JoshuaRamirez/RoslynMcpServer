@@ -5,7 +5,7 @@ using RoslynMcp.Core.Refactoring.Convert;
 using RoslynMcp.Core.Workspace;
 using Xunit;
 
-namespace RoslynMcp.Core.Tests.Refactoring.Convert;
+namespace RoslynMcp.Core.Tests.Refactoring;
 
 /// <summary>
 /// Operation-level tests for <see cref="ConvertAnonymousToClassOperation"/> allFiles.
