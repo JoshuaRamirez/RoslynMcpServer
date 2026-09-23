@@ -417,6 +417,180 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
             .ThenBy(m => m.Span.Length)
             .ToList();
 
+    /// <summary>
+    /// Bulk eligibility: skip overrides / interface declarations /
+    /// interface implementations / partial pairs / <c>extern</c> /
+    /// <c>UnmanagedCallersOnly</c> / <c>ModuleInitializer</c> so allFiles
+    /// cannot rewrite a signature whose metadata or sibling contract cannot
+    /// be updated (ChangeSignature / Codex).
+    /// </summary>
+    internal static bool IsEligibleForAllFiles(IMethodSymbol method, MethodDeclarationSyntax methodDecl)
+    {
+        if (method.IsExtensionMethod)
+            return false;
+
+        if (method.PartialDefinitionPart != null || method.PartialImplementationPart != null)
+            return false;
+
+        if (method.IsExtern)
+            return false;
+
+        if (HasUnmanagedCallersOnlyAttribute(method, methodDecl))
+            return false;
+
+        if (HasModuleInitializerAttribute(method, methodDecl))
+            return false;
+
+        if (method.IsOverride)
+            return false;
+
+        if (method.ContainingType?.TypeKind == TypeKind.Interface)
+            return false;
+
+        if (!method.ExplicitInterfaceImplementations.IsDefaultOrEmpty &&
+            method.ExplicitInterfaceImplementations.Length > 0)
+        {
+            return false;
+        }
+
+        if (ImplementsAnyInterfaceMember(method))
+            return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// True when <paramref name="method"/> is the implementation of any
+    /// interface member on its containing type.
+    /// </summary>
+    internal static bool ImplementsAnyInterfaceMember(IMethodSymbol method)
+    {
+        var containingType = method.ContainingType;
+        if (containingType == null)
+            return false;
+
+        foreach (var iface in containingType.AllInterfaces)
+        {
+            foreach (var member in iface.GetMembers().OfType<IMethodSymbol>())
+            {
+                var impl = containingType.FindImplementationForInterfaceMember(member) as IMethodSymbol;
+                if (impl != null && SymbolEqualityComparer.Default.Equals(impl, method))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when inserting <paramref name="parameterType"/> at
+    /// <paramref name="insertIndex"/> would collide with another method of
+    /// the same name in the containing type (same arity + bound types)
+    /// (ChangeSignature / Codex).
+    /// </summary>
+    internal static bool WouldCollideWithSibling(
+        IMethodSymbol method,
+        MethodDeclarationSyntax methodDecl,
+        SemanticModel semanticModel,
+        string parameterType,
+        int insertIndex)
+    {
+        var containingType = method.ContainingType;
+        if (containingType == null)
+            return false;
+
+        var newTypeInfo = semanticModel.GetSpeculativeTypeInfo(
+            methodDecl.SpanStart,
+            SyntaxFactory.ParseTypeName(parameterType),
+            SpeculativeBindingOption.BindAsTypeOrNamespace);
+        if (newTypeInfo.Type == null || newTypeInfo.Type is IErrorTypeSymbol)
+            return false;
+
+        var prospectiveLength = method.Parameters.Length + 1;
+
+        foreach (var sibling in containingType.GetMembers(method.Name).OfType<IMethodSymbol>())
+        {
+            if (SymbolEqualityComparer.Default.Equals(sibling, method))
+                continue;
+            if (sibling.Parameters.Length != prospectiveLength)
+                continue;
+            if (sibling.TypeParameters.Length != method.TypeParameters.Length)
+                continue;
+
+            var collision = true;
+            for (var i = 0; i < prospectiveLength; i++)
+            {
+                ITypeSymbol expectedType;
+                if (i == insertIndex)
+                {
+                    expectedType = newTypeInfo.Type;
+                }
+                else
+                {
+                    var originalIndex = i < insertIndex ? i : i - 1;
+                    expectedType = method.Parameters[originalIndex].Type;
+                }
+
+                if (sibling.Parameters[i].RefKind != RefKind.None)
+                {
+                    collision = false;
+                    break;
+                }
+
+                if (!TypeEquivalenceHelpers.TypesEquivalent(sibling.Parameters[i].Type, expectedType))
+                {
+                    collision = false;
+                    break;
+                }
+            }
+
+            if (collision)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool HasModuleInitializerAttribute(IMethodSymbol method, MethodDeclarationSyntax methodDecl)
+    {
+        if (method.GetAttributes().Any(attr =>
+        {
+            var type = attr.AttributeClass;
+            if (type == null)
+                return false;
+            if (type.Name is not ("ModuleInitializerAttribute" or "ModuleInitializer"))
+                return false;
+            return type.ContainingNamespace?.ToDisplayString() == "System.Runtime.CompilerServices";
+        }))
+        {
+            return true;
+        }
+
+        return methodDecl.AttributeLists
+            .SelectMany(list => list.Attributes)
+            .Any(attr => attr.Name.ToString().Contains("ModuleInitializer", StringComparison.Ordinal));
+    }
+
+    private static bool HasUnmanagedCallersOnlyAttribute(IMethodSymbol method, MethodDeclarationSyntax methodDecl)
+    {
+        if (method.GetAttributes().Any(attr =>
+        {
+            var type = attr.AttributeClass;
+            if (type == null)
+                return false;
+            if (type.Name is not ("UnmanagedCallersOnlyAttribute" or "UnmanagedCallersOnly"))
+                return false;
+            return type.ContainingNamespace?.ToDisplayString() == "System.Runtime.InteropServices";
+        }))
+        {
+            return true;
+        }
+
+        return methodDecl.AttributeLists
+            .SelectMany(list => list.Attributes)
+            .Any(attr => attr.Name.ToString().Contains("UnmanagedCallersOnly", StringComparison.Ordinal));
+    }
+
     private async Task<Solution?> TryAddOneAsync(
         Document document,
         SemanticModel semanticModel,
@@ -429,6 +603,9 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
             return null;
 
         if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        if (!IsEligibleForAllFiles(methodSymbol, methodDecl))
             return null;
 
         var normalizedName = SyntaxIdentifierValidation.NormalizeIdentifier(@params.ParameterName);
@@ -450,6 +627,24 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         // Use the document's solution (allFiles currentSolution), not Context.Solution,
         // so DeclaringSyntaxReferences resolve after prior bulk rewrites (ChangeSignature peer).
         var solution = document.Project.Solution;
+
+        // Base virtual/abstract still eligible under IsOverride==false, but
+        // rewriting it while derived overrides keep the old signature breaks
+        // the hierarchy when bulk does not cascade (ChangeSignature / Codex).
+        var overrides = await SymbolFinder.FindOverridesAsync(
+            methodSymbol, solution, cancellationToken: cancellationToken);
+        if (overrides.Any())
+            return null;
+
+        if (WouldCollideWithSibling(
+            methodSymbol,
+            methodDecl,
+            semanticModel,
+            @params.ParameterType,
+            insertIndex))
+        {
+            return null;
+        }
 
         var relatedMethods = await GetRelatedMethodsAsync(
             methodSymbol,

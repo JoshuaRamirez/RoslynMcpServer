@@ -1471,6 +1471,90 @@ public class AddParameterOperationTests
     }
 
     [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_SkipsWhenTargetWouldCollapseOverloads()
+    {
+        const string source = """
+            public class Worker
+            {
+                public void Process() { }
+                public void Process(int timeout) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddParameterOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_SkipsOverrideEqualsRatherThanBreakingContract()
+    {
+        const string source = """
+            public class Worker
+            {
+                public override string ToString() => "x";
+                public void NeedsIt(int count) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.DoesNotContain("ToString(int", updated.Replace(" ", ""));
+        Assert.Contains("timeout", ParameterNames(GetMethods(updated, "NeedsIt").Single()));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_SkipsVirtualBaseWithOverrides()
+    {
+        const string source = """
+            public class Base
+            {
+                public virtual void Process(int count) { }
+            }
+
+            public class Derived : Base
+            {
+                public override void Process(int count) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddParameterOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
     public async Task AddParameter_AllFilesTrue_SkipsAlreadyHasParameter()
     {
         const string source = """
