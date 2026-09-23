@@ -798,6 +798,50 @@ public class RenameSymbolOperationTests
         Assert.Contains("SharedType", text2);
     }
 
+    [SkippableFact]
+    public async Task RenameSymbol_AllFilesTrue_RenameFile_DestinationExists_SkipsEntireTarget()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("TempType.cs", """
+                public class TempType { public int A; }
+                """),
+            ("SharedType.cs", """
+                public class SharedType { public int Existing; }
+                """),
+            ("Other/TempType.cs", """
+                namespace Other;
+                public class TempType { public int B; }
+                """));
+        var operation = new RenameSymbolOperation(workspace.Context);
+        var rootTemp = Path.Combine(workspace.DirectoryPath, "TempType.cs");
+        var rootShared = Path.Combine(workspace.DirectoryPath, "SharedType.cs");
+        var otherTemp = Path.Combine(workspace.DirectoryPath, "Other", "TempType.cs");
+        var otherShared = Path.Combine(workspace.DirectoryPath, "Other", "SharedType.cs");
+
+        var result = await operation.ExecuteAsync(new RenameSymbolParams
+        {
+            AllFiles = true,
+            SymbolName = "TempType",
+            NewName = "SharedType",
+            RenameFile = true
+        });
+
+        Assert.True(result.Success);
+        // Root destination already exists — skip entire target (no partial rename in old file).
+        Assert.True(File.Exists(rootTemp));
+        Assert.True(File.Exists(rootShared));
+        Assert.False(File.Exists(otherTemp));
+        Assert.True(File.Exists(otherShared));
+        var rootText = await File.ReadAllTextAsync(rootTemp);
+        // Colliding destination → skip entire target: old type/file untouched.
+        Assert.Contains("class TempType", rootText);
+        Assert.DoesNotContain("class SharedType", rootText);
+        var otherText = await File.ReadAllTextAsync(otherShared);
+        Assert.Contains("SharedType", otherText);
+        Assert.Contains(otherShared, result.Changes!.FilesCreated);
+        Assert.Contains(otherTemp, result.Changes.FilesDeleted);
+        Assert.DoesNotContain(rootTemp, result.Changes.FilesDeleted);
+    }
 
     [Fact]
     public void CollectNamedDeclarations_OrdersBySpanStart()
