@@ -137,6 +137,20 @@ public class RenameNamespaceOperationTests
     }
 
     [Fact]
+    public void FoldersOverlap_DetectsNestedAndEqualPaths()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameNsOverlap");
+        var outer = Path.Combine(root, "Old");
+        var inner = Path.Combine(outer, "Ns");
+        Assert.True(RenameNamespaceOperation.FoldersOverlap(outer, outer));
+        Assert.True(RenameNamespaceOperation.FoldersOverlap(outer, inner));
+        Assert.True(RenameNamespaceOperation.FoldersOverlap(inner, outer));
+        Assert.False(RenameNamespaceOperation.FoldersOverlap(
+            Path.Combine(root, "A"),
+            Path.Combine(root, "B")));
+    }
+
+    [Fact]
     public void CollectTopLevelNamespaces_IgnoresNested()
     {
         var tree = CSharpSyntaxTree.ParseText("""

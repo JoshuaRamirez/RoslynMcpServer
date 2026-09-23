@@ -243,9 +243,14 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
-        var renamedFullNames = new HashSet<string>(StringComparer.Ordinal);
+        // Full-solution multi-view counts (independent of optional sourceFile)
+        // so solution-wide rename cannot coalesce onto a linked multi-view path.
+        var linkedPathCounts = BuildLinkedPathCounts(originalSolution);
+        // Key by project + full name so same-named namespaces in unrelated
+        // compilations are each renamed once (Codex).
+        var renamedKeys = new HashSet<(ProjectId ProjectId, string FullName)>();
         var folderPlans = new List<FolderMovePlan>();
-        var claimedDestinations = new List<string>();
+        var claimedFolderPaths = new List<string>();
         var changedCountByDoc = new Dictionary<DocumentId, int>();
 
         bool madeProgress;
@@ -297,8 +302,9 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                                 namespaceDecl,
                                 newFullName,
                                 @params.UpdateFolders,
-                                renamedFullNames,
-                                claimedDestinations,
+                                renamedKeys,
+                                claimedFolderPaths,
+                                linkedPathCounts,
                                 cancellationToken);
                         }
                         catch (RefactoringException)
@@ -326,7 +332,10 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                     {
                         folderPlans.Add(folderPlan);
                         foreach (var folder in folderPlan.Folders)
-                            claimedDestinations.Add(folder.DestinationFolder);
+                        {
+                            claimedFolderPaths.Add(folder.SourceFolder);
+                            claimedFolderPaths.Add(folder.DestinationFolder);
+                        }
                     }
 
                     changedCountByDoc[primary.Id] =
@@ -446,16 +455,24 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         foreach (var folderPlan in folderPlans)
         {
             ApplyFolderMoves(folderPlan);
-            WriteProjectUpdates(folderPlan);
             Context.UpdateSolution(ApplyDocumentPathUpdates(Context.Solution, folderPlan));
 
             filesModified = filesModified.Select(path => RemapCommittedPath(path, folderPlan)).ToList();
-            filesModified.AddRange(folderPlan.ProjectTexts.Keys);
             foreach (var file in folderPlan.Files)
             {
                 filesCreated.Add(file.DestinationFile);
                 filesDeleted.Add(file.SourceFile);
             }
+        }
+
+        // Compose project-file rewrites from the original XML across every
+        // accepted plan so later plans cannot overwrite earlier Compile
+        // remaps (Codex).
+        if (folderPlans.Count > 0)
+        {
+            var composedProjectTexts = ComposeFolderPlanProjectTexts(folderPlans);
+            WriteProjectUpdates(composedProjectTexts);
+            filesModified.AddRange(composedProjectTexts.Keys);
         }
 
         return RefactoringResult.Succeeded(operationId,
@@ -496,8 +513,9 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         BaseNamespaceDeclarationSyntax namespaceDecl,
         string newFullName,
         bool updateFolders,
-        HashSet<string> renamedFullNames,
-        List<string> claimedDestinations,
+        HashSet<(ProjectId ProjectId, string FullName)> renamedKeys,
+        List<string> claimedFolderPaths,
+        IReadOnlyDictionary<string, int> linkedPathCounts,
         CancellationToken cancellationToken)
     {
         if (semanticModel.GetDeclaredSymbol(namespaceDecl, cancellationToken) is not INamespaceSymbol namespaceSymbol)
@@ -510,7 +528,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         if (string.IsNullOrEmpty(oldFullName))
             return (null, null);
 
-        if (renamedFullNames.Contains(oldFullName))
+        var renameKey = (document.Project.Id, oldFullName);
+        if (renamedKeys.Contains(renameKey))
             return (null, null);
 
         if (string.Equals(oldFullName, newFullName, StringComparison.Ordinal))
@@ -522,11 +541,17 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
 
         ValidateNoNameConflict(namespaceSymbol, newFullName, compilation);
 
+        var beforeSolution = document.Project.Solution;
         var newSolution = await ComputeRenamedSolutionAsync(
             namespaceSymbol,
             oldFullName,
             newFullName,
             cancellationToken);
+
+        // Renamer may rewrite references on linked multi-view paths; coalesce
+        // would then copy onto siblings. Skip-not-throw (Copilot / remove_parameter).
+        if (ChangedDocumentsTouchLinkedMultiView(beforeSolution, newSolution, linkedPathCounts))
+            return (null, null);
 
         ValidateChangedDocumentsAreEditable(Context.Solution, newSolution);
 
@@ -544,16 +569,11 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                     Context.Solution,
                     Context.Workspace);
 
-                if (folderPlan.Folders.Any(folder =>
-                        claimedDestinations.Any(claimed =>
-                            ReferToSameDirectory(claimed, folder.DestinationFolder) ||
-                            string.Equals(
-                                PathResolver.NormalizePath(claimed),
-                                PathResolver.NormalizePath(folder.DestinationFolder),
-                                StringComparison.OrdinalIgnoreCase))))
-                {
+                // Skip when any source/destination overlaps a previously claimed
+                // folder tree (not only equal destinations) so applying one plan
+                // cannot invalidate another (Codex).
+                if (FolderPlanOverlapsClaimed(folderPlan, claimedFolderPaths))
                     folderPlan = null;
-                }
             }
             catch (RefactoringException)
             {
@@ -561,8 +581,137 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             }
         }
 
-        renamedFullNames.Add(oldFullName);
+        renamedKeys.Add(renameKey);
         return (newSolution, folderPlan);
+    }
+
+    /// <summary>
+    /// True when any folder in <paramref name="plan"/> shares a path tree with
+    /// a previously claimed source or destination folder.
+    /// </summary>
+    private static bool FolderPlanOverlapsClaimed(
+        FolderMovePlan plan,
+        IReadOnlyList<string> claimedFolderPaths)
+    {
+        foreach (var folder in plan.Folders)
+        {
+            foreach (var claimed in claimedFolderPaths)
+            {
+                if (FoldersOverlap(folder.SourceFolder, claimed) ||
+                    FoldersOverlap(folder.DestinationFolder, claimed))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="left"/> and <paramref name="right"/> refer to
+    /// the same directory or one is nested under the other.
+    /// </summary>
+    internal static bool FoldersOverlap(string left, string right) =>
+        ReferToSameDirectory(left, right) ||
+        IsUnderOrEqual(left, right) ||
+        IsUnderOrEqual(right, left);
+
+    /// <summary>
+    /// Path → linked-view count across the entire solution (not a filtered
+    /// <c>sourceFile</c> subset). Same contract as
+    /// <c>RemoveParameterOperation.BuildLinkedPathCounts</c>.
+    /// </summary>
+    internal static Dictionary<string, int> BuildLinkedPathCounts(Solution solution)
+    {
+        var groups = AllFilesDocumentHelpers.GroupByLinkedPath(
+            AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution));
+        return groups
+            .Where(g => g.Count > 0 && g[0].FilePath != null)
+            .GroupBy(g => PathResolver.GetPathComparisonKey(g[0].FilePath!), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Count, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// True when <paramref name="document"/> shares a physical path with
+    /// multiple linked workspace views.
+    /// </summary>
+    internal static bool DocumentPathHasLinkedMultiView(
+        Document document,
+        IReadOnlyDictionary<string, int> linkedPathCounts)
+    {
+        if (document.FilePath == null)
+            return false;
+
+        var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
+        return linkedPathCounts.TryGetValue(pathKey, out var count) && count > 1;
+    }
+
+    /// <summary>
+    /// True when the rename rewrite touches any document whose path has
+    /// multiple linked views (so Coalesce would overwrite siblings).
+    /// </summary>
+    internal static bool ChangedDocumentsTouchLinkedMultiView(
+        Solution beforeSolution,
+        Solution afterSolution,
+        IReadOnlyDictionary<string, int> linkedPathCounts)
+    {
+        foreach (var projectChange in afterSolution.GetChanges(beforeSolution).GetProjectChanges())
+        {
+            foreach (var documentId in projectChange.GetChangedDocuments())
+            {
+                var document = beforeSolution.GetDocument(documentId)
+                    ?? afterSolution.GetDocument(documentId);
+                if (document != null && DocumentPathHasLinkedMultiView(document, linkedPathCounts))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Rebuilds project XML remaps from the original on-disk texts for every
+    /// accepted folder plan so Compile updates compose instead of overwrite.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> ComposeFolderPlanProjectTexts(
+        IReadOnlyList<FolderMovePlan> plans)
+    {
+        var compileMoves = plans
+            .SelectMany(plan => plan.Files)
+            .Select(file => (file.SourceFile, file.DestinationFile))
+            .ToList();
+        var folderPairs = plans
+            .SelectMany(plan => plan.Folders)
+            .Select(folder => (folder.SourceFolder, folder.DestinationFolder))
+            .ToList();
+
+        var projectPaths = plans
+            .SelectMany(plan => plan.ProjectTexts.Keys)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var composed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var projectPath in projectPaths)
+        {
+            if (!File.Exists(projectPath))
+                continue;
+
+            var projectDirectory = Path.GetDirectoryName(projectPath);
+            if (string.IsNullOrEmpty(projectDirectory))
+                continue;
+
+            var original = File.ReadAllText(projectPath);
+            var updated = UpdateExplicitCompileItemsForMoves(
+                original,
+                projectDirectory,
+                compileMoves,
+                folderPairs);
+            if (!string.Equals(original, updated, StringComparison.Ordinal))
+                composed[projectPath] = updated;
+        }
+
+        return composed;
     }
 
     /// <summary>
@@ -1816,9 +1965,12 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         return solution;
     }
 
-    private static void WriteProjectUpdates(FolderMovePlan plan)
+    private static void WriteProjectUpdates(FolderMovePlan plan) =>
+        WriteProjectUpdates(plan.ProjectTexts);
+
+    private static void WriteProjectUpdates(IReadOnlyDictionary<string, string> projectTexts)
     {
-        foreach (var (projectPath, text) in plan.ProjectTexts)
+        foreach (var (projectPath, text) in projectTexts)
         {
             try
             {
