@@ -690,25 +690,46 @@ public class HelpGeneratorTests
     [Fact]
     public void GenerateToolHelp_RequiredKeywordParams_ShownAsRequired()
     {
-        // RenameSymbolParams has: required string SourceFile, required string SymbolName,
-        // required string NewName — these should appear under REQUIRED, not OPTIONAL.
+        // RenameSymbolParams keeps required SymbolName + NewName; SourceFile is nullable
+        // so allFiles can omit it and appears under OPTIONAL with --all-files.
         var registry = ToolRegistry.BuildDefault();
         var tool = registry.GetTool("rename-symbol")!;
         var help = HelpGenerator.GenerateToolHelp(tool);
 
-        // The help should have a REQUIRED section containing source-file, symbol-name, new-name
         Assert.Contains("REQUIRED:", help);
 
-        // Split at REQUIRED: and OPTIONAL: to verify placement
         var requiredIdx = help.IndexOf("REQUIRED:");
         var optionalIdx = help.IndexOf("OPTIONAL:");
         Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
         Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
 
         var requiredSection = help[requiredIdx..optionalIdx];
-        Assert.Contains("--source-file", requiredSection);
+        var optionalSection = help[optionalIdx..];
+        Assert.DoesNotContain("--source-file", requiredSection);
         Assert.Contains("--symbol-name", requiredSection);
         Assert.Contains("--new-name", requiredSection);
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+    }
+
+    [Fact]
+    public void GenerateToolHelp_RenameSymbol_ShowsAllFiles()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("rename-symbol")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("rename-symbol", help);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var optionalSection = help[optionalIdx..];
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--symbol-name", help);
+        Assert.Contains("--new-name", help);
     }
 
     [Fact]
