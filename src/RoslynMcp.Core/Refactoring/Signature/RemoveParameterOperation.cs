@@ -17,6 +17,9 @@ namespace RoslynMcp.Core.Refactoring.Signature;
 /// <summary>
 /// Removes a named parameter from a method and updates call sites, overrides,
 /// and interface implementations.
+/// Optional <c>allFiles</c> walks every C# document (or the optional single
+/// <c>sourceFile</c>) and removes the named parameter from every eligible method,
+/// skipping ineligible methods rather than throwing.
 /// </summary>
 public sealed class RemoveParameterOperation : RefactoringOperationBase<RemoveParameterParams>
 {
@@ -36,22 +39,37 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
     /// </summary>
     internal static void Validate(RemoveParameterParams @params)
     {
+        if (string.IsNullOrWhiteSpace(@params.ParameterName))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "parameterName is required.");
+
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.MethodName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with methodName, line, or column.");
+            }
+
+            // Optional sourceFile still must be an absolute .cs path when set
+            // (AddParameter / ChangeSignature allFiles / Copilot).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (string.IsNullOrWhiteSpace(@params.MethodName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
 
-        if (string.IsNullOrWhiteSpace(@params.ParameterName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "parameterName is required.");
+        ValidateSourceFilePath(@params.SourceFile!);
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-
-        if (!File.Exists(@params.SourceFile))
+        if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
@@ -61,13 +79,28 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
     }
 
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+    }
+
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
         RemoveParameterParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var sourceFile = @params.SourceFile!;
+        var methodName = @params.MethodName!;
+
+        var document = GetDocumentOrThrow(sourceFile);
         DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -75,17 +108,20 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var methodDecl = FindMethodHelpers.FindMethodDeclaration(root, @params.MethodName, @params.Line, @params.Column);
+        var methodDecl = FindMethodHelpers.FindMethodDeclaration(root, methodName, @params.Line, @params.Column);
         var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve method symbol.");
 
         var parameter = FindParameter(methodSymbol, @params.ParameterName);
         var removeIndex = parameter.Ordinal;
 
+        var solution = document.Project.Solution;
+
         var relatedMethods = await GetRelatedMethodsAsync(
             methodSymbol,
             @params.UpdateOverrides,
             @params.UpdateImplementations,
+            solution,
             cancellationToken);
 
         var namesAtIndex = relatedMethods
@@ -93,15 +129,15 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             .Select(m => m.Parameters[removeIndex].Name)
             .ToHashSet(StringComparer.Ordinal);
 
-        var declarationTargets = await CollectDeclarationTargetsAsync(relatedMethods, cancellationToken);
+        var declarationTargets = await CollectDeclarationTargetsAsync(relatedMethods, solution, cancellationToken);
         foreach (var target in declarationTargets)
             DocumentEditableHelpers.ValidateDocumentIsEditable(target.Document, Context.Workspace);
 
-        var callSites = await CollectCallSitesAsync(relatedMethods, cancellationToken);
+        var callSites = await CollectCallSitesAsync(relatedMethods, solution, cancellationToken);
         foreach (var callSite in callSites)
             DocumentEditableHelpers.ValidateDocumentIsEditable(callSite.Document, Context.Workspace);
 
-        var bodyUsages = await CollectBodyUsagesAsync(relatedMethods, removeIndex, cancellationToken);
+        var bodyUsages = await CollectBodyUsagesAsync(relatedMethods, removeIndex, solution, cancellationToken);
         if (bodyUsages.Count > 0 && !@params.Force)
         {
             throw new RefactoringException(
@@ -135,7 +171,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             namesAtIndex,
             cancellationToken);
 
-        await EnsureNoNewCompilationErrorsAsync(document.Project.Solution, newSolution, cancellationToken);
+        await EnsureNoNewCompilationErrorsAsync(solution, newSolution, cancellationToken);
 
         if (@params.Preview)
         {
@@ -160,7 +196,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.MethodName,
+                Name = methodName,
                 FullyQualifiedName = methodSymbol.ToDisplayString(),
                 Kind = Contracts.Enums.SymbolKind.Method
             },
@@ -169,6 +205,535 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
     }
 
 
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>AddParameterOperation.ExecuteAllFilesAsync</c>)
+    /// and removes <paramref name="params"/>.ParameterName from every eligible
+    /// <see cref="MethodDeclarationSyntax"/>. Optional <c>sourceFile</c> limits
+    /// via <see cref="DocumentSourceFileFilter"/>. Linked multi-project views of
+    /// the same path are skipped rather than coalescing (same contract as
+    /// <c>SafeDeleteOperation.ExecuteAllFilesAsync</c> / add_parameter allFiles);
+    /// a candidate is also skipped when any related declaration, call site, or
+    /// body usage lives on a multi-view path. Methods that lack the parameter,
+    /// fail existing single-site validation, uneditable / source-generated docs,
+    /// and otherwise inapplicable methods are skipped rather than failing the
+    /// walk. Deterministic <c>SpanStart</c> order within a file. When every file
+    /// is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        RemoveParameterParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+        var linkedPathCounts = BuildLinkedPathCounts(originalSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+
+        var changedCountByDoc = new Dictionary<DocumentId, int>();
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (linkedDocuments.Count > 1)
+                continue;
+
+            var primary = linkedDocuments.FirstOrDefault(d =>
+                d is not SourceGeneratedDocument &&
+                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+            if (primary == null)
+                continue;
+
+            while (true)
+            {
+                var currentDocument = currentSolution.GetDocument(primary.Id);
+                if (currentDocument == null ||
+                    currentDocument is SourceGeneratedDocument ||
+                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                {
+                    break;
+                }
+
+                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                if (root == null || semanticModel == null)
+                    break;
+
+                Solution? updated = null;
+                foreach (var methodDecl in CollectMethods(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        updated = await TryRemoveOneAsync(
+                            currentDocument,
+                            semanticModel,
+                            methodDecl,
+                            @params,
+                            linkedPathCounts,
+                            cancellationToken);
+                    }
+                    catch (RefactoringException)
+                    {
+                        updated = null;
+                    }
+
+                    if (updated != null)
+                        break;
+                }
+
+                if (updated == null)
+                    break;
+
+                var beforeSolution = currentSolution;
+                currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                    beforeSolution,
+                    updated,
+                    Context.Workspace,
+                    cancellationToken);
+
+                changedCountByDoc[primary.Id] =
+                    changedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+            }
+        }
+
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var changedCount = changedCountByDoc.GetValueOrDefault(document.Id);
+                if (changedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        changedCount = Math.Max(changedCount, changedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = changedCount > 0
+                        ? BuildAllFilesDescription(changedCount)
+                        : "Update related declarations and call sites",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that removed
+    /// <paramref name="changedCount"/> parameters.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int changedCount) =>
+        changedCount == 1
+            ? "Remove parameter"
+            : $"Remove {changedCount} parameters";
+
+    /// <summary>
+    /// Collects every <see cref="MethodDeclarationSyntax"/> in
+    /// <paramref name="root"/> in deterministic <c>SpanStart</c> then
+    /// span-length order.
+    /// </summary>
+    internal static IReadOnlyList<MethodDeclarationSyntax> CollectMethods(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .OrderBy(m => m.SpanStart)
+            .ThenBy(m => m.Span.Length)
+            .ToList();
+
+    /// <summary>
+    /// Bulk eligibility: skip overrides / interface declarations /
+    /// interface implementations / partial pairs / <c>extern</c> /
+    /// <c>UnmanagedCallersOnly</c> / <c>ModuleInitializer</c> so allFiles
+    /// cannot rewrite a signature whose metadata or sibling contract cannot
+    /// be updated (AddParameter / ChangeSignature / Codex).
+    /// </summary>
+    internal static bool IsEligibleForAllFiles(IMethodSymbol method, MethodDeclarationSyntax methodDecl)
+    {
+        if (method.IsExtensionMethod)
+            return false;
+
+        if (method.PartialDefinitionPart != null || method.PartialImplementationPart != null)
+            return false;
+
+        if (method.IsExtern)
+            return false;
+
+        if (HasUnmanagedCallersOnlyAttribute(method, methodDecl))
+            return false;
+
+        if (HasModuleInitializerAttribute(method, methodDecl))
+            return false;
+
+        if (method.IsOverride)
+            return false;
+
+        if (method.ContainingType?.TypeKind == TypeKind.Interface)
+            return false;
+
+        if (!method.ExplicitInterfaceImplementations.IsDefaultOrEmpty &&
+            method.ExplicitInterfaceImplementations.Length > 0)
+        {
+            return false;
+        }
+
+        if (ImplementsAnyInterfaceMember(method))
+            return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// True when <paramref name="method"/> is the implementation of any
+    /// interface member on its containing type.
+    /// </summary>
+    internal static bool ImplementsAnyInterfaceMember(IMethodSymbol method)
+    {
+        var containingType = method.ContainingType;
+        if (containingType == null)
+            return false;
+
+        foreach (var iface in containingType.AllInterfaces)
+        {
+            foreach (var member in iface.GetMembers().OfType<IMethodSymbol>())
+            {
+                var impl = containingType.FindImplementationForInterfaceMember(member) as IMethodSymbol;
+                if (impl != null && SymbolEqualityComparer.Default.Equals(impl, method))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when removing the parameter at <paramref name="removeIndex"/> would
+    /// collide with another method of the same name in the containing type
+    /// (same arity + bound types) (ChangeSignature / Codex).
+    /// </summary>
+    internal static bool WouldCollideWithSibling(IMethodSymbol method, int removeIndex)
+    {
+        var containingType = method.ContainingType;
+        if (containingType == null)
+            return false;
+
+        if (removeIndex < 0 || removeIndex >= method.Parameters.Length)
+            return false;
+
+        var prospectiveLength = method.Parameters.Length - 1;
+
+        foreach (var sibling in containingType.GetMembers(method.Name).OfType<IMethodSymbol>())
+        {
+            if (SymbolEqualityComparer.Default.Equals(sibling, method))
+                continue;
+            if (sibling.Parameters.Length != prospectiveLength)
+                continue;
+            if (sibling.TypeParameters.Length != method.TypeParameters.Length)
+                continue;
+
+            var collision = true;
+            for (var i = 0; i < prospectiveLength; i++)
+            {
+                var originalIndex = i < removeIndex ? i : i + 1;
+                var expectedType = method.Parameters[originalIndex].Type;
+                var expectedRef = method.Parameters[originalIndex].RefKind;
+
+                if (sibling.Parameters[i].RefKind != expectedRef)
+                {
+                    collision = false;
+                    break;
+                }
+
+                if (!TypeEquivalenceHelpers.TypesEquivalent(sibling.Parameters[i].Type, expectedType))
+                {
+                    collision = false;
+                    break;
+                }
+            }
+
+            if (collision)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool HasModuleInitializerAttribute(IMethodSymbol method, MethodDeclarationSyntax methodDecl)
+    {
+        if (method.GetAttributes().Any(attr =>
+        {
+            var type = attr.AttributeClass;
+            if (type == null)
+                return false;
+            if (type.Name is not ("ModuleInitializerAttribute" or "ModuleInitializer"))
+                return false;
+            return type.ContainingNamespace?.ToDisplayString() == "System.Runtime.CompilerServices";
+        }))
+        {
+            return true;
+        }
+
+        return methodDecl.AttributeLists
+            .SelectMany(list => list.Attributes)
+            .Any(attr => attr.Name.ToString().Contains("ModuleInitializer", StringComparison.Ordinal));
+    }
+
+    private static bool HasUnmanagedCallersOnlyAttribute(IMethodSymbol method, MethodDeclarationSyntax methodDecl)
+    {
+        if (method.GetAttributes().Any(attr =>
+        {
+            var type = attr.AttributeClass;
+            if (type == null)
+                return false;
+            if (type.Name is not ("UnmanagedCallersOnlyAttribute" or "UnmanagedCallersOnly"))
+                return false;
+            return type.ContainingNamespace?.ToDisplayString() == "System.Runtime.InteropServices";
+        }))
+        {
+            return true;
+        }
+
+        return methodDecl.AttributeLists
+            .SelectMany(list => list.Attributes)
+            .Any(attr => attr.Name.ToString().Contains("UnmanagedCallersOnly", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Path → linked-view count across the entire solution (not a filtered
+    /// <c>sourceFile</c> subset). Same helper as
+    /// <c>AddParameterOperation.BuildLinkedPathCounts</c>.
+    /// </summary>
+    internal static Dictionary<string, int> BuildLinkedPathCounts(Solution solution)
+    {
+        var groups = AllFilesDocumentHelpers.GroupByLinkedPath(
+            AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution));
+        return groups
+            .Where(g => g.Count > 0 && g[0].FilePath != null)
+            .GroupBy(g => PathResolver.GetPathComparisonKey(g[0].FilePath!), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Count, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// True when <paramref name="document"/> shares a physical path with
+    /// multiple linked workspace views.
+    /// </summary>
+    internal static bool DocumentPathHasLinkedMultiView(
+        Document document,
+        IReadOnlyDictionary<string, int> linkedPathCounts)
+    {
+        if (document.FilePath == null)
+            return false;
+
+        var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
+        return linkedPathCounts.TryGetValue(pathKey, out var count) && count > 1;
+    }
+
+    private async Task<Solution?> TryRemoveOneAsync(
+        Document document,
+        SemanticModel semanticModel,
+        MethodDeclarationSyntax methodDecl,
+        RemoveParameterParams @params,
+        IReadOnlyDictionary<string, int> linkedPathCounts,
+        CancellationToken cancellationToken)
+    {
+        var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken);
+        if (methodSymbol == null)
+            return null;
+
+        if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
+            return null;
+
+        if (!IsEligibleForAllFiles(methodSymbol, methodDecl))
+            return null;
+
+        var normalizedName = SyntaxIdentifierValidation.NormalizeIdentifier(@params.ParameterName);
+        var parameter = methodSymbol.Parameters.FirstOrDefault(p => p.Name == normalizedName);
+        if (parameter == null)
+            return null;
+
+        var removeIndex = parameter.Ordinal;
+
+        if (WouldCollideWithSibling(methodSymbol, removeIndex))
+            return null;
+
+        // Use the document's solution (allFiles currentSolution), not Context.Solution,
+        // so DeclaringSyntaxReferences resolve after prior bulk rewrites (AddParameter peer).
+        var solution = document.Project.Solution;
+
+        // Base virtual/abstract still eligible under IsOverride==false, but
+        // rewriting it while derived overrides keep the old signature breaks
+        // the hierarchy when bulk does not cascade (AddParameter / Codex).
+        var overrides = await SymbolFinder.FindOverridesAsync(
+            methodSymbol, solution, cancellationToken: cancellationToken);
+        if (overrides.Any())
+            return null;
+
+        var relatedMethods = await GetRelatedMethodsAsync(
+            methodSymbol,
+            @params.UpdateOverrides,
+            @params.UpdateImplementations,
+            solution,
+            cancellationToken);
+
+        var namesAtIndex = relatedMethods
+            .Where(m => m.Parameters.Length > removeIndex)
+            .Select(m => m.Parameters[removeIndex].Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var declarationTargets = await CollectDeclarationTargetsAsync(relatedMethods, solution, cancellationToken);
+        foreach (var target in declarationTargets)
+        {
+            if (!DocumentEditableHelpers.IsDocumentEditable(target.Document, Context.Workspace))
+                return null;
+            if (DocumentPathHasLinkedMultiView(target.Document, linkedPathCounts))
+                return null;
+        }
+
+        var callSites = await CollectCallSitesAsync(relatedMethods, solution, cancellationToken);
+        foreach (var callSite in callSites)
+        {
+            if (!DocumentEditableHelpers.IsDocumentEditable(callSite.Document, Context.Workspace))
+                return null;
+            if (DocumentPathHasLinkedMultiView(callSite.Document, linkedPathCounts))
+                return null;
+        }
+
+        var bodyUsages = await CollectBodyUsagesAsync(relatedMethods, removeIndex, solution, cancellationToken);
+        if (bodyUsages.Count > 0 && !@params.Force)
+            return null;
+
+        if (bodyUsages.Any(u => !u.CanReplaceWithDefault))
+            return null;
+
+        foreach (var usage in bodyUsages)
+        {
+            if (!DocumentEditableHelpers.IsDocumentEditable(usage.Document, Context.Workspace))
+                return null;
+            if (DocumentPathHasLinkedMultiView(usage.Document, linkedPathCounts))
+                return null;
+        }
+
+        var beforeText = await document.GetTextAsync(cancellationToken);
+        var newSolution = await ApplyChangesAsync(
+            document,
+            declarationTargets,
+            callSites,
+            bodyUsages,
+            methodSymbol.Parameters.ToList(),
+            removeIndex,
+            namesAtIndex,
+            cancellationToken);
+
+        try
+        {
+            await EnsureNoNewCompilationErrorsAsync(solution, newSolution, cancellationToken);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+
+        var afterDocument = newSolution.GetDocument(document.Id);
+        if (afterDocument == null)
+            return null;
+
+        var afterText = await afterDocument.GetTextAsync(cancellationToken);
+        if (beforeText.ContentEquals(afterText))
+        {
+            var anyDiff = false;
+            foreach (var project in newSolution.Projects)
+            {
+                foreach (var doc in project.Documents)
+                {
+                    var originalDoc = solution.GetDocument(doc.Id);
+                    if (originalDoc == null)
+                        continue;
+                    var before = await originalDoc.GetTextAsync(cancellationToken);
+                    var after = await doc.GetTextAsync(cancellationToken);
+                    if (!before.ContentEquals(after))
+                    {
+                        anyDiff = true;
+                        break;
+                    }
+                }
+
+                if (anyDiff)
+                    break;
+            }
+
+            if (!anyDiff)
+                return null;
+        }
+
+        return newSolution;
+    }
 
     internal static IParameterSymbol FindParameter(IMethodSymbol method, string name)
     {
@@ -189,6 +754,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         IMethodSymbol method,
         bool updateOverrides,
         bool updateImplementations,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         var results = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default) { method };
@@ -205,7 +771,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             foreach (var symbol in results.ToList())
             {
                 var overrides = await SymbolFinder.FindOverridesAsync(
-                    symbol, Context.Solution, cancellationToken: cancellationToken);
+                    symbol, solution, cancellationToken: cancellationToken);
                 foreach (var ov in overrides.OfType<IMethodSymbol>())
                     results.Add(ov);
             }
@@ -218,7 +784,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                 if (candidate.ContainingType.TypeKind == TypeKind.Interface)
                 {
                     var implementations = await SymbolFinder.FindImplementationsAsync(
-                        candidate, Context.Solution, cancellationToken: cancellationToken);
+                        candidate, solution, cancellationToken: cancellationToken);
                     foreach (var impl in implementations.OfType<IMethodSymbol>())
                         results.Add(impl);
                     continue;
@@ -238,7 +804,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                         results.Add(ifaceMethod);
                         var otherImpls = await SymbolFinder.FindImplementationsAsync(
                             ifaceMethod,
-                            Context.Solution,
+                            solution,
                             cancellationToken: cancellationToken);
                         foreach (var other in otherImpls.OfType<IMethodSymbol>())
                             results.Add(other);
@@ -250,8 +816,9 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         return results.Where(SignatureOverrideHelpers.HasSourceDeclaration).ToList();
     }
 
-    private async Task<List<DeclarationTarget>> CollectDeclarationTargetsAsync(
+    private static async Task<List<DeclarationTarget>> CollectDeclarationTargetsAsync(
         IReadOnlyList<IMethodSymbol> methods,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         var targets = new List<DeclarationTarget>();
@@ -267,7 +834,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                         $"Method '{method.Name}' is an unsupported target for remove_parameter.");
                 }
 
-                var document = Context.Solution.GetDocument(syntaxRef.SyntaxTree)
+                var document = solution.GetDocument(syntaxRef.SyntaxTree)
                     ?? throw new RefactoringException(
                         ErrorCodes.DocumentNotEditable,
                         $"Could not locate the document for method '{method.Name}'.");
@@ -286,8 +853,9 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         return targets;
     }
 
-    private async Task<List<CallSite>> CollectCallSitesAsync(
+    private static async Task<List<CallSite>> CollectCallSitesAsync(
         IReadOnlyList<IMethodSymbol> methods,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         var callSites = new List<CallSite>();
@@ -295,7 +863,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
 
         foreach (var method in methods)
         {
-            var references = await SymbolFinder.FindReferencesAsync(method, Context.Solution, cancellationToken);
+            var references = await SymbolFinder.FindReferencesAsync(method, solution, cancellationToken);
             foreach (var referenced in references)
             {
                 foreach (var location in referenced.Locations)
@@ -339,9 +907,10 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         return callSites;
     }
 
-    private async Task<List<BodyUsage>> CollectBodyUsagesAsync(
+    private static async Task<List<BodyUsage>> CollectBodyUsagesAsync(
         IReadOnlyList<IMethodSymbol> methods,
         int parameterIndex,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         var usages = new List<BodyUsage>();
@@ -358,7 +927,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                 if (await syntaxRef.GetSyntaxAsync(cancellationToken) is not MethodDeclarationSyntax declaration)
                     continue;
 
-                var document = Context.Solution.GetDocument(syntaxRef.SyntaxTree);
+                var document = solution.GetDocument(syntaxRef.SyntaxTree);
                 if (document == null)
                     continue;
 
