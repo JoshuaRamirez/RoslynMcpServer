@@ -35,6 +35,7 @@ public class RenameNamespaceToolTests
         Assert.NotEmpty(_tool.Description);
         Assert.Contains("column", _tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("smallest namespace", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -48,15 +49,17 @@ public class RenameNamespaceToolTests
         Assert.Equal("object", root.GetProperty("type").GetString());
         Assert.True(root.TryGetProperty("properties", out _));
         Assert.True(root.TryGetProperty("required", out _));
+        Assert.True(root.TryGetProperty("oneOf", out _));
     }
 
     [Fact]
-    public void GetDefinition_HasRequiredFields()
+    public void GetDefinition_UsesConditionalRequiredFields()
     {
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
-        var required = doc.RootElement.GetProperty("required");
+        var root = doc.RootElement;
+        var required = root.GetProperty("required");
 
         var requiredFields = new List<string>();
         foreach (var item in required.EnumerateArray())
@@ -65,9 +68,44 @@ public class RenameNamespaceToolTests
         }
 
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("namespaceName", requiredFields);
         Assert.Contains("newName", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+        Assert.DoesNotContain("namespaceName", requiredFields);
+
+        var branches = root.GetProperty("oneOf");
+        Assert.Equal(2, branches.GetArrayLength());
+
+        var singleSiteRequired = ReadStrings(branches[0].GetProperty("required"));
+        Assert.Contains("solutionPath", singleSiteRequired);
+        Assert.Contains("sourceFile", singleSiteRequired);
+        Assert.Contains("namespaceName", singleSiteRequired);
+        Assert.Contains("newName", singleSiteRequired);
+
+        var allFilesRequired = ReadStrings(branches[1].GetProperty("required"));
+        Assert.Contains("solutionPath", allFilesRequired);
+        Assert.Contains("allFiles", allFilesRequired);
+        Assert.Contains("newName", allFilesRequired);
+        Assert.DoesNotContain("sourceFile", allFilesRequired);
+        Assert.DoesNotContain("namespaceName", allFilesRequired);
+        Assert.Equal(
+            JsonValueKind.True,
+            branches[1].GetProperty("properties").GetProperty("allFiles").GetProperty("const").ValueKind);
+    }
+
+    [Fact]
+    public void GetDefinition_HasOptionalAllFiles()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("allFiles", out var allFiles));
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("eligible", description!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile", description!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -80,6 +118,7 @@ public class RenameNamespaceToolTests
 
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.True(properties.TryGetProperty("namespaceName", out _));
         Assert.True(properties.TryGetProperty("newName", out _));
         Assert.True(properties.TryGetProperty("line", out _));
@@ -105,6 +144,14 @@ public class RenameNamespaceToolTests
         }
 
         return false;
+    }
+
+    private static List<string> ReadStrings(JsonElement array)
+    {
+        var values = new List<string>();
+        foreach (var item in array.EnumerateArray())
+            values.Add(item.GetString()!);
+        return values;
     }
 
     #endregion
@@ -142,6 +189,23 @@ public class RenameNamespaceToolTests
 
         var result = await _tool.ExecuteAsync(args);
 
+        Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true,
+                "newName": "NewNs"
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        // ThrowingWorkspaceProvider rejects workspace creation; args including allFiles parsed.
         Assert.True(result.IsError);
     }
 

@@ -33,13 +33,13 @@ public sealed class RenameNamespaceTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Rename a C# namespace across the solution, updating declarations, using directives, and qualified name references. When updateFolders is true, also move folders whose path matches the old namespace. column (optional) picks the smallest namespace whose name or declaration span covers that column when set with line (name preferred, then smallest covering declaration); omitted keeps today's namespaceName + optional line pick; column without line keeps today's omitted-line path.";
+        "Rename a C# namespace across the solution, updating declarations, using directives, and qualified name references. When updateFolders is true, also move folders whose path matches the old namespace. column (optional) picks the smallest namespace whose name or declaration span covers that column when set with line (name preferred, then smallest covering declaration); omitted keeps today's namespaceName + optional line pick; column without line keeps today's omitted-line path. sourceFile and namespaceName are required when allFiles is omitted or false. allFiles: true walks every C# file and renames every eligible top-level namespace declaration to newName under today's single-site validation (sourceFile optional when true; cannot be combined with namespaceName, line, or column; newName remains required). updateFolders / preview remain valid with allFiles.";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "namespaceName", "newName" },
+        required = new[] { "solutionPath", "newName" },
         properties = new
         {
             solutionPath = new
@@ -50,41 +50,81 @@ public sealed class RenameNamespaceTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to a source file that declares the namespace"
+                description = "Absolute path to a source file that declares the namespace. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "When true, walk every C# document (or the optional single sourceFile) and rename every eligible top-level namespace declaration to newName. Cannot be combined with namespaceName, line, or column. Default false.",
+                @default = false
             },
             namespaceName = new
             {
                 type = "string",
-                description = "Current namespace name (simple or fully qualified)"
+                description = "Current namespace name (simple or fully qualified). Single-site only; cannot be combined with allFiles."
             },
             newName = new
             {
                 type = "string",
-                description = "New namespace name (simple or fully qualified)"
+                description = "New namespace name (simple or fully qualified). Required for both single-site and allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number used to select a namespace declaration when the file has more than one. When column is omitted, matching stays today's covering-span line pick.",
+                description = "1-based line number used to select a namespace declaration when the file has more than one. When column is omitted, matching stays today's covering-span line pick. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column for disambiguation. When set with line, selects the smallest namespace whose name or declaration span covers that column (name preferred, then smallest covering declaration). Omitted keeps today's namespaceName + optional line pick. Column without line keeps today's omitted-line path.",
+                description = "1-based column for disambiguation. When set with line, selects the smallest namespace whose name or declaration span covers that column (name preferred, then smallest covering declaration). Omitted keeps today's namespaceName + optional line pick. Column without line keeps today's omitted-line path. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             updateFolders = new
             {
                 type = "boolean",
-                description = "Also move folders whose path matches the old namespace (for example src/Old/Ns to src/New/Ns). Default false leaves folders in place.",
+                description = "Also move folders whose path matches the old namespace (for example src/Old/Ns to src/New/Ns). Default false leaves folders in place. Valid with allFiles; later destination claims are skipped on collision.",
                 @default = false
             },
             preview = new
             {
                 type = "boolean",
-                description = "Return computed changes without applying",
+                description = "Return computed changes without applying. Valid with allFiles.",
                 @default = false
+            }
+        },
+        oneOf = new object[]
+        {
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @enum = new[] { false }
+                    }
+                },
+                required = new[] { "solutionPath", "sourceFile", "namespaceName", "newName" }
+            },
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @const = true
+                    }
+                },
+                required = new[] { "solutionPath", "allFiles", "newName" },
+                not = new
+                {
+                    anyOf = new object[]
+                    {
+                        new { required = new[] { "namespaceName" } },
+                        new { required = new[] { "line" } },
+                        new { required = new[] { "column" } }
+                    }
+                }
             }
         },
         additionalProperties = false
@@ -114,6 +154,7 @@ public sealed class RenameNamespaceTool : IToolHandler
             var @params = new RenameNamespaceParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 NamespaceName = args.NamespaceName,
                 NewName = args.NewName,
                 Line = args.Line,
@@ -147,8 +188,9 @@ public sealed class RenameNamespaceTool : IToolHandler
     private sealed class RenameNamespaceArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
-        public string NamespaceName { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
+        public string? NamespaceName { get; init; }
         public string NewName { get; init; } = "";
         public int? Line { get; init; }
         public int? Column { get; init; }
