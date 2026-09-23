@@ -822,6 +822,101 @@ public class SafeDeleteOperationTests
         Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
     }
 
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_SkipsStaticConstructor()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace TestApp;
+
+            public class Host
+            {
+                static Host()
+                {
+                    System.Console.WriteLine("init");
+                }
+
+                private static void Unused()
+                {
+                }
+
+                public static int Run() => 1;
+            }
+
+            public static class Driver
+            {
+                public static int Go() => Host.Run();
+            }
+            """);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams { AllFiles = true });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("static Host()", updated);
+        Assert.DoesNotContain("Unused()", updated);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_SkipsUsingVarLocal()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace TestApp;
+
+            public class Host
+            {
+                public int Run()
+                {
+                    using var scope = (System.IDisposable)null!;
+                    return 1;
+                }
+
+                private int _unusedField;
+            }
+
+            public static class Driver
+            {
+                public static int Go() => new Host().Run();
+            }
+            """);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams { AllFiles = true });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("using var scope", updated);
+        Assert.DoesNotContain("_unusedField", updated);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_SkipsPrivateMainEntryPoint()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace TestApp;
+
+            public static class Program
+            {
+                private static void Main()
+                {
+                }
+
+                private static void UnusedHelper()
+                {
+                }
+            }
+            """);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams { AllFiles = true });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("Main()", updated);
+        Assert.DoesNotContain("UnusedHelper", updated);
+    }
+
     #endregion
 
     private static string AbsoluteTestPath() =>

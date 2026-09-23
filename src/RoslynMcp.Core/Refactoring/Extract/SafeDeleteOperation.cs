@@ -209,17 +209,11 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
                 cancellationToken.ThrowIfCancellationRequested();
 
                 // Linked multi-project views of the same path can diverge under
-                // preprocessor symbols; skip rather than coalescing a delete that
-                // only one compilation can honor (same contract as
-                // push_members_down / pull_members_up allFiles).
+                // preprocessor symbols / references; skip rather than coalescing
+                // a delete that only one compilation can honor (same contract as
+                // pull_members_up / push_members_down / extract_base_class allFiles).
                 if (linkedDocuments.Count > 1)
-                {
-                    if (!await LinkedDocumentsHaveIdenticalTextAsync(
-                            linkedDocuments, currentSolution, cancellationToken))
-                    {
-                        continue;
-                    }
-                }
+                    continue;
 
                 var primary = linkedDocuments.FirstOrDefault(d =>
                     d is not SourceGeneratedDocument &&
@@ -398,20 +392,37 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         EventDeclarationSyntax => true,
         OperatorDeclarationSyntax => true,
         ConversionOperatorDeclarationSyntax => true,
-        ConstructorDeclarationSyntax => true,
+        // Static constructors are runtime-invoked with no source refs; never
+        // bulk-delete them (Codex P1). Instance constructors remain eligible.
+        ConstructorDeclarationSyntax constructor when
+            !constructor.Modifiers.Any(SyntaxKind.StaticKeyword) => true,
         DestructorDeclarationSyntax => true,
         TypeDeclarationSyntax => true,
         EnumDeclarationSyntax => true,
         DelegateDeclarationSyntax => true,
         EnumMemberDeclarationSyntax => true,
         LocalFunctionStatementSyntax => true,
-        VariableDeclaratorSyntax declarator when
-            declarator.Parent is VariableDeclarationSyntax
-            {
-                Parent: FieldDeclarationSyntax or EventFieldDeclarationSyntax or LocalDeclarationStatementSyntax
-            } => true,
+        VariableDeclaratorSyntax declarator when IsDeletableVariableDeclarator(declarator) => true,
         _ => false
     };
+
+    /// <summary>
+    /// Field / event-field declarators, and ordinary locals — but not
+    /// <c>using var</c> / <c>await using var</c>, whose acquisition+disposal
+    /// is the behavior even when the variable is unreferenced (Codex P1).
+    /// </summary>
+    private static bool IsDeletableVariableDeclarator(VariableDeclaratorSyntax declarator)
+    {
+        if (declarator.Parent is not VariableDeclarationSyntax variableDeclaration)
+            return false;
+
+        return variableDeclaration.Parent switch
+        {
+            FieldDeclarationSyntax or EventFieldDeclarationSyntax => true,
+            LocalDeclarationStatementSyntax local => local.UsingKeyword == default,
+            _ => false
+        };
+    }
 
     private async Task<Solution?> TryDeleteOneAsync(
         Document document,
@@ -427,6 +438,12 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         var symbol = NormalizeDeletableSymbol(declared);
         if (!IsAllFilesDeletableAccessibility(symbol))
             return null;
+
+        if (symbol is IMethodSymbol method &&
+            await IsApplicationEntryPointCandidateAsync(document, method, cancellationToken))
+        {
+            return null;
+        }
 
         try
         {
@@ -456,29 +473,56 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
     private static bool IsAllFilesDeletableAccessibility(ISymbol symbol) =>
         symbol.DeclaredAccessibility is Accessibility.Private or Accessibility.NotApplicable;
 
-    private static async Task<bool> LinkedDocumentsHaveIdenticalTextAsync(
-        IReadOnlyList<Document> linkedDocuments,
-        Solution solution,
+    /// <summary>
+    /// True for the compilation entry point, or a static <c>Main</c> with an
+    /// entry-point-legal signature when the host project has no recorded entry
+    /// point (class-library TempWorkspace). Same shape as
+    /// <c>ChangeSignatureOperation.IsApplicationEntryPointCandidate</c> /
+    /// <c>ConvertToAsyncOperation</c> (Codex P1 / CS5001).
+    /// </summary>
+    private static async Task<bool> IsApplicationEntryPointCandidateAsync(
+        Document document,
+        IMethodSymbol method,
         CancellationToken cancellationToken)
     {
-        SourceText? baseline = null;
-        foreach (var linked in linkedDocuments)
-        {
-            var live = solution.GetDocument(linked.Id) ?? linked;
-            if (live is SourceGeneratedDocument)
-                continue;
-            var text = await live.GetTextAsync(cancellationToken);
-            if (baseline == null)
-            {
-                baseline = text;
-                continue;
-            }
+        var compilation = await document.Project.GetCompilationAsync(cancellationToken);
+        if (compilation == null)
+            return false;
 
-            if (!baseline.ContentEquals(text))
+        var entryPoint = compilation.GetEntryPoint(cancellationToken);
+        if (entryPoint != null &&
+            SymbolEqualityComparer.Default.Equals(entryPoint, method))
+        {
+            return true;
+        }
+
+        if (!method.IsStatic ||
+            !string.Equals(method.Name, "Main", StringComparison.Ordinal) ||
+            method.Parameters.Length > 1)
+        {
+            return false;
+        }
+
+        if (method.Parameters.Length == 1)
+        {
+            var parameterType = method.Parameters[0].Type;
+            var isStringArray = parameterType is IArrayTypeSymbol
+            {
+                ElementType.SpecialType: SpecialType.System_String
+            };
+            var isReadOnlySpanOfString =
+                parameterType is INamedTypeSymbol
+                {
+                    Name: "ReadOnlySpan",
+                    TypeArguments: [{ SpecialType: SpecialType.System_String }]
+                };
+            if (!isStringArray && !isReadOnlySpanOfString)
                 return false;
         }
 
-        return true;
+        return method.ReturnsVoid ||
+               method.ReturnType.SpecialType is SpecialType.System_Int32 ||
+               method.ReturnType.Name is "Task" or "ValueTask";
     }
 
     internal static TextSpan GetSelectionSpan(SourceText sourceText, SafeDeleteParams @params)
