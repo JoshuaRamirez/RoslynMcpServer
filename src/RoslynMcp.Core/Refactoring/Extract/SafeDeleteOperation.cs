@@ -193,7 +193,7 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
         var deletedCountByDoc = new Dictionary<DocumentId, int>();
@@ -523,6 +523,50 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         return method.ReturnsVoid ||
                method.ReturnType.SpecialType is SpecialType.System_Int32 ||
                method.ReturnType.Name is "Task" or "ValueTask";
+    }
+
+
+    /// <summary>
+    /// Exact-path / unique-ignore-case filter for optional <c>allFiles</c>
+    /// <c>sourceFile</c> (same contract as <c>ExtractMethodOperation</c> /
+    /// <c>PullMembersUpOperation</c>). Rejects missing and case-ambiguous paths
+    /// instead of silently no-opping or matching both <c>Foo.cs</c> and
+    /// <c>foo.cs</c> (Copilot).
+    /// </summary>
+    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var exactMatches = documents
+            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
+            .ToList();
+        if (exactMatches.Count > 0)
+        {
+            var exactKeys = exactMatches
+                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+                .ToHashSet(StringComparer.Ordinal);
+            return documents
+                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
+                .ToList();
+        }
+
+        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
+        var distinctPaths = matchedDocuments
+            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return distinctPaths.Count switch
+        {
+            0 when !File.Exists(sourceFile) => throw new RefactoringException(
+                ErrorCodes.SourceFileNotFound,
+                $"Source file not found: {sourceFile}"),
+            0 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"File not found in workspace: {sourceFile}"),
+            > 1 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ => matchedDocuments
+        };
     }
 
     internal static TextSpan GetSelectionSpan(SourceText sourceText, SafeDeleteParams @params)
