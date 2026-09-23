@@ -29,6 +29,130 @@ public class RenameNamespaceOperationTests
     }
 
     [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameNamespaceOperation.Validate(new RenameNamespaceParams
+            {
+                AllFiles = false,
+                NamespaceName = "OldNs",
+                NewName = "NewNs"
+            }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrNamespaceName_DoesNotThrow()
+    {
+        RenameNamespaceOperation.Validate(new RenameNamespaceParams
+        {
+            AllFiles = true,
+            NewName = "NewNs"
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithRelativeSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameNamespaceOperation.Validate(new RenameNamespaceParams
+            {
+                AllFiles = true,
+                SourceFile = "relative/Foo.cs",
+                NewName = "NewNs"
+            }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithNonCSharpSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameNamespaceOperation.Validate(new RenameNamespaceParams
+            {
+                AllFiles = true,
+                SourceFile = Path.Combine(Path.GetTempPath(), "Foo.txt"),
+                NewName = "NewNs"
+            }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMissingSourceFile_DoesNotThrow()
+    {
+        RenameNamespaceOperation.Validate(new RenameNamespaceParams
+        {
+            AllFiles = true,
+            SourceFile = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameNsMissingAllFiles.cs"),
+            NewName = "NewNs"
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithNamespaceName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameNamespaceOperation.Validate(new RenameNamespaceParams
+            {
+                AllFiles = true,
+                NamespaceName = "OldNs",
+                NewName = "NewNs"
+            }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameNamespaceOperation.Validate(new RenameNamespaceParams
+            {
+                AllFiles = true,
+                NewName = "NewNs",
+                Line = 1
+            }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameNamespaceOperation.Validate(new RenameNamespaceParams
+            {
+                AllFiles = true,
+                NewName = "NewNs",
+                Column = 1
+            }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Rename namespace to 'NewNs'", RenameNamespaceOperation.BuildAllFilesDescription(1, "NewNs"));
+        Assert.Equal("Rename 2 namespaces to 'NewNs'", RenameNamespaceOperation.BuildAllFilesDescription(2, "NewNs"));
+    }
+
+    [Fact]
+    public void CollectTopLevelNamespaces_IgnoresNested()
+    {
+        var tree = CSharpSyntaxTree.ParseText("""
+            namespace Outer
+            {
+                namespace Inner { }
+                class C { }
+            }
+            """);
+        var root = tree.GetRoot();
+        var collected = RenameNamespaceOperation.CollectTopLevelNamespaces(root);
+        Assert.Single(collected);
+        Assert.Equal("Outer", collected[0].Name.ToString());
+    }
+
+    [Fact]
     public void Validate_RelativeSourceFile_ThrowsInvalidSourcePath()
     {
         var ex = Assert.Throws<RefactoringException>(
@@ -1613,6 +1737,284 @@ public class RenameNamespaceOperationTests
 
         Assert.Equal(ErrorCodes.SymbolAmbiguous, ex.ErrorCode);
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    #endregion
+
+
+    #region allFiles
+
+    private const string EligibleNsFileA = """
+        namespace OldA;
+
+        public class FileA { }
+        """;
+
+    private const string EligibleNsFileB = """
+        namespace OldB;
+
+        public class FileB { }
+        """;
+
+    private const string AlreadyNewNsFileC = """
+        namespace NewNs;
+
+        public class FileC { }
+        """;
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    [SkippableFact]
+    public async Task RenameNamespace_OmittedAllFiles_KeepsSingleSiteRewrite()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleNsFileA),
+            ("FileB.cs", EligibleNsFileB));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = pathA,
+            NamespaceName = "OldA",
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(pathA));
+        Assert.Contains("namespace OldB", await File.ReadAllTextAsync(pathB));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFilesTrue_AppliesToEligibleNamespacesAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleNsFileA),
+            ("FileB.cs", EligibleNsFileB),
+            ("FileC.cs", AlreadyNewNsFileC));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var pathC = Path.Combine(workspace.DirectoryPath, "FileC.cs");
+        var beforeC = await File.ReadAllTextAsync(pathC);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            AllFiles = true,
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(pathA));
+        // Second distinct namespace may rename or skip on collision with NewNs from first rename.
+        var textB = await File.ReadAllTextAsync(pathB);
+        Assert.True(textB.Contains("namespace NewNs") || textB.Contains("namespace OldB"));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(pathC));
+        Assert.True(result.Changes!.FilesModified.Count >= 1);
+        Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, pathA));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathC));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFilesTrue_WithoutSourceFileOrNamespaceName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleNsFileA),
+            ("FileB.cs", EligibleNsFileB));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            AllFiles = true,
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Changes!.FilesModified.Count >= 1);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleNsFileA);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameNamespaceParams
+            {
+                AllFiles = false,
+                NamespaceName = "OldA",
+                NewName = "NewNs"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFilesTrue_WithNamespaceName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleNsFileA);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameNamespaceParams
+            {
+                AllFiles = true,
+                NamespaceName = "OldA",
+                NewName = "NewNs"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleNsFileA),
+            ("FileB.cs", EligibleNsFileB),
+            ("FileC.cs", AlreadyNewNsFileC));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var pathC = Path.Combine(workspace.DirectoryPath, "FileC.cs");
+        var beforeA = await File.ReadAllTextAsync(pathA);
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var beforeC = await File.ReadAllTextAsync(pathC);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            AllFiles = true,
+            NewName = "NewNs",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => PathsEqual(c.File, pathA));
+        Assert.DoesNotContain(result.PendingChanges, c => PathsEqual(c.File, pathC));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(pathA));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(pathC));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileC.cs", AlreadyNewNsFileC));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var pathC = Path.Combine(workspace.DirectoryPath, "FileC.cs");
+        var before = await File.ReadAllTextAsync(pathC);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            AllFiles = true,
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Equal(before, await File.ReadAllTextAsync(pathC));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleNsFileA),
+            ("FileB.cs", EligibleNsFileB));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            AllFiles = true,
+            SourceFile = pathA,
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(pathA));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, pathA));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleNsFileA);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameNamespaceParams
+            {
+                AllFiles = true,
+                NewName = "NewNs",
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFilesTrue_WithColumn_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleNsFileA);
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameNamespaceParams
+            {
+                AllFiles = true,
+                NewName = "NewNs",
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFilesTrue_NameConflict_SkipsLater()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", """
+                namespace A;
+
+                public class Shared { }
+                """),
+            ("FileB.cs", """
+                namespace B;
+
+                public class Shared { }
+                """));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            AllFiles = true,
+            NewName = "Merged"
+        });
+
+        Assert.True(result.Success);
+        var alpha = await File.ReadAllTextAsync(pathA);
+        var beta = await File.ReadAllTextAsync(pathB);
+        var renamedCount = (alpha.Contains("namespace Merged") ? 1 : 0) + (beta.Contains("namespace Merged") ? 1 : 0);
+        Assert.Equal(1, renamedCount);
+        Assert.True(alpha.Contains("namespace A;") || beta.Contains("namespace B;"));
     }
 
     #endregion

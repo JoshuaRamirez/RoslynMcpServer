@@ -19,6 +19,9 @@ namespace RoslynMcp.Core.Refactoring.Rename;
 /// <summary>
 /// Renames a namespace across the solution, updating declarations,
 /// using directives, and qualified name references.
+/// Optional <c>allFiles</c> walks every C# document (or the optional single
+/// <c>sourceFile</c>) and renames every eligible top-level namespace declaration
+/// to <c>newName</c>, skipping ineligible declarations rather than throwing.
 /// </summary>
 public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNamespaceParams>
 {
@@ -42,36 +45,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     /// </summary>
     internal static void Validate(RenameNamespaceParams @params)
     {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
-
-        if (string.IsNullOrWhiteSpace(@params.NamespaceName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "namespaceName is required.");
-
         if (string.IsNullOrWhiteSpace(@params.NewName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "newName is required.");
-
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
-
-        if (@params.Line.HasValue && @params.Line.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
-
-        if (@params.Column.HasValue && @params.Column.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
-
-        if (!IsValidNamespaceName(@params.NamespaceName))
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidNamespace,
-                $"'{@params.NamespaceName}' is not a valid namespace name.");
-        }
 
         if (!IsValidNamespaceName(@params.NewName))
         {
@@ -90,12 +65,64 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             }
         }
 
-        if (string.Equals(@params.NamespaceName.Trim(), @params.NewName.Trim(), StringComparison.Ordinal))
+        if (@params.AllFiles)
+        {
+            if (!string.IsNullOrWhiteSpace(@params.NamespaceName) ||
+                @params.Line.HasValue ||
+                @params.Column.HasValue)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with namespaceName, line, or column.");
+            }
+
+            // Optional sourceFile still must be an absolute .cs path when set
+            // (RemoveParameter / MoveTypeToNamespace allFiles).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+
+        if (string.IsNullOrWhiteSpace(@params.NamespaceName))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "namespaceName is required.");
+
+        ValidateSourceFilePath(@params.SourceFile!);
+
+        if (!File.Exists(@params.SourceFile!))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+
+        if (@params.Line.HasValue && @params.Line.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
+
+        if (@params.Column.HasValue && @params.Column.Value < 1)
+            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
+
+        if (!IsValidNamespaceName(@params.NamespaceName!))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidNamespace,
+                $"'{@params.NamespaceName}' is not a valid namespace name.");
+        }
+
+        if (string.Equals(@params.NamespaceName!.Trim(), @params.NewName.Trim(), StringComparison.Ordinal))
         {
             throw new RefactoringException(
                 ErrorCodes.SameLocation,
                 "New name is the same as current name.");
         }
+    }
+
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
     }
 
     /// <summary>
@@ -110,7 +137,10 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         RenameNamespaceParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var namespaceSymbol = await FindNamespaceAsync(document, @params, cancellationToken);
@@ -186,6 +216,356 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     }
 
     /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>RemoveParameterOperation.ExecuteAllFilesAsync</c>)
+    /// and renames every eligible top-level <see cref="BaseNamespaceDeclarationSyntax"/>
+    /// to <paramref name="params"/>.NewName. Optional <c>sourceFile</c> limits
+    /// via <see cref="DocumentSourceFileFilter"/>. Linked multi-project views of
+    /// the same path are skipped rather than coalescing (same contract as
+    /// <c>SafeDeleteOperation.ExecuteAllFilesAsync</c> / remove_parameter allFiles).
+    /// Namespaces already at <c>newName</c>, name-conflict cases, uneditable /
+    /// source-generated docs, and otherwise inapplicable declarations are skipped
+    /// rather than failing the walk. Deterministic <c>SpanStart</c> order within
+    /// a file. The document-group walk repeats until a full pass makes no progress.
+    /// When every file is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        RenameNamespaceParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var newFullName = @params.NewName.Trim();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+        var renamedFullNames = new HashSet<string>(StringComparer.Ordinal);
+        var folderPlans = new List<FolderMovePlan>();
+        var claimedDestinations = new List<string>();
+        var changedCountByDoc = new Dictionary<DocumentId, int>();
+
+        bool madeProgress;
+        do
+        {
+            madeProgress = false;
+
+            foreach (var linkedDocuments in documentGroups)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (linkedDocuments.Count > 1)
+                    continue;
+
+                var primary = linkedDocuments.FirstOrDefault(d =>
+                    d is not SourceGeneratedDocument &&
+                    DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+                if (primary == null)
+                    continue;
+
+                while (true)
+                {
+                    Context.UpdateSolution(currentSolution);
+
+                    var currentDocument = currentSolution.GetDocument(primary.Id);
+                    if (currentDocument == null ||
+                        currentDocument is SourceGeneratedDocument ||
+                        !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                    {
+                        break;
+                    }
+
+                    var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                    var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                    if (root == null || semanticModel == null)
+                        break;
+
+                    Solution? updated = null;
+                    FolderMovePlan? folderPlan = null;
+                    foreach (var namespaceDecl in CollectTopLevelNamespaces(root))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        try
+                        {
+                            (updated, folderPlan) = await TryRenameOneAsync(
+                                currentDocument,
+                                semanticModel,
+                                namespaceDecl,
+                                newFullName,
+                                @params.UpdateFolders,
+                                renamedFullNames,
+                                claimedDestinations,
+                                cancellationToken);
+                        }
+                        catch (RefactoringException)
+                        {
+                            updated = null;
+                            folderPlan = null;
+                        }
+
+                        if (updated != null)
+                            break;
+                    }
+
+                    if (updated == null)
+                        break;
+
+                    var beforeSolution = currentSolution;
+                    currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                        beforeSolution,
+                        updated,
+                        Context.Workspace,
+                        cancellationToken);
+                    Context.UpdateSolution(currentSolution);
+
+                    if (folderPlan != null)
+                    {
+                        folderPlans.Add(folderPlan);
+                        foreach (var folder in folderPlan.Folders)
+                            claimedDestinations.Add(folder.DestinationFolder);
+                    }
+
+                    changedCountByDoc[primary.Id] =
+                        changedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+                    madeProgress = true;
+                }
+            }
+        } while (madeProgress);
+
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var changedCount = changedCountByDoc.GetValueOrDefault(document.Id);
+                if (changedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        changedCount = Math.Max(changedCount, changedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = changedCount > 0
+                        ? BuildAllFilesDescription(changedCount, newFullName)
+                        : $"Rename namespace to '{newFullName}'"
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+        {
+            foreach (var plan in folderPlans)
+            {
+                foreach (var folder in plan.Folders)
+                {
+                    allPendingChanges.Add(new PendingChange
+                    {
+                        File = folder.SourceFolder,
+                        ChangeType = ChangeKind.Delete,
+                        Description = $"Move folder to match namespace '{newFullName}'"
+                    });
+                    allPendingChanges.Add(new PendingChange
+                    {
+                        File = folder.DestinationFolder,
+                        ChangeType = ChangeKind.Create,
+                        Description = $"Move '{folder.SourceFolder}' to '{folder.DestinationFolder}'"
+                    });
+                }
+
+                foreach (var projectPath in plan.ProjectTexts.Keys)
+                {
+                    allPendingChanges.Add(new PendingChange
+                    {
+                        File = projectPath,
+                        ChangeType = ChangeKind.Modify,
+                        Description = "Update explicit Compile items to the moved folder"
+                    });
+                }
+            }
+
+            Context.UpdateSolution(originalSolution);
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+        }
+
+        Context.UpdateSolution(originalSolution);
+
+        if (!anyChanged && folderPlans.Count == 0)
+        {
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+                null, 0, 0);
+        }
+
+        var filesModified = new List<string>();
+        var filesCreated = new List<string>();
+        var filesDeleted = new List<string>();
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            filesModified.AddRange(commitResult.FilesModified);
+            filesCreated.AddRange(commitResult.FilesCreated);
+            filesDeleted.AddRange(commitResult.FilesDeleted);
+        }
+
+        foreach (var folderPlan in folderPlans)
+        {
+            ApplyFolderMoves(folderPlan);
+            WriteProjectUpdates(folderPlan);
+            Context.UpdateSolution(ApplyDocumentPathUpdates(Context.Solution, folderPlan));
+
+            filesModified = filesModified.Select(path => RemapCommittedPath(path, folderPlan)).ToList();
+            filesModified.AddRange(folderPlan.ProjectTexts.Keys);
+            foreach (var file in folderPlan.Files)
+            {
+                filesCreated.Add(file.DestinationFile);
+                filesDeleted.Add(file.SourceFile);
+            }
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges
+            {
+                FilesModified = filesModified,
+                FilesCreated = filesCreated,
+                FilesDeleted = filesDeleted
+            },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that renamed
+    /// <paramref name="changedCount"/> namespace declarations to
+    /// <paramref name="newFullName"/>.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int changedCount, string newFullName) =>
+        changedCount == 1
+            ? $"Rename namespace to '{newFullName}'"
+            : $"Rename {changedCount} namespaces to '{newFullName}'";
+
+    /// <summary>
+    /// Top-level namespace declarations in a file (file-scoped or block).
+    /// Nested namespace declarations are ignored so bulk does not rename
+    /// child segments independently of their outer declaration.
+    /// </summary>
+    internal static IReadOnlyList<BaseNamespaceDeclarationSyntax> CollectTopLevelNamespaces(SyntaxNode root) =>
+        root.ChildNodes()
+            .OfType<BaseNamespaceDeclarationSyntax>()
+            .OrderBy(n => n.SpanStart)
+            .ThenBy(n => n.Span.Length)
+            .ToList();
+
+    private async Task<(Solution? Solution, FolderMovePlan? FolderPlan)> TryRenameOneAsync(
+        Document document,
+        SemanticModel semanticModel,
+        BaseNamespaceDeclarationSyntax namespaceDecl,
+        string newFullName,
+        bool updateFolders,
+        HashSet<string> renamedFullNames,
+        List<string> claimedDestinations,
+        CancellationToken cancellationToken)
+    {
+        if (semanticModel.GetDeclaredSymbol(namespaceDecl, cancellationToken) is not INamespaceSymbol namespaceSymbol)
+            return (null, null);
+
+        if (namespaceSymbol.IsGlobalNamespace)
+            return (null, null);
+
+        var oldFullName = GetFullName(namespaceSymbol);
+        if (string.IsNullOrEmpty(oldFullName))
+            return (null, null);
+
+        if (renamedFullNames.Contains(oldFullName))
+            return (null, null);
+
+        if (string.Equals(oldFullName, newFullName, StringComparison.Ordinal))
+            return (null, null);
+
+        var compilation = await document.Project.GetCompilationAsync(cancellationToken);
+        if (compilation == null)
+            return (null, null);
+
+        ValidateNoNameConflict(namespaceSymbol, newFullName, compilation);
+
+        var newSolution = await ComputeRenamedSolutionAsync(
+            namespaceSymbol,
+            oldFullName,
+            newFullName,
+            cancellationToken);
+
+        ValidateChangedDocumentsAreEditable(Context.Solution, newSolution);
+
+        FolderMovePlan? folderPlan = null;
+        if (updateFolders)
+        {
+            try
+            {
+                // Plan against the pre-rename document path / solution so folder
+                // matching still sees the old namespace segments on disk.
+                folderPlan = PlanFolderMoves(
+                    document,
+                    oldFullName,
+                    newFullName,
+                    Context.Solution,
+                    Context.Workspace);
+
+                if (folderPlan.Folders.Any(folder =>
+                        claimedDestinations.Any(claimed =>
+                            ReferToSameDirectory(claimed, folder.DestinationFolder) ||
+                            string.Equals(
+                                PathResolver.NormalizePath(claimed),
+                                PathResolver.NormalizePath(folder.DestinationFolder),
+                                StringComparison.OrdinalIgnoreCase))))
+                {
+                    folderPlan = null;
+                }
+            }
+            catch (RefactoringException)
+            {
+                folderPlan = null;
+            }
+        }
+
+        renamedFullNames.Add(oldFullName);
+        return (newSolution, folderPlan);
+    }
+
+    /// <summary>
     /// Resolves the namespace declared in <paramref name="document"/> that matches
     /// <see cref="RenameNamespaceParams.NamespaceName"/>.
     /// </summary>
@@ -202,7 +582,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         return FindNamespace(
             root,
             semanticModel,
-            @params.NamespaceName,
+            @params.NamespaceName!,
             @params.Line,
             @params.Column,
             cancellationToken);

@@ -1247,9 +1247,11 @@ public class HelpGeneratorTests
 
         Assert.Contains("rename-namespace", help);
         Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("smallest namespace", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("optional line pick", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("omitted-line path", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile and namespaceName are required", tool.Description, StringComparison.OrdinalIgnoreCase);
 
         var requiredIdx = help.IndexOf("REQUIRED:");
         var optionalIdx = help.IndexOf("OPTIONAL:");
@@ -1259,17 +1261,39 @@ public class HelpGeneratorTests
         var requiredSection = help[requiredIdx..optionalIdx];
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
-        Assert.Contains("--namespace-name", requiredSection);
         Assert.Contains("--new-name", requiredSection);
+        Assert.DoesNotContain("--source-file", requiredSection);
+        Assert.DoesNotContain("--namespace-name", requiredSection);
         Assert.DoesNotContain("--column", requiredSection);
         Assert.DoesNotContain("--line", requiredSection);
         Assert.DoesNotContain("--preview", requiredSection);
 
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--namespace-name", optionalSection);
         Assert.Contains("--line", optionalSection);
         Assert.Contains("--column", optionalSection);
         Assert.Contains("--preview", optionalSection);
         Assert.Contains("--update-folders", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+    }
+
+    [Fact]
+    public void GenerateToolHelp_RenameNamespace_ShowsAllFiles()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("rename-namespace")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("rename-namespace", help);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var optionalSection = help[optionalIdx..];
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--new-name", help);
     }
 
     [Fact]
