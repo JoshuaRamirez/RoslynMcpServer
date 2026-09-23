@@ -263,11 +263,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
     {
         var originalSolution = Context.Solution;
         var currentSolution = originalSolution;
-        var allDocuments = originalSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
             allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
@@ -338,11 +334,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             }
         }
 
-        var documentsToCompare = originalSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-            .ToList();
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;
