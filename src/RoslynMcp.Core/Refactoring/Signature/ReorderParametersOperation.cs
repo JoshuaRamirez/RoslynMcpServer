@@ -216,6 +216,10 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
 
         var changedCountByDoc = new Dictionary<DocumentId, int>();
+        // Stable method keys already reordered this walk. Non-identity permutations
+        // remain eligible after apply (e.g. [1,0] swaps forever), so track each
+        // target once (Codex / Copilot P1).
+        var processedMethodKeys = new HashSet<string>(StringComparer.Ordinal);
 
         // Repeat until a full document-group pass makes no progress so that
         // call-site rewrites in later files can unlock earlier methods that were
@@ -266,6 +270,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                                 methodDecl,
                                 @params,
                                 linkedPathCounts,
+                                processedMethodKeys,
                                 cancellationToken);
                         }
                         catch (RefactoringException)
@@ -539,6 +544,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         MethodDeclarationSyntax methodDecl,
         ReorderParametersParams @params,
         IReadOnlyDictionary<string, int> linkedPathCounts,
+        HashSet<string> processedMethodKeys,
         CancellationToken cancellationToken)
     {
         var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken);
@@ -552,6 +558,10 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
             return null;
 
         if (methodSymbol.Parameters.Length != @params.NewOrder.Length)
+            return null;
+
+        var methodKey = BuildStableMethodKey(methodSymbol);
+        if (processedMethodKeys.Contains(methodKey))
             return null;
 
         int[] newOrder;
@@ -657,7 +667,22 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                 return null;
         }
 
+        processedMethodKeys.Add(methodKey);
         return newSolution;
+    }
+
+    /// <summary>
+    /// Order-independent identity for a method so a bulk walk can apply
+    /// <c>newOrder</c> at most once even when the permutation is not idempotent
+    /// (e.g. swap <c>[1, 0]</c>).
+    /// </summary>
+    internal static string BuildStableMethodKey(IMethodSymbol method)
+    {
+        var containing = method.ContainingType?.ToDisplayString() ?? "<global>";
+        var parts = method.Parameters
+            .Select(p => $"{p.RefKind}:{p.Type.ToDisplayString()}:{p.Name}")
+            .OrderBy(s => s, StringComparer.Ordinal);
+        return $"{containing}.{method.Name}<{method.TypeParameters.Length}>({string.Join(",", parts)})";
     }
 
     private static bool IsIdentityPermutation(int[] newOrder)
