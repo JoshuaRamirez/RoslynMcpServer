@@ -7,59 +7,82 @@ public sealed class AddParameterParams
 {
     /// <summary>
     /// Absolute path to the source file containing the method.
+    /// Required when <see cref="AllFiles"/> is false.
+    /// When <see cref="AllFiles"/> is true, optional and limits the walk
+    /// to that one file when set.
     /// </summary>
-    public required string SourceFile { get; init; }
+    public string? SourceFile { get; init; }
 
     /// <summary>
-    /// Name of the method to modify.
+    /// When true, process every eligible method in every C# document
+    /// (or the optional single <see cref="SourceFile"/>) by adding the
+    /// same <see cref="ParameterName"/> / <see cref="ParameterType"/>
+    /// (and optional <see cref="DefaultValue"/> / <see cref="Position"/>)
+    /// under today's single-site validation.
+    /// When true, cannot be combined with <see cref="MethodName"/>,
+    /// <see cref="Line"/>, or <see cref="Column"/>.
     /// </summary>
-    public required string MethodName { get; init; }
+    public bool AllFiles { get; init; }
+
+    /// <summary>
+    /// Name of the method to modify. Single-site only.
+    /// Required when <see cref="AllFiles"/> is false.
+    /// </summary>
+    public string? MethodName { get; init; }
 
     /// <summary>
     /// Name for the new parameter.
+    /// Required for both single-site and allFiles.
     /// </summary>
     public required string ParameterName { get; init; }
 
     /// <summary>
     /// C# type of the new parameter.
+    /// Required for both single-site and allFiles.
     /// </summary>
     public required string ParameterType { get; init; }
 
     /// <summary>
     /// Default value used at existing call sites (and on the declaration when provided).
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public string? DefaultValue { get; init; }
 
     /// <summary>
     /// 0-based insertion position. -1 (default) inserts at the end of required
     /// parameters (before optionals and <c>params</c>).
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public int Position { get; init; } = -1;
 
     /// <summary>
     /// Line number for disambiguation if multiple methods have the same name (1-based).
+    /// Single-site only.
     /// </summary>
     public int? Line { get; init; }
 
     /// <summary>
     /// 1-based column for disambiguation. When set, selects the smallest method
     /// whose identifier or declaration span covers that column. Omitted keeps
-    /// today's MethodName and/or Line start-line pick.
+    /// today's MethodName and/or Line start-line pick. Single-site only.
     /// </summary>
     public int? Column { get; init; }
 
     /// <summary>
     /// Update the virtual/override chain together. Default: true.
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool UpdateOverrides { get; init; } = true;
 
     /// <summary>
     /// Update interface declarations and implementations together. Default: true.
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool UpdateImplementations { get; init; } = true;
 
     /// <summary>
     /// Return computed changes without applying. Default: false.
+    /// Valid with <see cref="AllFiles"/>.
     /// </summary>
     public bool Preview { get; init; }
 }
