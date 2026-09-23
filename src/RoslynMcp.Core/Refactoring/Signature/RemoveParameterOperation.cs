@@ -421,71 +421,6 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             .ToList();
 
     /// <summary>
-    /// Bulk eligibility: skip overrides / interface declarations /
-    /// interface implementations / partial pairs / <c>extern</c> /
-    /// <c>UnmanagedCallersOnly</c> / <c>ModuleInitializer</c> so allFiles
-    /// cannot rewrite a signature whose metadata or sibling contract cannot
-    /// be updated (AddParameter / ChangeSignature / Codex).
-    /// </summary>
-    internal static bool IsEligibleForAllFiles(IMethodSymbol method, MethodDeclarationSyntax methodDecl)
-    {
-        if (method.IsExtensionMethod)
-            return false;
-
-        if (method.PartialDefinitionPart != null || method.PartialImplementationPart != null)
-            return false;
-
-        if (method.IsExtern)
-            return false;
-
-        if (HasUnmanagedCallersOnlyAttribute(method, methodDecl))
-            return false;
-
-        if (HasModuleInitializerAttribute(method, methodDecl))
-            return false;
-
-        if (method.IsOverride)
-            return false;
-
-        if (method.ContainingType?.TypeKind == TypeKind.Interface)
-            return false;
-
-        if (!method.ExplicitInterfaceImplementations.IsDefaultOrEmpty &&
-            method.ExplicitInterfaceImplementations.Length > 0)
-        {
-            return false;
-        }
-
-        if (ImplementsAnyInterfaceMember(method))
-            return false;
-
-        return true;
-    }
-
-    /// <summary>
-    /// True when <paramref name="method"/> is the implementation of any
-    /// interface member on its containing type.
-    /// </summary>
-    internal static bool ImplementsAnyInterfaceMember(IMethodSymbol method)
-    {
-        var containingType = method.ContainingType;
-        if (containingType == null)
-            return false;
-
-        foreach (var iface in containingType.AllInterfaces)
-        {
-            foreach (var member in iface.GetMembers().OfType<IMethodSymbol>())
-            {
-                var impl = containingType.FindImplementationForInterfaceMember(member) as IMethodSymbol;
-                if (impl != null && SymbolEqualityComparer.Default.Equals(impl, method))
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>
     /// True when removing the parameter at <paramref name="removeIndex"/> would
     /// collide with another method of the same name in the containing type
     /// (same arity + bound types) (ChangeSignature / Codex).
@@ -537,46 +472,6 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         return false;
     }
 
-    private static bool HasModuleInitializerAttribute(IMethodSymbol method, MethodDeclarationSyntax methodDecl)
-    {
-        if (method.GetAttributes().Any(attr =>
-        {
-            var type = attr.AttributeClass;
-            if (type == null)
-                return false;
-            if (type.Name is not ("ModuleInitializerAttribute" or "ModuleInitializer"))
-                return false;
-            return type.ContainingNamespace?.ToDisplayString() == "System.Runtime.CompilerServices";
-        }))
-        {
-            return true;
-        }
-
-        return methodDecl.AttributeLists
-            .SelectMany(list => list.Attributes)
-            .Any(attr => attr.Name.ToString().Contains("ModuleInitializer", StringComparison.Ordinal));
-    }
-
-    private static bool HasUnmanagedCallersOnlyAttribute(IMethodSymbol method, MethodDeclarationSyntax methodDecl)
-    {
-        if (method.GetAttributes().Any(attr =>
-        {
-            var type = attr.AttributeClass;
-            if (type == null)
-                return false;
-            if (type.Name is not ("UnmanagedCallersOnlyAttribute" or "UnmanagedCallersOnly"))
-                return false;
-            return type.ContainingNamespace?.ToDisplayString() == "System.Runtime.InteropServices";
-        }))
-        {
-            return true;
-        }
-
-        return methodDecl.AttributeLists
-            .SelectMany(list => list.Attributes)
-            .Any(attr => attr.Name.ToString().Contains("UnmanagedCallersOnly", StringComparison.Ordinal));
-    }
-
     /// <summary>
     /// Path → linked-view count across the entire solution (not a filtered
     /// <c>sourceFile</c> subset). Same helper as
@@ -622,7 +517,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         if (!DocumentEditableHelpers.IsDocumentEditable(document, Context.Workspace))
             return null;
 
-        if (!IsEligibleForAllFiles(methodSymbol, methodDecl))
+        if (!AllFilesMethodEligibilityHelpers.IsEligibleForAllFiles(methodSymbol, methodDecl))
             return null;
 
         var normalizedName = SyntaxIdentifierValidation.NormalizeIdentifier(@params.ParameterName);

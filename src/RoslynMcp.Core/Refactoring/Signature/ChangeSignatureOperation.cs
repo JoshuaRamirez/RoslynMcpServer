@@ -493,7 +493,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (!method.ExplicitInterfaceImplementations.IsDefaultOrEmpty &&
             method.ExplicitInterfaceImplementations.Length > 0)
             return false;
-        if (ImplementsAnyInterfaceMember(method))
+        if (AllFilesMethodEligibilityHelpers.ImplementsAnyInterfaceMember(method))
             return false;
 
         var byName = method.Parameters.ToDictionary(p => p.Name, StringComparer.Ordinal);
@@ -517,29 +517,6 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         }
 
         return true;
-    }
-
-    /// <summary>
-    /// True when <paramref name="method"/> is the implementation of any
-    /// interface member on its containing type.
-    /// </summary>
-    internal static bool ImplementsAnyInterfaceMember(IMethodSymbol method)
-    {
-        var containingType = method.ContainingType;
-        if (containingType == null)
-            return false;
-
-        foreach (var iface in containingType.AllInterfaces)
-        {
-            foreach (var member in iface.GetMembers().OfType<IMethodSymbol>())
-            {
-                var impl = containingType.FindImplementationForInterfaceMember(member) as IMethodSymbol;
-                if (impl != null && SymbolEqualityComparer.Default.Equals(impl, method))
-                    return true;
-            }
-        }
-
-        return false;
     }
 
     /// <summary>
