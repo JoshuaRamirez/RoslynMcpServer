@@ -175,11 +175,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         CancellationToken cancellationToken)
     {
         var originalSolution = Context.Solution;
-        var allDocuments = originalSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
             allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile);
@@ -268,11 +264,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;
-        var documentsToCompare = originalSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-            .ToList();
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         foreach (var document in documentsToCompare)
         {
