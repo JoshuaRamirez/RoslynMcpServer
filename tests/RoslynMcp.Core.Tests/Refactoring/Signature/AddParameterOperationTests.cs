@@ -123,6 +123,127 @@ public class AddParameterOperationTests
         Assert.False(AddParameterOperation.IsValidParameterType("???"));
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddParameterOperation.Validate(new AddParameterParams
+            {
+                AllFiles = false,
+                MethodName = "Process",
+                ParameterName = "timeout",
+                ParameterType = "int"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrMethodName_DoesNotThrow()
+    {
+        AddParameterOperation.Validate(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int"
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithRelativeSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddParameterOperation.Validate(new AddParameterParams
+            {
+                AllFiles = true,
+                SourceFile = "Worker.cs",
+                ParameterName = "timeout",
+                ParameterType = "int"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithNonCSharpSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddParameterOperation.Validate(new AddParameterParams
+            {
+                AllFiles = true,
+                SourceFile = Path.Combine(Path.GetTempPath(), "Worker.txt"),
+                ParameterName = "timeout",
+                ParameterType = "int"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMissingSourceFile_DoesNotThrow()
+    {
+        AddParameterOperation.Validate(new AddParameterParams
+        {
+            AllFiles = true,
+            SourceFile = Path.Combine(Path.GetTempPath(), "RoslynMcpAddParameterMissingAllFiles.cs"),
+            ParameterName = "timeout",
+            ParameterType = "int"
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMethodName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddParameterOperation.Validate(new AddParameterParams
+            {
+                AllFiles = true,
+                MethodName = "Process",
+                ParameterName = "timeout",
+                ParameterType = "int"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddParameterOperation.Validate(new AddParameterParams
+            {
+                AllFiles = true,
+                Line = 1,
+                ParameterName = "timeout",
+                ParameterType = "int"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            AddParameterOperation.Validate(new AddParameterParams
+            {
+                AllFiles = true,
+                Column = 1,
+                ParameterName = "timeout",
+                ParameterType = "int"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Add parameter", AddParameterOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Add 2 parameters", AddParameterOperation.BuildAllFilesDescription(2));
+    }
+
     #endregion
 
     #region Happy Path
@@ -1117,6 +1238,445 @@ public class AddParameterOperationTests
 
     #region Helpers
 
+    #region allFiles
+
+    private const string EligibleFileA = """
+        public class FileA
+        {
+            public void Process(int count) { }
+            public void Other(int count) { }
+            public void AlreadyHas(int count, int timeout) { }
+        }
+        """;
+
+    private const string EligibleFileB = """
+        public class FileB
+        {
+            public void Process(int count) { }
+        }
+        """;
+
+    private const string IneligibleFileC = """
+        public class FileC
+        {
+            public void AlreadyHas(int count, int timeout) { }
+            public void AlsoHas(string name, int timeout = 0) { }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task AddParameter_OmittedAllFiles_KeepsSingleSiteRewrite()
+    {
+        const string source = """
+            public class Worker
+            {
+                public void Process(int count) { }
+                public void Other(int count) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            SourceFile = workspace.SourcePath,
+            MethodName = "Process",
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("timeout", ParameterNames(GetMethods(updated, "Process").Single()));
+        Assert.DoesNotContain("timeout", ParameterNames(GetMethods(updated, "Other").Single()));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_AppliesToEligibleMethodsAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new AddParameterOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var pathC = Path.Combine(workspace.DirectoryPath, "FileC.cs");
+        var beforeC = await File.ReadAllTextAsync(pathC);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var updatedA = await File.ReadAllTextAsync(pathA);
+        var updatedB = await File.ReadAllTextAsync(pathB);
+        Assert.Contains("timeout", ParameterNames(GetMethods(updatedA, "Process").Single()));
+        Assert.Contains("timeout", ParameterNames(GetMethods(updatedA, "Other").Single()));
+        Assert.Equal(2, ParameterNames(GetMethods(updatedA, "AlreadyHas").Single()).Length);
+        Assert.Contains("timeout", ParameterNames(GetMethods(updatedB, "Process").Single()));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(pathC));
+        Assert.True(result.Changes!.FilesModified.Count >= 2);
+        Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, pathA));
+        Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathC));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_WithoutSourceFileOrMethodName_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Changes!.FilesModified.Count >= 2);
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddParameterParams
+            {
+                AllFiles = false,
+                MethodName = "Process",
+                ParameterName = "timeout",
+                ParameterType = "int"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_WithMethodName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(EligibleFileA);
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddParameterParams
+            {
+                AllFiles = true,
+                MethodName = "Process",
+                ParameterName = "timeout",
+                ParameterType = "int"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("methodName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new AddParameterOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var pathC = Path.Combine(workspace.DirectoryPath, "FileC.cs");
+        var beforeA = await File.ReadAllTextAsync(pathA);
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var beforeC = await File.ReadAllTextAsync(pathC);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => PathsEqual(c.File, pathA));
+        Assert.Contains(result.PendingChanges, c => PathsEqual(c.File, pathB));
+        Assert.DoesNotContain(result.PendingChanges, c => PathsEqual(c.File, pathC));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(pathA));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(pathC));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileC.cs", IneligibleFileC),
+            ("FileC2.cs", IneligibleFileC));
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new AddParameterOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            SourceFile = pathA,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        var updatedA = await File.ReadAllTextAsync(pathA);
+        Assert.Contains("timeout", ParameterNames(GetMethods(updatedA, "Process").Single()));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, pathA));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_SkipsWhenTargetWouldCollapseOverloads()
+    {
+        const string source = """
+            public class Worker
+            {
+                public void Process() { }
+                public void Process(int timeout) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddParameterOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_SkipsOverrideEqualsRatherThanBreakingContract()
+    {
+        const string source = """
+            public class Worker
+            {
+                public override string ToString() => "x";
+                public void NeedsIt(int count) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.DoesNotContain("ToString(int", updated.Replace(" ", ""));
+        Assert.Contains("timeout", ParameterNames(GetMethods(updated, "NeedsIt").Single()));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_SkipsVirtualBaseWithOverrides()
+    {
+        const string source = """
+            public class Base
+            {
+                public virtual void Process(int count) { }
+            }
+
+            public class Derived : Base
+            {
+                public override void Process(int count) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddParameterOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_SkipsAlreadyHasParameter()
+    {
+        const string source = """
+            public class Worker
+            {
+                public void AlreadyHas(int count, int timeout) { }
+                public void NeedsIt(int count) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Equal(2, ParameterNames(GetMethods(updated, "AlreadyHas").Single()).Length);
+        Assert.Contains("timeout", ParameterNames(GetMethods(updated, "NeedsIt").Single()));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_SkipsModuleInitializer()
+    {
+        const string source = """
+            namespace TestApp;
+            using System.Runtime.CompilerServices;
+            public static class Startup
+            {
+                [ModuleInitializer]
+                public static void Init() { }
+                public static void NeedsIt(int count) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new AddParameterOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        var updated = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.DoesNotContain("Init(int", updated.Replace(" ", ""));
+        Assert.Contains("timeout", ParameterNames(GetMethods(updated, "NeedsIt").Single()));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_SkipsWhenCallSiteOnLinkedMultiViewPath()
+    {
+        // Method lives on a singleton path (AnchorA/AnchorB); call site lives on
+        // Shared.cs linked into both projects. Without the related-target multi-view
+        // gate, TryAddOne would rewrite Shared and Coalesce would overwrite siblings.
+        const string sharedSource = """
+            namespace TestApp;
+
+            public static class Caller
+            {
+                public static void Use() => Worker.Process();
+            }
+            """;
+        const string anchorASource = """
+            namespace TestApp;
+
+            public static class Worker
+            {
+                public static void Process() { }
+            }
+            """;
+        const string anchorBSource = """
+            namespace TestApp;
+
+            public static class Worker
+            {
+                public static void Process() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorASource, anchorBSource);
+        var counts = AddParameterOperation.BuildLinkedPathCounts(workspace.Context.Solution);
+        var sharedKey = RoslynMcp.Core.FileSystem.PathResolver.GetPathComparisonKey(
+            workspace.SourcePaths["Shared.cs"]);
+        Assert.True(counts.TryGetValue(sharedKey, out var sharedCount) && sharedCount > 1);
+
+        var beforeShared = await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["AnchorA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["AnchorB.cs"]);
+
+        var operation = new AddParameterOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeShared, await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["AnchorA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["AnchorB.cs"]));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    #endregion
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left).Replace('\\', '/'),
+            Path.GetFullPath(right).Replace('\\', '/'),
+            StringComparison.OrdinalIgnoreCase);
+
     private static AddParameterParams ValidParams(
         string? sourceFile = null,
         string methodName = "Process",
@@ -1172,9 +1732,13 @@ public class AddParameterOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public Dictionary<string, string> SourcePaths { get; init; } = new(StringComparer.Ordinal);
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Worker.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Worker.cs") =>
+            CreateAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1191,8 +1755,15 @@ public class AddParameterOperationTests
                 </Project>
                 """);
 
-            var sourcePath = Path.Combine(directory, fileName);
-            await File.WriteAllTextAsync(sourcePath, source);
+            string? sourcePath = null;
+            foreach (var (fileName, source) in files)
+            {
+                var path = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(path, source);
+                sourcePath ??= path;
+            }
+
+            sourcePath ??= Path.Combine(directory, "Worker.cs");
 
             try
             {
@@ -1209,6 +1780,143 @@ public class AddParameterOperationTests
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
                     SourcePath = sourcePath,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        public static async Task<TempWorkspace> CreateWithLinkedProjectsAsync(
+            string sharedSource,
+            string anchorASource,
+            string anchorBSource)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpAddParameterLinked_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            var sharedPath = Path.Combine(directory, "Shared.cs");
+            var rootProjectPath = Path.Combine(directory, "ProjectA.csproj");
+            var referencedProjectPath = Path.Combine(directory, "ProjectB.csproj");
+            var anchorAPath = Path.Combine(directory, "AnchorA.cs");
+            var anchorBPath = Path.Combine(directory, "AnchorB.cs");
+            var projectTypeGuid = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
+            var projectAGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+            var projectBGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+
+            await File.WriteAllTextAsync(sharedPath, sharedSource);
+            await File.WriteAllTextAsync(anchorAPath, anchorASource);
+            await File.WriteAllTextAsync(anchorBPath, anchorBSource);
+            await File.WriteAllTextAsync(solutionPath, $$"""
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                VisualStudioVersion = 17.0.31903.59
+                MinimumVisualStudioVersion = 10.0.40219.1
+                Project("{{projectTypeGuid}}") = "ProjectA", "ProjectA.csproj", "{{projectAGuid}}"
+                EndProject
+                Project("{{projectTypeGuid}}") = "ProjectB", "ProjectB.csproj", "{{projectBGuid}}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                		Release|Any CPU = Release|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{{projectAGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectAGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            await File.WriteAllTextAsync(rootProjectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="AnchorA.cs" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            await File.WriteAllTextAsync(referencedProjectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="AnchorB.cs" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Shared.cs"] = sharedPath,
+                ["AnchorA.cs"] = anchorAPath,
+                ["AnchorB.cs"] = anchorBPath
+            };
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                foreach (var sourcePath in sourcePaths.Values)
+                {
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
+                }
+
+                var linkedCount = context.Solution.Projects
+                    .SelectMany(proj => proj.Documents)
+                    .Count(d => d.FilePath != null &&
+                                string.Equals(Path.GetFullPath(d.FilePath), Path.GetFullPath(sharedPath), StringComparison.OrdinalIgnoreCase));
+                if (linkedCount < 2)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException($"Expected linked document in both projects, found {linkedCount}.");
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = rootProjectPath,
+                    SourcePath = sharedPath,
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }
