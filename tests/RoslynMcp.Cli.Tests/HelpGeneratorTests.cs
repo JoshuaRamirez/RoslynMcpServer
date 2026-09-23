@@ -1447,6 +1447,21 @@ public class HelpGeneratorTests
         Assert.Contains("covers that column", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("exclusive-end", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("line pick", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0);
+        var optionalSection = help[optionalIdx..];
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--line", optionalSection);
+        Assert.Contains("--new-type-name", optionalSection);
+        Assert.Contains("--column", optionalSection);
+        Assert.Contains("--as-record", optionalSection);
+        Assert.Contains("--preview", optionalSection);
     }
 
     [Fact]

@@ -33,13 +33,13 @@ public sealed class ConvertAnonymousToClassTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert an anonymous type (new { ... }) to a named class or record and replace same-shape anonymous creations in the solution. column (optional) picks the anonymous creation whose span covers that column when set with line (exclusive-end; unique covering match, else CannotConvert / SymbolAmbiguous); omitted keeps today's line pick.";
+        "Convert an anonymous type (new { ... }) to a named class or record and replace same-shape anonymous creations in the solution. sourceFile, line, and newTypeName are required when allFiles is omitted or false. column (optional) picks the anonymous creation whose span covers that column when set with line (exclusive-end; unique covering match, else CannotConvert / SymbolAmbiguous); omitted keeps today's line pick. allFiles: true walks every C# file and converts every distinct eligible anonymous-type shape (type named from sanitized member names; sourceFile optional when true; cannot be combined with line, column, or newTypeName). asRecord / preview remain valid with allFiles.";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "line", "newTypeName" },
+        required = new[] { "solutionPath" },
         properties = new
         {
             solutionPath = new
@@ -50,34 +50,76 @@ public sealed class ConvertAnonymousToClassTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the anonymous object creation"
+                description = "Absolute path to the source file containing the anonymous object creation. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with line, column, or newTypeName.",
+                @default = false
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number of the anonymous object creation. When column is omitted, matching stays today's line pick (single covering candidate returns; several on the line stay SymbolAmbiguous)."
+                description = "1-based line number of the anonymous object creation. Required when allFiles is false. When column is omitted, matching stays today's line pick (single covering candidate returns; several on the line stay SymbolAmbiguous). Single-site only; cannot be combined with allFiles.",
+                minimum = 1
             },
             newTypeName = new
             {
                 type = "string",
-                description = "Name of the class or record to create"
+                description = "Name of the class or record to create. Required when allFiles is false. When allFiles is true, each type is named from sanitized member names. Single-site only; cannot be combined with allFiles."
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column on the anonymous object creation. When set with line, selects the creation whose span covers that column (exclusive-end; today's unique covering match, else CannotConvert / SymbolAmbiguous). Omitted keeps today's line pick."
+                description = "1-based column on the anonymous object creation. When set with line, selects the creation whose span covers that column (exclusive-end; today's unique covering match, else CannotConvert / SymbolAmbiguous). Omitted keeps today's line pick. Single-site only; cannot be combined with allFiles.",
+                minimum = 1
             },
             asRecord = new
             {
                 type = "boolean",
-                description = "Create a record instead of a class",
+                description = "Create a record instead of a class. Valid with allFiles.",
                 @default = false
             },
             preview = new
             {
                 type = "boolean",
-                description = "Return computed changes without applying",
+                description = "Return computed changes without applying. Valid with allFiles.",
                 @default = false
+            }
+        },
+        oneOf = new object[]
+        {
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @enum = new[] { false }
+                    }
+                },
+                required = new[] { "solutionPath", "sourceFile", "line", "newTypeName" }
+            },
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @const = true
+                    }
+                },
+                required = new[] { "solutionPath", "allFiles" },
+                not = new
+                {
+                    anyOf = new object[]
+                    {
+                        new { required = new[] { "line" } },
+                        new { required = new[] { "column" } },
+                        new { required = new[] { "newTypeName" } }
+                    }
+                }
             }
         },
         additionalProperties = false
@@ -107,7 +149,8 @@ public sealed class ConvertAnonymousToClassTool : IToolHandler
             var @params = new ConvertAnonymousToClassParams
             {
                 SourceFile = args.SourceFile,
-                Line = args.Line ?? 0,
+                AllFiles = args.AllFiles ?? false,
+                Line = args.Line,
                 NewTypeName = args.NewTypeName,
                 Column = args.Column,
                 AsRecord = args.AsRecord ?? false,
@@ -139,9 +182,10 @@ public sealed class ConvertAnonymousToClassTool : IToolHandler
     private sealed class ConvertAnonymousToClassArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public int? Line { get; init; }
-        public string NewTypeName { get; init; } = "";
+        public string? NewTypeName { get; init; }
         public int? Column { get; init; }
         public bool? AsRecord { get; init; }
         public bool? Preview { get; init; }
