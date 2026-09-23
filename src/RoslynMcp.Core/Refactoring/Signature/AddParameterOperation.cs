@@ -219,7 +219,9 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
     /// <see cref="MethodDeclarationSyntax"/>. Optional <c>sourceFile</c> limits
     /// via <see cref="DocumentSourceFileFilter"/>. Linked multi-project views of
     /// the same path are skipped rather than coalescing (same contract as
-    /// <c>SafeDeleteOperation.ExecuteAllFilesAsync</c> / hierarchy allFiles).
+    /// <c>SafeDeleteOperation.ExecuteAllFilesAsync</c> / hierarchy allFiles);
+    /// a candidate is also skipped when any related declaration or call site
+    /// lives on a multi-view path (so Coalesce cannot overwrite siblings).
     /// Methods that already have the parameter, fail existing single-site
     /// validation, uneditable / source-generated docs, and otherwise inapplicable
     /// methods are skipped rather than failing the walk. Deterministic
@@ -234,6 +236,10 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         var originalSolution = Context.Solution;
         var currentSolution = originalSolution;
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+        // Full-solution linked-view counts (independent of optional sourceFile filter)
+        // so related declaration / call-site rewrites cannot touch a multi-view path
+        // and then get coalesced onto divergent siblings (Copilot / push_members_down).
+        var linkedPathCounts = BuildLinkedPathCounts(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
             allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
@@ -286,6 +292,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
                             semanticModel,
                             methodDecl,
                             @params,
+                            linkedPathCounts,
                             cancellationToken);
                     }
                     catch (RefactoringException)
@@ -591,11 +598,43 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
             .Any(attr => attr.Name.ToString().Contains("UnmanagedCallersOnly", StringComparison.Ordinal));
     }
 
+
+    /// <summary>
+    /// Path → linked-view count across the entire solution (not a filtered
+    /// <c>sourceFile</c> subset). Same helper as
+    /// <c>PushMembersDownOperation.BuildLinkedPathCounts</c>.
+    /// </summary>
+    internal static Dictionary<string, int> BuildLinkedPathCounts(Solution solution)
+    {
+        var groups = AllFilesDocumentHelpers.GroupByLinkedPath(
+            AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution));
+        return groups
+            .Where(g => g.Count > 0 && g[0].FilePath != null)
+            .GroupBy(g => PathResolver.GetPathComparisonKey(g[0].FilePath!), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Count, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// True when <paramref name="document"/> shares a physical path with
+    /// multiple linked workspace views.
+    /// </summary>
+    internal static bool DocumentPathHasLinkedMultiView(
+        Document document,
+        IReadOnlyDictionary<string, int> linkedPathCounts)
+    {
+        if (document.FilePath == null)
+            return false;
+
+        var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
+        return linkedPathCounts.TryGetValue(pathKey, out var count) && count > 1;
+    }
+
     private async Task<Solution?> TryAddOneAsync(
         Document document,
         SemanticModel semanticModel,
         MethodDeclarationSyntax methodDecl,
         AddParameterParams @params,
+        IReadOnlyDictionary<string, int> linkedPathCounts,
         CancellationToken cancellationToken)
     {
         var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl, cancellationToken);
@@ -658,12 +697,18 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         {
             if (!DocumentEditableHelpers.IsDocumentEditable(target.Document, Context.Workspace))
                 return null;
+            // Related declarations on a linked multi-view path must not be rewritten —
+            // CoalesceLinkedDocumentTextAsync would copy onto divergent siblings (Copilot).
+            if (DocumentPathHasLinkedMultiView(target.Document, linkedPathCounts))
+                return null;
         }
 
         var callSites = await CollectCallSitesAsync(relatedMethods, solution, cancellationToken);
         foreach (var callSite in callSites)
         {
             if (!DocumentEditableHelpers.IsDocumentEditable(callSite.Document, Context.Workspace))
+                return null;
+            if (DocumentPathHasLinkedMultiView(callSite.Document, linkedPathCounts))
                 return null;
         }
 
