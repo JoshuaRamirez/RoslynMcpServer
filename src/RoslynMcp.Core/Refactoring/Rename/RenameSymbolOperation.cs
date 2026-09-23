@@ -287,7 +287,7 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
         var linkedPathCounts = AllFilesDocumentHelpers.BuildLinkedPathCounts(originalSolution);
         var renamedSymbols = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
-        var claimedFileDestinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var claimedFileDestinations = new HashSet<string>(StringComparer.Ordinal);
         var plannedFileRenames = new List<(string SourcePath, string DestinationPath)>();
         var changedCountByDoc = new Dictionary<DocumentId, int>();
 
@@ -465,6 +465,7 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         var filesCreated = commitResult.FilesCreated.ToList();
         var filesDeleted = commitResult.FilesDeleted.ToList();
 
+        var fileRenameWarnings = new List<string>();
         foreach (var (sourcePath, destinationPath) in plannedFileRenames)
         {
             try
@@ -489,20 +490,43 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
                 if (!filesDeleted.Any(p => PathResolver.GetPathComparisonKey(p) == sourceKey))
                     filesDeleted.Add(sourcePath);
             }
-            catch (IOException)
+            catch (IOException ex)
             {
-                // Skip failed physical renames; code references already updated.
+                fileRenameWarnings.Add(
+                    $"File rename failed for '{sourcePath}': {ex.Message}. " +
+                    "Code references were updated but file was not renamed.");
             }
         }
 
-        return RefactoringResult.Succeeded(operationId,
-            new FileChanges
+        var changes = new FileChanges
+        {
+            FilesModified = filesModified,
+            FilesCreated = filesCreated,
+            FilesDeleted = filesDeleted
+        };
+
+        if (fileRenameWarnings.Count > 0)
+        {
+            var succeeded = RefactoringResult.Succeeded(operationId, changes, null, 0, 0);
+            return new RefactoringResult
             {
-                FilesModified = filesModified,
-                FilesCreated = filesCreated,
-                FilesDeleted = filesDeleted
-            },
-            null, 0, 0);
+                Success = true,
+                OperationId = succeeded.OperationId,
+                Preview = succeeded.Preview,
+                Changes = succeeded.Changes,
+                Symbol = succeeded.Symbol,
+                ReferencesUpdated = succeeded.ReferencesUpdated,
+                UsingDirectivesAdded = succeeded.UsingDirectivesAdded,
+                UsingDirectivesRemoved = succeeded.UsingDirectivesRemoved,
+                ExecutionTimeMs = succeeded.ExecutionTimeMs,
+                Error = RefactoringError.Create(
+                    "PARTIAL_SUCCESS",
+                    string.Join(" ", fileRenameWarnings)),
+                PendingChanges = succeeded.PendingChanges
+            };
+        }
+
+        return RefactoringResult.Succeeded(operationId, changes, null, 0, 0);
     }
 
     /// <summary>
@@ -573,6 +597,32 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         if (HasSimpleNameConflict(symbol, @params.NewName))
             return (null, null);
 
+        // When renameFile is requested for a type whose file matches the type
+        // name, colliding destinations skip the entire symbol rewrite (not just
+        // the physical move) so we never leave newName in the old-named file.
+        (string SourcePath, string DestinationPath)? plannedFileRename = null;
+        if (@params.RenameFile
+            && symbol is INamedTypeSymbol
+            && document.FilePath != null)
+        {
+            var fileName = Path.GetFileNameWithoutExtension(document.FilePath);
+            if (fileName == symbol.Name)
+            {
+                var newFilePath = Path.Combine(
+                    Path.GetDirectoryName(document.FilePath)!,
+                    @params.NewName + ".cs");
+                var destKey = PathResolver.GetPathComparisonKey(newFilePath);
+                var sourceKey = PathResolver.GetPathComparisonKey(document.FilePath);
+                if (!string.Equals(sourceKey, destKey, StringComparison.Ordinal))
+                {
+                    if (claimedFileDestinations.Contains(destKey) || File.Exists(newFilePath))
+                        return (null, null);
+
+                    plannedFileRename = (document.FilePath, newFilePath);
+                }
+            }
+        }
+
         var options = new SymbolRenameOptions(
             RenameOverloads: @params.RenameOverloads,
             RenameInStrings: false,
@@ -630,36 +680,17 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         // partials of this symbol are not selected again on later passes.
         MarkRenamed(renamedSymbols, symbol, @params.RenameOverloads);
 
-        (string SourcePath, string DestinationPath)? fileRename = null;
-        if (@params.RenameFile
-            && symbol is INamedTypeSymbol
-            && document.FilePath != null)
+        if (plannedFileRename is { } rename)
         {
-            var fileName = Path.GetFileNameWithoutExtension(document.FilePath);
-            if (fileName == symbol.Name)
-            {
-                var newFilePath = Path.Combine(
-                    Path.GetDirectoryName(document.FilePath)!,
-                    @params.NewName + ".cs");
-                var destKey = PathResolver.GetPathComparisonKey(newFilePath);
-                if (!claimedFileDestinations.Contains(destKey)
-                    && !File.Exists(newFilePath)
-                    && !string.Equals(
-                        PathResolver.GetPathComparisonKey(document.FilePath),
-                        destKey,
-                        StringComparison.Ordinal))
-                {
-                    var doc = newSolution.GetDocument(document.Id);
-                    if (doc != null)
-                    {
-                        newSolution = newSolution.WithDocumentFilePath(document.Id, newFilePath);
-                        fileRename = (document.FilePath, newFilePath);
-                    }
-                }
-            }
+            var doc = newSolution.GetDocument(document.Id);
+            if (doc == null)
+                return (newSolution, null);
+
+            newSolution = newSolution.WithDocumentFilePath(document.Id, rename.DestinationPath);
+            return (newSolution, rename);
         }
 
-        return (newSolution, fileRename);
+        return (newSolution, null);
     }
 
     private static void MarkRenamed(HashSet<ISymbol> renamedSymbols, ISymbol symbol, bool renameOverloads)
@@ -677,7 +708,7 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
     /// <paramref name="newName"/> in the same container (cases single-site
     /// Renamer would leave conflicted). Locals, parameters, and method type
     /// parameters are checked against the enclosing method's lexical scope —
-    /// <see cref="INamedTypeSymbol.GetMembers(string)"/> cannot see them.
+    /// <c>INamedTypeSymbol.GetMembers</c> cannot see them.
     /// </summary>
     internal static bool HasSimpleNameConflict(ISymbol symbol, string newName)
     {
