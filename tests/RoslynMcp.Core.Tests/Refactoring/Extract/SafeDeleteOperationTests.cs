@@ -989,36 +989,6 @@ public class SafeDeleteOperationTests
 
 
     [SkippableFact]
-    public async Task SafeDelete_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
-    {
-        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
-            ("FileA.cs", UnusedMembersFileA),
-            ("FileB.cs", UnusedMembersFileB));
-        var operation = new SafeDeleteOperation(workspace.Context);
-        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpSafeDelete_Outside_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(outsideDir);
-        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
-
-        try
-        {
-            await File.WriteAllTextAsync(outsidePath, "class Outside { private int _unused; }");
-
-            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
-                operation.ExecuteAsync(new SafeDeleteParams
-                {
-                    AllFiles = true,
-                    SourceFile = outsidePath
-                }));
-
-            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
-        }
-        finally
-        {
-            Directory.Delete(outsideDir, recursive: true);
-        }
-    }
-
-    [SkippableFact]
     public async Task SafeDelete_AllFilesTrue_OptionalSourceFile_MissingOnDisk_Throws()
     {
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(

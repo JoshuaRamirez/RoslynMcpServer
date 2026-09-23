@@ -424,6 +424,54 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         };
     }
 
+    /// <summary>
+    /// Extra allFiles bulk guards (Codex P1): skip constructors (removing the
+    /// only private ctor would synthesize a public one), enum members (would
+    /// renumber later implicit values), types, indexers/operators, and
+    /// fields / locals / properties whose initializers may have side effects.
+    /// </summary>
+    internal static bool IsSafeForAllFilesBulkDelete(SyntaxNode node) => node switch
+    {
+        ConstructorDeclarationSyntax => false,
+        DestructorDeclarationSyntax => false,
+        OperatorDeclarationSyntax => false,
+        ConversionOperatorDeclarationSyntax => false,
+        EnumMemberDeclarationSyntax => false,
+        TypeDeclarationSyntax => false,
+        EnumDeclarationSyntax => false,
+        DelegateDeclarationSyntax => false,
+        IndexerDeclarationSyntax => false,
+        PropertyDeclarationSyntax property =>
+            property.Initializer == null || IsPureInitializer(property.Initializer.Value),
+        VariableDeclaratorSyntax declarator =>
+            declarator.Initializer == null || IsPureInitializer(declarator.Initializer.Value),
+        _ => true
+    };
+
+    /// <summary>
+    /// Literal / default / typeof / nameof-shaped initializers are treated as
+    /// pure for bulk safe-delete; anything else is assumed potentially
+    /// effectful and skipped.
+    /// </summary>
+    internal static bool IsPureInitializer(ExpressionSyntax expression)
+    {
+        while (expression is ParenthesizedExpressionSyntax parenthesized)
+            expression = parenthesized.Expression;
+
+        if (expression is LiteralExpressionSyntax or DefaultExpressionSyntax or TypeOfExpressionSyntax)
+            return true;
+
+        if (expression is InvocationExpressionSyntax
+            {
+                Expression: IdentifierNameSyntax { Identifier.Text: "nameof" }
+            })
+        {
+            return true;
+        }
+
+        return false;
+    }
+
     private async Task<Solution?> TryDeleteOneAsync(
         Document document,
         SyntaxNode declaration,
@@ -566,49 +614,6 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
                method.ReturnType.Name is "Task" or "ValueTask";
     }
 
-
-    /// <summary>
-    /// Exact-path / unique-ignore-case filter for optional <c>allFiles</c>
-    /// <c>sourceFile</c> (same contract as <c>ExtractMethodOperation</c> /
-    /// <c>PullMembersUpOperation</c>). Rejects missing and case-ambiguous paths
-    /// instead of silently no-opping or matching both <c>Foo.cs</c> and
-    /// <c>foo.cs</c> (Copilot).
-    /// </summary>
-    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
-    {
-        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
-        var exactMatches = documents
-            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
-            .ToList();
-        if (exactMatches.Count > 0)
-        {
-            var exactKeys = exactMatches
-                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
-                .ToHashSet(StringComparer.Ordinal);
-            return documents
-                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
-                .ToList();
-        }
-
-        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
-        var distinctPaths = matchedDocuments
-            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        return distinctPaths.Count switch
-        {
-            0 when !File.Exists(sourceFile) => throw new RefactoringException(
-                ErrorCodes.SourceFileNotFound,
-                $"Source file not found: {sourceFile}"),
-            0 => throw new RefactoringException(
-                ErrorCodes.SourceNotInWorkspace,
-                $"File not found in workspace: {sourceFile}"),
-            > 1 => throw new RefactoringException(
-                ErrorCodes.SourceNotInWorkspace,
-                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
-            _ => matchedDocuments
-        };
-    }
 
     internal static TextSpan GetSelectionSpan(SourceText sourceText, SafeDeleteParams @params)
     {
