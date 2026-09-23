@@ -469,12 +469,25 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         {
             try
             {
-                if (File.Exists(sourcePath) && !File.Exists(destinationPath))
-                {
+                if (!File.Exists(sourcePath))
+                    continue;
+
+                // CommitChangesAsync writes to the WithDocumentFilePath destination,
+                // so the destination often already exists here. Move when absent;
+                // otherwise delete the stale source that still holds the old type.
+                if (!File.Exists(destinationPath))
                     File.Move(sourcePath, destinationPath);
+                else
+                    File.Delete(sourcePath);
+
+                var destKey = PathResolver.GetPathComparisonKey(destinationPath);
+                filesModified.RemoveAll(p =>
+                    PathResolver.GetPathComparisonKey(p) == destKey);
+                if (!filesCreated.Any(p => PathResolver.GetPathComparisonKey(p) == destKey))
                     filesCreated.Add(destinationPath);
+                var sourceKey = PathResolver.GetPathComparisonKey(sourcePath);
+                if (!filesDeleted.Any(p => PathResolver.GetPathComparisonKey(p) == sourceKey))
                     filesDeleted.Add(sourcePath);
-                }
             }
             catch (IOException)
             {
@@ -660,11 +673,17 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
     }
 
     /// <summary>
-    /// True when a sibling member / type already uses <paramref name="newName"/>
-    /// in the same container (cases single-site Renamer would leave conflicted).
+    /// True when a sibling member / type / method-scoped name already uses
+    /// <paramref name="newName"/> in the same container (cases single-site
+    /// Renamer would leave conflicted). Locals, parameters, and method type
+    /// parameters are checked against the enclosing method's lexical scope —
+    /// <see cref="INamedTypeSymbol.GetMembers(string)"/> cannot see them.
     /// </summary>
     internal static bool HasSimpleNameConflict(ISymbol symbol, string newName)
     {
+        if (IsMethodScopedSymbol(symbol))
+            return HasMethodScopeNameConflict(symbol, newName);
+
         if (symbol.ContainingType != null)
         {
             foreach (var member in symbol.ContainingType.GetMembers(newName))
@@ -686,6 +705,122 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
                     return true;
                 }
             }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Locals, parameters, and method type parameters live in a method's
+    /// lexical declaration space rather than on <see cref="INamedTypeSymbol"/>.
+    /// </summary>
+    internal static bool IsMethodScopedSymbol(ISymbol symbol) =>
+        symbol.Kind is Microsoft.CodeAnalysis.SymbolKind.Local or Microsoft.CodeAnalysis.SymbolKind.Parameter
+        || symbol is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method };
+
+    /// <summary>
+    /// Enclosing <see cref="IMethodSymbol"/> for a method-scoped symbol
+    /// (walks through local functions / transparent enclosing symbols).
+    /// </summary>
+    internal static IMethodSymbol? GetEnclosingMethod(ISymbol symbol)
+    {
+        for (var current = symbol.ContainingSymbol; current != null; current = current.ContainingSymbol)
+        {
+            if (current is IMethodSymbol method)
+                return method;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// True when <paramref name="newName"/> collides with a parameter, method
+    /// type parameter, local, or local function in the enclosing method.
+    /// Conservative: any same-name local in the method body counts as a
+    /// conflict (sibling-block renames may be skipped; skip-not-throw).
+    /// </summary>
+    internal static bool HasMethodScopeNameConflict(ISymbol symbol, string newName)
+    {
+        var method = GetEnclosingMethod(symbol);
+        if (method == null)
+            return false;
+
+        foreach (var parameter in method.Parameters)
+        {
+            if (parameter.Name == newName
+                && !SymbolEqualityComparer.Default.Equals(parameter, symbol))
+            {
+                return true;
+            }
+        }
+
+        foreach (var typeParameter in method.TypeParameters)
+        {
+            if (typeParameter.Name == newName
+                && !SymbolEqualityComparer.Default.Equals(typeParameter, symbol))
+            {
+                return true;
+            }
+        }
+
+        foreach (var syntaxRef in method.DeclaringSyntaxReferences)
+        {
+            var syntax = syntaxRef.GetSyntax();
+            var body = GetMethodBodySyntax(syntax);
+            if (body == null)
+                continue;
+
+            foreach (var declarator in body.DescendantNodes().OfType<VariableDeclaratorSyntax>())
+            {
+                if (declarator.Identifier.ValueText != newName)
+                    continue;
+                if (IsDeclaredBySymbol(symbol, declarator.Span))
+                    continue;
+                return true;
+            }
+
+            foreach (var designation in body.DescendantNodes().OfType<SingleVariableDesignationSyntax>())
+            {
+                if (designation.Identifier.ValueText != newName)
+                    continue;
+                if (IsDeclaredBySymbol(symbol, designation.Span))
+                    continue;
+                return true;
+            }
+
+            foreach (var localFunction in body.DescendantNodes().OfType<LocalFunctionStatementSyntax>())
+            {
+                if (localFunction.Identifier.ValueText != newName)
+                    continue;
+                if (IsDeclaredBySymbol(symbol, localFunction.Identifier.Span))
+                    continue;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static SyntaxNode? GetMethodBodySyntax(SyntaxNode methodSyntax) =>
+        methodSyntax switch
+        {
+            MethodDeclarationSyntax method => (SyntaxNode?)method.Body ?? method.ExpressionBody,
+            LocalFunctionStatementSyntax local => (SyntaxNode?)local.Body ?? local.ExpressionBody,
+            AccessorDeclarationSyntax accessor => (SyntaxNode?)accessor.Body ?? accessor.ExpressionBody,
+            ConstructorDeclarationSyntax ctor => (SyntaxNode?)ctor.Body ?? ctor.ExpressionBody,
+            DestructorDeclarationSyntax dtor => (SyntaxNode?)dtor.Body ?? dtor.ExpressionBody,
+            OperatorDeclarationSyntax op => (SyntaxNode?)op.Body ?? op.ExpressionBody,
+            ConversionOperatorDeclarationSyntax conv => (SyntaxNode?)conv.Body ?? conv.ExpressionBody,
+            _ => methodSyntax
+        };
+
+    private static bool IsDeclaredBySymbol(ISymbol symbol, TextSpan span)
+    {
+        foreach (var syntaxRef in symbol.DeclaringSyntaxReferences)
+        {
+            var node = syntaxRef.GetSyntax();
+            if (node.Span.Contains(span) || span.Contains(node.Span) || node.Span.OverlapsWith(span))
+                return true;
         }
 
         return false;

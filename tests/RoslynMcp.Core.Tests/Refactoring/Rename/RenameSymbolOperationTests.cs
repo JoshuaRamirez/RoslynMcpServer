@@ -783,10 +783,17 @@ public class RenameSymbolOperationTests
         var rootShared = Path.Combine(workspace.DirectoryPath, "SharedType.cs");
         var otherShared = Path.Combine(workspace.DirectoryPath, "Other", "SharedType.cs");
         // Distinct directories — both file renames succeed without destination collision.
-        Assert.True(File.Exists(rootShared) || File.Exists(path1));
-        Assert.True(File.Exists(otherShared) || File.Exists(path2));
-        var text1 = await File.ReadAllTextAsync(File.Exists(rootShared) ? rootShared : path1);
-        var text2 = await File.ReadAllTextAsync(File.Exists(otherShared) ? otherShared : path2);
+        // Commit writes to the new FilePath; source must still be removed.
+        Assert.True(File.Exists(rootShared));
+        Assert.True(File.Exists(otherShared));
+        Assert.False(File.Exists(path1));
+        Assert.False(File.Exists(path2));
+        Assert.Contains(rootShared, result.Changes!.FilesCreated);
+        Assert.Contains(otherShared, result.Changes.FilesCreated);
+        Assert.Contains(path1, result.Changes.FilesDeleted);
+        Assert.Contains(path2, result.Changes.FilesDeleted);
+        var text1 = await File.ReadAllTextAsync(rootShared);
+        var text2 = await File.ReadAllTextAsync(otherShared);
         Assert.Contains("SharedType", text1);
         Assert.Contains("SharedType", text2);
     }
@@ -836,6 +843,70 @@ public class RenameSymbolOperationTests
         Assert.True(RenameSymbolOperation.HasSimpleNameConflict(foo, "Bar"));
         Assert.False(RenameSymbolOperation.HasSimpleNameConflict(foo, "Baz"));
     }
+
+    [Fact]
+    public void HasSimpleNameConflict_LocalVsParameter_Detects()
+    {
+        var tree = CSharpSyntaxTree.ParseText("""
+            public class Host
+            {
+                public void M(int Bar)
+                {
+                    int Foo = 0;
+                }
+            }
+            """);
+        var compilation = CSharpCompilation.Create(
+            "LexicalConflict",
+            [tree],
+            [MetadataReference.CreateFromFile(typeof(object).Assembly.Location)]);
+        var model = compilation.GetSemanticModel(tree);
+        var foo = model.GetDeclaredSymbol(
+            tree.GetRoot().DescendantNodes().OfType<VariableDeclaratorSyntax>()
+                .First(v => v.Identifier.ValueText == "Foo"))!;
+        Assert.True(RenameSymbolOperation.HasSimpleNameConflict(foo, "Bar"));
+        Assert.False(RenameSymbolOperation.HasSimpleNameConflict(foo, "Baz"));
+    }
+
+    [SkippableFact]
+    public async Task RenameSymbol_AllFilesTrue_LocalVsParameterConflict_Skips()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Locals.cs", """
+                public class Host
+                {
+                    public void M(int Bar)
+                    {
+                        int Foo = 0;
+                        _ = Foo;
+                    }
+
+                    public void N()
+                    {
+                        int Foo = 1;
+                        _ = Foo;
+                    }
+                }
+                """));
+        var operation = new RenameSymbolOperation(workspace.Context);
+        var path = Path.Combine(workspace.DirectoryPath, "Locals.cs");
+
+        var result = await operation.ExecuteAsync(new RenameSymbolParams
+        {
+            AllFiles = true,
+            SymbolName = "Foo",
+            NewName = "Bar",
+            RenameFile = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(path);
+        // M(int Bar) { int Foo } conflicts — Foo kept; N()'s Foo renames to Bar.
+        Assert.Contains("int Foo = 0", text);
+        Assert.Contains("int Bar = 1", text);
+        Assert.DoesNotContain("int Foo = 1", text);
+    }
+
 
 
     [SkippableFact]
