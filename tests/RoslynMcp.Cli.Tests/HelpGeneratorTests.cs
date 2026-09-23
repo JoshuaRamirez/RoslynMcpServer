@@ -1188,6 +1188,7 @@ public class HelpGeneratorTests
 
         Assert.Contains("reorder-parameters", help);
         Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("smallest method", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("start-line", tool.Description, StringComparison.OrdinalIgnoreCase);
 
@@ -1199,16 +1200,40 @@ public class HelpGeneratorTests
         var requiredSection = help[requiredIdx..optionalIdx];
         var optionalSection = help[optionalIdx..];
 
-        Assert.Contains("--source-file", requiredSection);
-        Assert.Contains("--method-name", requiredSection);
+        // newOrder stays required; sourceFile/methodName become optional with allFiles.
         Assert.Contains("--new-order", requiredSection);
+        Assert.DoesNotContain("--source-file", requiredSection);
+        Assert.DoesNotContain("--method-name", requiredSection);
         Assert.DoesNotContain("--column", requiredSection);
         Assert.DoesNotContain("--line", requiredSection);
         Assert.DoesNotContain("--preview", requiredSection);
+        Assert.DoesNotContain("--all-files", requiredSection);
 
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--method-name", optionalSection);
         Assert.Contains("--line", optionalSection);
         Assert.Contains("--column", optionalSection);
         Assert.Contains("--preview", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+    }
+
+    [Fact]
+    public void GenerateToolHelp_ReorderParameters_ShowsAllFiles()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("reorder-parameters")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("reorder-parameters", help);
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var optionalSection = help[optionalIdx..];
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--new-order", help);
     }
 
     [Fact]
