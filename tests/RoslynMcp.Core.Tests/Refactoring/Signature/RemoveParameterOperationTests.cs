@@ -1703,6 +1703,44 @@ public class RemoveParameterOperationTests
     }
 
     [SkippableFact]
+    public async Task RemoveParameter_AllFilesTrue_CascadesWhenLaterRewriteUnlocksEarlierMethod()
+    {
+        // A uses unused only by forwarding to B(unused). Removing B first updates
+        // A's call site; a second document-group pass then removes A's unused.
+        const string fileA = """
+            public static class FileA
+            {
+                public static void A(int unused) => FileB.B(unused);
+            }
+            """;
+        const string fileB = """
+            public static class FileB
+            {
+                public static void B(int unused) { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", fileA),
+            ("FileB.cs", fileB));
+        var operation = new RemoveParameterOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+
+        var result = await operation.ExecuteAsync(new RemoveParameterParams
+        {
+            AllFiles = true,
+            ParameterName = "unused"
+        });
+
+        Assert.True(result.Success);
+        var updatedA = await File.ReadAllTextAsync(pathA);
+        var updatedB = await File.ReadAllTextAsync(pathB);
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updatedA, "A").Single()));
+        Assert.DoesNotContain("unused", ParameterNames(GetMethods(updatedB, "B").Single()));
+        Assert.Contains("FileB.B()", updatedA.Replace(" ", ""));
+    }
+
+    [SkippableFact]
     public async Task RemoveParameter_AllFilesTrue_SkipsWhenCallSiteOnLinkedMultiViewPath()
     {
         const string sharedSource = """

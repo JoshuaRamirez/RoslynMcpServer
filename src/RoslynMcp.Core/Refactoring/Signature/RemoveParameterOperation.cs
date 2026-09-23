@@ -217,7 +217,9 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
     /// body usage lives on a multi-view path. Methods that lack the parameter,
     /// fail existing single-site validation, uneditable / source-generated docs,
     /// and otherwise inapplicable methods are skipped rather than failing the
-    /// walk. Deterministic <c>SpanStart</c> order within a file. When every file
+    /// walk. Deterministic <c>SpanStart</c> order within a file. The document-group
+    /// walk repeats until a full pass makes no progress so cross-file call-site
+    /// rewrites can unlock previously skipped methods (Codex). When every file
     /// is a no-op, succeeds with empty changes.
     /// </summary>
     private async Task<RefactoringResult> ExecuteAllFilesAsync(
@@ -237,72 +239,82 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
 
         var changedCountByDoc = new Dictionary<DocumentId, int>();
 
-        foreach (var linkedDocuments in documentGroups)
+        // Repeat until a full document-group pass makes no progress so that
+        // call-site rewrites in later files can unlock earlier methods that were
+        // skipped for body usages (Codex).
+        bool madeProgress;
+        do
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            madeProgress = false;
 
-            if (linkedDocuments.Count > 1)
-                continue;
-
-            var primary = linkedDocuments.FirstOrDefault(d =>
-                d is not SourceGeneratedDocument &&
-                DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
-            if (primary == null)
-                continue;
-
-            while (true)
+            foreach (var linkedDocuments in documentGroups)
             {
-                var currentDocument = currentSolution.GetDocument(primary.Id);
-                if (currentDocument == null ||
-                    currentDocument is SourceGeneratedDocument ||
-                    !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (linkedDocuments.Count > 1)
+                    continue;
+
+                var primary = linkedDocuments.FirstOrDefault(d =>
+                    d is not SourceGeneratedDocument &&
+                    DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+                if (primary == null)
+                    continue;
+
+                while (true)
                 {
-                    break;
-                }
-
-                var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
-                var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
-                if (root == null || semanticModel == null)
-                    break;
-
-                Solution? updated = null;
-                foreach (var methodDecl in CollectMethods(root))
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    try
+                    var currentDocument = currentSolution.GetDocument(primary.Id);
+                    if (currentDocument == null ||
+                        currentDocument is SourceGeneratedDocument ||
+                        !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
                     {
-                        updated = await TryRemoveOneAsync(
-                            currentDocument,
-                            semanticModel,
-                            methodDecl,
-                            @params,
-                            linkedPathCounts,
-                            cancellationToken);
-                    }
-                    catch (RefactoringException)
-                    {
-                        updated = null;
-                    }
-
-                    if (updated != null)
                         break;
+                    }
+
+                    var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                    var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                    if (root == null || semanticModel == null)
+                        break;
+
+                    Solution? updated = null;
+                    foreach (var methodDecl in CollectMethods(root))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        try
+                        {
+                            updated = await TryRemoveOneAsync(
+                                currentDocument,
+                                semanticModel,
+                                methodDecl,
+                                @params,
+                                linkedPathCounts,
+                                cancellationToken);
+                        }
+                        catch (RefactoringException)
+                        {
+                            updated = null;
+                        }
+
+                        if (updated != null)
+                            break;
+                    }
+
+                    if (updated == null)
+                        break;
+
+                    var beforeSolution = currentSolution;
+                    currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                        beforeSolution,
+                        updated,
+                        Context.Workspace,
+                        cancellationToken);
+
+                    changedCountByDoc[primary.Id] =
+                        changedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+                    madeProgress = true;
                 }
-
-                if (updated == null)
-                    break;
-
-                var beforeSolution = currentSolution;
-                currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
-                    beforeSolution,
-                    updated,
-                    Context.Workspace,
-                    cancellationToken);
-
-                changedCountByDoc[primary.Id] =
-                    changedCountByDoc.GetValueOrDefault(primary.Id) + 1;
             }
-        }
+        } while (madeProgress);
 
         var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
