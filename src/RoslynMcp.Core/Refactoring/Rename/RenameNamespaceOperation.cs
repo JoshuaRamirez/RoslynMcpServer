@@ -245,7 +245,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
         // Full-solution multi-view counts (independent of optional sourceFile)
         // so solution-wide rename cannot coalesce onto a linked multi-view path.
-        var linkedPathCounts = BuildLinkedPathCounts(originalSolution);
+        var linkedPathCounts = AllFilesDocumentHelpers.BuildLinkedPathCounts(originalSolution);
         // Key by project + full name so same-named namespaces in unrelated
         // compilations are each renamed once (Codex).
         var renamedKeys = new HashSet<(ProjectId ProjectId, string FullName)>();
@@ -618,36 +618,6 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         IsUnderOrEqual(right, left);
 
     /// <summary>
-    /// Path → linked-view count across the entire solution (not a filtered
-    /// <c>sourceFile</c> subset). Same contract as
-    /// <c>RemoveParameterOperation.BuildLinkedPathCounts</c>.
-    /// </summary>
-    internal static Dictionary<string, int> BuildLinkedPathCounts(Solution solution)
-    {
-        var groups = AllFilesDocumentHelpers.GroupByLinkedPath(
-            AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution));
-        return groups
-            .Where(g => g.Count > 0 && g[0].FilePath != null)
-            .GroupBy(g => PathResolver.GetPathComparisonKey(g[0].FilePath!), StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.First().Count, StringComparer.Ordinal);
-    }
-
-    /// <summary>
-    /// True when <paramref name="document"/> shares a physical path with
-    /// multiple linked workspace views.
-    /// </summary>
-    internal static bool DocumentPathHasLinkedMultiView(
-        Document document,
-        IReadOnlyDictionary<string, int> linkedPathCounts)
-    {
-        if (document.FilePath == null)
-            return false;
-
-        var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
-        return linkedPathCounts.TryGetValue(pathKey, out var count) && count > 1;
-    }
-
-    /// <summary>
     /// True when the rename rewrite touches any document whose path has
     /// multiple linked views (so Coalesce would overwrite siblings).
     /// </summary>
@@ -662,7 +632,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             {
                 var document = beforeSolution.GetDocument(documentId)
                     ?? afterSolution.GetDocument(documentId);
-                if (document != null && DocumentPathHasLinkedMultiView(document, linkedPathCounts))
+                if (document != null && AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(document, linkedPathCounts))
                     return true;
             }
         }
@@ -2109,7 +2079,6 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
 
         return false;
     }
-
 
     private sealed record FolderMove(string SourceFolder, string DestinationFolder);
 

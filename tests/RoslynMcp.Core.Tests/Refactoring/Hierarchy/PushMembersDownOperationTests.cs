@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Hierarchy;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -4701,7 +4702,7 @@ public class PushMembersDownOperationTests
             baseSource, derivedSource);
         var beforeBase = await File.ReadAllTextAsync(workspace.SourcePaths["Base.cs"]);
         var beforeDerived = await File.ReadAllTextAsync(workspace.SourcePaths["Derived.cs"]);
-        var counts = PushMembersDownOperation.BuildLinkedPathCounts(workspace.Context.Solution);
+        var counts = AllFilesDocumentHelpers.BuildLinkedPathCounts(workspace.Context.Solution);
         var derivedKey = RoslynMcp.Core.FileSystem.PathResolver.GetPathComparisonKey(
             workspace.SourcePaths["Derived.cs"]);
         Assert.True(counts.TryGetValue(derivedKey, out var derivedCount) && derivedCount > 1);

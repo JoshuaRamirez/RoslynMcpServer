@@ -286,7 +286,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         // Linked-path counts must cover the whole solution — not just the
         // sourceFile-filtered walk — so DeclaringPathHasLinkedMultiView still
         // sees multi-view derived targets outside the filtered source set.
-        var linkedPathCounts = BuildLinkedPathCounts(originalSolution);
+        var linkedPathCounts = AllFilesDocumentHelpers.BuildLinkedPathCounts(originalSolution);
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
@@ -1068,21 +1068,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     }
 
     /// <summary>
-    /// Path → linked-view count across the entire solution (not a filtered
-    /// sourceFile subset). Used so multi-view derived targets are still
-    /// detected when the walk is limited to one source path.
-    /// </summary>
-    internal static Dictionary<string, int> BuildLinkedPathCounts(Solution solution)
-    {
-        var groups = AllFilesDocumentHelpers.GroupByLinkedPath(
-            AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution));
-        return groups
-            .Where(g => g.Count > 0 && g[0].FilePath != null)
-            .GroupBy(g => PathResolver.GetPathComparisonKey(g[0].FilePath!), StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.First().Count, StringComparer.Ordinal);
-    }
-
-    /// <summary>
     /// True when any declaring document of <paramref name="type"/> shares a
     /// physical path with multiple linked workspace views.
     /// </summary>
@@ -1270,9 +1255,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 ErrorCodes.TypeNotFound,
                 $"Type '{typeName}' not found in file.");
     }
-
-
-
 
     /// <summary>
     /// Folds descendant derived-type replacements that
@@ -1923,7 +1905,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             }
         }
     }
-
 
     /// <summary>
     /// True when <paramref name="location"/> falls inside the syntax of any
@@ -2920,7 +2901,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             .NormalizeWhitespace();
     }
 
-
     private static MemberDeclarationSyntax ConvertToAbstract(MemberDeclarationSyntax member)
     {
         return member switch
@@ -2943,7 +2923,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 "Only methods, properties, indexers, and events can be left as abstract members.")
         };
     }
-
 
     private static PropertyDeclarationSyntax ToAbstractProperty(PropertyDeclarationSyntax property)
     {
@@ -3222,7 +3201,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         var kindSet = kinds.ToHashSet();
         return modifiers.Where(token => !kindSet.Contains(token.Kind()));
     }
-
 
     private static TypeDeclarationSyntax BuildSourceReplacement(
         TypeDeclarationSyntax sourceDecl,

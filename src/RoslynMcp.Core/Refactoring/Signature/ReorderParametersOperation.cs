@@ -181,7 +181,6 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
             0);
     }
 
-
     /// <summary>
     /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
     /// document filter as <c>RemoveParameterOperation.ExecuteAllFilesAsync</c>)
@@ -208,7 +207,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         var originalSolution = Context.Solution;
         var currentSolution = originalSolution;
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
-        var linkedPathCounts = BuildLinkedPathCounts(originalSolution);
+        var linkedPathCounts = AllFilesDocumentHelpers.BuildLinkedPathCounts(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
             allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
@@ -403,36 +402,6 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
             .ThenBy(m => m.Span.Length)
             .ToList();
 
-    /// <summary>
-    /// Path → linked-view count across the entire solution (not a filtered
-    /// <c>sourceFile</c> subset). Same helper as
-    /// <c>RemoveParameterOperation.BuildLinkedPathCounts</c>.
-    /// </summary>
-    internal static Dictionary<string, int> BuildLinkedPathCounts(Solution solution)
-    {
-        var groups = AllFilesDocumentHelpers.GroupByLinkedPath(
-            AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution));
-        return groups
-            .Where(g => g.Count > 0 && g[0].FilePath != null)
-            .GroupBy(g => PathResolver.GetPathComparisonKey(g[0].FilePath!), StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.First().Count, StringComparer.Ordinal);
-    }
-
-    /// <summary>
-    /// True when <paramref name="document"/> shares a physical path with
-    /// multiple linked workspace views.
-    /// </summary>
-    internal static bool DocumentPathHasLinkedMultiView(
-        Document document,
-        IReadOnlyDictionary<string, int> linkedPathCounts)
-    {
-        if (document.FilePath == null)
-            return false;
-
-        var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
-        return linkedPathCounts.TryGetValue(pathKey, out var count) && count > 1;
-    }
-
     private async Task<Solution?> TryReorderOneAsync(
         Document document,
         SemanticModel semanticModel,
@@ -507,7 +476,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         {
             if (!DocumentEditableHelpers.IsDocumentEditable(target.Document, Context.Workspace))
                 return null;
-            if (DocumentPathHasLinkedMultiView(target.Document, linkedPathCounts))
+            if (AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(target.Document, linkedPathCounts))
                 return null;
         }
 
@@ -517,7 +486,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         {
             if (!DocumentEditableHelpers.IsDocumentEditable(callSite.Document, Context.Workspace))
                 return null;
-            if (DocumentPathHasLinkedMultiView(callSite.Document, linkedPathCounts))
+            if (AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(callSite.Document, linkedPathCounts))
                 return null;
         }
 
