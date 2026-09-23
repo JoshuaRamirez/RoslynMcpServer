@@ -3,6 +3,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Extract;
 using RoslynMcp.Core.Refactoring.Utilities;
@@ -810,16 +811,85 @@ public class SafeDeleteOperationTests
         var operation = new SafeDeleteOperation(workspace.Context);
         var aliased = workspace.SourcePaths["FileA.cs"].Replace("FileA.cs", "filea.cs", StringComparison.Ordinal);
 
-        var result = await operation.ExecuteAsync(new SafeDeleteParams
+        if (File.Exists(aliased))
         {
-            AllFiles = true,
-            SourceFile = aliased
-        });
+            var result = await operation.ExecuteAsync(new SafeDeleteParams
+            {
+                AllFiles = true,
+                SourceFile = aliased
+            });
 
-        Assert.True(result.Success);
-        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
-        Assert.DoesNotContain("_unusedA", updatedA);
+            Assert.True(result.Success);
+            var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+            Assert.DoesNotContain("_unusedA", updatedA);
+            Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+            return;
+        }
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SafeDeleteParams
+            {
+                AllFiles = true,
+                SourceFile = aliased
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
         Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", UnusedMembersFileA),
+            ("FileB.cs", UnusedMembersFileB));
+        var operation = new SafeDeleteOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpSafeDelete_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "class Outside { private int _x; }");
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new SafeDeleteParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_OptionalSourceFile_AmbiguousIgnoreCase_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("FileA.cs", UnusedMembersFileA), ("filea.cs", UnusedMembersFileB)],
+            explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["FileA.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["filea.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new SafeDeleteOperation(workspace.Context);
+        var ambiguous = FlipPathFileNameAsciiCase(workspace.SourcePaths["FileA.cs"]);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SafeDeleteParams
+            {
+                AllFiles = true,
+                SourceFile = ambiguous
+            }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
 
@@ -974,6 +1044,16 @@ public class SafeDeleteOperationTests
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n", StringComparison.Ordinal);
 
+    private static string FlipPathFileNameAsciiCase(string path)
+    {
+        var fileName = Path.GetFileName(path);
+        var flipped = new string(fileName.Select(static c =>
+            c is >= 'a' and <= 'z' ? char.ToUpperInvariant(c) :
+            c is >= 'A' and <= 'Z' ? char.ToLowerInvariant(c) :
+            c).ToArray());
+        return Path.Combine(Path.GetDirectoryName(path)!, flipped);
+    }
+
     private static (int StartLine, int StartColumn, int EndLine, int EndColumn) FindSpan(string source, string snippet)
     {
         var index = source.IndexOf(snippet, StringComparison.Ordinal);
@@ -1015,7 +1095,12 @@ public class SafeDeleteOperationTests
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
             CreateWithFilesAsync((fileName, source));
 
-        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
+        public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
+            CreateWithFilesAsync(files, explicitCompileItems: false);
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(
+            IReadOnlyList<(string FileName, string Source)> files,
+            bool explicitCompileItems)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1023,18 +1108,23 @@ public class SafeDeleteOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal);
+            var compileItems = explicitCompileItems
+                ? string.Join(Environment.NewLine, files.Select(f => $"    <Compile Include=\"{f.FileName}\" />"))
+                : string.Empty;
 
             // Pin authored sources so generated AssemblyInfo / TFM attributes
             // are not hit by the allFiles .cs document walk.
-            await File.WriteAllTextAsync(projectPath, """
+            await File.WriteAllTextAsync(projectPath, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
                     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
                     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                {(explicitCompileItems ? "    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>" : string.Empty)}
                   </PropertyGroup>
+                {(explicitCompileItems ? $"  <ItemGroup>{Environment.NewLine}{compileItems}{Environment.NewLine}  </ItemGroup>" : string.Empty)}
                 </Project>
                 """);
 
