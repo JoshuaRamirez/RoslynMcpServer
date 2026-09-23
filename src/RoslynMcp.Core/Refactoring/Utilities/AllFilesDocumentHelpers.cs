@@ -7,7 +7,10 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// Shared allFiles document enumerate / linked-path group / linked-text
 /// coalesce walk used by IntroduceField / ExtractConstant /
 /// IntroduceParameter / InlineMethod / ChangeSignature / ExtractInterface
-/// (and Enumerate / GroupBy peers). Same bodies as the identical copies on those operations.
+/// (and Enumerate / GroupBy peers), plus BuildLinkedPathCounts /
+/// DocumentPathHasLinkedMultiView for AddParameter / RemoveParameter /
+/// ReorderParameters / RenameNamespace / PushMembersDown. Same bodies as the
+/// identical copies on those operations.
 /// Named AllFilesDocumentHelpers (not DocumentSourceFileFilter) because this
 /// cluster is the walk + linked-sibling coalesce used together by those
 /// operations; sourceFile filtering stays on DocumentSourceFileFilter.
@@ -128,5 +131,36 @@ internal static class AllFilesDocumentHelpers
         }
 
         return currentSolution;
+    }
+
+    /// <summary>
+    /// Path → linked-view count across the entire solution (not a filtered
+    /// <c>sourceFile</c> subset). Same body as the identical copies on
+    /// AddParameter / RemoveParameter / ReorderParameters /
+    /// RenameNamespace / PushMembersDown.
+    /// </summary>
+    internal static Dictionary<string, int> BuildLinkedPathCounts(Solution solution)
+    {
+        var groups = GroupByLinkedPath(EnumerateCsharpDocuments(solution));
+        return groups
+            .Where(g => g.Count > 0 && g[0].FilePath != null)
+            .GroupBy(g => PathResolver.GetPathComparisonKey(g[0].FilePath!), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First().Count, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// True when <paramref name="document"/> shares a physical path with
+    /// multiple linked workspace views. Same body as the identical copies on
+    /// AddParameter / RemoveParameter / ReorderParameters / RenameNamespace.
+    /// </summary>
+    internal static bool DocumentPathHasLinkedMultiView(
+        Document document,
+        IReadOnlyDictionary<string, int> linkedPathCounts)
+    {
+        if (document.FilePath == null)
+            return false;
+
+        var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
+        return linkedPathCounts.TryGetValue(pathKey, out var count) && count > 1;
     }
 }

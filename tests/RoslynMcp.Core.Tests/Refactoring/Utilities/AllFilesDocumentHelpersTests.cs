@@ -140,6 +140,66 @@ public class AllFilesDocumentHelpersTests
         }
     }
 
+    [Fact]
+    public void BuildLinkedPathCounts_CountsLinkedViewsByComparisonKey()
+    {
+        using var workspace = new AdhocWorkspace();
+        var projectA = workspace.AddProject("A", LanguageNames.CSharp);
+        var projectB = workspace.AddProject("B", LanguageNames.CSharp);
+
+        var sharedPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-counts-" + Path.GetRandomFileName() + ".cs");
+        var soloPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-counts-solo-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(sharedPath, "class Shared {}");
+        File.WriteAllText(soloPath, "class Solo {}");
+        try
+        {
+            AddOnDiskDocument(workspace, projectA.Id, sharedPath, "class Shared {}");
+            AddOnDiskDocument(workspace, projectB.Id, sharedPath, "class Shared {}");
+            AddOnDiskDocument(workspace, projectA.Id, soloPath, "class Solo {}");
+
+            var counts = AllFilesDocumentHelpers.BuildLinkedPathCounts(workspace.CurrentSolution);
+
+            var sharedKey = PathResolver.GetPathComparisonKey(sharedPath);
+            var soloKey = PathResolver.GetPathComparisonKey(soloPath);
+            Assert.Equal(2, counts[sharedKey]);
+            Assert.Equal(1, counts[soloKey]);
+        }
+        finally
+        {
+            TryDelete(sharedPath);
+            TryDelete(soloPath);
+        }
+    }
+
+    [Fact]
+    public void DocumentPathHasLinkedMultiView_TrueOnlyWhenCountExceedsOne()
+    {
+        using var workspace = new AdhocWorkspace();
+        var projectA = workspace.AddProject("A", LanguageNames.CSharp);
+        var projectB = workspace.AddProject("B", LanguageNames.CSharp);
+
+        var sharedPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-mv-" + Path.GetRandomFileName() + ".cs");
+        var soloPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-mv-solo-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(sharedPath, "class Shared {}");
+        File.WriteAllText(soloPath, "class Solo {}");
+        try
+        {
+            var sharedA = AddOnDiskDocument(workspace, projectA.Id, sharedPath, "class Shared {}");
+            AddOnDiskDocument(workspace, projectB.Id, sharedPath, "class Shared {}");
+            var solo = AddOnDiskDocument(workspace, projectA.Id, soloPath, "class Solo {}");
+
+            var counts = AllFilesDocumentHelpers.BuildLinkedPathCounts(workspace.CurrentSolution);
+
+            Assert.True(AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(sharedA, counts));
+            Assert.False(AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(solo, counts));
+        }
+        finally
+        {
+            TryDelete(sharedPath);
+            TryDelete(soloPath);
+        }
+    }
+
     private static Document AddOnDiskDocument(
         AdhocWorkspace workspace,
         ProjectId projectId,

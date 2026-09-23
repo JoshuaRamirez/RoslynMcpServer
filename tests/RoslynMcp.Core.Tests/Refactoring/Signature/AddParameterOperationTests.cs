@@ -1644,7 +1644,7 @@ public class AddParameterOperationTests
 
         await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
             sharedSource, anchorASource, anchorBSource);
-        var counts = AddParameterOperation.BuildLinkedPathCounts(workspace.Context.Solution);
+        var counts = AllFilesDocumentHelpers.BuildLinkedPathCounts(workspace.Context.Solution);
         var sharedKey = RoslynMcp.Core.FileSystem.PathResolver.GetPathComparisonKey(
             workspace.SourcePaths["Shared.cs"]);
         Assert.True(counts.TryGetValue(sharedKey, out var sharedCount) && sharedCount > 1);

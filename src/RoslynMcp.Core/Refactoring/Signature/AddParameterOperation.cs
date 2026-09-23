@@ -239,7 +239,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         // Full-solution linked-view counts (independent of optional sourceFile filter)
         // so related declaration / call-site rewrites cannot touch a multi-view path
         // and then get coalesced onto divergent siblings (Copilot / push_members_down).
-        var linkedPathCounts = BuildLinkedPathCounts(originalSolution);
+        var linkedPathCounts = AllFilesDocumentHelpers.BuildLinkedPathCounts(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
             allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
@@ -493,37 +493,6 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         return false;
     }
 
-
-    /// <summary>
-    /// Path → linked-view count across the entire solution (not a filtered
-    /// <c>sourceFile</c> subset). Same helper as
-    /// <c>PushMembersDownOperation.BuildLinkedPathCounts</c>.
-    /// </summary>
-    internal static Dictionary<string, int> BuildLinkedPathCounts(Solution solution)
-    {
-        var groups = AllFilesDocumentHelpers.GroupByLinkedPath(
-            AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution));
-        return groups
-            .Where(g => g.Count > 0 && g[0].FilePath != null)
-            .GroupBy(g => PathResolver.GetPathComparisonKey(g[0].FilePath!), StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.First().Count, StringComparer.Ordinal);
-    }
-
-    /// <summary>
-    /// True when <paramref name="document"/> shares a physical path with
-    /// multiple linked workspace views.
-    /// </summary>
-    internal static bool DocumentPathHasLinkedMultiView(
-        Document document,
-        IReadOnlyDictionary<string, int> linkedPathCounts)
-    {
-        if (document.FilePath == null)
-            return false;
-
-        var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
-        return linkedPathCounts.TryGetValue(pathKey, out var count) && count > 1;
-    }
-
     private async Task<Solution?> TryAddOneAsync(
         Document document,
         SemanticModel semanticModel,
@@ -594,7 +563,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
                 return null;
             // Related declarations on a linked multi-view path must not be rewritten —
             // CoalesceLinkedDocumentTextAsync would copy onto divergent siblings (Copilot).
-            if (DocumentPathHasLinkedMultiView(target.Document, linkedPathCounts))
+            if (AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(target.Document, linkedPathCounts))
                 return null;
         }
 
@@ -603,7 +572,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         {
             if (!DocumentEditableHelpers.IsDocumentEditable(callSite.Document, Context.Workspace))
                 return null;
-            if (DocumentPathHasLinkedMultiView(callSite.Document, linkedPathCounts))
+            if (AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(callSite.Document, linkedPathCounts))
                 return null;
         }
 
@@ -660,7 +629,6 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
 
         return newSolution;
     }
-
 
     internal static int ComputeInsertionIndex(ParameterListSyntax list, int position)
     {
@@ -1101,7 +1069,6 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
-
 
     internal static bool IsValidParameterType(string type)
     {
