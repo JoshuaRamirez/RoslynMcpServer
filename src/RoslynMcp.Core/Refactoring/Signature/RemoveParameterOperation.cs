@@ -1150,7 +1150,9 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         {
             pendingChanges.Add(new PendingChange
             {
-                File = @params.SourceFile,
+                File = originalDocument.FilePath
+                    ?? @params.SourceFile
+                    ?? throw new RefactoringException(ErrorCodes.RoslynError, "Missing source file for preview."),
                 ChangeType = ChangeKind.Modify,
                 Description = $"Remove parameter '{@params.ParameterName}' from '{@params.MethodName}'",
                 BeforeSnippet = null,
