@@ -989,6 +989,161 @@ public class SafeDeleteOperationTests
 
 
     [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_SkipsEffectfulFieldAndLocalInitializers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace TestApp;
+
+            public class Host
+            {
+                private static readonly object Registration = Register();
+                private static int _unusedPure = 0;
+
+                private static object Register() => new object();
+                private static int Mutate() => 1;
+
+                public static int Run()
+                {
+                    var removed = Mutate();
+                    return 1;
+                }
+            }
+
+            public static class Driver
+            {
+                public static int Go() => Host.Run();
+            }
+            """);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams { AllFiles = true });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("Registration = Register()", updated);
+        Assert.Contains("var removed = Mutate()", updated);
+        Assert.DoesNotContain("_unusedPure", updated);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_SkipsEffectfulPropertyInitializer()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace TestApp;
+
+            public class Host
+            {
+                private object Registration { get; } = Register();
+                private int UnusedProp { get; }
+
+                private static object Register() => new object();
+
+                public static int Run() => 1;
+            }
+
+            public static class Driver
+            {
+                public static int Go() => Host.Run();
+            }
+            """);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams { AllFiles = true });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("Registration { get; } = Register()", updated);
+        Assert.DoesNotContain("UnusedProp", updated);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_SkipsPrivateConstructorThatSuppressesPublicConstruction()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace TestApp;
+
+            public class Utility
+            {
+                private Utility()
+                {
+                }
+
+                private static void UnusedHelper()
+                {
+                }
+
+                public static int Run() => 1;
+            }
+
+            public static class Driver
+            {
+                public static int Go() => Utility.Run();
+            }
+            """);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams { AllFiles = true });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("private Utility()", updated);
+        Assert.DoesNotContain("UnusedHelper", updated);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_SkipsEnumMemberThatWouldRenumberLaterValues()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            namespace TestApp;
+
+            public enum Mode
+            {
+                Legacy,
+                Current
+            }
+
+            public class Host
+            {
+                private static void UnusedHelper()
+                {
+                }
+
+                public static int Run() => (int)Mode.Current;
+            }
+
+            public static class Driver
+            {
+                public static int Go() => Host.Run();
+            }
+            """);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams { AllFiles = true });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains("Legacy,", updated);
+        Assert.Contains("Current", updated);
+        Assert.DoesNotContain("UnusedHelper", updated);
+    }
+
+    [Fact]
+    public void IsPureInitializer_AllowsLiteralsDefaultTypeofNameof_RejectsCalls()
+    {
+        var literal = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseExpression("42");
+        var call = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseExpression("Register()");
+        var nameofExpr = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseExpression("nameof(Host)");
+        var typeofExpr = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseExpression("typeof(int)");
+        var defaultExpr = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseExpression("default(int)");
+
+        Assert.True(SafeDeleteOperation.IsPureInitializer(literal));
+        Assert.True(SafeDeleteOperation.IsPureInitializer(nameofExpr));
+        Assert.True(SafeDeleteOperation.IsPureInitializer(typeofExpr));
+        Assert.True(SafeDeleteOperation.IsPureInitializer(defaultExpr));
+        Assert.False(SafeDeleteOperation.IsPureInitializer(call));
+    }
+
+    [SkippableFact]
     public async Task SafeDelete_AllFilesTrue_OptionalSourceFile_MissingOnDisk_Throws()
     {
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
