@@ -32,6 +32,7 @@ public class SafeDeleteToolTests
     {
         Assert.NotNull(_tool.Description);
         Assert.NotEmpty(_tool.Description);
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -45,15 +46,17 @@ public class SafeDeleteToolTests
         Assert.Equal("object", root.GetProperty("type").GetString());
         Assert.True(root.TryGetProperty("properties", out _));
         Assert.True(root.TryGetProperty("required", out _));
+        Assert.True(root.TryGetProperty("oneOf", out _));
     }
 
     [Fact]
-    public void GetDefinition_HasRequiredFields()
+    public void GetDefinition_UsesConditionalRequiredFields()
     {
         var schema = _tool.InputSchema;
         var json = JsonSerializer.Serialize(schema);
         var doc = JsonDocument.Parse(json);
-        var required = doc.RootElement.GetProperty("required");
+        var root = doc.RootElement;
+        var required = root.GetProperty("required");
 
         var requiredFields = new List<string>();
         foreach (var item in required.EnumerateArray())
@@ -62,11 +65,42 @@ public class SafeDeleteToolTests
         }
 
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("startLine", requiredFields);
-        Assert.Contains("startColumn", requiredFields);
-        Assert.Contains("endLine", requiredFields);
-        Assert.Contains("endColumn", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+
+        var branches = root.GetProperty("oneOf");
+        Assert.Equal(2, branches.GetArrayLength());
+
+        var singleSiteRequired = ReadStrings(branches[0].GetProperty("required"));
+        Assert.Contains("solutionPath", singleSiteRequired);
+        Assert.Contains("sourceFile", singleSiteRequired);
+        Assert.Contains("startLine", singleSiteRequired);
+        Assert.Contains("startColumn", singleSiteRequired);
+        Assert.Contains("endLine", singleSiteRequired);
+        Assert.Contains("endColumn", singleSiteRequired);
+
+        var allFilesRequired = ReadStrings(branches[1].GetProperty("required"));
+        Assert.Contains("solutionPath", allFilesRequired);
+        Assert.Contains("allFiles", allFilesRequired);
+        Assert.DoesNotContain("sourceFile", allFilesRequired);
+        Assert.Equal(
+            JsonValueKind.True,
+            branches[1].GetProperty("properties").GetProperty("allFiles").GetProperty("const").ValueKind);
+    }
+
+    [Fact]
+    public void GetDefinition_HasOptionalAllFiles()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("allFiles", out var allFiles));
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
+        var description = allFiles.GetProperty("description").GetString();
+        Assert.Contains("C# files", description!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile", description!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -79,6 +113,7 @@ public class SafeDeleteToolTests
 
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.True(properties.TryGetProperty("startLine", out _));
         Assert.True(properties.TryGetProperty("startColumn", out _));
         Assert.True(properties.TryGetProperty("endLine", out _));
@@ -127,6 +162,22 @@ public class SafeDeleteToolTests
         Assert.True(result.IsError);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        // ThrowingWorkspaceProvider rejects workspace creation; args including allFiles parsed.
+        Assert.True(result.IsError);
+    }
+
     #endregion
 
     #region Helper Methods
@@ -134,6 +185,14 @@ public class SafeDeleteToolTests
     private static string GetResultText(ToolResult result)
     {
         return result.Content.FirstOrDefault()?.Text ?? string.Empty;
+    }
+
+    private static List<string> ReadStrings(JsonElement array)
+    {
+        var values = new List<string>();
+        foreach (var item in array.EnumerateArray())
+            values.Add(item.GetString()!);
+        return values;
     }
 
     #endregion

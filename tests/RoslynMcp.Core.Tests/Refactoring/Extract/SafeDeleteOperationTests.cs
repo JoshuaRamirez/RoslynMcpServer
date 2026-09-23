@@ -98,6 +98,82 @@ public class SafeDeleteOperationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SafeDeleteOperation.Validate(new SafeDeleteParams
+            {
+                AllFiles = false,
+                StartLine = 1,
+                StartColumn = 1,
+                EndLine = 1,
+                EndColumn = 2
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutStartLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SafeDeleteOperation.Validate(new SafeDeleteParams
+            {
+                AllFiles = false,
+                SourceFile = AbsoluteTestPath(),
+                StartColumn = 1,
+                EndLine = 1,
+                EndColumn = 2
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFileOrSelection_DoesNotThrow()
+    {
+        SafeDeleteOperation.Validate(new SafeDeleteParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithStartLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SafeDeleteOperation.Validate(new SafeDeleteParams
+            {
+                AllFiles = true,
+                StartLine = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithSymbolName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SafeDeleteOperation.Validate(new SafeDeleteParams
+            {
+                AllFiles = true,
+                SymbolName = "_unused"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal("Safe-delete unused symbol", SafeDeleteOperation.BuildAllFilesDescription(1));
+        Assert.Equal("Safe-delete 2 unused symbols", SafeDeleteOperation.BuildAllFilesDescription(2));
+    }
+
     #endregion
 
     #region P0 Happy Path
@@ -446,6 +522,308 @@ public class SafeDeleteOperationTests
 
     #region Helpers
 
+
+    #region AllFiles
+
+    private const string UnusedMembersFileA = """
+        namespace TestApp;
+
+        public class FileA
+        {
+            private int _unusedA;
+
+            public int Get()
+            {
+                return 42;
+            }
+
+            private void UnusedHelperA()
+            {
+            }
+        }
+        """;
+
+    private const string UnusedMembersFileB = """
+        namespace TestApp;
+
+        public class FileB
+        {
+            private string _unusedB;
+
+            public string Name()
+            {
+                return "ok";
+            }
+        }
+        """;
+
+    private const string UsedMembersFileC = """
+        namespace TestApp;
+
+        public class FileC
+        {
+            private int _used;
+
+            public int Get()
+            {
+                return _used;
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesFalse_DeletesOnlySpecifiedSymbol()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", UnusedMembersFileA),
+            ("FileB.cs", UnusedMembersFileB));
+        var operation = new SafeDeleteOperation(workspace.Context);
+        var span = FindSpan(UnusedMembersFileA, "_unusedA");
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams
+        {
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            AllFiles = false,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn,
+            SymbolName = "_unusedA"
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain("_unusedA", updatedA);
+        Assert.Contains("UnusedHelperA", updatedA);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_OmittedAllFiles_KeepsSingleSiteDelete()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(UnusedMembersFileA);
+        var operation = new SafeDeleteOperation(workspace.Context);
+        var span = FindSpan(UnusedMembersFileA, "UnusedHelperA");
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams
+        {
+            SourceFile = workspace.SourcePath,
+            StartLine = span.StartLine,
+            StartColumn = span.StartColumn,
+            EndLine = span.EndLine,
+            EndColumn = span.EndColumn
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.DoesNotContain("UnusedHelperA", updated);
+        Assert.Contains("_unusedA", updated);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_DeletesUnusedMembersAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", UnusedMembersFileA),
+            ("FileB.cs", UnusedMembersFileB),
+            ("FileC.cs", UsedMembersFileC));
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        var updatedC = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.DoesNotContain("_unusedA", updatedA);
+        Assert.DoesNotContain("UnusedHelperA", updatedA);
+        Assert.Contains("return 42;", updatedA);
+        Assert.DoesNotContain("_unusedB", updatedB);
+        Assert.Contains("return \"ok\";", updatedB);
+        Assert.Contains("_used", updatedC);
+        Assert.Contains("return _used;", updatedC);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_WithoutSourceFileOrSelection_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", UnusedMembersFileA));
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(UnusedMembersFileA);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SafeDeleteParams
+            {
+                AllFiles = false,
+                StartLine = 1,
+                StartColumn = 1,
+                EndLine = 1,
+                EndColumn = 2
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_WithStartLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(UnusedMembersFileA);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SafeDeleteParams
+            {
+                AllFiles = true,
+                StartLine = 4
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_WithSymbolName_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(UnusedMembersFileA);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SafeDeleteParams
+            {
+                AllFiles = true,
+                SymbolName = "_unusedA"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", UnusedMembersFileA),
+            ("FileB.cs", UnusedMembersFileB));
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.True(result.PendingChanges.Count >= 2);
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", UsedMembersFileC));
+        var before = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes?.FilesModified ?? []);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_SkipsWhenUsagesExist()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileC.cs", UsedMembersFileC),
+            ("FileA.cs", UnusedMembersFileA));
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedC = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Contains("_used", updatedC);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain("_unusedA", updatedA);
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", UnusedMembersFileA),
+            ("FileB.cs", UnusedMembersFileB));
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var operation = new SafeDeleteOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain("_unusedA", updatedA);
+        Assert.DoesNotContain("UnusedHelperA", updatedA);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SafeDelete_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", UnusedMembersFileA),
+            ("FileB.cs", UnusedMembersFileB));
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var operation = new SafeDeleteOperation(workspace.Context);
+        var aliased = workspace.SourcePaths["FileA.cs"].Replace("FileA.cs", "filea.cs", StringComparison.Ordinal);
+
+        var result = await operation.ExecuteAsync(new SafeDeleteParams
+        {
+            AllFiles = true,
+            SourceFile = aliased
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain("_unusedA", updatedA);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+    }
+
+    #endregion
+
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpSafeDeleteMissing.cs");
 
@@ -487,9 +865,13 @@ public class SafeDeleteOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs")
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
+            CreateWithFilesAsync((fileName, source));
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -497,33 +879,47 @@ public class SafeDeleteOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePath = Path.Combine(directory, fileName);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
             await File.WriteAllTextAsync(projectPath, """
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
                 """);
-            await File.WriteAllTextAsync(sourcePath, source);
+
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+            }
 
             try
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var sourcePath in sourcePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
                 }
 
                 return new TempWorkspace
                 {
                     DirectoryPath = directory,
                     ProjectPath = projectPath,
-                    SourcePath = sourcePath,
+                    SourcePath = sourcePaths[files[0].FileName],
+                    SourcePaths = sourcePaths,
                     Context = context
                 };
             }

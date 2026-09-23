@@ -17,7 +17,10 @@ namespace RoslynMcp.Core.Refactoring.Extract;
 /// <summary>
 /// Deletes a selected symbol only when it has no remaining references.
 /// Remaining usages are reported as an error with locations; no force-delete
-/// or reference cleanup is performed.
+/// or reference cleanup is performed. Optional <c>allFiles</c> walks every
+/// C# document (or the optional single <c>sourceFile</c>) and deletes every
+/// eligible unused declaration under today's single-site rules, skipping
+/// symbols with usages rather than throwing.
 /// </summary>
 public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeleteParams>
 {
@@ -37,8 +40,45 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
     /// </summary>
     internal static void Validate(SafeDeleteParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (@params.StartLine.HasValue ||
+                @params.StartColumn.HasValue ||
+                @params.EndLine.HasValue ||
+                @params.EndColumn.HasValue ||
+                !string.IsNullOrWhiteSpace(@params.SymbolName))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with startLine, startColumn, endLine, endColumn, or symbolName.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            {
+                if (!PathResolver.IsAbsolutePath(@params.SourceFile))
+                    throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+                if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
+                    throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+            }
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+
+        if (!@params.StartLine.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "startLine is required.");
+
+        if (!@params.StartColumn.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "startColumn is required.");
+
+        if (!@params.EndLine.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endLine is required.");
+
+        if (!@params.EndColumn.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endColumn is required.");
 
         if (!PathResolver.IsAbsolutePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
@@ -46,20 +86,20 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
-        if (@params.StartLine < 1)
+        if (@params.StartLine.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "startLine must be >= 1.");
 
-        if (@params.StartColumn < 1)
+        if (@params.StartColumn.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "startColumn must be >= 1.");
 
-        if (@params.EndLine < 1)
+        if (@params.EndLine.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "endLine must be >= 1.");
 
-        if (@params.EndColumn < 1)
+        if (@params.EndColumn.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "endColumn must be >= 1.");
 
-        if (@params.EndLine < @params.StartLine ||
-            (@params.EndLine == @params.StartLine && @params.EndColumn < @params.StartColumn))
+        if (@params.EndLine.Value < @params.StartLine.Value ||
+            (@params.EndLine.Value == @params.StartLine.Value && @params.EndColumn.Value < @params.StartColumn.Value))
             throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
 
         if (!File.Exists(@params.SourceFile))
@@ -72,7 +112,10 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         SafeDeleteParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -121,18 +164,340 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
             0);
     }
 
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>ExtractMethodOperation.ExecuteAllFilesAsync</c>
+    /// / <c>MakeStaticOperation.ExecuteAllFilesAsync</c> /
+    /// <c>InlineConstantOperation.ExecuteAllFilesAsync</c>) and deletes
+    /// every eligible unused <c>private</c> (or local) declaration under
+    /// today's single-site rules. Public / protected / internal symbols are
+    /// skipped in bulk (single-site can still delete them) so solution-local
+    /// allFiles cannot wipe public API that simply has no in-solution callers.
+    /// Optional <c>sourceFile</c> limits the walk to that one file. Symbols
+    /// with remaining usages, uneditable / source-generated docs, linked
+    /// multi-views that diverge, and otherwise ineligible declarations are
+    /// skipped rather than failing the walk. Declarations are considered in
+    /// descending <c>SpanStart</c> order so nested / later members are
+    /// deleted before outer types; each successful delete re-resolves the
+    /// document (and the walk repeats while progress is made) so cascading
+    /// unused symbols unlock. When every declaration is a no-op, succeeds
+    /// with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        SafeDeleteParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+        var deletedCountByDoc = new Dictionary<DocumentId, int>();
+
+        // Revisit after later deletions unlock newly-unused symbols (e.g. a
+        // helper only referenced by another unused member deleted earlier).
+        bool madeProgress;
+        do
+        {
+            madeProgress = false;
+            foreach (var linkedDocuments in documentGroups)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // Linked multi-project views of the same path can diverge under
+                // preprocessor symbols; skip rather than coalescing a delete that
+                // only one compilation can honor (same contract as
+                // push_members_down / pull_members_up allFiles).
+                if (linkedDocuments.Count > 1)
+                {
+                    if (!await LinkedDocumentsHaveIdenticalTextAsync(
+                            linkedDocuments, currentSolution, cancellationToken))
+                    {
+                        continue;
+                    }
+                }
+
+                var primary = linkedDocuments.FirstOrDefault(d =>
+                    d is not SourceGeneratedDocument &&
+                    DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+                if (primary == null)
+                    continue;
+
+                while (true)
+                {
+                    var currentDocument = currentSolution.GetDocument(primary.Id);
+                    if (currentDocument == null ||
+                        currentDocument is SourceGeneratedDocument ||
+                        !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                    {
+                        break;
+                    }
+
+                    var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                    var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                    if (root == null || semanticModel == null)
+                        break;
+
+                    Solution? updated = null;
+                    foreach (var declaration in CollectDeletableDeclarations(root))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        try
+                        {
+                            updated = await TryDeleteOneAsync(
+                                currentDocument,
+                                declaration,
+                                semanticModel,
+                                currentSolution,
+                                cancellationToken);
+                        }
+                        catch (RefactoringException)
+                        {
+                            updated = null;
+                        }
+
+                        if (updated != null)
+                            break;
+                    }
+
+                    if (updated == null)
+                        break;
+
+                    var beforeSolution = currentSolution;
+                    currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                        beforeSolution,
+                        updated,
+                        Context.Workspace,
+                        cancellationToken);
+
+                    deletedCountByDoc[primary.Id] =
+                        deletedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+                    madeProgress = true;
+                }
+            }
+        }
+        while (madeProgress);
+
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var originalRoot = await originalDocument.GetSyntaxRootAsync(cancellationToken);
+                var currentRoot = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                if (originalRoot == null || currentRoot == null)
+                    continue;
+
+                var span = originalRoot.GetLocation().GetLineSpan();
+                var deletedCount = deletedCountByDoc.GetValueOrDefault(document.Id);
+                if (deletedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        deletedCount = Math.Max(deletedCount, deletedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = deletedCount > 0
+                        ? BuildAllFilesDescription(deletedCount)
+                        : "Update after safe-deleting unused symbols",
+                    BeforeSnippet = originalRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    AfterSnippet = currentRoot.NormalizeWhitespace().ToFullString().Trim(),
+                    StartLine = span.StartLinePosition.Line + 1,
+                    EndLine = span.EndLinePosition.Line + 1
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                null, 0, 0);
+        }
+
+        return RefactoringResult.Succeeded(operationId,
+            new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that safe-deleted
+    /// <paramref name="deletedCount"/> unused symbols.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int deletedCount) =>
+        deletedCount == 1
+            ? "Safe-delete unused symbol"
+            : $"Safe-delete {deletedCount} unused symbols";
+
+    /// <summary>
+    /// Collects every declaration node that single-site safe-delete can
+    /// remove (methods, properties, events, fields, locals, types, enums,
+    /// delegates, enum members, local functions, constructors, destructors,
+    /// operators, indexers) in descending <c>SpanStart</c> then span-length
+    /// order so nested / later members are considered before outer types.
+    /// <see cref="TryDeleteOneAsync"/> further restricts bulk deletes to
+    /// private / local symbols via <see cref="IsAllFilesDeletableAccessibility"/>.
+    /// </summary>
+    internal static IReadOnlyList<SyntaxNode> CollectDeletableDeclarations(SyntaxNode root) =>
+        root.DescendantNodes()
+            .Where(IsDeletableDeclarationNode)
+            .OrderByDescending(node => node.SpanStart)
+            .ThenByDescending(node => node.Span.Length)
+            .ToList();
+
+    private static bool IsDeletableDeclarationNode(SyntaxNode node) => node switch
+    {
+        MethodDeclarationSyntax => true,
+        PropertyDeclarationSyntax => true,
+        IndexerDeclarationSyntax => true,
+        EventDeclarationSyntax => true,
+        OperatorDeclarationSyntax => true,
+        ConversionOperatorDeclarationSyntax => true,
+        ConstructorDeclarationSyntax => true,
+        DestructorDeclarationSyntax => true,
+        TypeDeclarationSyntax => true,
+        EnumDeclarationSyntax => true,
+        DelegateDeclarationSyntax => true,
+        EnumMemberDeclarationSyntax => true,
+        LocalFunctionStatementSyntax => true,
+        VariableDeclaratorSyntax declarator when
+            declarator.Parent is VariableDeclarationSyntax
+            {
+                Parent: FieldDeclarationSyntax or EventFieldDeclarationSyntax or LocalDeclarationStatementSyntax
+            } => true,
+        _ => false
+    };
+
+    private async Task<Solution?> TryDeleteOneAsync(
+        Document document,
+        SyntaxNode declaration,
+        SemanticModel semanticModel,
+        Solution solution,
+        CancellationToken cancellationToken)
+    {
+        var declared = semanticModel.GetDeclaredSymbol(declaration, cancellationToken);
+        if (declared == null)
+            return null;
+
+        var symbol = NormalizeDeletableSymbol(declared);
+        if (!IsAllFilesDeletableAccessibility(symbol))
+            return null;
+
+        try
+        {
+            ValidateSymbolCanBeDeleted(symbol);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+
+        var declarationDocuments = await GetDeclarationDocumentsAsync(symbol, solution, cancellationToken);
+        if (declarationDocuments.Any(declarationDocument =>
+                !DocumentEditableHelpers.IsDocumentEditable(declarationDocument, Context.Workspace)))
+        {
+            return null;
+        }
+
+        var usages = await FindUsagesAsync(symbol, solution, cancellationToken);
+        if (!CanSafelyDelete(usages))
+            return null;
+
+        var plan = await BuildPlanAsync(symbol, cancellationToken);
+        return await ApplyPlanAsync(solution, plan, cancellationToken);
+    }
+
+
+    private static bool IsAllFilesDeletableAccessibility(ISymbol symbol) =>
+        symbol.DeclaredAccessibility is Accessibility.Private or Accessibility.NotApplicable;
+
+    private static async Task<bool> LinkedDocumentsHaveIdenticalTextAsync(
+        IReadOnlyList<Document> linkedDocuments,
+        Solution solution,
+        CancellationToken cancellationToken)
+    {
+        SourceText? baseline = null;
+        foreach (var linked in linkedDocuments)
+        {
+            var live = solution.GetDocument(linked.Id) ?? linked;
+            if (live is SourceGeneratedDocument)
+                continue;
+            var text = await live.GetTextAsync(cancellationToken);
+            if (baseline == null)
+            {
+                baseline = text;
+                continue;
+            }
+
+            if (!baseline.ContentEquals(text))
+                return false;
+        }
+
+        return true;
+    }
+
     internal static TextSpan GetSelectionSpan(SourceText sourceText, SafeDeleteParams @params)
     {
-        if (@params.StartLine > sourceText.Lines.Count || @params.EndLine > sourceText.Lines.Count)
+        var startLineNumber = @params.StartLine!.Value;
+        var startColumn = @params.StartColumn!.Value;
+        var endLineNumber = @params.EndLine!.Value;
+        var endColumn = @params.EndColumn!.Value;
+
+        if (startLineNumber > sourceText.Lines.Count || endLineNumber > sourceText.Lines.Count)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Selection is outside the file.");
 
-        var startLine = sourceText.Lines[@params.StartLine - 1];
-        var endLine = sourceText.Lines[@params.EndLine - 1];
-        if (@params.StartColumn - 1 > startLine.Span.Length || @params.EndColumn - 1 > endLine.SpanIncludingLineBreak.Length)
+        var startLine = sourceText.Lines[startLineNumber - 1];
+        var endLine = sourceText.Lines[endLineNumber - 1];
+        if (startColumn - 1 > startLine.Span.Length || endColumn - 1 > endLine.SpanIncludingLineBreak.Length)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Selection column is outside the line.");
 
-        var startPosition = startLine.Start + @params.StartColumn - 1;
-        var endPosition = endLine.Start + @params.EndColumn - 1;
+        var startPosition = startLine.Start + startColumn - 1;
+        var endPosition = endLine.Start + endColumn - 1;
         if (endPosition < startPosition)
             throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
 
@@ -244,6 +609,12 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
 
     private async Task<IReadOnlyList<Document>> GetDeclarationDocumentsAsync(
         ISymbol symbol,
+        CancellationToken cancellationToken) =>
+        await GetDeclarationDocumentsAsync(symbol, Context.Solution, cancellationToken);
+
+    private async Task<IReadOnlyList<Document>> GetDeclarationDocumentsAsync(
+        ISymbol symbol,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         var documents = new List<Document>();
@@ -251,7 +622,7 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         {
             cancellationToken.ThrowIfCancellationRequested();
             var syntax = await reference.GetSyntaxAsync(cancellationToken);
-            var document = Context.Solution.GetDocument(syntax.SyntaxTree);
+            var document = solution.GetDocument(syntax.SyntaxTree);
             if (document == null)
             {
                 throw new RefactoringException(
@@ -274,10 +645,16 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
 
     private async Task<IReadOnlyList<UsageLocation>> FindUsagesAsync(
         ISymbol symbol,
+        CancellationToken cancellationToken) =>
+        await FindUsagesAsync(symbol, Context.Solution, cancellationToken);
+
+    private async Task<IReadOnlyList<UsageLocation>> FindUsagesAsync(
+        ISymbol symbol,
+        Solution solution,
         CancellationToken cancellationToken)
     {
         var references = await SymbolFinder.FindReferencesAsync(
-            symbol, Context.Solution, cancellationToken);
+            symbol, solution, cancellationToken);
         var usages = new List<UsageLocation>();
 
         foreach (var referencedSymbol in references)
