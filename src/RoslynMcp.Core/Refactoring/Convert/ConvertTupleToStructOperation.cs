@@ -105,6 +105,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         var insertPosition = TypeInsertionHelpers.GetTypeInsertionPosition(root, creation);
         ValidateMembersForGeneratedType(members, semanticModel, insertPosition, @params.AsRecord);
+        if (@params.AsRecord)
+            await ValidateNoInitBreakingElementWritesAsync(creations, members, cancellationToken);
         var typeDeclaration = CreateNamedStruct(
             lookupName,
             @params.AsRecord,
@@ -351,6 +353,116 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 initializerExpr)
             .WithLeadingTrivia(creation.GetLeadingTrivia())
             .WithTrailingTrivia(creation.GetTrailingTrivia());
+    }
+
+    /// <summary>
+    /// Record structs emit <c>init</c> accessors; reject when a converted creation initializes a
+    /// local/parameter/field that later receives a tuple-element assignment (CS8852).
+    /// </summary>
+    private static async Task ValidateNoInitBreakingElementWritesAsync(
+        IReadOnlyList<CreationTarget> creations,
+        IReadOnlyList<TupleMember> members,
+        CancellationToken cancellationToken)
+    {
+        var memberNames = members
+            .Select(m => StripVerbatimPrefix(m.Name))
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var target in creations)
+        {
+            var root = await target.Document.GetSyntaxRootAsync(cancellationToken);
+            var model = await target.Document.GetSemanticModelAsync(cancellationToken);
+            if (root == null || model == null)
+                continue;
+
+            var node = root.FindNode(target.Span, getInnermostNodeForTie: true);
+            ExpressionSyntax? creation = null;
+            for (SyntaxNode? cursor = node; cursor != null; cursor = cursor.Parent)
+            {
+                if (cursor is ExpressionSyntax expression && IsRewritableCreationSyntax(expression))
+                {
+                    creation = expression;
+                    break;
+                }
+            }
+
+            if (creation == null)
+                continue;
+
+            var storage = TryGetAssignedStorageSymbol(creation, model, cancellationToken);
+            if (storage == null)
+                continue;
+
+            if (HasElementWrite(root, model, storage, memberNames))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CannotConvert,
+                    $"Cannot convert to a record struct because '{storage.Name}' has element assignments that require settable properties.");
+            }
+        }
+    }
+
+    internal static ISymbol? TryGetAssignedStorageSymbol(
+        ExpressionSyntax creation,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken = default)
+    {
+        SyntaxNode node = creation;
+        while (node.Parent is ParenthesizedExpressionSyntax parenthesized)
+            node = parenthesized;
+
+        if (node.Parent is EqualsValueClauseSyntax equals)
+        {
+            switch (equals.Parent)
+            {
+                case VariableDeclaratorSyntax declarator:
+                    return semanticModel.GetDeclaredSymbol(declarator, cancellationToken);
+                case PropertyDeclarationSyntax property:
+                    return semanticModel.GetDeclaredSymbol(property, cancellationToken);
+            }
+        }
+
+        if (node.Parent is AssignmentExpressionSyntax assignment &&
+            assignment.Right == node)
+        {
+            return semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
+        }
+
+        return null;
+    }
+
+    internal static bool HasElementWrite(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        ISymbol storage,
+        HashSet<string> memberNames)
+    {
+        foreach (var node in root.DescendantNodes())
+        {
+            ExpressionSyntax? writtenMember = node switch
+            {
+                AssignmentExpressionSyntax assignment => assignment.Left,
+                PrefixUnaryExpressionSyntax prefix when
+                    prefix.IsKind(SyntaxKind.PreIncrementExpression) ||
+                    prefix.IsKind(SyntaxKind.PreDecrementExpression) => prefix.Operand,
+                PostfixUnaryExpressionSyntax postfix when
+                    postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
+                    postfix.IsKind(SyntaxKind.PostDecrementExpression) => postfix.Operand,
+                _ => null
+            };
+
+            if (writtenMember is not MemberAccessExpressionSyntax memberAccess)
+                continue;
+
+            if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
+                continue;
+
+            var target = semanticModel.GetSymbolInfo(memberAccess.Expression).Symbol;
+            if (target != null && SymbolEqualityComparer.Default.Equals(target, storage))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
