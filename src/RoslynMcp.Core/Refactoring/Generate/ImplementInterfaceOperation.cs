@@ -236,8 +236,9 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
     /// missing members of already-declared interfaces on every eligible
     /// <see cref="TypeDeclarationSyntax"/> (class / struct / record /
     /// record struct / interface, including nested — same node kind as
-    /// today's <c>FindTypeDeclaration</c>). Optional <c>sourceFile</c>
-    /// limits the walk to that one file. Types with no declared interfaces,
+    /// today's <c>FindTypeDeclaration</c>). Optional
+    /// <see cref="ImplementInterfaceParams.SourceFile"/> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Types with no declared interfaces,
     /// empty eligible members, <c>NameCollision</c>, uneditable documents,
     /// parse/symbol failures, and otherwise ineligible types are skipped
     /// rather than failing the walk. Bulk never
@@ -255,7 +256,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var implementedCountByDoc = new Dictionary<DocumentId, int>();
         var processedTypes = new HashSet<string>(StringComparer.Ordinal);

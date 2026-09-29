@@ -206,7 +206,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
     /// / <c>GenerateConstructorOperation.ExecuteAllFilesAsync</c>) and
     /// generates stubs for distinct eligible undefined call sites. Optional
     /// <see cref="GenerateMethodStubParams.SourceFile"/> limits via
-    /// <see cref="DocumentSourceFileFilter"/>. Ineligible / already-resolved /
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Ineligible / already-resolved /
     /// uneditable / uninferable sites are skipped rather than failing the
     /// walk. Dedupes by target type + signature so the same stub is not
     /// double-generated. When every site is a no-op, succeeds with empty
@@ -222,7 +222,7 @@ public sealed class GenerateMethodStubOperation : RefactoringOperationBase<Gener
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var generatedCountByDoc = new Dictionary<DocumentId, int>();
         var processedSignatures = new HashSet<string>(StringComparer.Ordinal);

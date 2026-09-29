@@ -2508,6 +2508,89 @@ public class GeneratePropertyOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateProperty_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", PropertyEligibleFileA),
+            ("FileB.cs", PropertyEligibleFileB));
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var pathA = workspace.PathFor("FileA.cs");
+        var pathB = workspace.PathFor("FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var flipped = FlipPathCasing(pathA);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new GeneratePropertyParams
+        {
+            AllFiles = true,
+            SourceFile = flipped,
+            PropertyName = "Name",
+            PropertyType = "string"
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(pathA));
+        Assert.Contains("public string Name", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, pathA));
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", PropertyEligibleFileA),
+            ("FileB.cs", PropertyEligibleFileB));
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateProperty_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "namespace TestApp; public class Outside { }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new GeneratePropertyParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath,
+                    PropertyName = "Name",
+                    PropertyType = "string"
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task GenerateProperty_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", PropertyEligibleFileA),
+            ("FileB.cs", PropertyEligibleFileB));
+        var operation = new GeneratePropertyOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateProperty_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GeneratePropertyParams
+            {
+                AllFiles = true,
+                SourceFile = missing,
+                PropertyName = "Name",
+                PropertyType = "string"
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [SkippableFact]
     public async Task GenerateProperty_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
     {
         await using var workspace = await TempWorkspace.CreateAsync(

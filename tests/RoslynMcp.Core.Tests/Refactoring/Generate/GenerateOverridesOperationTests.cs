@@ -3733,6 +3733,9 @@ public class GenerateOverridesOperationTests
         var beforeB = await File.ReadAllTextAsync(workspace.PathFor("FileB.cs"));
         var flipped = FlipPathCasing(workspace.PathFor("FileA.cs"));
 
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+
         var result = await operation.ExecuteAsync(new GenerateOverridesParams
         {
             AllFiles = true,
@@ -3745,6 +3748,55 @@ public class GenerateOverridesOperationTests
         Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.PathFor("FileB.cs")));
         Assert.Single(result.Changes!.FilesModified);
         Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.PathFor("FileA.cs")));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateOverrides_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "namespace TestApp; public class OutsideBase { public virtual void Speak() { } } public class Outside : OutsideBase { }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new GenerateOverridesParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateOverrides_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateOverridesParams
+            {
+                AllFiles = true,
+                SourceFile = missing
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
     [SkippableFact]

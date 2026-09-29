@@ -216,7 +216,8 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
     /// <see cref="TypeDeclarationSyntax"/> (class / struct / record /
     /// record struct / interface, including nested — same node kind as
     /// today's <see cref="TypeDeclarationHelpers.FindTypeDeclaration"/>). Optional
-    /// <c>sourceFile</c> limits the walk to that one file. Empty collect
+    /// <see cref="GenerateOverridesParams.SourceFile"/> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Empty collect
     /// / <c>NoOverridableMembers</c>, <c>OverrideExists</c>, uneditable
     /// documents, parse/symbol failures, and otherwise ineligible types
     /// are skipped rather than failing the walk. When a later rewrite
@@ -233,7 +234,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var generatedCountByDoc = new Dictionary<DocumentId, int>();
         var processedTypes = new HashSet<string>(StringComparer.Ordinal);

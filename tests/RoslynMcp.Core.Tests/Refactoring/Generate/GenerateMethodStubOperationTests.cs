@@ -2856,6 +2856,83 @@ public class GenerateMethodStubOperationTests
     }
 
     [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", StubEligibleFileA),
+            ("FileB.cs", StubEligibleFileB));
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var pathA = workspace.PathFor("FileA.cs");
+        var pathB = workspace.PathFor("FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var flipped = FlipPathCasing(pathA);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new GenerateMethodStubParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(pathA));
+        Assert.Contains("private void MissingA()", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, pathA));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, pathB));
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", StubEligibleFileA),
+            ("FileB.cs", StubEligibleFileB));
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateMethodStub_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "namespace TestApp; public class Outside { public void Run() { Missing(); } }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new GenerateMethodStubParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task GenerateMethodStub_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", StubEligibleFileA),
+            ("FileB.cs", StubEligibleFileB));
+        var operation = new GenerateMethodStubOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpGenerateMethodStub_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GenerateMethodStubParams
+            {
+                AllFiles = true,
+                SourceFile = missing
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [SkippableFact]
     public async Task GenerateMethodStub_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
     {
         await using var workspace = await TempWorkspace.CreateAsync(
@@ -2969,6 +3046,23 @@ public class GenerateMethodStubOperationTests
     #endregion
 
     #region Helpers
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
 
     private static bool PathEquals(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
