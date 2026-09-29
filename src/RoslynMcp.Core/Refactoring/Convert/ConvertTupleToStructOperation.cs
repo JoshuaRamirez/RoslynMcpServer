@@ -105,7 +105,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         var insertPosition = TypeInsertionHelpers.GetTypeInsertionPosition(root, creation);
         if (@params.AsRecord)
-            ValidateRecordStructLanguageVersion(semanticModel);
+            await ValidateRecordStructLanguageVersionAsync(creations, cancellationToken);
 
         ValidateMembersForGeneratedType(members, semanticModel, insertPosition, @params.AsRecord);
         if (@params.AsRecord)
@@ -497,6 +497,27 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// <c>record struct</c> / init object-initializers require C# 10+ in every
+    /// document that will be rewritten (declaration site and same-shape creations).
+    /// Latest / Preview / LatestMajor are allowed.
+    /// </summary>
+    private static async Task ValidateRecordStructLanguageVersionAsync(
+        IReadOnlyList<CreationTarget> creations,
+        CancellationToken cancellationToken)
+    {
+        var seen = new HashSet<DocumentId>();
+        foreach (var target in creations)
+        {
+            if (!seen.Add(target.Document.Id))
+                continue;
+
+            var model = await target.Document.GetSemanticModelAsync(cancellationToken);
+            if (model != null)
+                ValidateRecordStructLanguageVersion(model);
+        }
+    }
+
+    /// <summary>
     /// <c>record struct</c> requires C# 10+. Latest / Preview / LatestMajor are allowed.
     /// </summary>
     internal static void ValidateRecordStructLanguageVersion(SemanticModel semanticModel)
@@ -525,7 +546,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         "Equals",
         "GetHashCode",
         "PrintMembers",
-        "ToString"
+        "ToString",
+        "op_Equality",
+        "op_Inequality"
     };
 
     internal static void ValidateMembersForGeneratedType(

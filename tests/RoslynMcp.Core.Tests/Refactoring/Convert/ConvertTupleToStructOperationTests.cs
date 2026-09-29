@@ -803,6 +803,73 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordOpEqualityMember_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    return (op_Equality: 1, X: 2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Pair",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("op_Equality", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordOpInequalityMember_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    return (op_Inequality: 1, X: 2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Pair",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("op_Inequality", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
     [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordFalse_AllowsCloneMember()
     {
@@ -1008,6 +1075,32 @@ public class ConvertTupleToStructOperationTests
         Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
         Assert.Contains("C# 10", ex.Message, StringComparison.Ordinal);
         Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecord_ReferencingConsumerBelowCSharp10_ThrowsAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateReferencingConsumerAsync(
+            originLangVersion: "10.0",
+            consumerLangVersion: "8.0");
+        var originalOrigin = await File.ReadAllTextAsync(workspace.SourcePath);
+        var originalConsumer = await File.ReadAllTextAsync(workspace.SecondarySourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("C# 10", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(originalOrigin, await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Equal(originalConsumer, await File.ReadAllTextAsync(workspace.SecondarySourcePath));
     }
 
     [SkippableFact]
@@ -1695,6 +1788,100 @@ public class ConvertTupleToStructOperationTests
 
             sourcePath ??= Path.Combine(directory, "Worker.cs");
             return await LoadAsync(directory, projectPath, sourcePath);
+        }
+
+
+        public static async Task<TempWorkspace> CreateReferencingConsumerAsync(
+            string originLangVersion,
+            string consumerLangVersion)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertTupleRef_" + Guid.NewGuid().ToString("N"));
+            var appDir = Path.Combine(directory, "App");
+            var otherDir = Path.Combine(directory, "Other");
+            Directory.CreateDirectory(appDir);
+            Directory.CreateDirectory(otherDir);
+
+            var appProject = Path.Combine(appDir, "App.csproj");
+            var otherProject = Path.Combine(otherDir, "Other.csproj");
+            var appSource = Path.Combine(appDir, "Worker.cs");
+            var otherSource = Path.Combine(otherDir, "Client.cs");
+
+            await File.WriteAllTextAsync(appProject, $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <LangVersion>{originLangVersion}</LangVersion>
+                  </PropertyGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(otherProject, $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <LangVersion>{consumerLangVersion}</LangVersion>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="..\App\App.csproj" />
+                  </ItemGroup>
+                </Project>
+                """);
+            await File.WriteAllTextAsync(appSource, """
+                namespace TestApp;
+
+                public class Worker
+                {
+                    public object Create()
+                    {
+                        return (X: 1, Y: 2);
+                    }
+                }
+                """);
+            await File.WriteAllTextAsync(otherSource, """
+                namespace OtherApp;
+
+                public class Client
+                {
+                    public object Create()
+                    {
+                        return (X: 3, Y: 4);
+                    }
+                }
+                """);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            await File.WriteAllTextAsync(solutionPath, """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\App.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Other", "Other\Other.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            var workspace = await LoadAsync(directory, solutionPath, appSource);
+            return new TempWorkspace
+            {
+                DirectoryPath = workspace.DirectoryPath,
+                ProjectPath = workspace.ProjectPath,
+                SourcePath = workspace.SourcePath,
+                Context = workspace.Context,
+                SecondarySourcePath = otherSource
+            };
         }
 
         public static async Task<TempWorkspace> CreateSiblingProjectsAsync()
