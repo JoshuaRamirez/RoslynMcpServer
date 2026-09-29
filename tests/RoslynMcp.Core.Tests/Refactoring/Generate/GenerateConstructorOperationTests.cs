@@ -5434,21 +5434,6 @@ public class GenerateConstructorOperationTests
     }
 
     [Fact]
-    public void TypeWalkKey_IncludesProjectIdentity()
-    {
-        var projectA = ProjectId.CreateNewId();
-        var projectB = ProjectId.CreateNewId();
-        const string fqn = "global::TestApp.Widget";
-
-        var keyA = GenerateConstructorOperation.TypeWalkKey(projectA, fqn);
-        var keyB = GenerateConstructorOperation.TypeWalkKey(projectB, fqn);
-
-        Assert.NotEqual(keyA, keyB);
-        Assert.Equal(keyA, GenerateConstructorOperation.TypeWalkKey(projectA, fqn));
-        Assert.NotEqual(keyA, GenerateConstructorOperation.TypeWalkKey(projectA, "global::TestApp.Other"));
-    }
-
-    [Fact]
     public void Validate_AllFilesTrue_WithLine_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -5558,6 +5543,47 @@ public class GenerateConstructorOperationTests
         Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
         Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
         Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileC.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task GenerateConstructor_AllFilesTrue_SameNamedFileLocalTypes_BothGetCtors()
+    {
+        const string fileA = """
+            namespace TestApp;
+
+            file class Worker
+            {
+                public string Name { get; set; }
+            }
+            """;
+
+        const string fileB = """
+            namespace TestApp;
+
+            file class Worker
+            {
+                public int Age { get; set; }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", fileA),
+            ("FileB.cs", fileB));
+        var operation = new GenerateConstructorOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateConstructorParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains("public Worker(string name)", updatedA, StringComparison.Ordinal);
+        Assert.Contains("public Worker(int age)", updatedB, StringComparison.Ordinal);
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
     }
 
     [SkippableFact]
