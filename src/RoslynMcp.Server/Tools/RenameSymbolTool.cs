@@ -32,13 +32,14 @@ public sealed class RenameSymbolTool : IToolHandler
     public string Name => "rename_symbol";
 
     /// <inheritdoc />
-    public string Description => "Rename any C# symbol (type, method, property, field, variable, etc.) with automatic reference updates across the solution.";
+    public string Description =>
+        "Rename any C# symbol (type, method, property, field, variable, etc.) with automatic reference updates across the solution. sourceFile, symbolName, and newName are required when allFiles is omitted or false. allFiles: true walks every C# file and renames every eligible declaration whose simple name equals symbolName to newName under today's single-site validation (sourceFile optional when true; cannot be combined with line or column; symbolName / newName remain required). renameOverloads / renameImplementations / renameFile / preview remain valid with allFiles.";
 
     /// <inheritdoc />
     public object InputSchema => new
     {
         type = "object",
-        required = new[] { "solutionPath", "sourceFile", "symbolName", "newName" },
+        required = new[] { "solutionPath", "symbolName", "newName" },
         properties = new
         {
             solutionPath = new
@@ -49,53 +50,92 @@ public sealed class RenameSymbolTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the symbol"
+                description = "Absolute path to the source file containing the symbol. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+            },
+            allFiles = new
+            {
+                type = "boolean",
+                description = "When true, walk every C# document (or the optional single sourceFile) and rename every eligible declaration whose simple name equals symbolName to newName. Cannot be combined with line or column. Default false.",
+                @default = false
             },
             symbolName = new
             {
                 type = "string",
-                description = "Current name of the symbol to rename"
+                description = "Current name of the symbol to rename. Required for both single-site and allFiles."
             },
             newName = new
             {
                 type = "string",
-                description = "New name for the symbol"
+                description = "New name for the symbol. Required for both single-site and allFiles."
             },
             line = new
             {
                 type = "integer",
-                description = "1-based line number for disambiguation if multiple symbols match",
+                description = "1-based line number for disambiguation if multiple symbols match. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             column = new
             {
                 type = "integer",
-                description = "1-based column number for disambiguation",
+                description = "1-based column number for disambiguation. Single-site only; cannot be combined with allFiles.",
                 minimum = 1
             },
             renameOverloads = new
             {
                 type = "boolean",
-                description = "Rename all overloads of a method",
+                description = "Rename all overloads of a method. Valid with allFiles.",
                 @default = false
             },
             renameImplementations = new
             {
                 type = "boolean",
-                description = "Rename interface implementations",
+                description = "Rename interface implementations. Valid with allFiles.",
                 @default = true
             },
             renameFile = new
             {
                 type = "boolean",
-                description = "Rename the file if renaming a type that matches the filename",
+                description = "Rename the file if renaming a type that matches the filename. Valid with allFiles; colliding destinations are skipped.",
                 @default = true
             },
             preview = new
             {
                 type = "boolean",
-                description = "Return computed changes without applying",
+                description = "Return computed changes without applying. Valid with allFiles.",
                 @default = false
+            }
+        },
+        oneOf = new object[]
+        {
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @enum = new[] { false }
+                    }
+                },
+                required = new[] { "solutionPath", "sourceFile", "symbolName", "newName" }
+            },
+            new
+            {
+                properties = new
+                {
+                    allFiles = new
+                    {
+                        @const = true
+                    }
+                },
+                required = new[] { "solutionPath", "allFiles", "symbolName", "newName" },
+                not = new
+                {
+                    anyOf = new object[]
+                    {
+                        new { required = new[] { "line" } },
+                        new { required = new[] { "column" } }
+                    }
+                }
             }
         },
         additionalProperties = false
@@ -117,16 +157,15 @@ public sealed class RenameSymbolTool : IToolHandler
                 return ToolResult.Error("Failed to parse arguments");
             }
 
-            // Create workspace context
             using var context = await _workspaceProvider.CreateContextAsync(
                 args.SolutionPath,
                 cancellationToken);
 
-            // Execute operation
             var operation = new RenameSymbolOperation(context);
             var @params = new RenameSymbolParams
             {
                 SourceFile = args.SourceFile,
+                AllFiles = args.AllFiles ?? false,
                 SymbolName = args.SymbolName,
                 NewName = args.NewName,
                 Line = args.Line,
@@ -162,7 +201,8 @@ public sealed class RenameSymbolTool : IToolHandler
     private sealed class RenameSymbolArgs
     {
         public string SolutionPath { get; init; } = "";
-        public string SourceFile { get; init; } = "";
+        public string? SourceFile { get; init; }
+        public bool? AllFiles { get; init; }
         public string SymbolName { get; init; } = "";
         public string NewName { get; init; } = "";
         public int? Line { get; init; }

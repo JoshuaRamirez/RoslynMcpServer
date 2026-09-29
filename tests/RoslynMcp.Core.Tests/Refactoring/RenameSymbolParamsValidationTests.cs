@@ -1,6 +1,7 @@
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Rename;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring;
@@ -18,6 +19,7 @@ public class RenameSymbolParamsValidationTests
         OperatingSystem.IsWindows()
             ? $"C:\\test\\file{extension}"
             : $"/test/file{extension}";
+
     [Fact]
     public void ValidateParams_MissingSourceFile_ThrowsException()
     {
@@ -29,7 +31,7 @@ public class RenameSymbolParamsValidationTests
         };
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            RenameSymbolOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
@@ -45,7 +47,7 @@ public class RenameSymbolParamsValidationTests
         };
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            RenameSymbolOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
@@ -61,7 +63,7 @@ public class RenameSymbolParamsValidationTests
         };
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            RenameSymbolOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
@@ -77,7 +79,7 @@ public class RenameSymbolParamsValidationTests
         };
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            RenameSymbolOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
     }
@@ -93,7 +95,7 @@ public class RenameSymbolParamsValidationTests
         };
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            RenameSymbolOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.InvalidNewName, ex.ErrorCode);
     }
@@ -109,7 +111,7 @@ public class RenameSymbolParamsValidationTests
         };
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            RenameSymbolOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.ReservedKeyword, ex.ErrorCode);
     }
@@ -125,7 +127,7 @@ public class RenameSymbolParamsValidationTests
         };
 
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            RenameSymbolOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.SameLocation, ex.ErrorCode);
     }
@@ -133,35 +135,53 @@ public class RenameSymbolParamsValidationTests
     [Fact]
     public void ValidateParams_InvalidLineNumber_ThrowsException()
     {
-        var @params = new RenameSymbolParams
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameSymbolInvalidLine.cs");
+        File.WriteAllText(path, "// test");
+        try
         {
-            SourceFile = AbsoluteTestPath(),
-            SymbolName = "MyClass",
-            NewName = "RenamedClass",
-            Line = 0
-        };
+            var @params = new RenameSymbolParams
+            {
+                SourceFile = path,
+                SymbolName = "MyClass",
+                NewName = "RenamedClass",
+                Line = 0
+            };
 
-        var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            var ex = Assert.Throws<RefactoringException>(() =>
+                RenameSymbolOperation.Validate(@params));
 
-        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+            Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]
     public void ValidateParams_InvalidColumnNumber_ThrowsException()
     {
-        var @params = new RenameSymbolParams
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameSymbolInvalidColumn.cs");
+        File.WriteAllText(path, "// test");
+        try
         {
-            SourceFile = AbsoluteTestPath(),
-            SymbolName = "MyClass",
-            NewName = "RenamedClass",
-            Column = 0
-        };
+            var @params = new RenameSymbolParams
+            {
+                SourceFile = path,
+                SymbolName = "MyClass",
+                NewName = "RenamedClass",
+                Column = 0
+            };
 
-        var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            var ex = Assert.Throws<RefactoringException>(() =>
+                RenameSymbolOperation.Validate(@params));
 
-        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+            Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Theory]
@@ -182,59 +202,134 @@ public class RenameSymbolParamsValidationTests
 
         // Will throw for file not found, but not for the name
         var ex = Assert.Throws<RefactoringException>(() =>
-            ThrowIfInvalidParams(@params));
+            RenameSymbolOperation.Validate(@params));
 
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
-    /// <summary>
-    /// Mimics the parameter validation from RenameSymbolOperation.
-    /// </summary>
-    private static void ThrowIfInvalidParams(RenameSymbolParams @params)
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutSourceFile_Throws()
     {
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameSymbolOperation.Validate(new RenameSymbolParams
+            {
+                AllFiles = false,
+                SymbolName = "Foo",
+                NewName = "Bar"
+            }));
 
-        if (string.IsNullOrWhiteSpace(@params.SymbolName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "symbolName is required.");
-
-        if (string.IsNullOrWhiteSpace(@params.NewName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "newName is required.");
-
-        if (!IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!IsValidIdentifier(@params.NewName))
-            throw new RefactoringException(ErrorCodes.InvalidNewName, $"'{@params.NewName}' is not a valid C# identifier.");
-
-        if (IsKeyword(@params.NewName))
-            throw new RefactoringException(ErrorCodes.ReservedKeyword, $"'{@params.NewName}' is a C# reserved keyword.");
-
-        if (@params.Line.HasValue && @params.Line.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
-
-        if (@params.Column.HasValue && @params.Column.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
-
-        if (@params.SymbolName == @params.NewName)
-            throw new RefactoringException(ErrorCodes.SameLocation, "New name is the same as current name.");
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsAbsolutePath(string path) =>
-        Path.IsPathRooted(path);
-
-    private static bool IsValidIdentifier(string name) =>
-        System.Text.RegularExpressions.Regex.IsMatch(name, @"^@?[A-Za-z_][A-Za-z0-9_]*$");
-
-    private static bool IsKeyword(string name)
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFile_DoesNotThrow()
     {
-        // Don't treat verbatim identifiers as keywords
-        if (name.StartsWith("@")) return false;
+        RenameSymbolOperation.Validate(new RenameSymbolParams
+        {
+            AllFiles = true,
+            SymbolName = "Foo",
+            NewName = "Bar"
+        });
+    }
 
-        return Microsoft.CodeAnalysis.CSharp.SyntaxFacts.GetKeywordKind(name) !=
-               Microsoft.CodeAnalysis.CSharp.SyntaxKind.None;
+    [Fact]
+    public void Validate_AllFilesTrue_WithRelativeSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameSymbolOperation.Validate(new RenameSymbolParams
+            {
+                AllFiles = true,
+                SourceFile = "relative.cs",
+                SymbolName = "Foo",
+                NewName = "Bar"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithNonCSharpSourceFile_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameSymbolOperation.Validate(new RenameSymbolParams
+            {
+                AllFiles = true,
+                SourceFile = AbsoluteTestPath(".txt"),
+                SymbolName = "Foo",
+                NewName = "Bar"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithMissingSourceFile_DoesNotThrow()
+    {
+        RenameSymbolOperation.Validate(new RenameSymbolParams
+        {
+            AllFiles = true,
+            SourceFile = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameSymbolMissingAllFiles.cs"),
+            SymbolName = "Foo",
+            NewName = "Bar"
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameSymbolOperation.Validate(new RenameSymbolParams
+            {
+                AllFiles = true,
+                SymbolName = "Foo",
+                NewName = "Bar",
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameSymbolOperation.Validate(new RenameSymbolParams
+            {
+                AllFiles = true,
+                SymbolName = "Foo",
+                NewName = "Bar",
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_MissingSymbolName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            RenameSymbolOperation.Validate(new RenameSymbolParams
+            {
+                AllFiles = true,
+                SymbolName = "",
+                NewName = "Bar"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("symbolName", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal(
+            "Rename 'Foo' to 'Bar'",
+            RenameSymbolOperation.BuildAllFilesDescription(1, "Foo", "Bar"));
+        Assert.Equal(
+            "Rename 2 symbols 'Foo' to 'Bar'",
+            RenameSymbolOperation.BuildAllFilesDescription(2, "Foo", "Bar"));
     }
 }
