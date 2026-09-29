@@ -451,15 +451,20 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 PostfixUnaryExpressionSyntax postfix when
                     postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
                     postfix.IsKind(SyntaxKind.PostDecrementExpression) => postfix.Operand,
+                // Tuple fields accept ref/out; generated properties do not.
+                ArgumentSyntax argument when
+                    argument.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) ||
+                    argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword) => argument.Expression,
                 _ => null
             };
 
             if (writtenTarget == null)
                 continue;
 
-            // Direct member writes (point.X = 3) and nested deconstruction
-            // targets ((point.X, point.Y) = (3, 4)) both need rejection for
-            // init-only record struct properties (CS8852).
+            // Direct member writes (point.X = 3), nested deconstruction
+            // targets ((point.X, point.Y) = (3, 4)), and ref/out arguments
+            // (Mutate(ref point.X)) all need rejection for init-only record
+            // struct properties / property-not-variable errors.
             foreach (var memberAccess in EnumerateAssignmentMemberAccesses(writtenTarget))
             {
                 if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
