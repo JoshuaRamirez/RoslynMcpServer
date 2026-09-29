@@ -321,6 +321,188 @@ public class RenameSymbolOperationTests
 
     #endregion
 
+    #region RenameInComments / RenameInStrings
+
+    private const string CommentAndStringSource = """
+        public class Widget
+        {
+            // Widget helper
+            public void Use()
+            {
+                var label = "Widget";
+                var w = new Widget();
+            }
+        }
+        """;
+
+    [Fact]
+    public void RenameSymbol_RenameInComments_DefaultsFalse()
+    {
+        var @params = new RenameSymbolParams
+        {
+            SourceFile = "C:\\test\\file.cs",
+            SymbolName = "Widget",
+            NewName = "Gadget"
+        };
+
+        Assert.False(@params.RenameInComments);
+        Assert.False(@params.RenameInStrings);
+    }
+
+    [Fact]
+    public void RenameSymbol_RenameInCommentsAndStrings_CanBeEnabled()
+    {
+        var @params = new RenameSymbolParams
+        {
+            SourceFile = "C:\\test\\file.cs",
+            SymbolName = "Widget",
+            NewName = "Gadget",
+            RenameInComments = true,
+            RenameInStrings = true
+        };
+
+        Assert.True(@params.RenameInComments);
+        Assert.True(@params.RenameInStrings);
+    }
+
+    [SkippableFact]
+    public async Task RenameSymbol_Default_LeavesCommentAndStringOccurrencesUntouched()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(CommentAndStringSource, "Widget.cs");
+        var operation = new RenameSymbolOperation(workspace.Context);
+        var path = workspace.SourcePath;
+
+        var result = await operation.ExecuteAsync(new RenameSymbolParams
+        {
+            SourceFile = path,
+            SymbolName = "Widget",
+            NewName = "Gadget",
+            RenameFile = false
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(path);
+        Assert.Contains("class Gadget", text);
+        Assert.Contains("new Gadget()", text);
+        Assert.Contains("// Widget helper", text);
+        Assert.Contains("\"Widget\"", text);
+    }
+
+    [SkippableFact]
+    public async Task RenameSymbol_RenameInCommentsTrue_RewritesCommentOccurrence()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(CommentAndStringSource, "Widget.cs");
+        var operation = new RenameSymbolOperation(workspace.Context);
+        var path = workspace.SourcePath;
+
+        var result = await operation.ExecuteAsync(new RenameSymbolParams
+        {
+            SourceFile = path,
+            SymbolName = "Widget",
+            NewName = "Gadget",
+            RenameFile = false,
+            RenameInComments = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(path);
+        Assert.Contains("class Gadget", text);
+        Assert.Contains("// Gadget helper", text);
+        Assert.Contains("\"Widget\"", text);
+    }
+
+    [SkippableFact]
+    public async Task RenameSymbol_RenameInStringsTrue_RewritesStringOccurrence()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(CommentAndStringSource, "Widget.cs");
+        var operation = new RenameSymbolOperation(workspace.Context);
+        var path = workspace.SourcePath;
+
+        var result = await operation.ExecuteAsync(new RenameSymbolParams
+        {
+            SourceFile = path,
+            SymbolName = "Widget",
+            NewName = "Gadget",
+            RenameFile = false,
+            RenameInStrings = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(path);
+        Assert.Contains("class Gadget", text);
+        Assert.Contains("// Widget helper", text);
+        Assert.Contains("\"Gadget\"", text);
+    }
+
+    [SkippableFact]
+    public async Task RenameSymbol_AllFiles_RenameInCommentsAndStrings_HonorsBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(CommentAndStringSource, "Widget.cs");
+        var operation = new RenameSymbolOperation(workspace.Context);
+        var path = workspace.SourcePath;
+
+        var result = await operation.ExecuteAsync(new RenameSymbolParams
+        {
+            AllFiles = true,
+            SymbolName = "Widget",
+            NewName = "Gadget",
+            RenameFile = false,
+            RenameInComments = true,
+            RenameInStrings = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(path);
+        Assert.Contains("class Gadget", text);
+        Assert.Contains("// Gadget helper", text);
+        Assert.Contains("\"Gadget\"", text);
+        Assert.DoesNotContain("// Widget helper", text);
+        Assert.DoesNotContain("\"Widget\"", text);
+    }
+
+
+    [SkippableFact]
+    public async Task RenameSymbol_Preview_RenameInComments_IncludesCommentOnlyFile()
+    {
+        const string declaration = """
+            public class Widget
+            {
+                public void Use() { var w = new Widget(); }
+            }
+            """;
+        const string commentOnly = """
+            // Widget helper lives here with no semantic reference
+            public class Other { }
+            """;
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Widget.cs", declaration),
+            ("Comments.cs", commentOnly));
+        var operation = new RenameSymbolOperation(workspace.Context);
+        var pathWidget = Path.Combine(workspace.DirectoryPath, "Widget.cs");
+        var pathComments = Path.Combine(workspace.DirectoryPath, "Comments.cs");
+        var beforeComments = await File.ReadAllTextAsync(pathComments);
+
+        var result = await operation.ExecuteAsync(new RenameSymbolParams
+        {
+            SourceFile = pathWidget,
+            SymbolName = "Widget",
+            NewName = "Gadget",
+            RenameFile = false,
+            RenameInComments = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => PathsEqual(c.File, pathWidget));
+        Assert.Contains(result.PendingChanges, c => PathsEqual(c.File, pathComments));
+        Assert.Equal(beforeComments, await File.ReadAllTextAsync(pathComments));
+        Assert.Contains("// Widget helper", await File.ReadAllTextAsync(pathComments));
+    }
+
+    #endregion
+
     #region Helper Methods
 
     /// <summary>
@@ -1052,8 +1234,6 @@ public class RenameSymbolOperationTests
         Assert.Contains("int Bar = 1", text);
         Assert.DoesNotContain("int Foo = 1", text);
     }
-
-
 
     [SkippableFact]
     public async Task RenameSymbol_AllFilesTrue_SkipsLinkedMultiViewPath()

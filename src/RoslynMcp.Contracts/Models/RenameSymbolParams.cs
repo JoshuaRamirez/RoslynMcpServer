@@ -63,6 +63,18 @@ public sealed class RenameSymbolParams
     public bool RenameFile { get; init; } = true;
 
     /// <summary>
+    /// Whether to rename matching identifier text inside comments.
+    /// Default: false (today's behavior). Valid with <see cref="AllFiles"/>.
+    /// </summary>
+    public bool RenameInComments { get; init; }
+
+    /// <summary>
+    /// Whether to rename matching identifier text inside string literals.
+    /// Default: false (today's behavior). Valid with <see cref="AllFiles"/>.
+    /// </summary>
+    public bool RenameInStrings { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// Valid with <see cref="AllFiles"/>.
     /// </summary>

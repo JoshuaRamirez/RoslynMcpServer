@@ -118,8 +118,8 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         // implementations; renameImplementations: false is honored after the rename.
         var options = new SymbolRenameOptions(
             RenameOverloads: @params.RenameOverloads,
-            RenameInStrings: false,
-            RenameInComments: false,
+            RenameInStrings: @params.RenameInStrings,
+            RenameInComments: @params.RenameInComments,
             RenameFile: false // We handle file rename separately
         );
 
@@ -177,10 +177,18 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
             }
         }
 
-        // If preview mode, return without applying
+        // If preview mode, return without applying. Derive PendingChanges from the
+        // renamed solution so comment/string-only files are included when those
+        // flags are on (ReferenceTracker only sees semantic references).
         if (@params.Preview)
         {
-            return CreatePreviewResult(operationId, symbol, @params, references.TotalReferenceCount, renamedFile);
+            return CreatePreviewResult(
+                operationId,
+                Context.Solution,
+                newSolution,
+                symbol.Name,
+                @params.NewName,
+                renamedFile);
         }
 
         // Commit changes
@@ -618,8 +626,8 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
 
         var options = new SymbolRenameOptions(
             RenameOverloads: @params.RenameOverloads,
-            RenameInStrings: false,
-            RenameInComments: false,
+            RenameInStrings: @params.RenameInStrings,
+            RenameInComments: @params.RenameInComments,
             RenameFile: false);
 
         IReadOnlyList<MemberIdentity> interfaceMembersToPreserve = [];
@@ -1095,29 +1103,37 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
 
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,
-        ISymbol symbol,
-        RenameSymbolParams @params,
-        int referenceCount,
+        Solution oldSolution,
+        Solution newSolution,
+        string oldName,
+        string newName,
         string? renamedFile)
     {
-        var pendingChanges = new List<PendingChange>
-        {
-            new()
-            {
-                File = @params.SourceFile!,
-                ChangeType = ChangeKind.Modify,
-                Description = $"Rename '{symbol.Name}' to '{@params.NewName}'"
-            }
-        };
+        // Mirror RenameNamespaceOperation.CreatePreviewResult: list every document
+        // that Renamer actually rewrote (semantic refs + optional comment/string hits).
+        var pendingChanges = new List<PendingChange>();
+        var seenPaths = new HashSet<string>(StringComparer.Ordinal);
 
-        if (referenceCount > 0)
+        foreach (var projectChange in newSolution.GetChanges(oldSolution).GetProjectChanges())
         {
-            pendingChanges.Add(new PendingChange
+            foreach (var documentId in projectChange.GetChangedDocuments())
             {
-                File = "(multiple files)",
-                ChangeType = ChangeKind.Modify,
-                Description = $"Update {referenceCount} reference(s)"
-            });
+                var document = oldSolution.GetDocument(documentId)
+                    ?? newSolution.GetDocument(documentId);
+                var path = document?.FilePath ?? document?.Name ?? "(unknown)";
+                var pathKey = document?.FilePath != null
+                    ? PathResolver.GetPathComparisonKey(document.FilePath)
+                    : path;
+                if (!seenPaths.Add(pathKey))
+                    continue;
+
+                pendingChanges.Add(new PendingChange
+                {
+                    File = path,
+                    ChangeType = ChangeKind.Modify,
+                    Description = $"Rename '{oldName}' to '{newName}'"
+                });
+            }
         }
 
         if (renamedFile != null)
@@ -1127,6 +1143,16 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
                 File = renamedFile,
                 ChangeType = ChangeKind.Create,
                 Description = "Rename file to match type name"
+            });
+        }
+
+        if (pendingChanges.Count == 0)
+        {
+            pendingChanges.Add(new PendingChange
+            {
+                File = "(solution)",
+                ChangeType = ChangeKind.Modify,
+                Description = $"Rename '{oldName}' to '{newName}'"
             });
         }
 
