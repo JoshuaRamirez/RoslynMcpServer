@@ -203,7 +203,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
     /// document filter as <c>ChangeSignatureOperation.ExecuteAllFilesAsync</c>)
     /// and changes return types to <paramref name="params"/>.NewReturnType for
     /// every eligible <see cref="MethodDeclarationSyntax"/>. Optional
-    /// <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
+    /// <c>sourceFile</c> limits via <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>.
     /// Linked documents that share a physical path are rewritten once and the
     /// same text is applied to every sibling <see cref="DocumentId"/> via
     /// <see cref="AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync"/>
@@ -227,7 +227,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
 

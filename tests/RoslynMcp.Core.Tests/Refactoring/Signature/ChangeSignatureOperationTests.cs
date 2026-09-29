@@ -1165,6 +1165,87 @@ public class ChangeSignatureOperationTests
     }
 
     [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var flipped = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new ChangeSignatureParams
+        {
+            AllFiles = true,
+            SourceFile = flipped,
+            Parameters = KeepXAddFlag()
+        });
+
+        Assert.True(result.Success);
+        var updatedA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        Assert.Contains("bool flag", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpChangeSignature_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "namespace TestApp; public class Outside { public void Process(int x) { } }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new ChangeSignatureParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath,
+                    Parameters = KeepXAddFlag()
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task ChangeSignature_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ChangeSignatureOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpChangeSignature_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ChangeSignatureParams
+            {
+                AllFiles = true,
+                SourceFile = missing,
+                Parameters = KeepXAddFlag()
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [SkippableFact]
     public async Task ChangeSignature_MultipleSameFileCallSites_UpdatesAll()
     {
         const string source = """
@@ -2485,6 +2566,23 @@ public class ChangeSignatureOperationTests
             Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
             Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
             StringComparison.OrdinalIgnoreCase);
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
 
     private sealed class TempWorkspace : IAsyncDisposable
     {

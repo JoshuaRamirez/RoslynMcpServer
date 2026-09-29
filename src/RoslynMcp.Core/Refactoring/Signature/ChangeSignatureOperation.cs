@@ -238,7 +238,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// document filter as <c>IntroduceParameterOperation.ExecuteAllFilesAsync</c>)
     /// and applies <paramref name="params"/>.Parameters to every eligible
     /// <see cref="MethodDeclarationSyntax"/>. Optional <c>sourceFile</c> limits
-    /// via <see cref="DocumentSourceFileFilter"/>. Linked documents that share a
+    /// via <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Linked documents that share a
     /// physical path are rewritten once and the same text is applied to every
     /// sibling <see cref="DocumentId"/> via <see cref="Solution.GetChanges(Solution)"/>
     /// coalesce (prefer a changed DocumentId as source). Methods missing any
@@ -261,7 +261,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
 
