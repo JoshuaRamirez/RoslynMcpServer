@@ -12,9 +12,9 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// DocumentPathHasLinkedMultiView for AddParameter / RemoveParameter /
 /// ReorderParameters / RenameNamespace / PushMembersDown, plus
 /// FilterAllFilesDocumentsBySourceFile for ExtractBaseClass /
-/// ExtractInterface / ExtractMethod / PushMembersDown / PullMembersUp
-/// (default path) and IntroduceField / SafeDelete (optional
-/// rejectMissingPathCasingMismatch arm).
+/// ExtractInterface / ExtractMethod / ExtractConstant / ExtractVariable /
+/// PushMembersDown / PullMembersUp (default path) and IntroduceField /
+/// SafeDelete (optional rejectMissingPathCasingMismatch arm).
 /// Same bodies as the identical copies on those operations.
 /// Named AllFilesDocumentHelpers (not DocumentSourceFileFilter) because this
 /// cluster is the walk + linked-sibling coalesce + exact/ignore-case
@@ -184,8 +184,9 @@ internal static class AllFilesDocumentHelpers
     /// <see cref="ErrorCodes.SourceNotInWorkspace"/> when nothing matches or
     /// multiple ignore-case paths collide. Default path
     /// (<paramref name="rejectMissingPathCasingMismatch"/> false) matches
-    /// ExtractBaseClass / ExtractInterface / ExtractMethod / PushMembersDown /
-    /// PullMembersUp. When <paramref name="rejectMissingPathCasingMismatch"/>
+    /// ExtractBaseClass / ExtractInterface / ExtractMethod / ExtractConstant /
+    /// ExtractVariable / PushMembersDown / PullMembersUp. When
+    /// <paramref name="rejectMissingPathCasingMismatch"/>
     /// is true (IntroduceField / SafeDelete), also reject an ignore-case hit
     /// whose comparison key differs from the caller path when that path does
     /// not exist on disk.
