@@ -247,7 +247,8 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
     /// <see cref="TypeDeclarationSyntax"/> (class / struct / record /
     /// record struct / interface, including nested — same node kind as
     /// today's <see cref="TypeDeclarationHelpers.FindTypeDeclaration"/>). Optional
-    /// <c>sourceFile</c> limits the walk to that one file. Interface,
+    /// <see cref="GenerateEqualsHashCodeParams.SourceFile"/> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Interface,
     /// no-members when <c>callSuper</c> is false, existing-equality
     /// collisions when <c>replaceExisting</c> is false,
     /// <c>CallSuperOnObjectBase</c> / <c>CallSuperOnAbstractBase</c>,
@@ -266,7 +267,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var generatedCountByDoc = new Dictionary<DocumentId, int>();
         var processedTypes = new HashSet<string>(StringComparer.Ordinal);
