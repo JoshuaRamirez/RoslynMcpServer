@@ -1818,6 +1818,23 @@ public class RenameNamespaceOperationTests
             Path.GetFullPath(right),
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
+
     [SkippableFact]
     public async Task RenameNamespace_OmittedAllFiles_KeepsSingleSiteRewrite()
     {
@@ -2003,6 +2020,85 @@ public class RenameNamespaceOperationTests
         Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
         Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, pathA));
         Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleNsFileA),
+            ("FileB.cs", EligibleNsFileB));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var flipped = FlipPathCasing(pathA);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            AllFiles = true,
+            SourceFile = flipped,
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace NewNs", await File.ReadAllTextAsync(pathA));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, pathA));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleNsFileA),
+            ("FileB.cs", EligibleNsFileB));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameNamespace_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "namespace OldNs; public class C { }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new RenameNamespaceParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath,
+                    NewName = "NewNs"
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleNsFileA),
+            ("FileB.cs", EligibleNsFileB));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameNamespace_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameNamespaceParams
+            {
+                AllFiles = true,
+                SourceFile = missing,
+                NewName = "NewNs"
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
     [SkippableFact]
