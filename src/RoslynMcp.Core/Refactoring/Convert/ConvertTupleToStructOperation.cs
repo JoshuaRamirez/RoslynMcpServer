@@ -104,6 +104,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             DocumentEditableHelpers.ValidateDocumentIsEditable(target.Document, Context.Workspace);
 
         var insertPosition = TypeInsertionHelpers.GetTypeInsertionPosition(root, creation);
+        if (@params.AsRecord)
+            ValidateRecordStructLanguageVersion(semanticModel);
+
         ValidateMembersForGeneratedType(members, semanticModel, insertPosition, @params.AsRecord);
         if (@params.AsRecord)
             await ValidateNoInitBreakingElementWritesAsync(creations, members, cancellationToken);
@@ -439,7 +442,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         foreach (var node in root.DescendantNodes())
         {
-            ExpressionSyntax? writtenMember = node switch
+            ExpressionSyntax? writtenTarget = node switch
             {
                 AssignmentExpressionSyntax assignment => assignment.Left,
                 PrefixUnaryExpressionSyntax prefix when
@@ -451,18 +454,61 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 _ => null
             };
 
-            if (writtenMember is not MemberAccessExpressionSyntax memberAccess)
+            if (writtenTarget == null)
                 continue;
 
-            if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
-                continue;
+            // Direct member writes (point.X = 3) and nested deconstruction
+            // targets ((point.X, point.Y) = (3, 4)) both need rejection for
+            // init-only record struct properties (CS8852).
+            foreach (var memberAccess in EnumerateAssignmentMemberAccesses(writtenTarget))
+            {
+                if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
+                    continue;
 
-            var target = semanticModel.GetSymbolInfo(memberAccess.Expression).Symbol;
-            if (target != null && SymbolEqualityComparer.Default.Equals(target, storage))
-                return true;
+                var target = semanticModel.GetSymbolInfo(memberAccess.Expression).Symbol;
+                if (target != null && SymbolEqualityComparer.Default.Equals(target, storage))
+                    return true;
+            }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Yields member accesses that are assignment / increment targets, including
+    /// nested accesses inside tuple deconstruction left-hand sides.
+    /// </summary>
+    internal static IEnumerable<MemberAccessExpressionSyntax> EnumerateAssignmentMemberAccesses(
+        ExpressionSyntax writtenTarget)
+    {
+        if (writtenTarget is MemberAccessExpressionSyntax direct)
+        {
+            yield return direct;
+            yield break;
+        }
+
+        foreach (var nested in writtenTarget.DescendantNodes().OfType<MemberAccessExpressionSyntax>())
+            yield return nested;
+    }
+
+    /// <summary>
+    /// <c>record struct</c> requires C# 10+. Latest / Preview / LatestMajor are allowed.
+    /// </summary>
+    internal static void ValidateRecordStructLanguageVersion(SemanticModel semanticModel)
+    {
+        if (semanticModel.SyntaxTree.Options is not CSharpParseOptions parseOptions)
+            return;
+
+        var version = parseOptions.LanguageVersion;
+        if (version is LanguageVersion.Latest or LanguageVersion.LatestMajor or LanguageVersion.Preview)
+            return;
+
+        if (version < LanguageVersion.CSharp10)
+        {
+            throw new RefactoringException(
+                ErrorCodes.CannotConvert,
+                "asRecord requires C# 10 or later (record structs are not available in earlier language versions).");
+        }
     }
 
     /// <summary>

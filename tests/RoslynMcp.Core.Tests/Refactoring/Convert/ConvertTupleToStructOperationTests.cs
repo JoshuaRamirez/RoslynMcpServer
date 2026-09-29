@@ -906,6 +906,74 @@ public class ConvertTupleToStructOperationTests
     }
 
     [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordDeconstructionAssignment_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    (point.X, point.Y) = (3, 4);
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("element assignments", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecord_LanguageVersionBelowCSharp10_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    return (X: 1, Y: 2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, langVersion: "9.0");
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("C# 10", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
     public async Task ConvertTupleToStruct_NotTuple_ThrowsAndWritesNothing()
     {
         const string source = """
@@ -1549,10 +1617,18 @@ public class ConvertTupleToStructOperationTests
         public required WorkspaceContext Context { get; init; }
         public string SecondarySourcePath { get; init; } = "";
 
-        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Worker.cs") =>
-            CreateAsync((fileName, source));
+        public static Task<TempWorkspace> CreateAsync(
+            string source,
+            string fileName = "Worker.cs",
+            string? langVersion = null) =>
+            CreateAsync(langVersion, (fileName, source));
 
-        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
+        public static Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files) =>
+            CreateAsync(langVersion: null, files);
+
+        public static async Task<TempWorkspace> CreateAsync(
+            string? langVersion,
+            params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1560,11 +1636,14 @@ public class ConvertTupleToStructOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            await File.WriteAllTextAsync(projectPath, """
+            var langVersionProperty = string.IsNullOrWhiteSpace(langVersion)
+                ? ""
+                : $"\n                    <LangVersion>{langVersion}</LangVersion>";
+            await File.WriteAllTextAsync(projectPath, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
-                    <Nullable>enable</Nullable>
+                    <Nullable>enable</Nullable>{langVersionProperty}
                   </PropertyGroup>
                 </Project>
                 """);
