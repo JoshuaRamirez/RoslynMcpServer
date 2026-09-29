@@ -244,6 +244,24 @@ public class MoveTypeToFileOperationTests
         Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Validate_AbsoluteNonCsSource_WithRelativeTarget_ThrowsInvalidTargetPathFirst()
+    {
+        // Absolute .txt sourceFile + relative targetFile: target absolute-path
+        // check must win (InvalidTargetPath) ahead of source .cs check
+        // (InvalidSourcePath). Preserves pre-#1601 interleaving.
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToFileOperation.Validate(new MoveTypeToFileParams
+            {
+                SourceFile = AbsoluteTestPath("Source.txt"),
+                SymbolName = "Widget",
+                TargetFile = "Target.cs"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidTargetPath, ex.ErrorCode);
+        Assert.Equal("targetFile must be an absolute path.", ex.Message);
+    }
+
     #endregion
 
     #region P0 optional column disambiguation

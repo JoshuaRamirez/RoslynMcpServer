@@ -5,7 +5,6 @@ using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
-using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
@@ -75,11 +74,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
 
         var sourceFile = @params.SourceFile!;
 
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        SourceFilePathHelpers.ValidateSourceFilePath(sourceFile);
 
         ValidateFormat(@params.Format);
 

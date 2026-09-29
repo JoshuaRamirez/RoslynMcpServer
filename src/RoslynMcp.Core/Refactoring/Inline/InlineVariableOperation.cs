@@ -58,11 +58,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
 
         var sourceFile = @params.SourceFile!;
 
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        SourceFilePathHelpers.ValidateSourceFilePath(sourceFile);
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");

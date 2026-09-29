@@ -211,11 +211,7 @@ public sealed class MoveTypeToNamespaceOperation
         if (string.IsNullOrWhiteSpace(@params.SymbolName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "symbolName is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
