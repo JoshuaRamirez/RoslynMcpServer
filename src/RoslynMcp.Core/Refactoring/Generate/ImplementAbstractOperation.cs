@@ -1139,16 +1139,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     }
 
     /// <summary>
-    /// Removes matched implementation declarations from every partial that
-    /// holds them. Match by span/kind, not SyntaxNode reference — same seam
-    /// as implement_interface / generate_property replaceExisting.
-    /// Uses <see cref="SyntaxRemoveOptions.KeepExteriorTrivia"/> and
-    /// <see cref="SyntaxRemoveOptions.KeepDirectives"/> so a leading
-    /// <c>#if</c> / <c>#region</c> on the removed member does not orphan
-    /// a following <c>#endif</c> / <c>#endregion</c>.
-    /// </summary>
-
-    /// <summary>
     /// Finds a type by <paramref name="typeName"/>. Omitted
     /// <paramref name="column"/> keeps today's typeName + optional
     /// <paramref name="line"/> pick, including omitted-line

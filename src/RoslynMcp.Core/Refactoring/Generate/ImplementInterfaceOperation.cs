@@ -922,16 +922,6 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
     }
 
     /// <summary>
-    /// Removes matched implementation declarations from every partial that
-    /// holds them. Match by span/kind, not SyntaxNode reference — same seam
-    /// as generate_property / generate_method_stub replaceExisting.
-    /// Uses <see cref="SyntaxRemoveOptions.KeepExteriorTrivia"/> and
-    /// <see cref="SyntaxRemoveOptions.KeepDirectives"/> so a leading
-    /// <c>#if</c> / <c>#region</c> on the removed member does not orphan
-    /// a following <c>#endif</c> / <c>#endregion</c>.
-    /// </summary>
-
-    /// <summary>
     /// Creates a preview result describing generate vs replace.
     /// When an existing member lives in another partial, also includes a
     /// Modify pending change per distinct declaring file with that member
