@@ -109,7 +109,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         ValidateMembersForGeneratedType(members, semanticModel, insertPosition, @params.AsRecord);
         if (@params.AsRecord)
-            await ValidateNoInitBreakingElementWritesAsync(creations, members, cancellationToken);
+            await ValidateNoInitBreakingElementWritesAsync(creations, members, tupleType, cancellationToken);
         var typeDeclaration = CreateNamedStruct(
             lookupName,
             @params.AsRecord,
@@ -365,6 +365,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     private static async Task ValidateNoInitBreakingElementWritesAsync(
         IReadOnlyList<CreationTarget> creations,
         IReadOnlyList<TupleMember> members,
+        ITypeSymbol tupleType,
         CancellationToken cancellationToken)
     {
         var memberNames = members
@@ -397,7 +398,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 continue;
 
             var storages = CollectStorageAliases(root, model, storage, cancellationToken);
-            if (HasElementWrite(root, model, storages, memberNames))
+            if (HasElementWrite(root, model, storages, memberNames, tupleType))
             {
                 throw new RefactoringException(
                     ErrorCodes.CannotConvert,
@@ -490,18 +491,21 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SyntaxNode root,
         SemanticModel semanticModel,
         ISymbol storage,
-        HashSet<string> memberNames) =>
+        HashSet<string> memberNames,
+        ITypeSymbol? tupleType = null) =>
         HasElementWrite(
             root,
             semanticModel,
             new HashSet<ISymbol>(SymbolEqualityComparer.Default) { storage },
-            memberNames);
+            memberNames,
+            tupleType);
 
     internal static bool HasElementWrite(
         SyntaxNode root,
         SemanticModel semanticModel,
         HashSet<ISymbol> storages,
-        HashSet<string> memberNames)
+        HashSet<string> memberNames,
+        ITypeSymbol? tupleType = null)
     {
         foreach (var node in root.DescendantNodes())
         {
@@ -528,7 +532,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
             // Direct member writes (point.X = 3), nested deconstruction
             // targets ((point.X, point.Y) = (3, 4)), chained mutable-value
-            // writes (point.X.Value = 3), ref/out arguments, and ref expressions
+            // writes (point.X.Value = 3), inferred-container writes
+            // (points[0].X = 3), ref/out arguments, and ref expressions
             // all need rejection for init-only record struct properties /
             // property-not-variable errors.
             foreach (var memberAccess in EnumerateAssignmentMemberAccesses(writtenTarget))
@@ -539,6 +544,17 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 var target = semanticModel.GetSymbolInfo(memberAccess.Expression).Symbol;
                 if (target != null && storages.Contains(target))
                     return true;
+
+                // Element/indexer receivers have no symbol; match by tuple type
+                // so writes through inferred containers are rejected.
+                if (tupleType != null &&
+                    memberAccess.Expression is ElementAccessExpressionSyntax &&
+                    SymbolEqualityComparer.Default.Equals(
+                        semanticModel.GetTypeInfo(memberAccess.Expression).Type,
+                        tupleType))
+                {
+                    return true;
+                }
             }
         }
 
