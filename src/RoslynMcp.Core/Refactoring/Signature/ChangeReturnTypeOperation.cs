@@ -1041,7 +1041,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             if (root == null || model == null)
                 return false;
 
-            var rematched = RematchMethod(root, primaryMethod);
+            var rematched = MethodRematchHelpers.RematchMethod(root, primaryMethod);
             if (rematched == null)
                 return false;
 
@@ -1135,7 +1135,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                     if (siblingRoot == null || siblingModel == null)
                         continue;
 
-                    var rematched = RematchMethod(siblingRoot, methodSyntax);
+                    var rematched = MethodRematchHelpers.RematchMethod(siblingRoot, methodSyntax);
                     if (rematched == null)
                         continue;
 
@@ -1195,23 +1195,6 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         }
     }
 
-    private static MethodDeclarationSyntax? RematchMethod(SyntaxNode root, MethodDeclarationSyntax original)
-    {
-        var candidates = root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .Where(m => m.Identifier.Text == original.Identifier.Text)
-            .ToList();
-        if (candidates.Count == 0)
-            return null;
-        if (candidates.Count == 1)
-            return candidates[0];
-
-        return candidates
-            .OrderBy(m => Math.Abs(m.SpanStart - original.SpanStart))
-            .ThenBy(m => m.Span.Length)
-            .FirstOrDefault();
-    }
-
     internal static void ValidateInvocationResultContext(
         InvocationExpressionSyntax invocation,
         ITypeSymbol newReturnType,
@@ -1261,7 +1244,6 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             .OfType<YieldStatementSyntax>()
             .Any(yield => !IsInNestedFunction(yield, declaration));
     }
-
 
     internal static bool MethodGroupStillCompatible(
         SyntaxNode node,

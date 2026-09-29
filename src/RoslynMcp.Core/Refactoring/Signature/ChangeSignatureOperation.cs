@@ -1323,7 +1323,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                     if (siblingRoot == null || siblingModel == null)
                         continue;
 
-                    var rematched = RematchMethod(siblingRoot, methodSyntax);
+                    var rematched = MethodRematchHelpers.RematchMethod(siblingRoot, methodSyntax);
                     if (rematched == null)
                         continue;
 
@@ -1437,23 +1437,6 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         }
 
         return false;
-    }
-
-    private static MethodDeclarationSyntax? RematchMethod(SyntaxNode root, MethodDeclarationSyntax original)
-    {
-        var candidates = root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .Where(m => m.Identifier.Text == original.Identifier.Text)
-            .ToList();
-        if (candidates.Count == 0)
-            return null;
-        if (candidates.Count == 1)
-            return candidates[0];
-
-        return candidates
-            .OrderBy(m => Math.Abs(m.SpanStart - original.SpanStart))
-            .ThenBy(m => m.Span.Length)
-            .FirstOrDefault();
     }
 
     private static InvocationExpressionSyntax? RematchInvocation(SyntaxNode root, TextSpan span)
