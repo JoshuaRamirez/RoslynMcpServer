@@ -6,12 +6,15 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// <summary>
 /// Shared <c>sourceFile</c> absolute-.cs path validation used by Extract /
 /// Hierarchy / Signature / Rename / Convert / Generate / Inline / Organize /
-/// Format / Encapsulate / Move* / MakeStatic / MakeNonStatic / UseBaseType /
-/// RenameFileToMatchType params gates, plus Query ops and SafeDelete that
-/// previously inlined the same two <see cref="PathResolver"/> checks
-/// (absolute path + <c>.cs</c> extension, throwing
-/// <see cref="RefactoringException"/> with
+/// Format / Encapsulate / MoveTypeToNamespace / MakeStatic / MakeNonStatic /
+/// UseBaseType / RenameFileToMatchType params gates, plus Query ops and
+/// SafeDelete that previously inlined the same two
+/// <see cref="PathResolver"/> checks (absolute path + <c>.cs</c> extension,
+/// throwing <see cref="RefactoringException"/> with
 /// <see cref="ErrorCodes.InvalidSourcePath"/>).
+/// <c>MoveTypeToFile</c> keeps interleaved source/target checks so relative
+/// <c>targetFile</c> still yields <c>InvalidTargetPath</c> ahead of a non-.cs
+/// <c>sourceFile</c>.
 /// </summary>
 internal static class SourceFilePathHelpers
 {
