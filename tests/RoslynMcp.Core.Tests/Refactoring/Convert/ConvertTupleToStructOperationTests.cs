@@ -738,6 +738,72 @@ public class ConvertTupleToStructOperationTests
     }
 
     [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordGetHashCodeMember_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    return (GetHashCode: 1, X: 2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Pair",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("GetHashCode", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordPrintMembersMember_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    return (PrintMembers: 1, X: 2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Pair",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("PrintMembers", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordFalse_AllowsCloneMember()
     {
         const string source = """
