@@ -12,7 +12,10 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// ConvertToBlockBody / AddBraces / RemoveBraces / InvertIf /
 /// ConvertExpressionBody / ConvertToPatternMatching / ConvertProperty /
 /// ConvertForeachLinq / SimplifyName / ConvertToInterpolatedString /
-/// ConvertToAsync (and Generate*/Implement*/InlineConstant/MakeStatic peers),
+/// ConvertToAsync / AddMissingUsings / RemoveUnusedUsings / SortUsings /
+/// FormatDocument / EncapsulateField / AddNullChecks / UseBaseType /
+/// RenameFileToMatchType / MoveTypeToNamespace / MoveTypeToFile
+/// (and Generate*/Implement*/InlineConstant/MakeStatic peers),
 /// plus BuildLinkedPathCounts /
 /// DocumentPathHasLinkedMultiView for AddParameter / RemoveParameter /
 /// ReorderParameters / RenameNamespace / PushMembersDown, plus
@@ -43,8 +46,13 @@ internal static class AllFilesDocumentHelpers
     /// ConvertToBlockBody / AddBraces / RemoveBraces / InvertIf /
     /// ConvertExpressionBody / ConvertToPatternMatching / ConvertProperty /
     /// ConvertForeachLinq / SimplifyName / ConvertToInterpolatedString /
-    /// ConvertToAsync (those Convert callers previously omitted OrderBy;
-    /// migrating onto this helper adds the deterministic FilePath ordinal walk).
+    /// ConvertToAsync / AddMissingUsings / RemoveUnusedUsings / SortUsings /
+    /// FormatDocument / EncapsulateField / AddNullChecks / UseBaseType /
+    /// RenameFileToMatchType / MoveTypeToNamespace / MoveTypeToFile (those
+    /// Convert / Organize / Format / Encapsulate / Generate / Hierarchy /
+    /// Rename / MoveType callers previously omitted OrderBy except
+    /// MoveTypeToNamespace, which already ordered; migrating onto this helper
+    /// adds the deterministic FilePath ordinal walk where it was missing).
     /// </summary>
     internal static List<Document> EnumerateCsharpDocuments(Solution solution)
     {

@@ -206,10 +206,7 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         CancellationToken cancellationToken)
     {
         var solution = Context.Solution;
-        var allDocuments = solution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution);
 
         var totalUsingsAdded = 0;
         var allFilesModified = new List<string>();
