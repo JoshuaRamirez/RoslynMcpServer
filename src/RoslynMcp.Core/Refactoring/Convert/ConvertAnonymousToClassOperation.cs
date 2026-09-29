@@ -905,8 +905,8 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
     /// Throws <see cref="ErrorCodes.NameConflictScope"/> when
     /// <paramref name="typeName"/> matches an in-scope type parameter (method or
     /// type) at any replacement creation site. Uses
-    /// <see cref="SemanticModel.LookupSymbols(int,INamespaceOrTypeSymbol,string)"/>
-    /// plus enclosing-symbol type parameters; compares identifiers after
+    /// <c>SemanticModel.LookupSymbols</c> plus enclosing-symbol type parameters;
+    /// compares identifiers after
     /// <see cref="SyntaxIdentifierValidation.NormalizeIdentifier"/> (same
     /// <c>@</c> stripping as other name checks).
     /// </summary>
