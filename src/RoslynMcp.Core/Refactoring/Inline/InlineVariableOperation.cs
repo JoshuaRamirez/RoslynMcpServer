@@ -164,7 +164,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not resolve variable symbol.");
         }
 
-        if (IsUsingDeclaration(declarator))
+        if (UsingDeclarationHelpers.IsUsingDeclaration(declarator))
         {
             throw new RefactoringException(
                 ErrorCodes.InvalidSelection,
@@ -513,20 +513,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         {
             Parent: LocalDeclarationStatementSyntax statement
         } &&
-        !IsUsingDeclaration(declarator);
-
-    /// <summary>
-    /// True for <c>using var</c> / <c>await using</c> locals (and classic
-    /// <c>using (...)</c> declarators). Mirrors
-    /// <c>IntroduceFieldOperation.IsUsingDeclaration</c>.
-    /// </summary>
-    private static bool IsUsingDeclaration(VariableDeclaratorSyntax declarator) =>
-        declarator.Parent?.Parent switch
-        {
-            LocalDeclarationStatementSyntax statement => statement.UsingKeyword != default,
-            UsingStatementSyntax => true,
-            _ => false
-        };
+        !UsingDeclarationHelpers.IsUsingDeclaration(declarator);
 
     private async Task<Solution?> TryInlineOneAsync(
         Document document,
@@ -546,7 +533,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         if (variableSymbol == null)
             return null;
 
-        if (IsUsingDeclaration(declarator) || IsRefLocal(variableSymbol, initializerExpression))
+        if (UsingDeclarationHelpers.IsUsingDeclaration(declarator) || IsRefLocal(variableSymbol, initializerExpression))
             return null;
 
         var containingMethod = declarator.Ancestors().OfType<BaseMethodDeclarationSyntax>().FirstOrDefault();
@@ -639,7 +626,6 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
-
 
     /// <summary>
     /// True when <paramref name="usage"/> is passed as <c>ref</c>/<c>out</c>/<c>in</c>
@@ -819,7 +805,6 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         declarator.Parent is VariableDeclarationSyntax declaration
             ? declaration.GetLocation().GetLineSpan()
             : declarator.GetLocation().GetLineSpan();
-
 
     private sealed class InlineRewriter : CSharpSyntaxRewriter
     {

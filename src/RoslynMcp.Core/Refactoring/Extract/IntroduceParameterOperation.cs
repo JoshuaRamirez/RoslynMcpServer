@@ -413,15 +413,7 @@ public sealed class IntroduceParameterOperation : RefactoringOperationBase<Intro
         {
             Parent: LocalDeclarationStatementSyntax
         } &&
-        !IsUsingDeclaration(declarator);
-
-    private static bool IsUsingDeclaration(VariableDeclaratorSyntax declarator) =>
-        declarator.Parent?.Parent switch
-        {
-            LocalDeclarationStatementSyntax statement => statement.UsingKeyword != default,
-            UsingStatementSyntax => true,
-            _ => false
-        };
+        !UsingDeclarationHelpers.IsUsingDeclaration(declarator);
 
     private async Task<Solution?> TryPromoteOneAsync(
         Document document,
@@ -433,7 +425,7 @@ public sealed class IntroduceParameterOperation : RefactoringOperationBase<Intro
         if (localDecl.Initializer == null)
             return null;
 
-        if (IsUsingDeclaration(localDecl))
+        if (UsingDeclarationHelpers.IsUsingDeclaration(localDecl))
             return null;
 
         // Prefer the nearest method; skip locals that live in a local function
