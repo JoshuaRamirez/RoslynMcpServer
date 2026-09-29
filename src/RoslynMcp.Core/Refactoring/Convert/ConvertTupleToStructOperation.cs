@@ -479,8 +479,15 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 if (alias == null || source == null || aliases.Contains(alias))
                     continue;
 
-                while (source is ParenthesizedExpressionSyntax parenthesized)
-                    source = parenthesized.Expression;
+                while (true)
+                {
+                    if (source is ParenthesizedExpressionSyntax parenthesized)
+                        source = parenthesized.Expression;
+                    else if (source is RefExpressionSyntax refExpression)
+                        source = refExpression.Expression;
+                    else
+                        break;
+                }
 
                 if (ExpressionReferencesStorageAlias(source, aliases, semanticModel, cancellationToken))
                 {
@@ -505,8 +512,15 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SemanticModel semanticModel,
         CancellationToken cancellationToken = default)
     {
-        while (expression is ParenthesizedExpressionSyntax parenthesized)
-            expression = parenthesized.Expression;
+        while (true)
+        {
+            if (expression is ParenthesizedExpressionSyntax parenthesized)
+                expression = parenthesized.Expression;
+            else if (expression is RefExpressionSyntax refExpression)
+                expression = refExpression.Expression;
+            else
+                break;
+        }
 
         var symbol = semanticModel.GetSymbolInfo(expression, cancellationToken).Symbol;
         if (symbol != null && aliases.Contains(symbol))
@@ -561,6 +575,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 {
                     return true;
                 }
+
+                // Enumerable.Repeat(point, n) / similar: argument is element T,
+                // return is IEnumerable<T> (Codex P1 sequence factories).
+                if (MethodReturnWrapsElementAsSequence(method, parameter))
+                    return true;
             }
 
             if (invocation.Expression is MemberAccessExpressionSyntax memberAccess &&
@@ -707,6 +726,24 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         return OriginalReturnElementSharesSourceElementTypeParameter(method);
     }
 
+    /// <summary>
+    /// True when <paramref name="parameter"/> is an element type parameter <c>T</c>
+    /// and the method returns a sequence of <c>T</c> (e.g. <c>Enumerable.Repeat</c>).
+    /// </summary>
+    private static bool MethodReturnWrapsElementAsSequence(IMethodSymbol method, IParameterSymbol parameter)
+    {
+        var original = (method.ReducedFrom ?? method).OriginalDefinition;
+        if (parameter.Ordinal < 0 || parameter.Ordinal >= original.Parameters.Length)
+            return false;
+
+        if (original.Parameters[parameter.Ordinal].Type is not ITypeParameterSymbol elementTypeParameter)
+            return false;
+
+        var returnElement = TryGetSequenceElementType(original.ReturnType);
+        return returnElement != null &&
+               SymbolEqualityComparer.Default.Equals(returnElement, elementTypeParameter);
+    }
+
     private static bool IsElementExtractingMethod(IMethodSymbol method)
     {
         var name = (method.ReducedFrom ?? method).OriginalDefinition.Name;
@@ -758,19 +795,31 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             while (expr is ParenthesizedExpressionSyntax parenthesized)
                 expr = parenthesized.Expression;
 
-            if (expr is SimpleLambdaExpressionSyntax simple &&
-                simple.ExpressionBody is IdentifierNameSyntax id &&
-                id.Identifier.ValueText == simple.Parameter.Identifier.ValueText)
+            if (expr is SimpleLambdaExpressionSyntax simple)
             {
-                return true;
+                var body = simple.ExpressionBody;
+                while (body is ParenthesizedExpressionSyntax parenthesizedBody)
+                    body = parenthesizedBody.Expression;
+
+                if (body is IdentifierNameSyntax id &&
+                    id.Identifier.ValueText == simple.Parameter.Identifier.ValueText)
+                {
+                    return true;
+                }
             }
 
             if (expr is ParenthesizedLambdaExpressionSyntax paren &&
-                paren.ParameterList.Parameters.Count == 1 &&
-                paren.ExpressionBody is IdentifierNameSyntax pid &&
-                pid.Identifier.ValueText == paren.ParameterList.Parameters[0].Identifier.ValueText)
+                paren.ParameterList.Parameters.Count == 1)
             {
-                return true;
+                var body = paren.ExpressionBody;
+                while (body is ParenthesizedExpressionSyntax parenthesizedBody)
+                    body = parenthesizedBody.Expression;
+
+                if (body is IdentifierNameSyntax pid &&
+                    pid.Identifier.ValueText == paren.ParameterList.Parameters[0].Identifier.ValueText)
+                {
+                    return true;
+                }
             }
         }
 
