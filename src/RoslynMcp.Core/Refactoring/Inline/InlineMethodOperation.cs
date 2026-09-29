@@ -189,7 +189,8 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
     /// document filter as <c>InlineConstantOperation.ExecuteAllFilesAsync</c>
     /// / <c>InlineVariableOperation.ExecuteAllFilesAsync</c>) and inlines
     /// every eligible <see cref="MethodDeclarationSyntax"/>. Optional
-    /// <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
+    /// <c>sourceFile</c> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>.
     /// Linked documents that share a physical path are rewritten once and the
     /// same text is applied to every sibling <see cref="DocumentId"/>
     /// (<see cref="PathResolver.GetPathComparisonKey"/>). Ineligible methods
@@ -210,7 +211,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         // One physical path may appear as multiple Documents when linked into
         // several projects. Discover methods once per normalized path.

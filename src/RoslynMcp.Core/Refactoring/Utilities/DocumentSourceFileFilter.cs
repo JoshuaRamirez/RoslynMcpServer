@@ -22,7 +22,7 @@ internal static class DocumentSourceFileFilter
     /// the raw <paramref name="sourceFile"/> is used instead. Same body as the
     /// MakeStatic / MakeNonStatic / GenerateOverrides / GenerateEqualsHashCode /
     /// GenerateConstructor / GenerateToString / ImplementInterface /
-    /// ImplementAbstract / InlineMethod copies (InlineConstant / InlineVariable
+    /// ImplementAbstract copies (InlineConstant / InlineVariable / InlineMethod
     /// now use <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>).
     /// </summary>
     internal static List<Document> FilterDocumentsBySourceFile(List<Document> documents, string sourceFile)
