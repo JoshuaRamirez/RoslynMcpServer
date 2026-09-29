@@ -353,6 +353,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             .WithTrailingTrivia(creation.GetTrailingTrivia());
     }
 
+    /// <summary>
+    /// Names that collide with synthesized <c>record struct</c> members (CS8859 / CS0102).
+    /// </summary>
+    private static readonly HashSet<string> RecordReservedMemberNames = new(StringComparer.Ordinal)
+    {
+        "Clone",
+        "Equals",
+        "GetHashCode",
+        "PrintMembers",
+        "ToString"
+    };
+
     internal static void ValidateMembersForGeneratedType(
         IReadOnlyList<TupleMember> members,
         SemanticModel semanticModel,
@@ -361,11 +373,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         foreach (var member in members)
         {
-            if (asRecord && member.Name == "Clone")
+            if (asRecord && RecordReservedMemberNames.Contains(StripVerbatimPrefix(member.Name)))
             {
                 throw new RefactoringException(
                     ErrorCodes.CannotConvert,
-                    "A record struct cannot declare a member named 'Clone'.");
+                    $"Tuple member '{member.Name}' cannot be used when asRecord is true because it collides with a synthesized record member.");
             }
 
             if (ContextValidTypeHelpers.IsLessAccessibleThanPublic(member.Type))
