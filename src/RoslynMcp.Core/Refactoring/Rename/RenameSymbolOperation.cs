@@ -251,7 +251,8 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
     /// document filter as <c>RenameNamespaceOperation.ExecuteAllFilesAsync</c>)
     /// and renames every eligible declaration whose simple name equals
     /// <paramref name="params"/>.SymbolName to <paramref name="params"/>.NewName.
-    /// Optional <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
+    /// Optional <c>sourceFile</c> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>.
     /// Linked multi-project views of the same path are skipped rather than
     /// coalescing (same contract as <c>SafeDeleteOperation.ExecuteAllFilesAsync</c> /
     /// rename_namespace / remove_parameter allFiles). Symbols already at
@@ -274,7 +275,7 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
         var linkedPathCounts = AllFilesDocumentHelpers.BuildLinkedPathCounts(originalSolution);

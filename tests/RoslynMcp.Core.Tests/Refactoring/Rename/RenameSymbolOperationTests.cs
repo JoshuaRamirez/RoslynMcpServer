@@ -476,6 +476,23 @@ public class RenameSymbolOperationTests
             Path.GetFullPath(right),
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
+
     [SkippableFact]
     public async Task RenameSymbol_OmittedAllFiles_KeepsSingleSiteRewrite()
     {
@@ -650,6 +667,91 @@ public class RenameSymbolOperationTests
         Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
         Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, pathA));
         Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+    }
+
+    [SkippableFact]
+    public async Task RenameSymbol_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleSymbolFileA),
+            ("FileB.cs", EligibleSymbolFileB));
+        var operation = new RenameSymbolOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var flipped = FlipPathCasing(pathA);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new RenameSymbolParams
+        {
+            AllFiles = true,
+            SourceFile = flipped,
+            SymbolName = "SharedName",
+            NewName = "RenamedTarget",
+            RenameFile = false
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("RenamedTarget", await File.ReadAllTextAsync(pathA));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, pathA));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+    }
+
+    [SkippableFact]
+    public async Task RenameSymbol_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleSymbolFileA),
+            ("FileB.cs", EligibleSymbolFileB));
+        var operation = new RenameSymbolOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameSymbol_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "public class SharedName { }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new RenameSymbolParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath,
+                    SymbolName = "SharedName",
+                    NewName = "RenamedTarget",
+                    RenameFile = false
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task RenameSymbol_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleSymbolFileA),
+            ("FileB.cs", EligibleSymbolFileB));
+        var operation = new RenameSymbolOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpRenameSymbol_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new RenameSymbolParams
+            {
+                AllFiles = true,
+                SourceFile = missing,
+                SymbolName = "SharedName",
+                NewName = "RenamedTarget",
+                RenameFile = false
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
     [SkippableFact]

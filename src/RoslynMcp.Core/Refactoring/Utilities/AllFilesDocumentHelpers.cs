@@ -14,7 +14,8 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// FilterAllFilesDocumentsBySourceFile for ExtractBaseClass /
 /// ExtractInterface / ExtractMethod / ExtractConstant / ExtractVariable /
 /// PushMembersDown / PullMembersUp / ConvertToBlockBody / InlineConstant /
-/// InlineVariable / InlineMethod / MakeStatic / MakeNonStatic / IntroduceParameter (default path) and
+/// InlineVariable / InlineMethod / MakeStatic / MakeNonStatic / IntroduceParameter /
+/// RenameSymbol / RenameNamespace (default path) and
 /// IntroduceField / SafeDelete (optional rejectMissingPathCasingMismatch arm).
 /// Same bodies as the identical copies on those operations.
 /// Named AllFilesDocumentHelpers (not DocumentSourceFileFilter) because this
@@ -188,7 +189,7 @@ internal static class AllFilesDocumentHelpers
     /// ExtractBaseClass / ExtractInterface / ExtractMethod / ExtractConstant /
     /// ExtractVariable / PushMembersDown / PullMembersUp / ConvertToBlockBody /
     /// InlineConstant / InlineVariable / InlineMethod / MakeStatic /
-    /// MakeNonStatic / IntroduceParameter.
+    /// MakeNonStatic / IntroduceParameter / RenameSymbol / RenameNamespace.
     /// When
     /// <paramref name="rejectMissingPathCasingMismatch"/>
     /// is true (IntroduceField / SafeDelete), also reject an ignore-case hit

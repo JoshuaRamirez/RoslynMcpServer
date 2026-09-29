@@ -212,7 +212,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
     /// document filter as <c>RemoveParameterOperation.ExecuteAllFilesAsync</c>)
     /// and renames every eligible top-level <see cref="BaseNamespaceDeclarationSyntax"/>
     /// to <paramref name="params"/>.NewName. Optional <c>sourceFile</c> limits
-    /// via <see cref="DocumentSourceFileFilter"/>. Linked multi-project views of
+    /// via <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>.
+    /// Linked multi-project views of
     /// the same path are skipped rather than coalescing (same contract as
     /// <c>SafeDeleteOperation.ExecuteAllFilesAsync</c> / remove_parameter allFiles).
     /// Namespaces already at <c>newName</c>, name-conflict cases, uneditable /
@@ -232,7 +233,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
         // Full-solution multi-view counts (independent of optional sourceFile)
