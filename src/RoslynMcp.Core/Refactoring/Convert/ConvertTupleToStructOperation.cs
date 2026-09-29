@@ -104,7 +104,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             DocumentEditableHelpers.ValidateDocumentIsEditable(target.Document, Context.Workspace);
 
         var insertPosition = TypeInsertionHelpers.GetTypeInsertionPosition(root, creation);
-        ValidateMembersForGeneratedType(members, semanticModel, insertPosition);
+        ValidateMembersForGeneratedType(members, semanticModel, insertPosition, @params.AsRecord);
         var typeDeclaration = CreateNamedStruct(
             lookupName,
             @params.AsRecord,
@@ -356,10 +356,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     internal static void ValidateMembersForGeneratedType(
         IReadOnlyList<TupleMember> members,
         SemanticModel semanticModel,
-        int insertPosition)
+        int insertPosition,
+        bool asRecord)
     {
         foreach (var member in members)
         {
+            if (asRecord && member.Name == "Clone")
+            {
+                throw new RefactoringException(
+                    ErrorCodes.CannotConvert,
+                    "A record struct cannot declare a member named 'Clone'.");
+            }
+
             if (ContextValidTypeHelpers.IsLessAccessibleThanPublic(member.Type))
             {
                 throw new RefactoringException(

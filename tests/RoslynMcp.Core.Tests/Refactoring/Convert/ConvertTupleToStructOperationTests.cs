@@ -672,6 +672,38 @@ public class ConvertTupleToStructOperationTests
     #region Rejects
 
     [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordCloneMember_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    return (Clone: 1, X: 2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Pair",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
     public async Task ConvertTupleToStruct_NotTuple_ThrowsAndWritesNothing()
     {
         const string source = """
