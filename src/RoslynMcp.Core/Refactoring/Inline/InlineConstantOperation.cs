@@ -693,7 +693,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
                     continue;
                 }
 
-                if (MethodSymbolHelpers.IsInNameof(node))
+                if (IsInNameOf(node))
                 {
                     results.Add(new ConstantReference(document, location.Location.SourceSpan, CanReplace: false, InAttribute: false));
                     continue;
@@ -717,6 +717,19 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
     private static bool IsInAttribute(SyntaxNode node) =>
         node.AncestorsAndSelf().Any(n => n is AttributeSyntax or AttributeArgumentSyntax);
 
+    private static bool IsInNameOf(SyntaxNode node)
+    {
+        foreach (var invocation in node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>())
+        {
+            if (invocation.Expression is IdentifierNameSyntax identifier &&
+                identifier.Identifier.Text == "nameof")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static ExpressionSyntax? FindReplaceableExpression(SyntaxNode node, TextSpan referenceSpan)
     {

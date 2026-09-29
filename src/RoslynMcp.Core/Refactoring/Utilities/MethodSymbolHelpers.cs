@@ -7,15 +7,14 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
 /// Shared helpers for method-symbol normalization and related checks used by
-/// make_static / make_non_static, and shared <c>nameof</c> detection used by
-/// inline_constant / inline_variable / introduce_field.
+/// make_static / make_non_static.
 /// </summary>
 internal static class MethodSymbolHelpers
 {
     /// <summary>
     /// True when <paramref name="node"/> is inside a <c>nameof(...)</c>
-    /// invocation. Same body as the prior private copies on make_static /
-    /// make_non_static / inline_constant / inline_variable.
+    /// invocation. Same body as the two private copies on make_static /
+    /// make_non_static.
     /// </summary>
     internal static bool IsInNameof(SyntaxNode node)
     {

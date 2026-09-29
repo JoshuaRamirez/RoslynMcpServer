@@ -207,7 +207,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
                     "Cannot inline variable used in ref/out/in or by-reference context.");
             }
 
-            if (MethodSymbolHelpers.IsInNameof(usage))
+            if (IsInNameOf(usage))
             {
                 throw new RefactoringException(
                     ErrorCodes.InvalidSelection,
@@ -556,7 +556,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         foreach (var usage in usages)
         {
             if (IsByReferenceUsage(usage) ||
-                MethodSymbolHelpers.IsInNameof(usage) ||
+                IsInNameOf(usage) ||
                 IsInferredAnonymousObjectMember(usage))
             {
                 return null;
@@ -670,6 +670,24 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
     private static bool IsInferredAnonymousObjectMember(IdentifierNameSyntax usage) =>
         usage.Parent is AnonymousObjectMemberDeclaratorSyntax member &&
         member.NameEquals == null;
+
+    /// <summary>
+    /// True when <paramref name="node"/> sits inside a <c>nameof(...)</c> invocation.
+    /// Mirrors <c>InlineConstantOperation.IsInNameOf</c>.
+    /// </summary>
+    private static bool IsInNameOf(SyntaxNode node)
+    {
+        foreach (var invocation in node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>())
+        {
+            if (invocation.Expression is IdentifierNameSyntax identifier &&
+                identifier.Identifier.Text == "nameof")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// True when the local is written after initialization via assignment or
@@ -829,7 +847,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             }
 
             // nameof(x) is not a value use; rewriting yields nameof(1).
-            if (MethodSymbolHelpers.IsInNameof(node))
+            if (IsInNameOf(node))
             {
                 return base.VisitIdentifierName(node);
             }
