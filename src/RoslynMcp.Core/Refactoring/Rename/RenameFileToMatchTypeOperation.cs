@@ -203,9 +203,8 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
 
     /// <summary>
     /// Renames every C# document in the solution whose file name does not match
-    /// its single top-level type (same document filter as
-    /// <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>:
-    /// <c>FilePath != null &amp;&amp; EndsWith(".cs")</c>).
+    /// its single top-level type (documents from
+    /// <see cref="AllFilesDocumentHelpers.EnumerateCsharpDocuments"/>).
     /// Multi-type, zero-type, already-matching, destination-occupied, and
     /// uneditable documents are skipped. A physical file linked into several
     /// projects is moved once; every owning document and project still receives
@@ -220,10 +219,7 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
         RenameFileToMatchTypeParams @params,
         CancellationToken cancellationToken)
     {
-        var allDocuments = Context.Solution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(Context.Solution);
 
         var candidates = new List<FileRenamePlan>();
         var skippedSources = new List<string>();

@@ -265,10 +265,7 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
     {
         var originalSolution = Context.Solution;
         var currentSolution = originalSolution;
-        var allDocuments = originalSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         var encapsulatedCountByDoc = new Dictionary<DocumentId, int>();
 
