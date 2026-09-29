@@ -8,7 +8,12 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// Shared allFiles document enumerate / linked-path group / linked-text
 /// coalesce walk used by IntroduceField / ExtractConstant /
 /// IntroduceParameter / InlineMethod / ChangeSignature / ExtractInterface
-/// (and Enumerate / GroupBy peers), plus BuildLinkedPathCounts /
+/// (and Enumerate / GroupBy peers), plus EnumerateCsharpDocuments for
+/// ConvertToBlockBody / AddBraces / RemoveBraces / InvertIf /
+/// ConvertExpressionBody / ConvertToPatternMatching / ConvertProperty /
+/// ConvertForeachLinq / SimplifyName / ConvertToInterpolatedString /
+/// ConvertToAsync (and Generate*/Implement*/InlineConstant/MakeStatic peers),
+/// plus BuildLinkedPathCounts /
 /// DocumentPathHasLinkedMultiView for AddParameter / RemoveParameter /
 /// ReorderParameters / RenameNamespace / PushMembersDown, plus
 /// FilterAllFilesDocumentsBySourceFile for ExtractBaseClass /
@@ -34,7 +39,12 @@ internal static class AllFilesDocumentHelpers
     /// (ordinal-ignore-case), ordered by FilePath. Same body as the
     /// IntroduceField / ExtractConstant / IntroduceParameter / InlineMethod /
     /// ChangeSignature / InlineVariable copies (ExecuteAllFiles start and
-    /// documentsToCompare).
+    /// documentsToCompare). Call sites at ExecuteAllFiles start also include
+    /// ConvertToBlockBody / AddBraces / RemoveBraces / InvertIf /
+    /// ConvertExpressionBody / ConvertToPatternMatching / ConvertProperty /
+    /// ConvertForeachLinq / SimplifyName / ConvertToInterpolatedString /
+    /// ConvertToAsync (those Convert callers previously omitted OrderBy;
+    /// migrating onto this helper adds the deterministic FilePath ordinal walk).
     /// </summary>
     internal static List<Document> EnumerateCsharpDocuments(Solution solution)
     {

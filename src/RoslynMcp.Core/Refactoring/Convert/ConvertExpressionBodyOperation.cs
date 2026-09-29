@@ -154,10 +154,7 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
     {
         var direction = Enum.Parse<ConversionDirection>(@params.Direction, ignoreCase: true);
         var currentSolution = Context.Solution;
-        var allDocuments = currentSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;

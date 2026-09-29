@@ -284,10 +284,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
         CancellationToken cancellationToken)
     {
         var currentSolution = Context.Solution;
-        var allDocuments = currentSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;

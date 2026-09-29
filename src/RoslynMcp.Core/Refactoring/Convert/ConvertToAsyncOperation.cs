@@ -315,10 +315,7 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
         CancellationToken cancellationToken)
     {
         var originalSolution = Context.Solution;
-        var allDocuments = originalSolution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         var candidates = new List<ConversionCandidate>();
         foreach (var document in allDocuments)
