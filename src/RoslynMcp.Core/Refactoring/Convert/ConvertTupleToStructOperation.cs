@@ -488,7 +488,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// True when <paramref name="expression"/> is (or is a conditional /
-    /// switch expression that forwards) a reference to a known storage alias.
+    /// switch / identity-like generic invocation / array-or-collection
+    /// creation that forwards) a reference to a known storage alias.
     /// </summary>
     internal static bool ExpressionReferencesStorageAlias(
         ExpressionSyntax expression,
@@ -521,6 +522,53 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             }
         }
 
+        // Generic / identity-like invocations that take an alias and return the
+        // same parameter type (e.g. static T Echo<T>(T value) => value) so
+        // var copy = Echo(point); copy.X = 3; is rejected (CS8852).
+        if (expression is InvocationExpressionSyntax invocation &&
+            semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is IMethodSymbol method)
+        {
+            var args = invocation.ArgumentList.Arguments;
+            for (var i = 0; i < args.Count && i < method.Parameters.Length; i++)
+            {
+                if (!ExpressionReferencesStorageAlias(args[i].Expression, aliases, semanticModel, cancellationToken))
+                    continue;
+                if (SymbolEqualityComparer.Default.Equals(method.Parameters[i].Type, method.ReturnType))
+                    return true;
+            }
+        }
+
+        // Array / collection creations that embed an alias so
+        // var points = new[] { point }; points[0].X = 3; tracks points.
+        if (expression is ImplicitArrayCreationExpressionSyntax implicitArray &&
+            implicitArray.Initializer != null)
+        {
+            foreach (var element in implicitArray.Initializer.Expressions)
+            {
+                if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
+                    return true;
+            }
+        }
+
+        if (expression is ArrayCreationExpressionSyntax arrayCreation &&
+            arrayCreation.Initializer != null)
+        {
+            foreach (var element in arrayCreation.Initializer.Expressions)
+            {
+                if (ExpressionReferencesStorageAlias(element, aliases, semanticModel, cancellationToken))
+                    return true;
+            }
+        }
+
+        if (expression is CollectionExpressionSyntax collection)
+        {
+            foreach (var element in collection.Elements.OfType<ExpressionElementSyntax>())
+            {
+                if (ExpressionReferencesStorageAlias(element.Expression, aliases, semanticModel, cancellationToken))
+                    return true;
+            }
+        }
+
         return false;
     }
 
@@ -542,7 +590,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         SemanticModel semanticModel,
         HashSet<ISymbol> storages,
         HashSet<string> memberNames,
-        ITypeSymbol? tupleType = null)
+        ITypeSymbol? _ = null)
     {
         foreach (var node in root.DescendantNodes())
         {
@@ -585,15 +633,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 if (target != null && storages.Contains(target))
                     return true;
 
-                // Element/indexer receivers have no symbol; match by tuple type
-                // so writes through inferred containers are rejected.
-                if (tupleType != null &&
-                    memberAccess.Expression is ElementAccessExpressionSyntax &&
-                    SymbolEqualityComparer.Default.Equals(
-                        semanticModel.GetTypeInfo(memberAccess.Expression).Type,
-                        tupleType))
+                // Element/indexer receivers (points[0]) have no symbol on the
+                // element access itself. Only reject when the container derives
+                // from converted storage (tracked via CollectStorageAliases /
+                // array creations that embed an alias) — not every unrelated
+                // same-shape tuple container in the file (Codex P2).
+                if (memberAccess.Expression is ElementAccessExpressionSyntax elementAccess)
                 {
-                    return true;
+                    var container = elementAccess.Expression;
+                    while (container is ParenthesizedExpressionSyntax parenthesized)
+                        container = parenthesized.Expression;
+                    var containerSymbol = semanticModel.GetSymbolInfo(container).Symbol;
+                    if (containerSymbol != null && storages.Contains(containerSymbol))
+                        return true;
                 }
             }
         }
