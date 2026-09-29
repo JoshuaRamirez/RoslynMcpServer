@@ -55,11 +55,7 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
 
             if (!string.IsNullOrWhiteSpace(@params.SourceFile))
             {
-                if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-                    throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-                if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-                    throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
             }
 
             return;
@@ -80,11 +76,7 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
         if (!@params.EndColumn.HasValue)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endColumn is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
 
         if (@params.StartLine.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "startLine must be >= 1.");
