@@ -106,7 +106,6 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
 
-
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
@@ -381,7 +380,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         IntroduceFieldParams bulkParams,
         CancellationToken cancellationToken)
     {
-        if (IsUsingDeclaration(declarator))
+        if (UsingDeclarationHelpers.IsUsingDeclaration(declarator))
             return null;
 
         if (declarator.Parent?.Parent is not LocalDeclarationStatementSyntax)
@@ -776,7 +775,6 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
         return null;
     }
-
 
     private static IReadOnlyList<IdentifierNameSyntax> FindLocalReferences(
         SyntaxNode root,
@@ -1648,21 +1646,13 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
 
     private static void RejectUsingLocal(ILocalSymbol local, VariableDeclaratorSyntax declarator)
     {
-        if (!IsUsingDeclaration(declarator))
+        if (!UsingDeclarationHelpers.IsUsingDeclaration(declarator))
             return;
 
         throw new RefactoringException(
             ErrorCodes.ExpressionNotFieldInitializable,
             $"Local variable '{local.Name}' is a using declaration and cannot be promoted to a field.");
     }
-
-    private static bool IsUsingDeclaration(VariableDeclaratorSyntax declarator) =>
-        declarator.Parent?.Parent switch
-        {
-            LocalDeclarationStatementSyntax statement => statement.UsingKeyword != default,
-            UsingStatementSyntax => true,
-            _ => false
-        };
 
     private static string? FindInsertBeforeFieldVariable(
         bool isStaticField,
