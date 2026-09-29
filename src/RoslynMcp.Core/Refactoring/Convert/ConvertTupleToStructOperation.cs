@@ -396,7 +396,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (storage == null)
                 continue;
 
-            if (HasElementWrite(root, model, storage, memberNames))
+            var storages = CollectStorageAliases(root, model, storage, cancellationToken);
+            if (HasElementWrite(root, model, storages, memberNames))
             {
                 throw new RefactoringException(
                     ErrorCodes.CannotConvert,
@@ -434,10 +435,72 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         return null;
     }
 
+    /// <summary>
+    /// Collects <paramref name="storage"/> plus locals/parameters/fields that are
+    /// assigned from it (value copies), so element writes through aliases are rejected.
+    /// </summary>
+    internal static HashSet<ISymbol> CollectStorageAliases(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        ISymbol storage,
+        CancellationToken cancellationToken = default)
+    {
+        var aliases = new HashSet<ISymbol>(SymbolEqualityComparer.Default) { storage };
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var node in root.DescendantNodes())
+            {
+                ISymbol? alias = null;
+                ExpressionSyntax? source = null;
+
+                if (node is VariableDeclaratorSyntax declarator &&
+                    declarator.Initializer?.Value is { } init)
+                {
+                    alias = semanticModel.GetDeclaredSymbol(declarator, cancellationToken);
+                    source = init;
+                }
+                else if (node is AssignmentExpressionSyntax assignment &&
+                         assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+                {
+                    alias = semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
+                    source = assignment.Right;
+                }
+
+                if (alias == null || source == null || aliases.Contains(alias))
+                    continue;
+
+                while (source is ParenthesizedExpressionSyntax parenthesized)
+                    source = parenthesized.Expression;
+
+                var sourceSymbol = semanticModel.GetSymbolInfo(source, cancellationToken).Symbol;
+                if (sourceSymbol != null && aliases.Contains(sourceSymbol))
+                {
+                    aliases.Add(alias);
+                    changed = true;
+                }
+            }
+        }
+
+        return aliases;
+    }
+
     internal static bool HasElementWrite(
         SyntaxNode root,
         SemanticModel semanticModel,
         ISymbol storage,
+        HashSet<string> memberNames) =>
+        HasElementWrite(
+            root,
+            semanticModel,
+            new HashSet<ISymbol>(SymbolEqualityComparer.Default) { storage },
+            memberNames);
+
+    internal static bool HasElementWrite(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        HashSet<ISymbol> storages,
         HashSet<string> memberNames)
     {
         foreach (var node in root.DescendantNodes())
@@ -455,6 +518,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 ArgumentSyntax argument when
                     argument.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) ||
                     argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword) => argument.Expression,
+                // ref int x = ref point.X; / ref returns
+                RefExpressionSyntax refExpression => refExpression.Expression,
                 _ => null
             };
 
@@ -462,16 +527,17 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 continue;
 
             // Direct member writes (point.X = 3), nested deconstruction
-            // targets ((point.X, point.Y) = (3, 4)), and ref/out arguments
-            // (Mutate(ref point.X)) all need rejection for init-only record
-            // struct properties / property-not-variable errors.
+            // targets ((point.X, point.Y) = (3, 4)), chained mutable-value
+            // writes (point.X.Value = 3), ref/out arguments, and ref expressions
+            // all need rejection for init-only record struct properties /
+            // property-not-variable errors.
             foreach (var memberAccess in EnumerateAssignmentMemberAccesses(writtenTarget))
             {
                 if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))
                     continue;
 
                 var target = semanticModel.GetSymbolInfo(memberAccess.Expression).Symbol;
-                if (target != null && SymbolEqualityComparer.Default.Equals(target, storage))
+                if (target != null && storages.Contains(target))
                     return true;
             }
         }
@@ -481,16 +547,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     /// <summary>
     /// Yields member accesses that are assignment / increment targets, including
-    /// nested accesses inside tuple deconstruction left-hand sides.
+    /// nested accesses inside tuple deconstruction left-hand sides and inner
+    /// accesses of chained targets (e.g. <c>point.X.Value</c> also yields <c>point.X</c>).
     /// </summary>
     internal static IEnumerable<MemberAccessExpressionSyntax> EnumerateAssignmentMemberAccesses(
         ExpressionSyntax writtenTarget)
     {
         if (writtenTarget is MemberAccessExpressionSyntax direct)
-        {
             yield return direct;
-            yield break;
-        }
 
         foreach (var nested in writtenTarget.DescendantNodes().OfType<MemberAccessExpressionSyntax>())
             yield return nested;
