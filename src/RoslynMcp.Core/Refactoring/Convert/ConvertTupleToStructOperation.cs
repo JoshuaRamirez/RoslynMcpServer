@@ -689,7 +689,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (expression is MemberAccessExpressionSyntax nestedAccess)
         {
             var memberName = nestedAccess.Name.Identifier.ValueText;
-            if (memberName is "Span" or "Memory")
+            // Span/Memory: container views. Result: Task<T>/ValueTask<T> sync unwrap.
+            if (memberName is "Span" or "Memory" or "Result")
             {
                 return ExpressionReferencesStorageAlias(
                     nestedAccess.Expression, aliases, semanticModel, cancellationToken);
@@ -1035,9 +1036,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 continue;
             }
 
-            foreach (var argument in tuple.Arguments)
+            var tupleType = semanticModel.GetTypeInfo(tuple).Type as INamedTypeSymbol;
+            for (var i = 0; i < tuple.Arguments.Count; i++)
             {
-                if (argument.NameColon?.Name.Identifier.ValueText != memberName)
+                var argument = tuple.Arguments[i];
+                // Match explicit NameColon, positional ItemN, and inferred element
+                // names (var wrapped = (point, 0); wrapped.point / wrapped.Item1).
+                if (!TupleAggregateArgumentMatchesMember(argument, i, memberName, tupleType))
                     continue;
 
                 if (ExpressionReferencesStorageAlias(
@@ -1048,6 +1053,34 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     return true;
                 }
             }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="memberName"/> names the tuple element at
+    /// <paramref name="index"/> via NameColon, ItemN, or an inferred element name.
+    /// </summary>
+    private static bool TupleAggregateArgumentMatchesMember(
+        ArgumentSyntax argument,
+        int index,
+        string memberName,
+        INamedTypeSymbol? tupleType)
+    {
+        var named = argument.NameColon?.Name.Identifier.ValueText;
+        if (string.Equals(named, memberName, StringComparison.Ordinal))
+            return true;
+
+        if (string.Equals("Item" + (index + 1), memberName, StringComparison.Ordinal))
+            return true;
+
+        if (tupleType is { IsTupleType: true } &&
+            !tupleType.TupleElements.IsDefault &&
+            index < tupleType.TupleElements.Length &&
+            string.Equals(tupleType.TupleElements[index].Name, memberName, StringComparison.Ordinal))
+        {
+            return true;
         }
 
         return false;
