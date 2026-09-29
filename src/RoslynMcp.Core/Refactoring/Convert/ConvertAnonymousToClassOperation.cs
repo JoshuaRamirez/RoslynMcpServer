@@ -124,6 +124,8 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         foreach (var target in creations)
             DocumentEditableHelpers.ValidateDocumentIsEditable(target.Document, Context.Workspace);
 
+        await ValidateNoTypeParameterShadowingAsync(creations, @params.NewTypeName!, cancellationToken);
+
         var insertPosition = TypeInsertionHelpers.GetTypeInsertionPosition(root, creation);
         ValidateMembersForGeneratedType(members, semanticModel, insertPosition);
         var typeDeclaration = CreateNamedType(
@@ -186,7 +188,8 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
     /// Linked multi-project views of the same path are skipped rather than
     /// coalescing (same contract as <c>SafeDeleteOperation.ExecuteAllFilesAsync</c> /
     /// rename_symbol / rename_namespace allFiles). Empty/invalid derived names,
-    /// unfixable collisions, uneditable / source-generated docs, members that
+    /// unfixable collisions (including derived names shadowed by in-scope type
+    /// parameters at replacement sites), uneditable / source-generated docs, members that
     /// fail today's generated-type validation, and otherwise ineligible sites
     /// are skipped rather than failing the walk. Deterministic document
     /// <c>FilePath</c> then creation <c>SpanStart</c> order; each distinct shape
@@ -502,6 +505,38 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         }
 
         var targetNamespace = NamespaceNameHelpers.GetContainingNamespaceName(semanticModel, creation);
+
+        List<CreationTarget> creations;
+        try
+        {
+            creations = await CollectSameShapeCreationsAsync(
+                document.Project,
+                anonymousType,
+                cancellationToken);
+        }
+        catch (RefactoringException)
+        {
+            convertedShapes.Add(shapeId);
+            return null;
+        }
+
+        if (creations.Count == 0)
+            creations.Add(new CreationTarget(document, creation.Span));
+
+        foreach (var target in creations)
+        {
+            if (!DocumentEditableHelpers.IsDocumentEditable(target.Document, Context.Workspace) ||
+                target.Document is SourceGeneratedDocument ||
+                AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(target.Document, linkedPathCounts))
+            {
+                convertedShapes.Add(shapeId);
+                return null;
+            }
+        }
+
+        // Choose a name after collecting replacement sites so in-scope type
+        // parameters at every site (not only the seed) can reject candidates
+        // (Codex P2 on PR #1497).
         string? chosenName = null;
         for (var suffix = 0; suffix < 100; suffix++)
         {
@@ -512,6 +547,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             try
             {
                 await ValidateNoNameConflictAsync(document, candidate, targetNamespace, cancellationToken);
+                await ValidateNoTypeParameterShadowingAsync(creations, candidate, cancellationToken);
                 chosenName = candidate;
                 break;
             }
@@ -543,34 +579,6 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         {
             convertedShapes.Add(shapeId);
             return null;
-        }
-
-        List<CreationTarget> creations;
-        try
-        {
-            creations = await CollectSameShapeCreationsAsync(
-                document.Project,
-                anonymousType,
-                cancellationToken);
-        }
-        catch (RefactoringException)
-        {
-            convertedShapes.Add(shapeId);
-            return null;
-        }
-
-        if (creations.Count == 0)
-            creations.Add(new CreationTarget(document, creation.Span));
-
-        foreach (var target in creations)
-        {
-            if (!DocumentEditableHelpers.IsDocumentEditable(target.Document, Context.Workspace) ||
-                target.Document is SourceGeneratedDocument ||
-                AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(target.Document, linkedPathCounts))
-            {
-                convertedShapes.Add(shapeId);
-                return null;
-            }
         }
 
         var typeDeclaration = CreateNamedType(
@@ -889,6 +897,67 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
                 throw new RefactoringException(
                     ErrorCodes.NameConflictScope,
                     $"Type '{newTypeName}' already exists in scope.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Throws <see cref="ErrorCodes.NameConflictScope"/> when
+    /// <paramref name="typeName"/> matches an in-scope type parameter (method or
+    /// type) at any replacement creation site. Uses
+    /// <see cref="SemanticModel.LookupSymbols(int,INamespaceOrTypeSymbol,string)"/>
+    /// plus enclosing-symbol type parameters; compares identifiers after
+    /// <see cref="SyntaxIdentifierValidation.NormalizeIdentifier"/> (same
+    /// <c>@</c> stripping as other name checks).
+    /// </summary>
+    private static async Task ValidateNoTypeParameterShadowingAsync(
+        IReadOnlyList<CreationTarget> creations,
+        string typeName,
+        CancellationToken cancellationToken)
+    {
+        var bare = SyntaxIdentifierValidation.NormalizeIdentifier(typeName);
+
+        foreach (var target in creations)
+        {
+            var model = await target.Document.GetSemanticModelAsync(cancellationToken);
+            if (model == null)
+                continue;
+
+            var position = target.Span.Start;
+            foreach (var symbol in model.LookupSymbols(position, name: bare))
+            {
+                if (symbol is ITypeParameterSymbol)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.NameConflictScope,
+                        $"Type '{typeName}' conflicts with an in-scope type parameter.");
+                }
+            }
+
+            for (var enclosing = model.GetEnclosingSymbol(position, cancellationToken);
+                 enclosing != null;
+                 enclosing = enclosing.ContainingSymbol)
+            {
+                IEnumerable<ITypeParameterSymbol>? typeParameters = enclosing switch
+                {
+                    IMethodSymbol method => method.TypeParameters,
+                    INamedTypeSymbol namedType => namedType.TypeParameters,
+                    _ => null
+                };
+
+                if (typeParameters == null)
+                    continue;
+
+                foreach (var typeParameter in typeParameters)
+                {
+                    var tpBare = SyntaxIdentifierValidation.NormalizeIdentifier(typeParameter.Name);
+                    if (string.Equals(tpBare, bare, StringComparison.Ordinal))
+                    {
+                        throw new RefactoringException(
+                            ErrorCodes.NameConflictScope,
+                            $"Type '{typeName}' conflicts with an in-scope type parameter.");
+                    }
+                }
             }
         }
     }

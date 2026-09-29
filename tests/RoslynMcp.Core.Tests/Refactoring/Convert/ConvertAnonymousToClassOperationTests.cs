@@ -1162,6 +1162,39 @@ public class ConvertAnonymousToClassOperationTests
     }
 
     [SkippableFact]
+    public async Task ConvertAnonymous_AllFilesTrue_TypeParameterShadow_UsesNumericSuffix()
+    {
+        // Codex P2 on PR #1497: derived NameAge matches method type parameter
+        // M<NameAge>(); must suffix rather than emit new NameAge { ... }.
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object M<NameAge>()
+                {
+                    return new { Name = "Ada", Age = 1 };
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertAnonymousToClassParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public class NameAge2", text);
+        Assert.Contains("return new NameAge2", text);
+        Assert.Contains("M<NameAge>()", text);
+        Assert.DoesNotMatch(@"new\s+NameAge(?![0-9A-Za-z_])", text);
+    }
+
+    [SkippableFact]
     public async Task ConvertAnonymous_AllFilesTrue_SkipsLinkedMultiViewPath()
     {
         const string sharedSource = """
