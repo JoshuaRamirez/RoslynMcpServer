@@ -209,7 +209,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
     /// / <c>ChangeReturnTypeOperation.ExecuteAllFilesAsync</c>) and adds
     /// <paramref name="params"/>.ParameterName / ParameterType to every eligible
     /// <see cref="MethodDeclarationSyntax"/>. Optional <c>sourceFile</c> limits
-    /// via <see cref="DocumentSourceFileFilter"/>. Linked multi-project views of
+    /// via <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Linked multi-project views of
     /// the same path are skipped rather than coalescing (same contract as
     /// <c>SafeDeleteOperation.ExecuteAllFilesAsync</c> / hierarchy allFiles);
     /// a candidate is also skipped when any related declaration or call site
@@ -234,7 +234,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         var linkedPathCounts = AllFilesDocumentHelpers.BuildLinkedPathCounts(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
 

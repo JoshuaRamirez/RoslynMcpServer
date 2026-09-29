@@ -201,7 +201,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
     /// document filter as <c>AddParameterOperation.ExecuteAllFilesAsync</c>)
     /// and removes <paramref name="params"/>.ParameterName from every eligible
     /// <see cref="MethodDeclarationSyntax"/>. Optional <c>sourceFile</c> limits
-    /// via <see cref="DocumentSourceFileFilter"/>. Linked multi-project views of
+    /// via <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Linked multi-project views of
     /// the same path are skipped rather than coalescing (same contract as
     /// <c>SafeDeleteOperation.ExecuteAllFilesAsync</c> / add_parameter allFiles);
     /// a candidate is also skipped when any related declaration, call site, or
@@ -224,7 +224,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         var linkedPathCounts = AllFilesDocumentHelpers.BuildLinkedPathCounts(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
 
