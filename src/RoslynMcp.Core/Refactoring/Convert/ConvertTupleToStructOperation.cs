@@ -487,8 +487,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// True when <paramref name="expression"/> is (or is a conditional whose
-    /// either branch is) a reference to a known storage alias.
+    /// True when <paramref name="expression"/> is (or is a conditional /
+    /// switch expression that forwards) a reference to a known storage alias.
     /// </summary>
     internal static bool ExpressionReferencesStorageAlias(
         ExpressionSyntax expression,
@@ -503,12 +503,22 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (symbol != null && aliases.Contains(symbol))
             return true;
 
-        // GetSymbolInfo returns null for conditionals; track either branch so
-        // var copy = cond ? point : point; still aliases copy to point.
+        // GetSymbolInfo returns null for conditionals / switches; walk arms so
+        // var copy = cond ? point : point; and switch { true => point, ... }
+        // still alias copy to point.
         if (expression is ConditionalExpressionSyntax conditional)
         {
             return ExpressionReferencesStorageAlias(conditional.WhenTrue, aliases, semanticModel, cancellationToken)
                 || ExpressionReferencesStorageAlias(conditional.WhenFalse, aliases, semanticModel, cancellationToken);
+        }
+
+        if (expression is SwitchExpressionSyntax switchExpression)
+        {
+            foreach (var arm in switchExpression.Arms)
+            {
+                if (ExpressionReferencesStorageAlias(arm.Expression, aliases, semanticModel, cancellationToken))
+                    return true;
+            }
         }
 
         return false;
