@@ -489,7 +489,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// <summary>
     /// True when <paramref name="expression"/> is (or is a conditional /
     /// switch / identity-like generic invocation / array-or-collection
-    /// creation that forwards) a reference to a known storage alias.
+    /// creation / container element read that forwards) a reference to a
+    /// known storage alias.
     /// </summary>
     internal static bool ExpressionReferencesStorageAlias(
         ExpressionSyntax expression,
@@ -567,6 +568,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 if (ExpressionReferencesStorageAlias(element.Expression, aliases, semanticModel, cancellationToken))
                     return true;
             }
+        }
+
+        // Reads from tracked containers: var copy = points[0]; copy.X = 3;
+        if (expression is ElementAccessExpressionSyntax elementAccess)
+        {
+            return ExpressionReferencesStorageAlias(
+                elementAccess.Expression, aliases, semanticModel, cancellationToken);
         }
 
         return false;
