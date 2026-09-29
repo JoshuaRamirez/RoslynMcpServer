@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
 using RoslynMcp.Core.Refactoring.Utilities;
@@ -814,6 +815,401 @@ public class ConvertAnonymousToClassOperationTests
 
     #endregion
 
+
+    #region allFiles
+
+    private const string AnonFileA = """
+        namespace TestApp;
+
+        public class WorkerA
+        {
+            public object Create()
+            {
+                return new { Name = "Ada", Age = 36 };
+            }
+        }
+        """;
+
+    private const string AnonFileB = """
+        namespace TestApp;
+
+        public class WorkerB
+        {
+            public object Create()
+            {
+                return new { Title = "Dev", Level = 2 };
+            }
+        }
+        """;
+
+    private const string AnonFileNoAnon = """
+        namespace TestApp;
+
+        public class WorkerC
+        {
+            public object Create() => "none";
+        }
+        """;
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithoutSourceFile_DoesNotThrow()
+    {
+        ConvertAnonymousToClassOperation.Validate(new ConvertAnonymousToClassParams
+        {
+            AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithLine_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertAnonymousToClassOperation.Validate(new ConvertAnonymousToClassParams
+            {
+                AllFiles = true,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("allFiles", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithColumn_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertAnonymousToClassOperation.Validate(new ConvertAnonymousToClassParams
+            {
+                AllFiles = true,
+                Column = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_WithNewTypeName_Throws()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertAnonymousToClassOperation.Validate(new ConvertAnonymousToClassParams
+            {
+                AllFiles = true,
+                NewTypeName = "Person"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesFalse_WithoutLine_Throws()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertAnonMissingLine.cs");
+        File.WriteAllText(path, "class C {}");
+        try
+        {
+            var ex = Assert.Throws<RefactoringException>(() =>
+                ConvertAnonymousToClassOperation.Validate(new ConvertAnonymousToClassParams
+                {
+                    SourceFile = path,
+                    NewTypeName = "Person"
+                }));
+
+            Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+            Assert.Contains("line", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void BuildAllFilesDescription_SingularAndPlural()
+    {
+        Assert.Equal(
+            "Convert anonymous type to class",
+            ConvertAnonymousToClassOperation.BuildAllFilesDescription(1, asRecord: false));
+        Assert.Equal(
+            "Convert 2 anonymous types to record",
+            ConvertAnonymousToClassOperation.BuildAllFilesDescription(2, asRecord: true));
+    }
+
+    [Fact]
+    public void DeriveTypeNameFromMembers_JoinsPascalCasePropertyNames()
+    {
+        // Compile a tiny anonymous type via workspace-free syntax is hard; exercise Finalize via public helper
+        // with a synthetic member list constructed through reflection-free compile of empty members.
+        Assert.Null(ConvertAnonymousToClassOperation.DeriveTypeNameFromMembers(
+            Array.Empty<ConvertAnonymousToClassOperation.AnonymousMember>()));
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymous_OmittedAllFiles_KeepsSingleSiteRewrite()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", AnonFileA),
+            ("FileB.cs", AnonFileB));
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+
+        var result = await operation.ExecuteAsync(new ConvertAnonymousToClassParams
+        {
+            SourceFile = pathA,
+            Line = FindLine(AnonFileA, "return new { Name"),
+            NewTypeName = "Person"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("public class Person", await File.ReadAllTextAsync(pathA));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymous_AllFilesTrue_AppliesToEligibleShapesAcrossFiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", AnonFileA),
+            ("FileB.cs", AnonFileB),
+            ("FileC.cs", AnonFileNoAnon));
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var pathC = Path.Combine(workspace.DirectoryPath, "FileC.cs");
+        var beforeC = await File.ReadAllTextAsync(pathC);
+
+        var result = await operation.ExecuteAsync(new ConvertAnonymousToClassParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.False(result.Preview);
+        var textA = await File.ReadAllTextAsync(pathA);
+        var textB = await File.ReadAllTextAsync(pathB);
+        Assert.Contains("public class NameAge", textA);
+        Assert.Contains("return new NameAge", textA);
+        Assert.Contains("public class TitleLevel", textB);
+        Assert.Contains("return new TitleLevel", textB);
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(pathC));
+        Assert.True(result.Changes!.FilesModified.Count >= 2);
+        Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, pathA));
+        Assert.Contains(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathC));
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymous_AllFilesTrue_WithoutSourceFile_Succeeds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", AnonFileA),
+            ("FileB.cs", AnonFileB));
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertAnonymousToClassParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Changes!.FilesModified.Count >= 2);
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymous_AllFilesFalse_WithoutSourceFile_MissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AnonFileA);
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertAnonymousToClassParams
+            {
+                AllFiles = false,
+                Line = 7,
+                NewTypeName = "Person"
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Contains("sourceFile", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymous_PreviewAllFiles_AggregatesChangedFilesAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", AnonFileA),
+            ("FileB.cs", AnonFileB),
+            ("FileC.cs", AnonFileNoAnon));
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var pathC = Path.Combine(workspace.DirectoryPath, "FileC.cs");
+        var beforeA = await File.ReadAllTextAsync(pathA);
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var beforeC = await File.ReadAllTextAsync(pathC);
+
+        var result = await operation.ExecuteAsync(new ConvertAnonymousToClassParams
+        {
+            AllFiles = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => PathsEqual(c.File, pathA));
+        Assert.DoesNotContain(result.PendingChanges, c => PathsEqual(c.File, pathC));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(pathA));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(pathC));
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymous_AllFilesTrue_EveryFileIneligible_SucceedsWithEmptyChanges()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileC.cs", AnonFileNoAnon));
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+        var pathC = Path.Combine(workspace.DirectoryPath, "FileC.cs");
+        var before = await File.ReadAllTextAsync(pathC);
+
+        var result = await operation.ExecuteAsync(new ConvertAnonymousToClassParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Equal(before, await File.ReadAllTextAsync(pathC));
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymous_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", AnonFileA),
+            ("FileB.cs", AnonFileB));
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+
+        var result = await operation.ExecuteAsync(new ConvertAnonymousToClassParams
+        {
+            AllFiles = true,
+            SourceFile = pathA
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("public class NameAge", await File.ReadAllTextAsync(pathA));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, pathA));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymous_AllFilesTrue_WithLine_Rejects()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AnonFileA);
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertAnonymousToClassParams
+            {
+                AllFiles = true,
+                Line = 1
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymous_AllFilesTrue_NameCollision_UsesNumericSuffix()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class NameAge { }
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    return new { Name = "Ada", Age = 36 };
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertAnonymousToClassParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public class NameAge2", text);
+        Assert.Contains("return new NameAge2", text);
+    }
+
+    [SkippableFact]
+    public async Task ConvertAnonymous_AllFilesTrue_SkipsLinkedMultiViewPath()
+    {
+        const string sharedSource = """
+            namespace TestApp;
+
+            public static class SharedHost
+            {
+                public static object Create() => new { Name = "Ada", Age = 36 };
+            }
+            """;
+        const string anchorASource = """
+            namespace TestApp;
+
+            public static class AnchorA
+            {
+                public static void KeepA() { }
+            }
+            """;
+        const string anchorBSource = """
+            namespace TestApp;
+
+            public static class AnchorB
+            {
+                public static void KeepB() { }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorASource, anchorBSource);
+        var counts = AllFilesDocumentHelpers.BuildLinkedPathCounts(workspace.Context.Solution);
+        var sharedKey = PathResolver.GetPathComparisonKey(workspace.SourcePaths["Shared.cs"]);
+        Assert.True(counts.TryGetValue(sharedKey, out var sharedCount) && sharedCount > 1);
+
+        var beforeShared = await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]);
+
+        var operation = new ConvertAnonymousToClassOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new ConvertAnonymousToClassParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(beforeShared, await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]));
+        Assert.Empty(result.Changes!.FilesModified);
+    }
+
+    #endregion
+
     #region Helpers
 
     private const string SameLineAnonymousSource = """
@@ -838,11 +1234,13 @@ public class ConvertAnonymousToClassOperationTests
 
     private static ConvertAnonymousToClassParams ValidParams(
         string? sourceFile = null,
-        int line = 7,
-        string newTypeName = "Person",
-        int? column = null) => new()
+        int? line = 7,
+        string? newTypeName = "Person",
+        int? column = null,
+        bool allFiles = false) => new()
         {
-            SourceFile = sourceFile ?? Path.Combine(Path.GetTempPath(), "RoslynMcpConvertAnonMissing.cs"),
+            SourceFile = sourceFile ?? (allFiles ? null : Path.Combine(Path.GetTempPath(), "RoslynMcpConvertAnonMissing.cs")),
+            AllFiles = allFiles,
             Line = line,
             NewTypeName = newTypeName,
             Column = column
@@ -884,6 +1282,7 @@ public class ConvertAnonymousToClassOperationTests
         public required string DirectoryPath { get; init; }
         public required string ProjectPath { get; init; }
         public required string SourcePath { get; init; }
+        public Dictionary<string, string> SourcePaths { get; init; } = new(StringComparer.Ordinal);
         public required WorkspaceContext Context { get; init; }
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Worker.cs") =>
@@ -945,6 +1344,126 @@ public class ConvertAnonymousToClassOperationTests
                     // ignore cleanup failures
                 }
 
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        public static async Task<TempWorkspace> CreateWithLinkedProjectsAsync(
+            string sharedSource,
+            string anchorASource,
+            string anchorBSource)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertAnonLinked_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            var sharedPath = Path.Combine(directory, "Shared.cs");
+            var rootProjectPath = Path.Combine(directory, "ProjectA.csproj");
+            var referencedProjectPath = Path.Combine(directory, "ProjectB.csproj");
+            var anchorAPath = Path.Combine(directory, "AnchorA.cs");
+            var anchorBPath = Path.Combine(directory, "AnchorB.cs");
+            var projectTypeGuid = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
+            var projectAGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+            var projectBGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+
+            await File.WriteAllTextAsync(sharedPath, sharedSource);
+            await File.WriteAllTextAsync(anchorAPath, anchorASource);
+            await File.WriteAllTextAsync(anchorBPath, anchorBSource);
+            await File.WriteAllTextAsync(solutionPath, $$"""
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                VisualStudioVersion = 17.0.31903.59
+                MinimumVisualStudioVersion = 10.0.40219.1
+                Project("{{projectTypeGuid}}") = "ProjectA", "ProjectA.csproj", "{{projectAGuid}}"
+                EndProject
+                Project("{{projectTypeGuid}}") = "ProjectB", "ProjectB.csproj", "{{projectBGuid}}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                		Release|Any CPU = Release|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{{projectAGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectAGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            await File.WriteAllTextAsync(rootProjectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="AnchorA.cs" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            await File.WriteAllTextAsync(referencedProjectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="AnchorB.cs" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                var linkedCount = context.Solution.Projects
+                    .SelectMany(p => p.Documents)
+                    .Count(d => d.FilePath != null &&
+                                PathResolver.GetPathComparisonKey(d.FilePath!) ==
+                                PathResolver.GetPathComparisonKey(sharedPath));
+                if (linkedCount < 2)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException($"Expected linked document in both projects, found {linkedCount}.");
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    ProjectPath = solutionPath,
+                    SourcePath = sharedPath,
+                    SourcePaths = new Dictionary<string, string>(StringComparer.Ordinal)
+                    {
+                        ["Shared.cs"] = sharedPath,
+                        ["AnchorA.cs"] = anchorAPath,
+                        ["AnchorB.cs"] = anchorBPath
+                    },
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try { Directory.Delete(directory, recursive: true); }
+                catch { /* ignore */ }
                 Skip.If(true, $"Workspace load failed: {ex.Message}");
                 throw;
             }

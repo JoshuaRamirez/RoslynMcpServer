@@ -1598,6 +1598,27 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_ConvertAnonymousToClass_ShowsAllFiles()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("convert-anonymous-to-class")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile/line/newTypeName are optional when allFiles is true; no required params");
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var optionalSection = help[optionalIdx..];
+        Assert.Contains("--source-file", optionalSection);
+        Assert.Contains("--all-files", optionalSection);
+        Assert.Contains("--line", optionalSection);
+        Assert.Contains("--new-type-name", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_ConvertTupleToStruct_ShowsExclusiveEndColumn()
     {
         var registry = ToolRegistry.BuildDefault();

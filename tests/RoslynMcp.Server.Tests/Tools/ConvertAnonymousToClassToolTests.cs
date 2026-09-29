@@ -63,9 +63,47 @@ public class ConvertAnonymousToClassToolTests
         }
 
         Assert.Contains("solutionPath", requiredFields);
-        Assert.Contains("sourceFile", requiredFields);
-        Assert.Contains("line", requiredFields);
-        Assert.Contains("newTypeName", requiredFields);
+        Assert.DoesNotContain("sourceFile", requiredFields);
+    }
+
+    [Fact]
+    public void GetDefinition_OneOf_BranchesForSingleSiteAndAllFiles()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var branches = doc.RootElement.GetProperty("oneOf");
+        Assert.Equal(2, branches.GetArrayLength());
+
+        var singleSiteRequired = new List<string>();
+        foreach (var item in branches[0].GetProperty("required").EnumerateArray())
+            singleSiteRequired.Add(item.GetString()!);
+        Assert.Contains("solutionPath", singleSiteRequired);
+        Assert.Contains("sourceFile", singleSiteRequired);
+        Assert.Contains("line", singleSiteRequired);
+        Assert.Contains("newTypeName", singleSiteRequired);
+
+        var allFilesRequired = new List<string>();
+        foreach (var item in branches[1].GetProperty("required").EnumerateArray())
+            allFilesRequired.Add(item.GetString()!);
+        Assert.Contains("solutionPath", allFilesRequired);
+        Assert.Contains("allFiles", allFilesRequired);
+        Assert.DoesNotContain("sourceFile", allFilesRequired);
+        Assert.Equal(
+            JsonValueKind.True,
+            branches[1].GetProperty("properties").GetProperty("allFiles").GetProperty("const").ValueKind);
+    }
+
+    [Fact]
+    public void GetDefinition_HasOptionalAllFiles()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+        Assert.True(properties.TryGetProperty("allFiles", out var allFiles));
+        Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
+        Assert.False(allFiles.GetProperty("default").GetBoolean());
     }
 
     [Fact]
@@ -78,6 +116,7 @@ public class ConvertAnonymousToClassToolTests
 
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("allFiles", out _));
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("newTypeName", out _));
         Assert.True(properties.TryGetProperty("column", out _));
@@ -97,6 +136,8 @@ public class ConvertAnonymousToClassToolTests
         Assert.Contains("covers that column", _tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("exclusive-end", _tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("line pick", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion
@@ -135,6 +176,22 @@ public class ConvertAnonymousToClassToolTests
 
         var result = await _tool.ExecuteAsync(args);
 
+        Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AllFilesTrueWithoutSourceFile_AcceptsArgs()
+    {
+        var args = JsonDocument.Parse("""
+            {
+                "solutionPath": "C:/test/test.sln",
+                "allFiles": true
+            }
+            """).RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        // ThrowingWorkspaceProvider rejects workspace creation; args including allFiles parsed.
         Assert.True(result.IsError);
     }
 

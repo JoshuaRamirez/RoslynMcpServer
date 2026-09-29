@@ -37,33 +37,56 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
     /// </summary>
     internal static void Validate(ConvertAnonymousToClassParams @params)
     {
+        if (@params.AllFiles)
+        {
+            if (@params.Line.HasValue || @params.Column.HasValue || !string.IsNullOrWhiteSpace(@params.NewTypeName))
+            {
+                throw new RefactoringException(
+                    ErrorCodes.MissingRequiredParam,
+                    "allFiles cannot be combined with line, column, or newTypeName.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                ValidateSourceFilePath(@params.SourceFile!);
+
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
         if (string.IsNullOrWhiteSpace(@params.NewTypeName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "newTypeName is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+        if (!@params.Line.HasValue)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "line is required.");
 
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        ValidateSourceFilePath(@params.SourceFile!);
 
-        if (@params.Line < 1)
+        if (@params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
-        if (!File.Exists(@params.SourceFile))
+        if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
-        if (!SyntaxIdentifierValidation.IsValidIdentifier(@params.NewTypeName))
+        if (!SyntaxIdentifierValidation.IsValidIdentifier(@params.NewTypeName!))
         {
             throw new RefactoringException(
                 ErrorCodes.InvalidSymbolName,
                 $"'{@params.NewTypeName}' is not a valid C# type name.");
         }
+    }
+
+    private static void ValidateSourceFilePath(string sourceFile)
+    {
+        if (!PathResolver.IsAbsolutePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+
+        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
+            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
     }
 
     /// <inheritdoc />
@@ -72,7 +95,10 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         ConvertAnonymousToClassParams @params,
         CancellationToken cancellationToken)
     {
-        var document = GetDocumentOrThrow(@params.SourceFile);
+        if (@params.AllFiles)
+            return await ExecuteAllFilesAsync(operationId, @params, cancellationToken);
+
+        var document = GetDocumentOrThrow(@params.SourceFile!);
         DocumentEditableHelpers.ValidateDocumentIsEditable(document, Context.Workspace);
 
         var root = await document.GetSyntaxRootAsync(cancellationToken);
@@ -80,12 +106,12 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         if (root == null || semanticModel == null)
             throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
 
-        var creation = FindAnonymousCreation(root, @params);
+        var creation = FindAnonymousCreation(root, @params.Line!.Value, @params.Column);
         var anonymousType = GetAnonymousType(semanticModel, creation);
         var members = GetAnonymousMembers(anonymousType);
         var targetNamespace = NamespaceNameHelpers.GetContainingNamespaceName(semanticModel, creation);
 
-        await ValidateNoNameConflictAsync(document, @params.NewTypeName, targetNamespace, cancellationToken);
+        await ValidateNoNameConflictAsync(document, @params.NewTypeName!, targetNamespace, cancellationToken);
 
         var creations = await CollectSameShapeCreationsAsync(
             document.Project,
@@ -101,7 +127,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         var insertPosition = TypeInsertionHelpers.GetTypeInsertionPosition(root, creation);
         ValidateMembersForGeneratedType(members, semanticModel, insertPosition);
         var typeDeclaration = CreateNamedType(
-            @params.NewTypeName,
+            @params.NewTypeName!,
             @params.AsRecord,
             members,
             semanticModel,
@@ -112,7 +138,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             typeDeclaration,
             creations,
             members,
-            @params.NewTypeName,
+            @params.NewTypeName!,
             targetNamespace,
             cancellationToken);
 
@@ -128,7 +154,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
 
         var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
         var qualifiedName = string.IsNullOrEmpty(targetNamespace)
-            ? @params.NewTypeName
+            ? @params.NewTypeName!
             : $"{targetNamespace}.{@params.NewTypeName}";
 
         return RefactoringResult.Succeeded(
@@ -141,7 +167,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             },
             new Contracts.Models.SymbolInfo
             {
-                Name = @params.NewTypeName,
+                Name = @params.NewTypeName!,
                 FullyQualifiedName = qualifiedName,
                 Kind = @params.AsRecord ? SymbolKind.Record : SymbolKind.Class
             },
@@ -149,13 +175,455 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             0);
     }
 
+    /// <summary>
+    /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
+    /// document filter as <c>RenameSymbolOperation.ExecuteAllFilesAsync</c> /
+    /// <c>RenameNamespaceOperation.ExecuteAllFilesAsync</c>) and converts every
+    /// distinct eligible anonymous-type shape, naming each type from sanitized
+    /// property names (PascalCase join; <c>@</c>-escape reserved keywords when
+    /// fixable; numeric suffix on collision). Optional <c>sourceFile</c> limits
+    /// via <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>.
+    /// Linked multi-project views of the same path are skipped rather than
+    /// coalescing (same contract as <c>SafeDeleteOperation.ExecuteAllFilesAsync</c> /
+    /// rename_symbol / rename_namespace allFiles). Empty/invalid derived names,
+    /// unfixable collisions, uneditable / source-generated docs, members that
+    /// fail today's generated-type validation, and otherwise ineligible sites
+    /// are skipped rather than failing the walk. Deterministic document
+    /// <c>FilePath</c> then creation <c>SpanStart</c> order; each distinct shape
+    /// once per project. When every file is a no-op, succeeds with empty changes.
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        ConvertAnonymousToClassParams @params,
+        CancellationToken cancellationToken)
+    {
+        var originalSolution = Context.Solution;
+        var currentSolution = originalSolution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(
+                allDocuments, @params.SourceFile!);
+        }
+
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+        var linkedPathCounts = AllFilesDocumentHelpers.BuildLinkedPathCounts(originalSolution);
+        var convertedShapes = new HashSet<(ProjectId ProjectId, string ShapeKey)>();
+        var changedCountByDoc = new Dictionary<DocumentId, int>();
+
+        bool madeProgress;
+        do
+        {
+            madeProgress = false;
+
+            foreach (var linkedDocuments in documentGroups)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (linkedDocuments.Count > 1)
+                    continue;
+
+                var primary = linkedDocuments.FirstOrDefault(d =>
+                    d is not SourceGeneratedDocument &&
+                    DocumentEditableHelpers.IsDocumentEditable(d, Context.Workspace));
+                if (primary == null)
+                    continue;
+
+                while (true)
+                {
+                    Context.UpdateSolution(currentSolution);
+
+                    var currentDocument = currentSolution.GetDocument(primary.Id);
+                    if (currentDocument == null ||
+                        currentDocument is SourceGeneratedDocument ||
+                        !DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                    {
+                        break;
+                    }
+
+                    var root = await currentDocument.GetSyntaxRootAsync(cancellationToken);
+                    var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
+                    if (root == null || semanticModel == null)
+                        break;
+
+                    Solution? updated = null;
+                    foreach (var creation in CollectAnonymousCreations(root))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        try
+                        {
+                            updated = await TryConvertOneAllFilesAsync(
+                                currentDocument,
+                                semanticModel,
+                                creation,
+                                @params.AsRecord,
+                                convertedShapes,
+                                linkedPathCounts,
+                                cancellationToken);
+                        }
+                        catch (RefactoringException)
+                        {
+                            updated = null;
+                        }
+
+                        if (updated != null)
+                            break;
+                    }
+
+                    if (updated == null)
+                        break;
+
+                    var beforeSolution = currentSolution;
+                    currentSolution = await AllFilesDocumentHelpers.CoalesceLinkedDocumentTextAsync(
+                        beforeSolution,
+                        updated,
+                        Context.Workspace,
+                        cancellationToken);
+                    Context.UpdateSolution(currentSolution);
+
+                    changedCountByDoc[primary.Id] =
+                        changedCountByDoc.GetValueOrDefault(primary.Id) + 1;
+                    madeProgress = true;
+                }
+            }
+        } while (madeProgress);
+
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+        var allPendingChanges = new List<PendingChange>();
+        var anyChanged = false;
+        var previewedPaths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var document in documentsToCompare)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var originalDocument = originalSolution.GetDocument(document.Id);
+            var currentDocument = currentSolution.GetDocument(document.Id);
+            if (originalDocument == null || currentDocument == null)
+                continue;
+
+            var beforeText = await originalDocument.GetTextAsync(cancellationToken);
+            var afterText = await currentDocument.GetTextAsync(cancellationToken);
+            if (beforeText.ContentEquals(afterText))
+                continue;
+
+            if (@params.Preview)
+            {
+                var pathKey = PathResolver.GetPathComparisonKey(originalDocument.FilePath!);
+                if (!previewedPaths.Add(pathKey))
+                    continue;
+
+                var changedCount = changedCountByDoc.GetValueOrDefault(document.Id);
+                if (changedCount == 0)
+                {
+                    foreach (var linkedId in documentsToCompare
+                        .Where(d => d.FilePath != null &&
+                                    PathResolver.GetPathComparisonKey(d.FilePath!) == pathKey)
+                        .Select(d => d.Id))
+                    {
+                        changedCount = Math.Max(changedCount, changedCountByDoc.GetValueOrDefault(linkedId));
+                    }
+                }
+
+                allPendingChanges.Add(new PendingChange
+                {
+                    File = originalDocument.FilePath!,
+                    ChangeType = ChangeKind.Modify,
+                    Description = changedCount > 0
+                        ? BuildAllFilesDescription(changedCount, @params.AsRecord)
+                        : $"Convert anonymous type to {(@params.AsRecord ? "record" : "class")}"
+                });
+                continue;
+            }
+
+            anyChanged = true;
+        }
+
+        if (@params.Preview)
+        {
+            Context.UpdateSolution(originalSolution);
+            return RefactoringResult.PreviewResult(operationId, allPendingChanges);
+        }
+
+        Context.UpdateSolution(originalSolution);
+
+        if (!anyChanged)
+        {
+            return RefactoringResult.Succeeded(operationId,
+                new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
+                null, 0, 0);
+        }
+
+        var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+        return RefactoringResult.Succeeded(
+            operationId,
+            new FileChanges
+            {
+                FilesModified = commitResult.FilesModified,
+                FilesCreated = commitResult.FilesCreated,
+                FilesDeleted = commitResult.FilesDeleted
+            },
+            null, 0, 0);
+    }
+
+    /// <summary>
+    /// Preview description for a file that converted
+    /// <paramref name="convertedCount"/> anonymous shapes.
+    /// </summary>
+    internal static string BuildAllFilesDescription(int convertedCount, bool asRecord)
+    {
+        var kind = asRecord ? "record" : "class";
+        return convertedCount == 1
+            ? $"Convert anonymous type to {kind}"
+            : $"Convert {convertedCount} anonymous types to {kind}";
+    }
+
+    /// <summary>
+    /// Anonymous object creations in <paramref name="root"/>, deterministic
+    /// <c>SpanStart</c> then span-length order.
+    /// </summary>
+    internal static IReadOnlyList<AnonymousObjectCreationExpressionSyntax> CollectAnonymousCreations(
+        SyntaxNode root)
+    {
+        return root.DescendantNodes()
+            .OfType<AnonymousObjectCreationExpressionSyntax>()
+            .OrderBy(n => n.SpanStart)
+            .ThenBy(n => n.Span.Length)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Derives a PascalCase type name by joining sanitized property names.
+    /// Returns <see langword="null"/> when empty, invalid, or an unfixable keyword.
+    /// </summary>
+    internal static string? DeriveTypeNameFromMembers(IReadOnlyList<AnonymousMember> members)
+    {
+        if (members.Count == 0)
+            return null;
+
+        var builder = new System.Text.StringBuilder();
+        foreach (var member in members)
+        {
+            var bare = SyntaxIdentifierValidation.NormalizeIdentifier(member.Name);
+            if (string.IsNullOrEmpty(bare))
+                return null;
+
+            builder.Append(char.ToUpperInvariant(bare[0]));
+            if (bare.Length > 1)
+                builder.Append(bare[1..]);
+        }
+
+        return FinalizeTypeName(builder.ToString());
+    }
+
+    /// <summary>
+    /// Appends a numeric suffix (<paramref name="suffix"/> ≥ 2) to
+    /// <paramref name="typeName"/>, re-finalizing for keyword escaping.
+    /// </summary>
+    internal static string? WithNumericSuffix(string typeName, int suffix)
+    {
+        if (suffix < 2)
+            return FinalizeTypeName(typeName);
+
+        var bare = SyntaxIdentifierValidation.NormalizeIdentifier(typeName);
+        return FinalizeTypeName(bare + suffix.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Stable shape key from member names and fully-qualified type display strings.
+    /// </summary>
+    internal static string BuildShapeKey(IReadOnlyList<AnonymousMember> members)
+    {
+        return string.Join(
+            "\u001f",
+            members.Select(m =>
+                m.Name + "\u001e" + m.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)));
+    }
+
+    private static string? FinalizeTypeName(string? seed)
+    {
+        if (string.IsNullOrEmpty(seed))
+            return null;
+
+        var name = seed;
+        if (char.IsDigit(name[0]))
+            name = "T" + name;
+
+        if (char.IsLower(name[0]))
+            name = char.ToUpperInvariant(name[0]) + name[1..];
+
+        if (!SyntaxIdentifierValidation.IsValidIdentifier(name))
+        {
+            var keywordKind = SyntaxFacts.GetKeywordKind(name);
+            if (keywordKind != SyntaxKind.None && SyntaxFacts.IsReservedKeyword(keywordKind))
+                name = "@" + name;
+            else
+                return null;
+        }
+
+        return SyntaxIdentifierValidation.IsValidIdentifier(name) ? name : null;
+    }
+
+    private async Task<Solution?> TryConvertOneAllFilesAsync(
+        Document document,
+        SemanticModel semanticModel,
+        AnonymousObjectCreationExpressionSyntax creation,
+        bool asRecord,
+        HashSet<(ProjectId ProjectId, string ShapeKey)> convertedShapes,
+        IReadOnlyDictionary<string, int> linkedPathCounts,
+        CancellationToken cancellationToken)
+    {
+        if (AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(document, linkedPathCounts))
+            return null;
+
+        INamedTypeSymbol anonymousType;
+        try
+        {
+            anonymousType = GetAnonymousType(semanticModel, creation);
+        }
+        catch (RefactoringException)
+        {
+            return null;
+        }
+
+        var members = GetAnonymousMembers(anonymousType);
+        var shapeKey = BuildShapeKey(members);
+        var shapeId = (document.Project.Id, shapeKey);
+        if (convertedShapes.Contains(shapeId))
+            return null;
+
+        var baseName = DeriveTypeNameFromMembers(members);
+        if (baseName == null)
+        {
+            convertedShapes.Add(shapeId);
+            return null;
+        }
+
+        var targetNamespace = NamespaceNameHelpers.GetContainingNamespaceName(semanticModel, creation);
+        string? chosenName = null;
+        for (var suffix = 0; suffix < 100; suffix++)
+        {
+            var candidate = suffix == 0 ? baseName : WithNumericSuffix(baseName, suffix + 1);
+            if (candidate == null)
+                continue;
+
+            try
+            {
+                await ValidateNoNameConflictAsync(document, candidate, targetNamespace, cancellationToken);
+                chosenName = candidate;
+                break;
+            }
+            catch (RefactoringException)
+            {
+                // try next suffix
+            }
+        }
+
+        if (chosenName == null)
+        {
+            convertedShapes.Add(shapeId);
+            return null;
+        }
+
+        var root = await document.GetSyntaxRootAsync(cancellationToken);
+        if (root == null)
+        {
+            convertedShapes.Add(shapeId);
+            return null;
+        }
+
+        var insertPosition = TypeInsertionHelpers.GetTypeInsertionPosition(root, creation);
+        try
+        {
+            ValidateMembersForGeneratedType(members, semanticModel, insertPosition);
+        }
+        catch (RefactoringException)
+        {
+            convertedShapes.Add(shapeId);
+            return null;
+        }
+
+        List<CreationTarget> creations;
+        try
+        {
+            creations = await CollectSameShapeCreationsAsync(
+                document.Project,
+                anonymousType,
+                cancellationToken);
+        }
+        catch (RefactoringException)
+        {
+            convertedShapes.Add(shapeId);
+            return null;
+        }
+
+        if (creations.Count == 0)
+            creations.Add(new CreationTarget(document, creation.Span));
+
+        foreach (var target in creations)
+        {
+            if (!DocumentEditableHelpers.IsDocumentEditable(target.Document, Context.Workspace) ||
+                target.Document is SourceGeneratedDocument ||
+                AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(target.Document, linkedPathCounts))
+            {
+                convertedShapes.Add(shapeId);
+                return null;
+            }
+        }
+
+        var typeDeclaration = CreateNamedType(
+            chosenName,
+            asRecord,
+            members,
+            semanticModel,
+            insertPosition);
+
+        Solution newSolution;
+        try
+        {
+            newSolution = await ApplyChangesAsync(
+                document,
+                typeDeclaration,
+                creations,
+                members,
+                chosenName,
+                targetNamespace,
+                cancellationToken);
+        }
+        catch (RefactoringException)
+        {
+            convertedShapes.Add(shapeId);
+            return null;
+        }
+
+        convertedShapes.Add(shapeId);
+        return newSolution;
+    }
+
     internal static AnonymousObjectCreationExpressionSyntax FindAnonymousCreation(
         SyntaxNode root,
         ConvertAnonymousToClassParams @params)
     {
+        if (!@params.Line.HasValue)
+        {
+            throw new RefactoringException(
+                ErrorCodes.MissingRequiredParam,
+                "line is required.");
+        }
+
+        return FindAnonymousCreation(root, @params.Line.Value, @params.Column);
+    }
+
+    internal static AnonymousObjectCreationExpressionSyntax FindAnonymousCreation(
+        SyntaxNode root,
+        int line,
+        int? column)
+    {
         var candidates = root.DescendantNodes()
             .OfType<AnonymousObjectCreationExpressionSyntax>()
-            .Where(n => SpanCoverage.SpanCoversLine(n.GetLocation().GetLineSpan(), @params.Line, @params.Column))
+            .Where(n => SpanCoverage.SpanCoversLine(n.GetLocation().GetLineSpan(), line, column))
             .ToList();
 
         if (candidates.Count == 1)
@@ -165,13 +633,13 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         {
             throw new RefactoringException(
                 ErrorCodes.CannotConvert,
-                $"No anonymous type found at line {@params.Line}.");
+                $"No anonymous type found at line {line}.");
         }
 
-        if (@params.Column.HasValue)
+        if (column.HasValue)
         {
             var atColumn = candidates
-                .Where(n => SpanCoverage.SpanCoversColumn(n.GetLocation().GetLineSpan(), @params.Line, @params.Column.Value))
+                .Where(n => SpanCoverage.SpanCoversColumn(n.GetLocation().GetLineSpan(), line, column.Value))
                 .ToList();
             if (atColumn.Count == 1)
                 return atColumn[0];
@@ -179,7 +647,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
 
         throw new RefactoringException(
             ErrorCodes.SymbolAmbiguous,
-            $"Multiple anonymous object creations found at line {@params.Line}. Provide column.");
+            $"Multiple anonymous object creations found at line {line}. Provide column.");
     }
 
     internal static INamedTypeSymbol GetAnonymousType(
@@ -225,8 +693,6 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         if (SymbolEqualityComparer.Default.Equals(named, original))
             return true;
 
-        // Same compilation may still surface distinct symbol instances across documents;
-        // same-shape + same assembly is the constructed anonymous type identity.
         if (!SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, original.ContainingAssembly))
             return false;
 
@@ -264,7 +730,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
                     default,
                     SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)),
                     SyntaxFactory.Token(SyntaxKind.RecordKeyword),
-                    SyntaxFactory.Identifier(typeName),
+                    CreateIdentifier(typeName),
                     typeParameterList: null,
                     parameterList: null,
                     baseList: null,
@@ -276,7 +742,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         }
         else
         {
-            declaration = SyntaxFactory.ClassDeclaration(typeName)
+            declaration = SyntaxFactory.ClassDeclaration(CreateIdentifier(typeName))
                 .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
                 .WithMembers(SyntaxFactory.List<MemberDeclarationSyntax>(properties));
         }
@@ -410,8 +876,9 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
                 $"Type '{newTypeName}' already exists in scope.");
         }
 
+        var bare = SyntaxIdentifierValidation.NormalizeIdentifier(newTypeName);
         var simpleMatches = compilation.GetSymbolsWithName(
-            name => name == newTypeName,
+            name => name == bare || name == newTypeName,
             SymbolFilter.Type,
             cancellationToken);
 
@@ -453,8 +920,6 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
             }
         }
 
-        // Same constructed anonymous type is one compiler-generated type; constructor
-        // references are a second, safer pass than string-matching `new {`.
         foreach (var ctor in anonymousType.InstanceConstructors)
         {
             var references = await SymbolFinder.FindReferencesAsync(
@@ -631,7 +1096,7 @@ public sealed class ConvertAnonymousToClassOperation : RefactoringOperationBase<
         {
             pendingChanges.Add(new PendingChange
             {
-                File = @params.SourceFile,
+                File = @params.SourceFile!,
                 ChangeType = ChangeKind.Modify,
                 Description = $"Convert anonymous type to {kind} '{@params.NewTypeName}'",
                 BeforeSnippet = null,
