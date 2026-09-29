@@ -56,7 +56,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             // Optional sourceFile still must be an absolute .cs path when set
             // (AddParameter / ChangeSignature allFiles / Copilot).
             if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-                ValidateSourceFilePath(@params.SourceFile!);
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
             return;
         }
@@ -67,7 +67,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         if (string.IsNullOrWhiteSpace(@params.MethodName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
 
-        ValidateSourceFilePath(@params.SourceFile!);
+        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
         if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -79,14 +79,6 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
     }
 
-    private static void ValidateSourceFilePath(string sourceFile)
-    {
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-    }
 
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(

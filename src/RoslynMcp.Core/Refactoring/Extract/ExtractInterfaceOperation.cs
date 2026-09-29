@@ -65,7 +65,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
             }
 
             if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-                ValidateSourceFilePath(@params.SourceFile!);
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
             return;
         }
@@ -79,7 +79,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         if (string.IsNullOrWhiteSpace(@params.InterfaceName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "interfaceName is required.");
 
-        ValidateSourceFilePath(@params.SourceFile!);
+        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
@@ -103,14 +103,6 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         }
     }
 
-    private static void ValidateSourceFilePath(string sourceFile)
-    {
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-    }
 
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(

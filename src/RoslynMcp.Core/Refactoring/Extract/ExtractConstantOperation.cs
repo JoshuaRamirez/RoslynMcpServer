@@ -59,7 +59,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
 
             if (!string.IsNullOrWhiteSpace(@params.SourceFile))
             {
-                ValidateSourceFilePath(@params.SourceFile!);
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
             }
 
             if (!ValidVisibilities.Contains(@params.Visibility))
@@ -86,7 +86,7 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
         if (!@params.EndColumn.HasValue)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endColumn is required.");
 
-        ValidateSourceFilePath(@params.SourceFile!);
+        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
         if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -109,14 +109,6 @@ public sealed class ExtractConstantOperation : RefactoringOperationBase<ExtractC
             throw new RefactoringException(ErrorCodes.InvalidVisibility, $"Invalid visibility: {@params.Visibility}");
     }
 
-    private static void ValidateSourceFilePath(string sourceFile)
-    {
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-    }
 
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(

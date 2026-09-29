@@ -79,7 +79,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             // Optional sourceFile still must be an absolute .cs path when set
             // (RemoveParameter / MoveTypeToNamespace allFiles).
             if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-                ValidateSourceFilePath(@params.SourceFile!);
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
             return;
         }
@@ -90,7 +90,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         if (string.IsNullOrWhiteSpace(@params.NamespaceName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "namespaceName is required.");
 
-        ValidateSourceFilePath(@params.SourceFile!);
+        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
         if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -116,14 +116,6 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         }
     }
 
-    private static void ValidateSourceFilePath(string sourceFile)
-    {
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-    }
 
     /// <summary>
     /// True when <paramref name="name"/> is a dotted sequence of C# identifiers.

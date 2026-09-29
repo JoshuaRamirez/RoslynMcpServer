@@ -63,7 +63,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
             // Optional sourceFile still must be an absolute .cs path when set
             // (RemoveParameter / AddParameter allFiles / Copilot).
             if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-                ValidateSourceFilePath(@params.SourceFile!);
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
             return;
         }
@@ -74,7 +74,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         if (string.IsNullOrWhiteSpace(@params.MethodName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
 
-        ValidateSourceFilePath(@params.SourceFile!);
+        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
         if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -86,14 +86,6 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
     }
 
-    private static void ValidateSourceFilePath(string sourceFile)
-    {
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-    }
 
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(

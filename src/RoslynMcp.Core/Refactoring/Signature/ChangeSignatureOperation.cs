@@ -73,7 +73,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             // Optional sourceFile still must be an absolute .cs path when set
             // (ConvertToBlockBody allFiles / Copilot).
             if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-                ValidateSourceFilePath(@params.SourceFile!);
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
             return;
         }
@@ -84,7 +84,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         if (string.IsNullOrWhiteSpace(@params.MethodName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "methodName is required.");
 
-        ValidateSourceFilePath(@params.SourceFile!);
+        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");
@@ -96,14 +96,6 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
 
-    private static void ValidateSourceFilePath(string sourceFile)
-    {
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-    }
 
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(

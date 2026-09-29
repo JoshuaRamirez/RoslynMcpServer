@@ -66,7 +66,7 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
             }
 
             if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-                ValidateSourceFilePath(@params.SourceFile!);
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
             return;
         }
@@ -89,7 +89,7 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
         if (!@params.EndColumn.HasValue)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "endColumn is required.");
 
-        ValidateSourceFilePath(@params.SourceFile!);
+        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
         if (!File.Exists(@params.SourceFile!))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
@@ -112,14 +112,6 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
             throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "Selection start must be before end.");
     }
 
-    private static void ValidateSourceFilePath(string sourceFile)
-    {
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
-    }
 
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
