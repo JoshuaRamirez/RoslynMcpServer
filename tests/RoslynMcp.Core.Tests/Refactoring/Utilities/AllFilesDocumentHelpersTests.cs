@@ -359,6 +359,71 @@ public class AllFilesDocumentHelpersTests
         }
     }
 
+    [SkippableFact]
+    public void FilterAllFilesDocumentsBySourceFile_CasingMismatchMissingPath_RejectFlagThrowsSourceFileNotFound()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+
+        var exactPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-Casemismatch-" + Path.GetRandomFileName() + "-FileA.cs");
+        File.WriteAllText(exactPath, "class FileA {}");
+        try
+        {
+            AddOnDiskDocument(workspace, project.Id, exactPath, "class FileA {}");
+            var docs = AllFilesDocumentHelpers.EnumerateCsharpDocuments(workspace.CurrentSolution);
+            var aliased = FlipAsciiLetterCasing(exactPath);
+            Assert.False(
+                string.Equals(exactPath, aliased, StringComparison.Ordinal),
+                "FlipAsciiLetterCasing must change the request spelling.");
+            Skip.If(
+                File.Exists(aliased),
+                "Volume resolves flipped casing as an existing path.");
+
+            var ex = Assert.Throws<RefactoringException>(() =>
+                AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(
+                    docs, aliased, rejectMissingPathCasingMismatch: true));
+
+            Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+            Assert.Contains(aliased, ex.Message);
+        }
+        finally
+        {
+            TryDelete(exactPath);
+        }
+    }
+
+    [Fact]
+    public void FilterAllFilesDocumentsBySourceFile_CasingMismatchMissingPath_DefaultAllowsIgnoreCaseMatch()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+
+        var exactPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-CaseDefault-" + Path.GetRandomFileName() + "-FileA.cs");
+        File.WriteAllText(exactPath, "class FileA {}");
+        try
+        {
+            AddOnDiskDocument(workspace, project.Id, exactPath, "class FileA {}");
+            var docs = AllFilesDocumentHelpers.EnumerateCsharpDocuments(workspace.CurrentSolution);
+            var aliased = FlipAsciiLetterCasing(exactPath);
+            Assert.False(
+                string.Equals(exactPath, aliased, StringComparison.Ordinal),
+                "FlipAsciiLetterCasing must change the request spelling.");
+
+            // Default path (flag false) keeps today's ignore-case allow behavior even
+            // when the flipped spelling is missing on a case-sensitive volume.
+            var filtered = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(docs, aliased);
+
+            Assert.Single(filtered);
+            Assert.Equal(
+                PathResolver.GetPathComparisonKey(exactPath),
+                PathResolver.GetPathComparisonKey(filtered[0].FilePath!));
+        }
+        finally
+        {
+            TryDelete(exactPath);
+        }
+    }
+
     private static string FlipAsciiLetterCasing(string path)
     {
         var chars = path.ToCharArray();

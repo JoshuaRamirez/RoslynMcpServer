@@ -12,7 +12,9 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// DocumentPathHasLinkedMultiView for AddParameter / RemoveParameter /
 /// ReorderParameters / RenameNamespace / PushMembersDown, plus
 /// FilterAllFilesDocumentsBySourceFile for ExtractBaseClass /
-/// ExtractInterface / ExtractMethod / PushMembersDown / PullMembersUp.
+/// ExtractInterface / ExtractMethod / PushMembersDown / PullMembersUp
+/// (default path) and IntroduceField / SafeDelete (optional
+/// rejectMissingPathCasingMismatch arm).
 /// Same bodies as the identical copies on those operations.
 /// Named AllFilesDocumentHelpers (not DocumentSourceFileFilter) because this
 /// cluster is the walk + linked-sibling coalesce + exact/ignore-case
@@ -180,13 +182,23 @@ internal static class AllFilesDocumentHelpers
     /// <see cref="RefactoringException"/> with
     /// <see cref="ErrorCodes.SourceFileNotFound"/> /
     /// <see cref="ErrorCodes.SourceNotInWorkspace"/> when nothing matches or
-    /// multiple ignore-case paths collide. Same body as the identical copies
-    /// on ExtractBaseClass / ExtractInterface / ExtractMethod /
-    /// PushMembersDown / PullMembersUp.
+    /// multiple ignore-case paths collide. Default path
+    /// (<paramref name="rejectMissingPathCasingMismatch"/> false) matches
+    /// ExtractBaseClass / ExtractInterface / ExtractMethod / PushMembersDown /
+    /// PullMembersUp. When <paramref name="rejectMissingPathCasingMismatch"/>
+    /// is true (IntroduceField / SafeDelete), also reject an ignore-case hit
+    /// whose comparison key differs from the caller path when that path does
+    /// not exist on disk.
     /// </summary>
-    internal static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    internal static List<Document> FilterAllFilesDocumentsBySourceFile(
+        List<Document> documents,
+        string sourceFile,
+        bool rejectMissingPathCasingMismatch = false)
     {
         var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var sourceFileKey = rejectMissingPathCasingMismatch
+            ? PathResolver.GetPathComparisonKey(sourceFile)
+            : null;
         var exactMatches = documents
             .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
             .ToList();
@@ -216,6 +228,12 @@ internal static class AllFilesDocumentHelpers
             > 1 => throw new RefactoringException(
                 ErrorCodes.SourceNotInWorkspace,
                 $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ when rejectMissingPathCasingMismatch
+                && !string.Equals(distinctPaths[0], sourceFileKey, StringComparison.Ordinal)
+                && !File.Exists(sourceFile) =>
+                throw new RefactoringException(
+                    ErrorCodes.SourceFileNotFound,
+                    $"Source file not found: {sourceFile}"),
             _ => matchedDocuments
         };
     }
