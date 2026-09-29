@@ -192,7 +192,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
         {
-            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
         }
 
         // One physical path may appear as multiple Documents when linked into
@@ -311,49 +311,6 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         return RefactoringResult.Succeeded(operationId,
             new FileChanges { FilesModified = [], FilesCreated = [], FilesDeleted = [] },
             null, 0, 0);
-    }
-
-    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
-    {
-        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
-        var sourceFileKey = PathResolver.GetPathComparisonKey(sourceFile);
-        var exactMatches = documents
-            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
-            .ToList();
-        if (exactMatches.Count > 0)
-        {
-            // Exact spelling disambiguates case-distinct files; still return every
-            // linked Document that shares the same physical comparison key so
-            // linked-view divergence checks are not skipped (Codex P2).
-            var exactKeys = exactMatches
-                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
-                .ToHashSet(StringComparer.Ordinal);
-            return documents
-                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
-                .ToList();
-        }
-
-        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
-        // Ambiguity is distinct case-sensitive paths, not linked Document count
-        // (one physical file linked into multiple projects is not ambiguous).
-        var distinctPaths = matchedDocuments
-            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        return distinctPaths.Count switch
-        {
-            0 => throw new RefactoringException(
-                ErrorCodes.SourceNotInWorkspace,
-                $"File not found in workspace: {sourceFile}"),
-            > 1 => throw new RefactoringException(
-                ErrorCodes.SourceNotInWorkspace,
-                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
-            _ when !string.Equals(distinctPaths[0], sourceFileKey, StringComparison.Ordinal) && !File.Exists(sourceFile) =>
-                throw new RefactoringException(
-                    ErrorCodes.SourceNotInWorkspace,
-                    $"File not found in workspace: {sourceFile}"),
-            _ => matchedDocuments
-        };
     }
 
     private static string BuildLinkedDocumentDivergenceMessage(string? filePath) =>

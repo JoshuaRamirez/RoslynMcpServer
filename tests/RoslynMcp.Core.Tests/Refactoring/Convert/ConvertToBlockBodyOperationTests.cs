@@ -1065,35 +1065,22 @@ public class ConvertToBlockBodyOperationTests
         var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
         var flipped = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
 
-        if (File.Exists(flipped))
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
         {
-            var result = await operation.ExecuteAsync(new ConvertToBlockBodyParams
-            {
-                AllFiles = true,
-                SourceFile = flipped
-            });
+            AllFiles = true,
+            SourceFile = flipped
+        });
 
-            Assert.True(result.Success);
-            var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
-            AssertMethodIsBlockBodied(updatedA, "One");
-            AssertMethodIsBlockBodied(updatedA, "Two");
-            Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
-            Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
-            Assert.Single(result.Changes!.FilesModified);
-            Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
-            return;
-        }
-
-        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
-            operation.ExecuteAsync(new ConvertToBlockBodyParams
-            {
-                AllFiles = true,
-                SourceFile = flipped
-            }));
-
-        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        AssertMethodIsBlockBodied(updatedA, "One");
+        AssertMethodIsBlockBodied(updatedA, "Two");
         Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
         Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
     }
 
     [SkippableFact]
