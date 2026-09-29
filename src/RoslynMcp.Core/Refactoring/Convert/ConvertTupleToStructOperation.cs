@@ -648,11 +648,32 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             }
         }
 
+        // Nested tuple containers: var wrapped = (Value: point, Other: 0);
+        if (expression is TupleExpressionSyntax tupleExpression)
+        {
+            foreach (var argument in tupleExpression.Arguments)
+            {
+                if (ExpressionReferencesStorageAlias(
+                        argument.Expression, aliases, semanticModel, cancellationToken))
+                {
+                    return true;
+                }
+            }
+        }
+
         // Reads from tracked containers: var copy = points[0]; copy.X = 3;
         if (expression is ElementAccessExpressionSyntax elementAccess)
         {
             return ExpressionReferencesStorageAlias(
                 elementAccess.Expression, aliases, semanticModel, cancellationToken);
+        }
+
+        // Nested receivers: wrapped.Value / memory.Span when the receiver
+        // expression flows from converted storage (Codex tuple-embed P1).
+        if (expression is MemberAccessExpressionSyntax nestedAccess)
+        {
+            return ExpressionReferencesStorageAlias(
+                nestedAccess.Expression, aliases, semanticModel, cancellationToken);
         }
 
         return false;
@@ -935,10 +956,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 // Tuple fields accept address-of; generated properties do not.
                 PrefixUnaryExpressionSyntax addressOf when
                     addressOf.IsKind(SyntaxKind.AddressOfExpression) => addressOf.Operand,
-                // Tuple fields accept ref/out; generated properties do not.
+                // Tuple fields accept ref/out/in; generated properties do not.
                 ArgumentSyntax argument when
                     argument.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) ||
-                    argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword) => argument.Expression,
+                    argument.RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword) ||
+                    argument.RefOrOutKeyword.IsKind(SyntaxKind.InKeyword) => argument.Expression,
                 // ref int x = ref point.X; / ref returns
                 RefExpressionSyntax refExpression => refExpression.Expression,
                 _ => null
@@ -950,7 +972,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             // Direct member writes (point.X = 3), nested deconstruction
             // targets ((point.X, point.Y) = (3, 4)), chained mutable-value
             // writes (point.X.Value = 3), inferred-container writes
-            // (points[0].X = 3), address-of (&point.X), ref/out arguments,
+            // (points[0].X = 3), address-of (&point.X), ref/out/in arguments,
             // and ref expressions all need rejection for init-only record
             // struct properties / property-not-variable errors.
             foreach (var memberAccess in EnumerateAssignmentMemberAccesses(writtenTarget))
@@ -962,12 +984,11 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 if (target != null && storages.Contains(target))
                     return true;
 
-                // Element/indexer receivers (points[0], points.AsSpan()[0],
-                // nested[0][0]): reject when the container expression flows from
-                // converted storage (Codex nested-receiver P1).
-                if (memberAccess.Expression is ElementAccessExpressionSyntax elementAccess &&
-                    ExpressionReferencesStorageAlias(
-                        elementAccess.Expression,
+                // Element/indexer / nested field receivers (points[0],
+                // points.AsSpan()[0], wrapped.Value): reject when the receiver
+                // expression flows from converted storage.
+                if (ExpressionReferencesStorageAlias(
+                        memberAccess.Expression,
                         storages,
                         semanticModel))
                 {
