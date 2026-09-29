@@ -38,11 +38,13 @@ internal static class AllFilesDocumentHelpers
     /// Every solution document whose FilePath ends with <c>.cs</c>
     /// (ordinal-ignore-case), ordered by FilePath. Same body as the
     /// IntroduceField / ExtractConstant / IntroduceParameter / InlineMethod /
-    /// ChangeSignature / InlineVariable / ConvertToBlockBody /
-    /// AddBraces / RemoveBraces / InvertIf / ConvertExpressionBody /
-    /// ConvertToPatternMatching / ConvertProperty / ConvertForeachLinq /
-    /// SimplifyName / ConvertToInterpolatedString / ConvertToAsync copies
-    /// (ExecuteAllFiles start and documentsToCompare).
+    /// ChangeSignature / InlineVariable copies (ExecuteAllFiles start and
+    /// documentsToCompare). Call sites at ExecuteAllFiles start also include
+    /// ConvertToBlockBody / AddBraces / RemoveBraces / InvertIf /
+    /// ConvertExpressionBody / ConvertToPatternMatching / ConvertProperty /
+    /// ConvertForeachLinq / SimplifyName / ConvertToInterpolatedString /
+    /// ConvertToAsync (those Convert callers previously omitted OrderBy;
+    /// migrating onto this helper adds the deterministic FilePath ordinal walk).
     /// </summary>
     internal static List<Document> EnumerateCsharpDocuments(Solution solution)
     {
