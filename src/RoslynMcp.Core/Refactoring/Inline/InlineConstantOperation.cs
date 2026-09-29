@@ -181,7 +181,8 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
     /// every eligible const field <c>VariableDeclaratorSyntax</c> whose
     /// parent field is <c>const</c> (same kind filter as
     /// <see cref="FindConstantDeclarator"/> / <see cref="ValidateIsConstant"/>).
-    /// Optional <c>sourceFile</c> limits the walk to that one file. Attribute
+    /// Optional <c>sourceFile</c> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Attribute
     /// uses, public-API constants when <c>removeConstant</c> would apply,
     /// uneditable documents, missing literals, and otherwise ineligible
     /// constants are skipped rather than failing the walk. When a later
@@ -198,7 +199,7 @@ public sealed class InlineConstantOperation : RefactoringOperationBase<InlineCon
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var inlinedCountByDoc = new Dictionary<DocumentId, int>();
         var processedFields = new HashSet<IFieldSymbol>(SymbolEqualityComparer.Default);

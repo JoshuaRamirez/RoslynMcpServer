@@ -298,7 +298,8 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
     /// / <c>GenerateMethodStubOperation.ExecuteAllFilesAsync</c>) and inlines
     /// every eligible local <see cref="VariableDeclaratorSyntax"/> in a
     /// <see cref="LocalDeclarationStatementSyntax"/> inside a method.
-    /// Optional <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
+    /// Optional <c>sourceFile</c> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>.
     /// Linked documents that share a physical path are rewritten once and the
     /// same text is applied to every sibling <see cref="DocumentId"/>
     /// (<see cref="PathResolver.GetPathComparisonKey"/>). Ineligible locals
@@ -318,7 +319,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         // One physical path may appear as multiple Documents when linked into
         // several projects. Rewrite once per normalized path and apply the same
