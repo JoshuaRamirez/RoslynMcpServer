@@ -181,10 +181,7 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         UseBaseTypeParams @params,
         CancellationToken cancellationToken)
     {
-        var allDocuments = Context.Solution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(Context.Solution);
 
         var seenTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
         var allRewrites = new List<RewritableReference>();

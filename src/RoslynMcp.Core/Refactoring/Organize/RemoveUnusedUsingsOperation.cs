@@ -183,10 +183,7 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
         CancellationToken cancellationToken)
     {
         var solution = Context.Solution;
-        var allDocuments = solution.Projects
-            .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution);
 
         var totalUsingsRemoved = 0;
         var allFilesModified = new List<string>();
