@@ -475,8 +475,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 while (source is ParenthesizedExpressionSyntax parenthesized)
                     source = parenthesized.Expression;
 
-                var sourceSymbol = semanticModel.GetSymbolInfo(source, cancellationToken).Symbol;
-                if (sourceSymbol != null && aliases.Contains(sourceSymbol))
+                if (ExpressionReferencesStorageAlias(source, aliases, semanticModel, cancellationToken))
                 {
                     aliases.Add(alias);
                     changed = true;
@@ -485,6 +484,34 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         return aliases;
+    }
+
+    /// <summary>
+    /// True when <paramref name="expression"/> is (or is a conditional whose
+    /// either branch is) a reference to a known storage alias.
+    /// </summary>
+    internal static bool ExpressionReferencesStorageAlias(
+        ExpressionSyntax expression,
+        HashSet<ISymbol> aliases,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken = default)
+    {
+        while (expression is ParenthesizedExpressionSyntax parenthesized)
+            expression = parenthesized.Expression;
+
+        var symbol = semanticModel.GetSymbolInfo(expression, cancellationToken).Symbol;
+        if (symbol != null && aliases.Contains(symbol))
+            return true;
+
+        // GetSymbolInfo returns null for conditionals; track either branch so
+        // var copy = cond ? point : point; still aliases copy to point.
+        if (expression is ConditionalExpressionSyntax conditional)
+        {
+            return ExpressionReferencesStorageAlias(conditional.WhenTrue, aliases, semanticModel, cancellationToken)
+                || ExpressionReferencesStorageAlias(conditional.WhenFalse, aliases, semanticModel, cancellationToken);
+        }
+
+        return false;
     }
 
     internal static bool HasElementWrite(
@@ -518,6 +545,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 PostfixUnaryExpressionSyntax postfix when
                     postfix.IsKind(SyntaxKind.PostIncrementExpression) ||
                     postfix.IsKind(SyntaxKind.PostDecrementExpression) => postfix.Operand,
+                // Tuple fields accept address-of; generated properties do not.
+                PrefixUnaryExpressionSyntax addressOf when
+                    addressOf.IsKind(SyntaxKind.AddressOfExpression) => addressOf.Operand,
                 // Tuple fields accept ref/out; generated properties do not.
                 ArgumentSyntax argument when
                     argument.RefOrOutKeyword.IsKind(SyntaxKind.RefKeyword) ||
@@ -533,9 +563,9 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             // Direct member writes (point.X = 3), nested deconstruction
             // targets ((point.X, point.Y) = (3, 4)), chained mutable-value
             // writes (point.X.Value = 3), inferred-container writes
-            // (points[0].X = 3), ref/out arguments, and ref expressions
-            // all need rejection for init-only record struct properties /
-            // property-not-variable errors.
+            // (points[0].X = 3), address-of (&point.X), ref/out arguments,
+            // and ref expressions all need rejection for init-only record
+            // struct properties / property-not-variable errors.
             foreach (var memberAccess in EnumerateAssignmentMemberAccesses(writtenTarget))
             {
                 if (!memberNames.Contains(memberAccess.Name.Identifier.ValueText))

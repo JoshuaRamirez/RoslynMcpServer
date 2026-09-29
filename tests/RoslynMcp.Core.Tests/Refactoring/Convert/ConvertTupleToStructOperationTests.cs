@@ -1045,6 +1045,77 @@ public class ConvertTupleToStructOperationTests
     }
 
     [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordConditionalCopyAliasElementAssignment_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create(bool condition)
+                {
+                    var point = (X: 1, Y: 2);
+                    var copy = condition ? point : point;
+                    copy.X = 3;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("element assignments", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordAddressOfElement_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public unsafe class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    int* p = &point.X;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source, allowUnsafe: true);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 7,
+                NewTypeName = "Point",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("element assignments", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordChainedMutableValueWrite_ThrowsAndWritesNothing()
     {
         const string source = """
@@ -1899,14 +1970,21 @@ public class ConvertTupleToStructOperationTests
         public static Task<TempWorkspace> CreateAsync(
             string source,
             string fileName = "Worker.cs",
-            string? langVersion = null) =>
-            CreateAsync(langVersion, (fileName, source));
+            string? langVersion = null,
+            bool allowUnsafe = false) =>
+            CreateAsync(langVersion, allowUnsafe, (fileName, source));
 
         public static Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files) =>
-            CreateAsync(langVersion: null, files);
+            CreateAsync(langVersion: null, allowUnsafe: false, files);
+
+        public static Task<TempWorkspace> CreateAsync(
+            string? langVersion,
+            params (string FileName, string Source)[] files) =>
+            CreateAsync(langVersion, allowUnsafe: false, files);
 
         public static async Task<TempWorkspace> CreateAsync(
             string? langVersion,
+            bool allowUnsafe,
             params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
@@ -1918,11 +1996,14 @@ public class ConvertTupleToStructOperationTests
             var langVersionProperty = string.IsNullOrWhiteSpace(langVersion)
                 ? ""
                 : $"\n                    <LangVersion>{langVersion}</LangVersion>";
+            var allowUnsafeProperty = allowUnsafe
+                ? "\n                    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>"
+                : "";
             await File.WriteAllTextAsync(projectPath, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
-                    <Nullable>enable</Nullable>{langVersionProperty}
+                    <Nullable>enable</Nullable>{langVersionProperty}{allowUnsafeProperty}
                   </PropertyGroup>
                 </Project>
                 """);
