@@ -411,7 +411,8 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     /// a constructor for every eligible <see cref="TypeDeclarationSyntax"/>
     /// (class / struct / record / record struct, including nested — same
     /// node kind as <see cref="TypeDeclarationHelpers.FindTypeDeclaration"/>). Optional
-    /// <c>sourceFile</c> limits the walk to that one file. Interface,
+    /// <see cref="GenerateConstructorParams.SourceFile"/> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Interface,
     /// static, no-member, <c>ConstructorExists</c>, uneditable, CS0666,
     /// CS8878, primary-constructor exact match, and otherwise ineligible
     /// types are skipped rather than failing the walk. When a later
@@ -428,7 +429,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var generatedCountByDoc = new Dictionary<DocumentId, int>();
         var processedTypes = new HashSet<string>(StringComparer.Ordinal);

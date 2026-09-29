@@ -211,7 +211,8 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
     /// <see cref="TypeDeclarationSyntax"/> (class / struct / record /
     /// record struct / interface, including nested — same node kind as
     /// today's <see cref="FindTypeDeclaration"/>). Optional
-    /// <c>sourceFile</c> limits the walk to that one file. Interface,
+    /// <see cref="GenerateToStringParams.SourceFile"/> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Interface,
     /// no-members when <c>callSuper</c> is false, existing-ToString
     /// collisions when <c>replaceExisting</c> is false,
     /// sealed inherited parameterless instance ToString (CS0239; skipped
@@ -233,7 +234,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var generatedCountByDoc = new Dictionary<DocumentId, int>();
         var processedTypes = new HashSet<string>(StringComparer.Ordinal);

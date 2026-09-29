@@ -20,13 +20,13 @@ internal static class DocumentSourceFileFilter
     /// When <see cref="PathResolver.NormalizePath"/> throws ArgumentException,
     /// NotSupportedException, or PathTooLongException for the requested path,
     /// the raw <paramref name="sourceFile"/> is used instead. Same body as the
-    /// GenerateConstructor / GenerateEqualsHashCode / GenerateToString
-    /// copies (InlineConstant / InlineVariable / InlineMethod /
-    /// MakeStatic / MakeNonStatic / IntroduceParameter / RenameSymbol /
-    /// RenameNamespace / AddParameter / RemoveParameter / ReorderParameters /
-    /// ChangeSignature / ChangeReturnType / ImplementInterface /
-    /// ImplementAbstract / GenerateOverrides / GenerateMethodStub /
-    /// GenerateProperty
+    /// prior Generate bare-filter copies (InlineConstant / InlineVariable /
+    /// InlineMethod / MakeStatic / MakeNonStatic / IntroduceParameter /
+    /// RenameSymbol / RenameNamespace / AddParameter / RemoveParameter /
+    /// ReorderParameters / ChangeSignature / ChangeReturnType /
+    /// ImplementInterface / ImplementAbstract / GenerateOverrides /
+    /// GenerateMethodStub / GenerateProperty / GenerateConstructor /
+    /// GenerateEqualsHashCode / GenerateToString
     /// now use <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>).
     /// </summary>
     internal static List<Document> FilterDocumentsBySourceFile(List<Document> documents, string sourceFile)
