@@ -528,24 +528,31 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         // Generic / identity-like invocations that take an alias and return the
         // same parameter type (e.g. static T Echo<T>(T value) => value) so
         // var copy = Echo(point); copy.X = 3; is rejected (CS8852).
-        // Also extension / instance receivers (points.ToArray()) whose return
-        // forwards the container's element type.
+        // Named arguments bind by parameter name (Pick(value: point, other: 0)).
+        // Also extension / instance receivers (points.ToArray() / First()) whose
+        // return forwards the container or its element type.
         if (expression is InvocationExpressionSyntax invocation &&
             semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is IMethodSymbol method)
         {
             var args = invocation.ArgumentList.Arguments;
-            for (var i = 0; i < args.Count && i < method.Parameters.Length; i++)
+            for (var i = 0; i < args.Count; i++)
             {
-                if (!ExpressionReferencesStorageAlias(args[i].Expression, aliases, semanticModel, cancellationToken))
+                var arg = args[i];
+                if (!ExpressionReferencesStorageAlias(arg.Expression, aliases, semanticModel, cancellationToken))
                     continue;
-                if (SymbolEqualityComparer.Default.Equals(method.Parameters[i].Type, method.ReturnType))
+
+                var parameter = ResolveInvocationParameter(method, arg, i);
+                if (parameter == null)
+                    continue;
+
+                if (SymbolEqualityComparer.Default.Equals(parameter.Type, method.ReturnType))
                     return true;
 
                 // Enumerable.ToArray<T>(IEnumerable<T>): parameter is sequence,
-                // return is T[] — preserve when element types match.
+                // return is T[] — preserve when element types match / forward.
                 if (MethodReturnForwardsContainer(
                         method,
-                        semanticModel.GetTypeInfo(args[i].Expression, cancellationToken).Type))
+                        semanticModel.GetTypeInfo(arg.Expression, cancellationToken).Type))
                 {
                     return true;
                 }
@@ -607,8 +614,35 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
+    /// Resolves the <see cref="IParameterSymbol"/> bound by <paramref name="argument"/>,
+    /// honoring named arguments (Codex P1).
+    /// </summary>
+    private static IParameterSymbol? ResolveInvocationParameter(
+        IMethodSymbol method,
+        ArgumentSyntax argument,
+        int positionalIndex)
+    {
+        if (argument.NameColon != null)
+        {
+            var name = argument.NameColon.Name.Identifier.ValueText;
+            foreach (var parameter in method.Parameters)
+            {
+                if (string.Equals(parameter.Name, name, StringComparison.Ordinal))
+                    return parameter;
+            }
+
+            return null;
+        }
+
+        return positionalIndex < method.Parameters.Length
+            ? method.Parameters[positionalIndex]
+            : null;
+    }
+
+    /// <summary>
     /// True when <paramref name="method"/>'s return forwards a container
-    /// (same type, or a sequence/array projection preserving element type).
+    /// (same type, First/Single element, or a sequence/array projection that
+    /// preserves the source element type parameter — not Select to fresh tuples).
     /// </summary>
     private static bool MethodReturnForwardsContainer(IMethodSymbol method, ITypeSymbol? sourceType)
     {
@@ -620,10 +654,53 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             return true;
 
         var sourceElement = TryGetSequenceElementType(sourceType);
+        if (sourceElement == null)
+            return false;
+
+        // First()/Single()/ElementAt(): return type is the sequence element.
+        if (SymbolEqualityComparer.Default.Equals(returnType, sourceElement))
+            return true;
+
         var returnElement = TryGetSequenceElementType(returnType);
-        return sourceElement != null &&
-               returnElement != null &&
-               SymbolEqualityComparer.Default.Equals(sourceElement, returnElement);
+        if (returnElement == null ||
+            !SymbolEqualityComparer.Default.Equals(sourceElement, returnElement))
+        {
+            return false;
+        }
+
+        // Constructed element types match — also require the original method's
+        // return element type parameter to be the same as the source sequence's
+        // element type parameter (ToArray/AsSpan), not a distinct TResult
+        // (Select) that happens to construct to the same tuple shape (Codex P2).
+        return OriginalReturnElementSharesSourceElementTypeParameter(method);
+    }
+
+    private static bool OriginalReturnElementSharesSourceElementTypeParameter(IMethodSymbol method)
+    {
+        // Prefer ReducedFrom for extension invocations (points.ToArray() / AsSpan()).
+        var original = (method.ReducedFrom ?? method).OriginalDefinition;
+
+        ITypeSymbol? originalSourceElement = null;
+        foreach (var parameter in original.Parameters)
+        {
+            originalSourceElement = TryGetSequenceElementType(parameter.Type);
+            if (originalSourceElement != null)
+                break;
+        }
+
+        if (originalSourceElement is not ITypeParameterSymbol sourceTypeParameter)
+            return false;
+
+        if (TryGetSequenceElementType(original.ReturnType) is ITypeParameterSymbol returnTypeParameter)
+            return SymbolEqualityComparer.Default.Equals(sourceTypeParameter, returnTypeParameter);
+
+        if (original.ReturnType is IArrayTypeSymbol array &&
+            array.ElementType is ITypeParameterSymbol arrayElement)
+        {
+            return SymbolEqualityComparer.Default.Equals(sourceTypeParameter, arrayElement);
+        }
+
+        return false;
     }
 
     private static ITypeSymbol? TryGetSequenceElementType(ITypeSymbol type)
@@ -635,6 +712,14 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         {
             if (named.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T &&
                 named.TypeArguments.Length == 1)
+            {
+                return named.TypeArguments[0];
+            }
+
+            // Span<T> / ReadOnlySpan<T> / Memory<T> / ReadOnlyMemory<T>
+            if (named.TypeArguments.Length == 1 &&
+                named.ContainingNamespace?.ToDisplayString() == "System" &&
+                named.Name is "Span" or "ReadOnlySpan" or "Memory" or "ReadOnlyMemory")
             {
                 return named.TypeArguments[0];
             }
