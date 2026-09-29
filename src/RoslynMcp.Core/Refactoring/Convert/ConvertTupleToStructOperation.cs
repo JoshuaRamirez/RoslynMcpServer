@@ -489,8 +489,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// <summary>
     /// True when <paramref name="expression"/> is (or is a conditional /
     /// switch / identity-like generic invocation / array-or-collection
-    /// creation / container element read that forwards) a reference to a
-    /// known storage alias.
+    /// True when <paramref name="expression"/> is (or is a conditional /
+    /// switch / identity-like generic invocation / array-or-collection
+    /// creation / container element read / container-forwarding call that
+    /// forwards) a reference to a known storage alias.
     /// </summary>
     internal static bool ExpressionReferencesStorageAlias(
         ExpressionSyntax expression,
@@ -526,6 +528,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         // Generic / identity-like invocations that take an alias and return the
         // same parameter type (e.g. static T Echo<T>(T value) => value) so
         // var copy = Echo(point); copy.X = 3; is rejected (CS8852).
+        // Also extension / instance receivers (points.ToArray()) whose return
+        // forwards the container's element type.
         if (expression is InvocationExpressionSyntax invocation &&
             semanticModel.GetSymbolInfo(invocation, cancellationToken).Symbol is IMethodSymbol method)
         {
@@ -536,6 +540,28 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     continue;
                 if (SymbolEqualityComparer.Default.Equals(method.Parameters[i].Type, method.ReturnType))
                     return true;
+
+                // Enumerable.ToArray<T>(IEnumerable<T>): parameter is sequence,
+                // return is T[] — preserve when element types match.
+                if (MethodReturnForwardsContainer(
+                        method,
+                        semanticModel.GetTypeInfo(args[i].Expression, cancellationToken).Type))
+                {
+                    return true;
+                }
+            }
+
+            if (invocation.Expression is MemberAccessExpressionSyntax memberAccess &&
+                ExpressionReferencesStorageAlias(
+                    memberAccess.Expression,
+                    aliases,
+                    semanticModel,
+                    cancellationToken) &&
+                MethodReturnForwardsContainer(
+                    method,
+                    semanticModel.GetTypeInfo(memberAccess.Expression, cancellationToken).Type))
+            {
+                return true;
             }
         }
 
@@ -578,6 +604,52 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="method"/>'s return forwards a container
+    /// (same type, or a sequence/array projection preserving element type).
+    /// </summary>
+    private static bool MethodReturnForwardsContainer(IMethodSymbol method, ITypeSymbol? sourceType)
+    {
+        if (sourceType == null || method.ReturnsVoid)
+            return false;
+
+        var returnType = method.ReturnType;
+        if (SymbolEqualityComparer.Default.Equals(returnType, sourceType))
+            return true;
+
+        var sourceElement = TryGetSequenceElementType(sourceType);
+        var returnElement = TryGetSequenceElementType(returnType);
+        return sourceElement != null &&
+               returnElement != null &&
+               SymbolEqualityComparer.Default.Equals(sourceElement, returnElement);
+    }
+
+    private static ITypeSymbol? TryGetSequenceElementType(ITypeSymbol type)
+    {
+        if (type is IArrayTypeSymbol array)
+            return array.ElementType;
+
+        if (type is INamedTypeSymbol named)
+        {
+            if (named.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T &&
+                named.TypeArguments.Length == 1)
+            {
+                return named.TypeArguments[0];
+            }
+
+            foreach (var iface in named.AllInterfaces)
+            {
+                if (iface.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T &&
+                    iface.TypeArguments.Length == 1)
+                {
+                    return iface.TypeArguments[0];
+                }
+            }
+        }
+
+        return null;
     }
 
     internal static bool HasElementWrite(
