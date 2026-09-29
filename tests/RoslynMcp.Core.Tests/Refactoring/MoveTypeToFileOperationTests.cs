@@ -1139,8 +1139,6 @@ public class MoveTypeToFileOperationTests
             ("AShared.cs", CollisionASource),
             ("BShared.cs", CollisionBSource));
         var operation = new MoveTypeToFileOperation(workspace.Context);
-        var beforeA = await File.ReadAllTextAsync(workspace.FilePaths["AShared.cs"]);
-        var beforeB = await File.ReadAllTextAsync(workspace.FilePaths["BShared.cs"]);
 
         var result = await operation.ExecuteAsync(new MoveTypeToFileParams
         {
@@ -1149,18 +1147,42 @@ public class MoveTypeToFileOperationTests
 
         Assert.True(result.Success);
         var sharedPath = workspace.TargetPath("Shared.cs");
-        var aStillThere = File.Exists(workspace.FilePaths["AShared.cs"]) &&
-            (await File.ReadAllTextAsync(workspace.FilePaths["AShared.cs"])).Contains("class Shared");
-        var bStillThere = File.Exists(workspace.FilePaths["BShared.cs"]) &&
-            (await File.ReadAllTextAsync(workspace.FilePaths["BShared.cs"])).Contains("class Shared");
+        // EnumerateCsharpDocuments OrderBy FilePath ordinal: AShared.cs claims Shared.cs first.
+        Assert.True(File.Exists(sharedPath));
+        Assert.Contains("namespace A", await File.ReadAllTextAsync(sharedPath));
+        Assert.DoesNotContain("namespace B", await File.ReadAllTextAsync(sharedPath));
+        Assert.False(File.Exists(workspace.FilePaths["AShared.cs"]));
+        Assert.True(File.Exists(workspace.FilePaths["BShared.cs"]));
+        Assert.Contains("namespace B", await File.ReadAllTextAsync(workspace.FilePaths["BShared.cs"]));
+        Assert.Contains("class Shared", await File.ReadAllTextAsync(workspace.FilePaths["BShared.cs"]));
+        Assert.Single(result.Changes!.FilesCreated);
+    }
 
-        // First claim moves; later claim is skipped. Exactly one source keeps Shared.
-        Assert.True(aStillThere ^ bStillThere);
-        if (File.Exists(sharedPath))
-            Assert.Contains("class Shared", await File.ReadAllTextAsync(sharedPath));
-        Assert.True(File.Exists(workspace.FilePaths["AShared.cs"]) || File.Exists(workspace.FilePaths["BShared.cs"]));
-        Assert.True(beforeA.Contains("class Shared") && beforeB.Contains("class Shared"));
-        Assert.True(result.Changes!.FilesCreated.Count <= 1);
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_DestinationCollision_OrderByFilePathWinsOverInsertionOrder()
+    {
+        // Insert BShared before AShared so solution document order ≠ FilePath ordinal order.
+        // Helper walk sorts by FilePath, so AShared still claims Shared.cs.
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("BShared.cs", CollisionBSource),
+            ("AShared.cs", CollisionASource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var sharedPath = workspace.TargetPath("Shared.cs");
+        Assert.True(File.Exists(sharedPath));
+        Assert.Contains("namespace A", await File.ReadAllTextAsync(sharedPath));
+        Assert.DoesNotContain("namespace B", await File.ReadAllTextAsync(sharedPath));
+        Assert.False(File.Exists(workspace.FilePaths["AShared.cs"]));
+        Assert.True(File.Exists(workspace.FilePaths["BShared.cs"]));
+        Assert.Contains("namespace B", await File.ReadAllTextAsync(workspace.FilePaths["BShared.cs"]));
+        Assert.Contains("class Shared", await File.ReadAllTextAsync(workspace.FilePaths["BShared.cs"]));
+        Assert.Single(result.Changes!.FilesCreated);
     }
 
     [SkippableFact]
