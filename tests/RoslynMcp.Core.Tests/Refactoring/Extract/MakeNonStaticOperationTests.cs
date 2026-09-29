@@ -1441,6 +1441,8 @@ public class MakeNonStaticOperationTests
         var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
         var flipped = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
 
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
         var result = await operation.ExecuteAsync(new MakeNonStaticParams
         {
             AllFiles = true,
@@ -1453,6 +1455,68 @@ public class MakeNonStaticOperationTests
         Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
         Assert.Single(result.Changes!.FilesModified);
         Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpMakeNonStatic_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, """
+                namespace TestApp;
+
+                public class Outside
+                {
+                    public static int Add(int a, int b) => a + b;
+
+                    public int Use()
+                    {
+                        var other = new Outside();
+                        return Outside.Add(1, 2);
+                    }
+                }
+                """);
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new MakeNonStaticParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task MakeNonStatic_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new MakeNonStaticOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpMakeNonStatic_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MakeNonStaticParams
+            {
+                AllFiles = true,
+                SourceFile = missing
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
     [SkippableFact]
