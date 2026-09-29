@@ -797,30 +797,49 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
             if (expr is SimpleLambdaExpressionSyntax simple)
             {
-                var body = simple.ExpressionBody;
-                while (body is ParenthesizedExpressionSyntax parenthesizedBody)
-                    body = parenthesizedBody.Expression;
-
-                if (body is IdentifierNameSyntax id &&
-                    id.Identifier.ValueText == simple.Parameter.Identifier.ValueText)
-                {
+                var parameterName = simple.Parameter.Identifier.ValueText;
+                if (IsIdentityLambdaBody(simple.ExpressionBody, simple.Block, parameterName))
                     return true;
-                }
             }
 
             if (expr is ParenthesizedLambdaExpressionSyntax paren &&
                 paren.ParameterList.Parameters.Count == 1)
             {
-                var body = paren.ExpressionBody;
-                while (body is ParenthesizedExpressionSyntax parenthesizedBody)
-                    body = parenthesizedBody.Expression;
-
-                if (body is IdentifierNameSyntax pid &&
-                    pid.Identifier.ValueText == paren.ParameterList.Parameters[0].Identifier.ValueText)
-                {
+                var parameterName = paren.ParameterList.Parameters[0].Identifier.ValueText;
+                if (IsIdentityLambdaBody(paren.ExpressionBody, paren.Block, parameterName))
                     return true;
-                }
             }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True for expression-bodied <c>x =&gt; x</c> / <c>x =&gt; (x)</c> or block-bodied
+    /// <c>x =&gt; { return x; }</c> identity selectors (Copilot).
+    /// </summary>
+    private static bool IsIdentityLambdaBody(
+        ExpressionSyntax? expressionBody,
+        BlockSyntax? block,
+        string parameterName)
+    {
+        if (expressionBody != null)
+        {
+            var body = expressionBody;
+            while (body is ParenthesizedExpressionSyntax parenthesizedBody)
+                body = parenthesizedBody.Expression;
+
+            return body is IdentifierNameSyntax id &&
+                   id.Identifier.ValueText == parameterName;
+        }
+
+        if (block?.Statements is [ReturnStatementSyntax { Expression: { } returned }])
+        {
+            while (returned is ParenthesizedExpressionSyntax parenthesizedReturned)
+                returned = parenthesizedReturned.Expression;
+
+            return returned is IdentifierNameSyntax id &&
+                   id.Identifier.ValueText == parameterName;
         }
 
         return false;
