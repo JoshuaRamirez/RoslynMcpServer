@@ -2,9 +2,9 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.FindSymbols;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
-using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Query;
@@ -25,11 +25,7 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
 
         if (!@params.Line.HasValue && string.IsNullOrWhiteSpace(@params.SymbolName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Either line/column or symbolName must be provided.");
