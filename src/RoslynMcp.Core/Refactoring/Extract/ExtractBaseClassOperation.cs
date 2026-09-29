@@ -102,13 +102,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid base class name: {@params.BaseClassName}");
 
         if (@params.TargetFile != null)
-        {
-            if (!PathResolver.IsAbsolutePath(@params.TargetFile))
-                throw new RefactoringException(ErrorCodes.InvalidTargetPath, "targetFile must be an absolute path.");
-
-            if (!PathResolver.IsValidCSharpFilePath(@params.TargetFile))
-                throw new RefactoringException(ErrorCodes.InvalidTargetPath, "targetFile must be a .cs file.");
-        }
+            TargetFilePathHelpers.ValidateTargetFilePath(@params.TargetFile);
     }
 
 

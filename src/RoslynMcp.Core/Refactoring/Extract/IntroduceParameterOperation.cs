@@ -68,11 +68,7 @@ public sealed class IntroduceParameterOperation : RefactoringOperationBase<Intro
 
         var sourceFile = @params.SourceFile!;
 
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        SourceFilePathHelpers.ValidateSourceFilePath(sourceFile);
 
         if (@params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");

@@ -7,8 +7,8 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// Shared <c>sourceFile</c> absolute-.cs path validation used by Extract /
 /// Hierarchy / Signature / Rename / Convert / Generate / Inline / Organize /
 /// Format / Encapsulate / MoveTypeToNamespace / MakeStatic / MakeNonStatic /
-/// UseBaseType / RenameFileToMatchType params gates, plus Query ops and
-/// SafeDelete that previously inlined the same two
+/// UseBaseType / RenameFileToMatchType / IntroduceParameter params gates, plus
+/// Query ops and SafeDelete that previously inlined the same two
 /// <see cref="PathResolver"/> checks (absolute path + <c>.cs</c> extension,
 /// throwing <see cref="RefactoringException"/> with
 /// <see cref="ErrorCodes.InvalidSourcePath"/>).

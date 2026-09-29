@@ -94,13 +94,7 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
             throw new RefactoringException(ErrorCodes.InvalidSymbolName, $"Invalid interface name: {@params.InterfaceName}");
 
         if (@params.TargetFile != null)
-        {
-            if (!PathResolver.IsAbsolutePath(@params.TargetFile))
-                throw new RefactoringException(ErrorCodes.InvalidTargetPath, "targetFile must be an absolute path.");
-
-            if (!PathResolver.IsValidCSharpFilePath(@params.TargetFile))
-                throw new RefactoringException(ErrorCodes.InvalidTargetPath, "targetFile must be a .cs file.");
-        }
+            TargetFilePathHelpers.ValidateTargetFilePath(@params.TargetFile);
     }
 
 
