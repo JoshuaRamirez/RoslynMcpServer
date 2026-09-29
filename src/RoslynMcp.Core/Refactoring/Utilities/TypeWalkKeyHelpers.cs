@@ -6,8 +6,9 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// <summary>
 /// Shared type-walk de-dupe key used by Generate AllFiles paths that collapse
 /// rematches and partials within one project (3-overload form with file-local
-/// identity). Same body as the ImplementAbstract / ImplementInterface /
-/// GenerateToString / GenerateOverrides / GenerateEqualsHashCode copies.
+/// identity). Callers: ImplementAbstract / ImplementInterface /
+/// GenerateToString / GenerateOverrides / GenerateEqualsHashCode /
+/// GenerateConstructor (and Hierarchy / Extract ops that share the same key).
 /// </summary>
 internal static class TypeWalkKeyHelpers
 {
