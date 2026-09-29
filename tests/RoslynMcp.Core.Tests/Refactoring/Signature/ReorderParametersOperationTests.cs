@@ -1597,6 +1597,89 @@ public class ReorderParametersOperationTests
     }
 
     [SkippableFact]
+    public async Task ReorderParameters_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ReorderParametersOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var flipped = FlipPathCasing(pathA);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new ReorderParametersParams
+        {
+            AllFiles = true,
+            SourceFile = flipped,
+            NewOrder = new[] { 1, 0 }
+        });
+
+        Assert.True(result.Success);
+        var updatedA = await File.ReadAllTextAsync(pathA);
+        Assert.Equal(["name", "count"], ParameterNames(GetMethods(updatedA, "Process").Single()));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, pathA));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ReorderParametersOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpReorderParameters_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "public class Outside { public void Process(int count, string name) { } }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new ReorderParametersParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath,
+                    NewOrder = new[] { 1, 0 }
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task ReorderParameters_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new ReorderParametersOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpReorderParameters_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ReorderParametersParams
+            {
+                AllFiles = true,
+                SourceFile = missing,
+                NewOrder = new[] { 1, 0 }
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [SkippableFact]
     public async Task ReorderParameters_AllFilesTrue_SkipsWhenTargetWouldMatchOverload()
     {
         const string source = """
@@ -1908,6 +1991,23 @@ public class ReorderParametersOperationTests
             Path.GetFullPath(left).Replace('\\', '/'),
             Path.GetFullPath(right).Replace('\\', '/'),
             StringComparison.OrdinalIgnoreCase);
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
 
     private static ReorderParametersParams ValidParams(
         string? sourceFile = null,

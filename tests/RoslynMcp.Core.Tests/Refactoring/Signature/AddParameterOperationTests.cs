@@ -1471,6 +1471,95 @@ public class AddParameterOperationTests
     }
 
     [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new AddParameterOperation(workspace.Context);
+        var pathA = Path.Combine(workspace.DirectoryPath, "FileA.cs");
+        var pathB = Path.Combine(workspace.DirectoryPath, "FileB.cs");
+        var beforeB = await File.ReadAllTextAsync(pathB);
+        var flipped = FlipPathCasing(pathA);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new AddParameterParams
+        {
+            AllFiles = true,
+            SourceFile = flipped,
+            ParameterName = "timeout",
+            ParameterType = "int",
+            DefaultValue = "30"
+        });
+
+        Assert.True(result.Success);
+        var updatedA = await File.ReadAllTextAsync(pathA);
+        Assert.Contains("timeout", ParameterNames(GetMethods(updatedA, "Process").Single()));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(pathB));
+        Assert.Contains(result.Changes!.FilesModified, p => PathsEqual(p, pathA));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathsEqual(p, pathB));
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new AddParameterOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpAddParameter_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "public class Outside { public void Process() { } }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new AddParameterParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath,
+                    ParameterName = "timeout",
+                    ParameterType = "int",
+                    DefaultValue = "30"
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task AddParameter_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("FileA.cs", EligibleFileA),
+            ("FileB.cs", EligibleFileB),
+            ("FileC.cs", IneligibleFileC));
+        var operation = new AddParameterOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpAddParameter_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddParameterParams
+            {
+                AllFiles = true,
+                SourceFile = missing,
+                ParameterName = "timeout",
+                ParameterType = "int",
+                DefaultValue = "30"
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [SkippableFact]
     public async Task AddParameter_AllFilesTrue_SkipsWhenTargetWouldCollapseOverloads()
     {
         const string source = """
@@ -1676,6 +1765,23 @@ public class AddParameterOperationTests
             Path.GetFullPath(left).Replace('\\', '/'),
             Path.GetFullPath(right).Replace('\\', '/'),
             StringComparison.OrdinalIgnoreCase);
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
 
     private static AddParameterParams ValidParams(
         string? sourceFile = null,
