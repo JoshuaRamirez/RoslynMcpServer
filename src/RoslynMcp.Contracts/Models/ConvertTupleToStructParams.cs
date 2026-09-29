@@ -18,7 +18,7 @@ public sealed class ConvertTupleToStructParams
     public required int Line { get; init; }
 
     /// <summary>
-    /// Name of the struct to create.
+    /// Name of the struct or record struct to create.
     /// </summary>
     public required string NewTypeName { get; init; }
 
@@ -29,6 +29,11 @@ public sealed class ConvertTupleToStructParams
     /// SymbolAmbiguous). Omitted keeps today's line pick.
     /// </summary>
     public int? Column { get; init; }
+
+    /// <summary>
+    /// Create a <c>record struct</c> instead of a <c>struct</c>. Default: false.
+    /// </summary>
+    public bool AsRecord { get; init; }
 
     /// <summary>
     /// Return computed changes without applying. Default: false.

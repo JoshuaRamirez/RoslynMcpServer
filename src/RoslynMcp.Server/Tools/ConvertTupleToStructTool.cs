@@ -33,7 +33,7 @@ public sealed class ConvertTupleToStructTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a tuple ((int X, int Y) / (1, 2) / ValueTuple) to a named struct and replace same-shape tuple creations in the solution. column (optional) picks the tuple creation whose span covers that column when set with line (exclusive-end; unique covering match, else CannotConvert / SymbolAmbiguous); omitted keeps today's line pick.";
+        "Convert a tuple ((int X, int Y) / (1, 2) / ValueTuple) to a named struct or record struct and replace same-shape tuple creations in the solution. asRecord (optional) creates a record struct with init properties instead of a struct with set properties. column (optional) picks the tuple creation whose span covers that column when set with line (exclusive-end; unique covering match, else CannotConvert / SymbolAmbiguous); omitted keeps today's line pick.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -60,12 +60,18 @@ public sealed class ConvertTupleToStructTool : IToolHandler
             newTypeName = new
             {
                 type = "string",
-                description = "Name of the struct to create"
+                description = "Name of the struct or record struct to create"
             },
             column = new
             {
                 type = "integer",
                 description = "1-based column on the tuple expression. When set with line, selects the creation whose span covers that column (exclusive-end; today's unique covering match, else CannotConvert / SymbolAmbiguous). Omitted keeps today's line pick."
+            },
+            asRecord = new
+            {
+                type = "boolean",
+                description = "Create a record struct instead of a struct",
+                @default = false
             },
             preview = new
             {
@@ -104,6 +110,7 @@ public sealed class ConvertTupleToStructTool : IToolHandler
                 Line = args.Line ?? 0,
                 NewTypeName = args.NewTypeName,
                 Column = args.Column,
+                AsRecord = args.AsRecord ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -136,6 +143,7 @@ public sealed class ConvertTupleToStructTool : IToolHandler
         public int? Line { get; init; }
         public string NewTypeName { get; init; } = "";
         public int? Column { get; init; }
+        public bool? AsRecord { get; init; }
         public bool? Preview { get; init; }
     }
 }
