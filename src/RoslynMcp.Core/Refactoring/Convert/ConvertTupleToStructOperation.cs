@@ -592,6 +592,10 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 // return is IEnumerable<T> (Codex P1 sequence factories).
                 if (MethodReturnWrapsElementAsSequence(method, parameter))
                     return true;
+
+                // Task.FromResult(point) / similar: argument is T, return is G<T>.
+                if (MethodReturnWrapsElementAsConstructedGeneric(method, parameter))
+                    return true;
             }
 
             if (invocation.Expression is MemberAccessExpressionSyntax memberAccess &&
@@ -680,12 +684,23 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 elementAccess.Expression, aliases, semanticModel, cancellationToken);
         }
 
-        // Nested receivers: wrapped.Value / memory.Span when the receiver
-        // expression flows from converted storage (Codex tuple-embed P1).
+        // Forwarding properties only (memory.Span). Do not treat every member
+        // of an alias-containing aggregate as an alias (wrapped.Fresh) — Codex P2.
         if (expression is MemberAccessExpressionSyntax nestedAccess)
         {
+            var memberName = nestedAccess.Name.Identifier.ValueText;
+            if (memberName is "Span" or "Memory")
+            {
+                return ExpressionReferencesStorageAlias(
+                    nestedAccess.Expression, aliases, semanticModel, cancellationToken);
+            }
+        }
+
+        // Await unwrap: var copy = await Task.FromResult(point);
+        if (expression is AwaitExpressionSyntax awaitExpression)
+        {
             return ExpressionReferencesStorageAlias(
-                nestedAccess.Expression, aliases, semanticModel, cancellationToken);
+                awaitExpression.Expression, aliases, semanticModel, cancellationToken);
         }
 
         return false;
@@ -757,6 +772,30 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         // (Select) that happens to construct to the same tuple shape (Codex P2).
         // Identity Select(x => x) is handled separately via IsIdentitySelectInvocation.
         return OriginalReturnElementSharesSourceElementTypeParameter(method);
+    }
+
+    /// <summary>
+    /// True when <paramref name="parameter"/> is type parameter <c>T</c> and the
+    /// method returns a constructed generic whose sole type argument is <c>T</c>
+    /// (e.g. <c>Task.FromResult&lt;T&gt;</c>).
+    /// </summary>
+    private static bool MethodReturnWrapsElementAsConstructedGeneric(
+        IMethodSymbol method,
+        IParameterSymbol parameter)
+    {
+        var original = (method.ReducedFrom ?? method).OriginalDefinition;
+        if (parameter.Ordinal < 0 || parameter.Ordinal >= original.Parameters.Length)
+            return false;
+
+        if (original.Parameters[parameter.Ordinal].Type is not ITypeParameterSymbol elementTypeParameter)
+            return false;
+
+        if (original.ReturnType is not INamedTypeSymbol { Arity: 1 } namedReturn)
+            return false;
+
+        return SymbolEqualityComparer.Default.Equals(
+            namedReturn.TypeArguments[0],
+            elementTypeParameter);
     }
 
     /// <summary>
@@ -969,6 +1008,51 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         return null;
     }
 
+    /// <summary>
+    /// True when <paramref name="memberAccess"/> is <c>wrapped.Member</c> and
+    /// <c>wrapped</c> was initialized with a tuple literal whose <c>Member</c>
+    /// argument embeds converted storage.
+    /// </summary>
+    private static bool TupleAggregateMemberCarriesStorage(
+        MemberAccessExpressionSyntax memberAccess,
+        HashSet<ISymbol> storages,
+        SemanticModel semanticModel,
+        SyntaxNode root)
+    {
+        var aggregate = semanticModel.GetSymbolInfo(memberAccess.Expression).Symbol;
+        if (aggregate == null || !storages.Contains(aggregate))
+            return false;
+
+        var memberName = memberAccess.Name.Identifier.ValueText;
+        foreach (var node in root.DescendantNodes())
+        {
+            if (node is not VariableDeclaratorSyntax declarator ||
+                !SymbolEqualityComparer.Default.Equals(
+                    semanticModel.GetDeclaredSymbol(declarator),
+                    aggregate) ||
+                declarator.Initializer?.Value is not TupleExpressionSyntax tuple)
+            {
+                continue;
+            }
+
+            foreach (var argument in tuple.Arguments)
+            {
+                if (argument.NameColon?.Name.Identifier.ValueText != memberName)
+                    continue;
+
+                if (ExpressionReferencesStorageAlias(
+                        argument.Expression,
+                        storages,
+                        semanticModel))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     internal static bool HasElementWrite(
         SyntaxNode root,
         SemanticModel semanticModel,
@@ -1038,6 +1122,18 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                         memberAccess.Expression,
                         storages,
                         semanticModel))
+                {
+                    return true;
+                }
+
+                // wrapped.Value.X when wrapped embeds converted storage in Value
+                // (MemberAccess no longer aliases every aggregate member).
+                if (memberAccess.Expression is MemberAccessExpressionSyntax outerMember &&
+                    TupleAggregateMemberCarriesStorage(
+                        outerMember,
+                        storages,
+                        semanticModel,
+                        root))
                 {
                     return true;
                 }
