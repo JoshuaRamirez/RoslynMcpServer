@@ -468,6 +468,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     alias = semanticModel.GetSymbolInfo(assignment.Left, cancellationToken).Symbol;
                     source = assignment.Right;
                 }
+                else if (node is ForEachStatementSyntax forEach &&
+                         forEach.Type is RefTypeSyntax)
+                {
+                    // foreach (ref var p in points.AsSpan()) p.X = 3;
+                    alias = semanticModel.GetDeclaredSymbol(forEach, cancellationToken);
+                    source = forEach.Expression;
+                }
 
                 if (alias == null || source == null || aliases.Contains(alias))
                     continue;
@@ -487,8 +494,6 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     }
 
     /// <summary>
-    /// True when <paramref name="expression"/> is (or is a conditional /
-    /// switch / identity-like generic invocation / array-or-collection
     /// True when <paramref name="expression"/> is (or is a conditional /
     /// switch / identity-like generic invocation / array-or-collection
     /// creation / container element read / container-forwarding call that
@@ -564,11 +569,32 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     aliases,
                     semanticModel,
                     cancellationToken) &&
-                MethodReturnForwardsContainer(
-                    method,
-                    semanticModel.GetTypeInfo(memberAccess.Expression, cancellationToken).Type))
+                (MethodReturnForwardsContainer(
+                     method,
+                     semanticModel.GetTypeInfo(memberAccess.Expression, cancellationToken).Type) ||
+                 IsIdentitySelectInvocation(invocation, method)))
             {
                 return true;
+            }
+
+            // points.Select(x => x) — TSource/TResult differ but selector forwards.
+            if (IsIdentitySelectInvocation(invocation, method))
+            {
+                if (invocation.Expression is MemberAccessExpressionSyntax receiverAccess &&
+                    ExpressionReferencesStorageAlias(
+                        receiverAccess.Expression,
+                        aliases,
+                        semanticModel,
+                        cancellationToken))
+                {
+                    return true;
+                }
+
+                foreach (var arg in args)
+                {
+                    if (ExpressionReferencesStorageAlias(arg.Expression, aliases, semanticModel, cancellationToken))
+                        return true;
+                }
             }
         }
 
@@ -658,8 +684,13 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             return false;
 
         // First()/Single()/ElementAt(): return type is the sequence element.
-        if (SymbolEqualityComparer.Default.Equals(returnType, sourceElement))
+        // Restrict by name so Aggregate/etc. that synthesize a fresh element
+        // are not treated as forwarding (Copilot).
+        if (SymbolEqualityComparer.Default.Equals(returnType, sourceElement) &&
+            IsElementExtractingMethod(method))
+        {
             return true;
+        }
 
         var returnElement = TryGetSequenceElementType(returnType);
         if (returnElement == null ||
@@ -672,7 +703,15 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         // return element type parameter to be the same as the source sequence's
         // element type parameter (ToArray/AsSpan), not a distinct TResult
         // (Select) that happens to construct to the same tuple shape (Codex P2).
+        // Identity Select(x => x) is handled separately via IsIdentitySelectInvocation.
         return OriginalReturnElementSharesSourceElementTypeParameter(method);
+    }
+
+    private static bool IsElementExtractingMethod(IMethodSymbol method)
+    {
+        var name = (method.ReducedFrom ?? method).OriginalDefinition.Name;
+        return name is "First" or "FirstOrDefault" or "Single" or "SingleOrDefault"
+            or "Last" or "LastOrDefault" or "ElementAt" or "ElementAtOrDefault";
     }
 
     private static bool OriginalReturnElementSharesSourceElementTypeParameter(IMethodSymbol method)
@@ -698,6 +737,41 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             array.ElementType is ITypeParameterSymbol arrayElement)
         {
             return SymbolEqualityComparer.Default.Equals(sourceTypeParameter, arrayElement);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True for <c>Select</c>/<c>SelectMany</c> whose selector is a simple identity
+    /// (<c>x =&gt; x</c>), so <c>points.Select(x =&gt; x).ToArray()</c> still aliases.
+    /// </summary>
+    private static bool IsIdentitySelectInvocation(InvocationExpressionSyntax invocation, IMethodSymbol method)
+    {
+        var name = (method.ReducedFrom ?? method).OriginalDefinition.Name;
+        if (name is not ("Select" or "SelectMany"))
+            return false;
+
+        foreach (var argument in invocation.ArgumentList.Arguments)
+        {
+            var expr = argument.Expression;
+            while (expr is ParenthesizedExpressionSyntax parenthesized)
+                expr = parenthesized.Expression;
+
+            if (expr is SimpleLambdaExpressionSyntax simple &&
+                simple.ExpressionBody is IdentifierNameSyntax id &&
+                id.Identifier.ValueText == simple.Parameter.Identifier.ValueText)
+            {
+                return true;
+            }
+
+            if (expr is ParenthesizedLambdaExpressionSyntax paren &&
+                paren.ParameterList.Parameters.Count == 1 &&
+                paren.ExpressionBody is IdentifierNameSyntax pid &&
+                pid.Identifier.ValueText == paren.ParameterList.Parameters[0].Identifier.ValueText)
+            {
+                return true;
+            }
         }
 
         return false;

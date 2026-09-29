@@ -1458,6 +1458,85 @@ public class ConvertTupleToStructOperationTests
     }
 
     [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordIdentitySelectAliasElementWrite_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System.Linq;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    var more = points.Select(x => x).ToArray();
+                    more[0].X = 5;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("element assignments", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordRefForeachElementWrite_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    foreach (ref var p in points.AsSpan())
+                        p.X = 3;
+                    return points;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("element assignments", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+
+    [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordInferredContainerElementWrite_ThrowsAndWritesNothing()
     {
         const string source = """
@@ -2308,6 +2387,7 @@ public class ConvertTupleToStructOperationTests
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
+                    <ImplicitUsings>enable</ImplicitUsings>
                     <Nullable>enable</Nullable>{langVersionProperty}{allowUnsafeProperty}
                   </PropertyGroup>
                 </Project>
