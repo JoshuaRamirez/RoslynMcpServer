@@ -160,8 +160,9 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
     /// eligible ordinary static method an instance method using today's
     /// rewrite (remove <c>static</c>, update type-name call sites and
     /// method-group conversions to a valid instance receiver or
-    /// <c>this</c>). Optional <c>sourceFile</c> limits the walk to that
-    /// one file. Already-instance, extension, virtual/override/abstract/extern,
+    /// <c>this</c>). Optional <c>sourceFile</c> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>.
+    /// Already-instance, extension, virtual/override/abstract/extern,
     /// static-class, interface / interface-implementing, no-valid-receiver,
     /// uneditable, conditional-access, and otherwise ineligible methods are
     /// skipped rather than failing the walk. When two plans claim the same
@@ -177,7 +178,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var acceptedDeclarations = new List<DeclarationEdit>();
         var acceptedCallSites = new List<CallSiteEdit>();

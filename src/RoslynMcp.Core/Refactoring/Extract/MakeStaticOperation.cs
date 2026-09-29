@@ -162,7 +162,8 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
     /// every eligible ordinary instance method static using today's
     /// rewrite (add <c>static</c>, update call sites and method-group
     /// conversions to the containing type name). Optional
-    /// <c>sourceFile</c> limits the walk to that one file. Already-static,
+    /// <c>sourceFile</c> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Already-static,
     /// virtual/override/abstract/extern, interface / interface-implementing,
     /// instance-member-using, uneditable, conditional-access, and otherwise
     /// ineligible methods are skipped rather than failing the walk. When
@@ -178,7 +179,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var acceptedDeclarations = new List<DeclarationEdit>();
         var acceptedCallSites = new List<CallSiteEdit>();
