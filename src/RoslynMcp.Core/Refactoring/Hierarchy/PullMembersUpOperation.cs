@@ -258,7 +258,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
         var pulledCountByDoc = new Dictionary<DocumentId, int>();
@@ -585,42 +585,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         return names;
     }
 
-    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
-    {
-        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
-        var exactMatches = documents
-            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
-            .ToList();
-        if (exactMatches.Count > 0)
-        {
-            var exactKeys = exactMatches
-                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
-                .ToHashSet(StringComparer.Ordinal);
-            return documents
-                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
-                .ToList();
-        }
-
-        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
-        var distinctPaths = matchedDocuments
-            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        return distinctPaths.Count switch
-        {
-            0 when !File.Exists(sourceFile) => throw new RefactoringException(
-                ErrorCodes.SourceFileNotFound,
-                $"Source file not found: {sourceFile}"),
-            0 => throw new RefactoringException(
-                ErrorCodes.SourceNotInWorkspace,
-                $"File not found in workspace: {sourceFile}"),
-            > 1 => throw new RefactoringException(
-                ErrorCodes.SourceNotInWorkspace,
-                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
-            _ => matchedDocuments
-        };
-    }
-
     /// <summary>
     /// Finds a type by <paramref name="typeName"/>. Omitted
     /// <paramref name="column"/> keeps today's typeName + optional
@@ -750,8 +714,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 ErrorCodes.TypeNotFound,
                 $"Type '{typeName}' not found in file.");
     }
-
-
 
     internal static INamedTypeSymbol GetTargetBaseType(INamedTypeSymbol derived, string? targetTypeName)
     {
@@ -1276,7 +1238,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             .NormalizeWhitespace();
     }
 
-
     private static MemberDeclarationSyntax ConvertToVirtualOnBase(MemberDeclarationSyntax member)
     {
         return member switch
@@ -1333,7 +1294,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         var kindSet = kinds.ToHashSet();
         return modifiers.Where(token => !kindSet.Contains(token.Kind()));
     }
-
 
     private static TypeDeclarationSyntax BuildDerivedReplacement(
         TypeDeclarationSyntax derivedDecl,
@@ -1490,7 +1450,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         var currentTarget = FindTypeInRoot(targetRoot, target.Name, targetSyntax.Span);
         return targetDocument.WithSyntaxRoot(targetRoot.ReplaceNode(currentTarget, newTarget)).Project.Solution;
     }
-
 
     private static TypeDeclarationSyntax FindTypeInRoot(SyntaxNode root, string typeName, Microsoft.CodeAnalysis.Text.TextSpan preferredSpan)
     {

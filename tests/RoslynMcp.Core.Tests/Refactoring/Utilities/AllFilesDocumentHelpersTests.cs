@@ -1,6 +1,8 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
+using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Core.FileSystem;
+using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using Xunit;
 
@@ -197,6 +199,91 @@ public class AllFilesDocumentHelpersTests
         {
             TryDelete(sharedPath);
             TryDelete(soloPath);
+        }
+    }
+
+
+    [Fact]
+    public void FilterAllFilesDocumentsBySourceFile_ExactPath_ReturnsExactAndLinkedSiblings()
+    {
+        using var workspace = new AdhocWorkspace();
+        var projectA = workspace.AddProject("A", LanguageNames.CSharp);
+        var projectB = workspace.AddProject("B", LanguageNames.CSharp);
+
+        var sharedPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-" + Path.GetRandomFileName() + ".cs");
+        var otherPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-other-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(sharedPath, "class Shared {}");
+        File.WriteAllText(otherPath, "class Other {}");
+        try
+        {
+            AddOnDiskDocument(workspace, projectA.Id, sharedPath, "class Shared {}");
+            AddOnDiskDocument(workspace, projectB.Id, sharedPath, "class Shared {}");
+            AddOnDiskDocument(workspace, projectA.Id, otherPath, "class Other {}");
+
+            var docs = AllFilesDocumentHelpers.EnumerateCsharpDocuments(workspace.CurrentSolution);
+            var filtered = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(docs, sharedPath);
+
+            Assert.Equal(2, filtered.Count);
+            Assert.All(filtered, d => Assert.Equal(
+                PathResolver.GetPathComparisonKey(sharedPath),
+                PathResolver.GetPathComparisonKey(d.FilePath!)));
+        }
+        finally
+        {
+            TryDelete(sharedPath);
+            TryDelete(otherPath);
+        }
+    }
+
+    [Fact]
+    public void FilterAllFilesDocumentsBySourceFile_MissingFile_ThrowsSourceFileNotFound()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+        var existing = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-exist-" + Path.GetRandomFileName() + ".cs");
+        var missing = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-missing-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(existing, "class E {}");
+        try
+        {
+            AddOnDiskDocument(workspace, project.Id, existing, "class E {}");
+            var docs = AllFilesDocumentHelpers.EnumerateCsharpDocuments(workspace.CurrentSolution);
+
+            var ex = Assert.Throws<RefactoringException>(() =>
+                AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(docs, missing));
+
+            Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+            Assert.Contains(missing, ex.Message);
+        }
+        finally
+        {
+            TryDelete(existing);
+        }
+    }
+
+    [Fact]
+    public void FilterAllFilesDocumentsBySourceFile_ExistsButNotInWorkspace_ThrowsSourceNotInWorkspace()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+        var inWorkspace = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-inws-" + Path.GetRandomFileName() + ".cs");
+        var onDiskOnly = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-ondisk-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(inWorkspace, "class In {}");
+        File.WriteAllText(onDiskOnly, "class Out {}");
+        try
+        {
+            AddOnDiskDocument(workspace, project.Id, inWorkspace, "class In {}");
+            var docs = AllFilesDocumentHelpers.EnumerateCsharpDocuments(workspace.CurrentSolution);
+
+            var ex = Assert.Throws<RefactoringException>(() =>
+                AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(docs, onDiskOnly));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+            Assert.Contains(onDiskOnly, ex.Message);
+        }
+        finally
+        {
+            TryDelete(inWorkspace);
+            TryDelete(onDiskOnly);
         }
     }
 

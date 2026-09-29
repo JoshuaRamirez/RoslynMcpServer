@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Core.FileSystem;
 
 namespace RoslynMcp.Core.Refactoring.Utilities;
@@ -9,11 +10,15 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// IntroduceParameter / InlineMethod / ChangeSignature / ExtractInterface
 /// (and Enumerate / GroupBy peers), plus BuildLinkedPathCounts /
 /// DocumentPathHasLinkedMultiView for AddParameter / RemoveParameter /
-/// ReorderParameters / RenameNamespace / PushMembersDown. Same bodies as the
-/// identical copies on those operations.
+/// ReorderParameters / RenameNamespace / PushMembersDown, plus
+/// FilterAllFilesDocumentsBySourceFile for ExtractBaseClass /
+/// ExtractInterface / ExtractMethod / PushMembersDown / PullMembersUp.
+/// Same bodies as the identical copies on those operations.
 /// Named AllFilesDocumentHelpers (not DocumentSourceFileFilter) because this
-/// cluster is the walk + linked-sibling coalesce used together by those
-/// operations; sourceFile filtering stays on DocumentSourceFileFilter.
+/// cluster is the walk + linked-sibling coalesce + exact/ignore-case
+/// optional-<c>sourceFile</c> limiter used together by those operations;
+/// the lower-level ignore-case path-key match stays on
+/// <see cref="DocumentSourceFileFilter"/>.
 /// </summary>
 internal static class AllFilesDocumentHelpers
 {
@@ -162,5 +167,56 @@ internal static class AllFilesDocumentHelpers
 
         var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
         return linkedPathCounts.TryGetValue(pathKey, out var count) && count > 1;
+    }
+
+    /// <summary>
+    /// Limits an allFiles document list to an optional caller-supplied
+    /// <paramref name="sourceFile"/>. Prefer exact
+    /// <see cref="PathResolver.NormalizePath"/> matches (and every linked
+    /// sibling that shares a path-comparison key with those exact hits);
+    /// otherwise fall back to
+    /// <see cref="DocumentSourceFileFilter.FilterDocumentsBySourceFile"/>
+    /// and require a single distinct comparison-key path. Throws
+    /// <see cref="RefactoringException"/> with
+    /// <see cref="ErrorCodes.SourceFileNotFound"/> /
+    /// <see cref="ErrorCodes.SourceNotInWorkspace"/> when nothing matches or
+    /// multiple ignore-case paths collide. Same body as the identical copies
+    /// on ExtractBaseClass / ExtractInterface / ExtractMethod /
+    /// PushMembersDown / PullMembersUp.
+    /// </summary>
+    internal static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
+    {
+        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
+        var exactMatches = documents
+            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
+            .ToList();
+        if (exactMatches.Count > 0)
+        {
+            var exactKeys = exactMatches
+                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+                .ToHashSet(StringComparer.Ordinal);
+            return documents
+                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
+                .ToList();
+        }
+
+        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
+        var distinctPaths = matchedDocuments
+            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        return distinctPaths.Count switch
+        {
+            0 when !File.Exists(sourceFile) => throw new RefactoringException(
+                ErrorCodes.SourceFileNotFound,
+                $"Source file not found: {sourceFile}"),
+            0 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"File not found in workspace: {sourceFile}"),
+            > 1 => throw new RefactoringException(
+                ErrorCodes.SourceNotInWorkspace,
+                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
+            _ => matchedDocuments
+        };
     }
 }
