@@ -118,8 +118,8 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         // implementations; renameImplementations: false is honored after the rename.
         var options = new SymbolRenameOptions(
             RenameOverloads: @params.RenameOverloads,
-            RenameInStrings: false,
-            RenameInComments: false,
+            RenameInStrings: @params.RenameInStrings,
+            RenameInComments: @params.RenameInComments,
             RenameFile: false // We handle file rename separately
         );
 
@@ -618,8 +618,8 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
 
         var options = new SymbolRenameOptions(
             RenameOverloads: @params.RenameOverloads,
-            RenameInStrings: false,
-            RenameInComments: false,
+            RenameInStrings: @params.RenameInStrings,
+            RenameInComments: @params.RenameInComments,
             RenameFile: false);
 
         IReadOnlyList<MemberIdentity> interfaceMembersToPreserve = [];

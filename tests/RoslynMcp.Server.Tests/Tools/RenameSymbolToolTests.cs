@@ -111,6 +111,21 @@ public class RenameSymbolToolTests
     }
 
     [Fact]
+    public void GetDefinition_HasOptionalRenameInCommentsAndStrings()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+        Assert.True(properties.TryGetProperty("renameInComments", out var comments));
+        Assert.True(properties.TryGetProperty("renameInStrings", out var strings));
+        Assert.Equal("boolean", comments.GetProperty("type").GetString());
+        Assert.Equal("boolean", strings.GetProperty("type").GetString());
+        Assert.False(comments.GetProperty("default").GetBoolean());
+        Assert.False(strings.GetProperty("default").GetBoolean());
+    }
+
+    [Fact]
     public void GetDefinition_HasProperties_ForAllParameters()
     {
         // Act
@@ -132,8 +147,12 @@ public class RenameSymbolToolTests
         Assert.True(properties.TryGetProperty("renameOverloads", out _));
         Assert.True(properties.TryGetProperty("renameImplementations", out var renameImplementations));
         Assert.True(properties.TryGetProperty("renameFile", out _));
+        Assert.True(properties.TryGetProperty("renameInComments", out var renameInComments));
+        Assert.True(properties.TryGetProperty("renameInStrings", out var renameInStrings));
         Assert.True(properties.TryGetProperty("preview", out _));
         Assert.True(renameImplementations.GetProperty("default").GetBoolean());
+        Assert.False(renameInComments.GetProperty("default").GetBoolean());
+        Assert.False(renameInStrings.GetProperty("default").GetBoolean());
     }
 
     #endregion

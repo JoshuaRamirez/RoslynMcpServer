@@ -33,7 +33,7 @@ public sealed class RenameSymbolTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Rename any C# symbol (type, method, property, field, variable, etc.) with automatic reference updates across the solution. sourceFile, symbolName, and newName are required when allFiles is omitted or false. allFiles: true walks every C# file and renames every eligible declaration whose simple name equals symbolName to newName under today's single-site validation (sourceFile optional when true; cannot be combined with line or column; symbolName / newName remain required). renameOverloads / renameImplementations / renameFile / preview remain valid with allFiles.";
+        "Rename any C# symbol (type, method, property, field, variable, etc.) with automatic reference updates across the solution. sourceFile, symbolName, and newName are required when allFiles is omitted or false. allFiles: true walks every C# file and renames every eligible declaration whose simple name equals symbolName to newName under today's single-site validation (sourceFile optional when true; cannot be combined with line or column; symbolName / newName remain required). renameOverloads / renameImplementations / renameFile / renameInComments / renameInStrings / preview remain valid with allFiles.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -97,6 +97,18 @@ public sealed class RenameSymbolTool : IToolHandler
                 type = "boolean",
                 description = "Rename the file if renaming a type that matches the filename. Valid with allFiles; colliding destinations are skipped.",
                 @default = true
+            },
+            renameInComments = new
+            {
+                type = "boolean",
+                description = "Also rename matching identifier text inside comments. Default false (today's behavior). Valid with allFiles.",
+                @default = false
+            },
+            renameInStrings = new
+            {
+                type = "boolean",
+                description = "Also rename matching identifier text inside string literals. Default false (today's behavior). Valid with allFiles.",
+                @default = false
             },
             preview = new
             {
@@ -173,6 +185,8 @@ public sealed class RenameSymbolTool : IToolHandler
                 RenameOverloads = args.RenameOverloads ?? false,
                 RenameImplementations = args.RenameImplementations ?? true,
                 RenameFile = args.RenameFile ?? true,
+                RenameInComments = args.RenameInComments ?? false,
+                RenameInStrings = args.RenameInStrings ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -210,6 +224,8 @@ public sealed class RenameSymbolTool : IToolHandler
         public bool? RenameOverloads { get; init; }
         public bool? RenameImplementations { get; init; }
         public bool? RenameFile { get; init; }
+        public bool? RenameInComments { get; init; }
+        public bool? RenameInStrings { get; init; }
         public bool? Preview { get; init; }
     }
 }
