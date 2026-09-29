@@ -243,7 +243,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
     /// / <c>GenerateOverridesOperation.ExecuteAllFilesAsync</c>) and generates
     /// the named property on every eligible type. Optional
     /// <see cref="GeneratePropertyParams.SourceFile"/> limits via
-    /// <see cref="DocumentSourceFileFilter"/>. Already-has-name /
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Already-has-name /
     /// unsupported / missing-field / uneditable types are skipped rather
     /// than failing the walk. When every type is a no-op, succeeds with
     /// empty changes.
@@ -258,7 +258,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var generatedCountByDoc = new Dictionary<DocumentId, int>();
         var processedTypes = new HashSet<string>(StringComparer.Ordinal);

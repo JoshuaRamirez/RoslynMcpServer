@@ -237,7 +237,8 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     /// <see cref="TypeDeclarationSyntax"/> (class / struct / record /
     /// record struct / interface, including nested — same node kind as
     /// today's host after <c>FindTypeDeclaration</c>). Optional
-    /// <c>sourceFile</c> limits the walk to that one file. Interface,
+    /// <see cref="ImplementAbstractParams.SourceFile"/> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>. Interface,
     /// static, struct, enum, delegate, no-unimplemented, uneditable,
     /// <c>NameCollision</c>, and otherwise ineligible types are skipped
     /// rather than failing the walk. When a later rewrite conflicts with
@@ -254,7 +255,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var implementedCountByDoc = new Dictionary<DocumentId, int>();
         var processedTypes = new HashSet<string>(StringComparer.Ordinal);
