@@ -204,7 +204,8 @@ public sealed class IntroduceParameterOperation : RefactoringOperationBase<Intro
     /// / <c>InlineVariableOperation.ExecuteAllFilesAsync</c>) and promotes
     /// every eligible local <see cref="VariableDeclaratorSyntax"/> in a
     /// <see cref="LocalDeclarationStatementSyntax"/> inside a method body.
-    /// Optional <c>sourceFile</c> limits via <see cref="DocumentSourceFileFilter"/>.
+    /// Optional <c>sourceFile</c> limits via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>.
     /// Linked documents that share a physical path are rewritten once and the
     /// same text is applied to every sibling <see cref="DocumentId"/> via
     /// <see cref="Solution.GetChanges(Solution)"/> coalesce (prefer a changed
@@ -226,7 +227,7 @@ public sealed class IntroduceParameterOperation : RefactoringOperationBase<Intro
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         // One physical path may appear as multiple Documents when linked into
         // several projects. Rewrite once per normalized path and apply the same

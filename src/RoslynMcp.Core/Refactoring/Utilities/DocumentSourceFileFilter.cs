@@ -23,7 +23,7 @@ internal static class DocumentSourceFileFilter
     /// GenerateOverrides / GenerateEqualsHashCode /
     /// GenerateConstructor / GenerateToString / ImplementInterface /
     /// ImplementAbstract copies (InlineConstant / InlineVariable / InlineMethod /
-    /// MakeStatic / MakeNonStatic
+    /// MakeStatic / MakeNonStatic / IntroduceParameter
     /// now use <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>).
     /// </summary>
     internal static List<Document> FilterDocumentsBySourceFile(List<Document> documents, string sourceFile)
