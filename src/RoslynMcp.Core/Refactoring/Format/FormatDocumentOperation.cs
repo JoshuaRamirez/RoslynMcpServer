@@ -3,8 +3,8 @@ using Microsoft.CodeAnalysis.Formatting;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
-using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Refactoring.Base;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Format;
