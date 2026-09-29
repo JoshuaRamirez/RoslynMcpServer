@@ -170,14 +170,10 @@ public sealed class MoveTypeToFileOperation
         if (string.IsNullOrWhiteSpace(@params.TargetFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "targetFile is required.");
 
-        if (!PathResolver.IsAbsolutePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
 
         if (!PathResolver.IsAbsolutePath(@params.TargetFile))
             throw new RefactoringException(ErrorCodes.InvalidTargetPath, "targetFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
 
         if (!PathResolver.IsValidCSharpFilePath(@params.TargetFile))
             throw new RefactoringException(ErrorCodes.InvalidTargetPath, "targetFile must be a .cs file.");

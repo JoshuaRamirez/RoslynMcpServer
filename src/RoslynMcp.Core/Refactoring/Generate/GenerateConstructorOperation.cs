@@ -109,11 +109,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         var sourceFile = @params.SourceFile!;
 
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        SourceFilePathHelpers.ValidateSourceFilePath(sourceFile);
 
         if (@params.Line.HasValue && @params.Line.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Line number must be >= 1.");

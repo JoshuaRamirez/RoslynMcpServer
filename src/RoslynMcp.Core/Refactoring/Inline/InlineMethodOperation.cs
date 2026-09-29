@@ -69,11 +69,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         var sourceFile = @params.SourceFile!;
         var methodName = @params.MethodName!;
 
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        SourceFilePathHelpers.ValidateSourceFilePath(sourceFile);
 
         if (!File.Exists(sourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {sourceFile}");

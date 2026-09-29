@@ -75,11 +75,7 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
 
         var sourceFile = @params.SourceFile!;
 
-        if (!PathResolver.IsAbsolutePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
-
-        if (!PathResolver.IsValidCSharpFilePath(sourceFile))
-            throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        SourceFilePathHelpers.ValidateSourceFilePath(sourceFile);
 
         ValidatePropertyShape(@params);
 
