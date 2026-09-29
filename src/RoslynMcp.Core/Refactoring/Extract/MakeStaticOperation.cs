@@ -198,7 +198,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
             if (root == null || semanticModel == null)
                 continue;
 
-            foreach (var methodDecl in CollectOrdinaryMethods(root))
+            foreach (var methodDecl in StaticMethodHelpers.CollectOrdinaryMethods(root))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -336,18 +336,6 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         convertedCount == 1
             ? "Make method static"
             : $"Make {convertedCount} methods static";
-
-    /// <summary>
-    /// Collects every <see cref="MethodDeclarationSyntax"/> in
-    /// <paramref name="root"/> in deterministic span order (ordinary-kind
-    /// filter is applied later via <see cref="TryGetEligibleMethod"/>).
-    /// </summary>
-    internal static IReadOnlyList<MethodDeclarationSyntax> CollectOrdinaryMethods(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .OrderBy(method => method.SpanStart)
-            .ThenBy(method => method.Span.Length)
-            .ToList();
 
     /// <summary>
     /// Classifies a method for allFiles using the same kind / modifier /
@@ -684,7 +672,7 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         {
             MemberAccessExpressionSyntax memberAccess when memberAccess.Expression == receiver => memberAccess.Name,
             ConditionalAccessExpressionSyntax conditional when conditional.Expression == receiver =>
-                GetConditionalBindingName(conditional),
+                StaticMethodHelpers.GetConditionalBindingName(conditional),
             _ => null
         };
 
@@ -695,14 +683,6 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
             SymbolEqualityComparer.Default.Equals(referenced.OriginalDefinition, method.OriginalDefinition);
     }
 
-    private static SimpleNameSyntax? GetConditionalBindingName(ConditionalAccessExpressionSyntax conditional) =>
-        conditional.WhenNotNull switch
-        {
-            MemberBindingExpressionSyntax binding => binding.Name,
-            InvocationExpressionSyntax invocation when invocation.Expression is MemberBindingExpressionSyntax binding =>
-                binding.Name,
-            _ => null
-        };
 
     private static RefactoringException CreateUsesInstanceMembersException(
         IMethodSymbol method,
@@ -745,8 +725,8 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
             declarations.Add(new DeclarationEdit(
                 declaration.SyntaxTree,
                 declaration.Span,
-                GetSignatureSnippet(declaration),
-                GetSignatureSnippet(AddStaticModifier(declaration))));
+                StaticMethodHelpers.GetSignatureSnippet(declaration),
+                StaticMethodHelpers.GetSignatureSnippet(AddStaticModifier(declaration))));
         }
 
         if (declarations.Count == 0)
@@ -789,11 +769,11 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
                 if (root == null || model == null)
                     continue;
 
-                var nameNode = FindReferencedName(root, location.Location.SourceSpan);
+                var nameNode = StaticMethodHelpers.FindReferencedName(root, location.Location.SourceSpan);
                 if (nameNode == null)
                     continue;
 
-                if (IsConditionalAccessCallSite(nameNode))
+                if (StaticMethodHelpers.IsConditionalAccessCallSite(nameNode))
                     throw CreateConditionalAccessException(method);
 
                 var target = GetRewriteTarget(nameNode);
@@ -821,18 +801,6 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         return edits;
     }
 
-    private static SimpleNameSyntax? FindReferencedName(SyntaxNode root, TextSpan span)
-    {
-        var node = root.FindNode(span, getInnermostNodeForTie: true);
-        return node as SimpleNameSyntax
-            ?? node.AncestorsAndSelf().OfType<SimpleNameSyntax>()
-                .FirstOrDefault(name => name.Span.Contains(span) || span.Contains(name.Span));
-    }
-
-    private static bool IsConditionalAccessCallSite(SimpleNameSyntax name) =>
-        name.Parent is MemberBindingExpressionSyntax ||
-        name.Ancestors().OfType<ConditionalAccessExpressionSyntax>().Any(conditional =>
-            GetConditionalBindingName(conditional) == name);
 
     private static RefactoringException CreateConditionalAccessException(IMethodSymbol method)
     {
@@ -1026,13 +994,6 @@ public sealed class MakeStaticOperation : RefactoringOperationBase<MakeStaticPar
         return method.WithModifiers(modifiers.Insert(insertIndex, staticToken));
     }
 
-    private static string GetSignatureSnippet(MethodDeclarationSyntax method)
-    {
-        var returnType = method.ReturnType.ToString();
-        var modifiers = string.Join(" ", method.Modifiers.Select(token => token.Text));
-        var signature = $"{modifiers} {returnType} {method.Identifier}{method.TypeParameterList}{method.ParameterList}";
-        return signature.Trim();
-    }
 
     private static RefactoringResult CreatePreviewResult(Guid operationId, StaticPlan plan)
     {

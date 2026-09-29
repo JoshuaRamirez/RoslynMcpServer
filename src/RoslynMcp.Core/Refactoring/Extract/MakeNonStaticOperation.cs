@@ -197,7 +197,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
             if (root == null || semanticModel == null)
                 continue;
 
-            foreach (var methodDecl in CollectOrdinaryMethods(root))
+            foreach (var methodDecl in StaticMethodHelpers.CollectOrdinaryMethods(root))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -336,18 +336,6 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         convertedCount == 1
             ? "Make method an instance method"
             : $"Make {convertedCount} methods instance methods";
-
-    /// <summary>
-    /// Collects every <see cref="MethodDeclarationSyntax"/> in
-    /// <paramref name="root"/> in deterministic span order (ordinary-kind
-    /// filter is applied later via <see cref="TryGetEligibleMethod"/>).
-    /// </summary>
-    internal static IReadOnlyList<MethodDeclarationSyntax> CollectOrdinaryMethods(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .OrderBy(method => method.SpanStart)
-            .ThenBy(method => method.Span.Length)
-            .ToList();
 
     /// <summary>
     /// Classifies a method for allFiles using the same kind / modifier /
@@ -605,8 +593,8 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
             declarations.Add(new DeclarationEdit(
                 declaration.SyntaxTree,
                 declaration.Span,
-                GetSignatureSnippet(declaration),
-                GetSignatureSnippet(RemoveStaticModifier(declaration))));
+                StaticMethodHelpers.GetSignatureSnippet(declaration),
+                StaticMethodHelpers.GetSignatureSnippet(RemoveStaticModifier(declaration))));
         }
 
         if (declarations.Count == 0)
@@ -649,14 +637,14 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
                 if (root == null || model == null)
                     continue;
 
-                var nameNode = FindReferencedName(root, location.Location.SourceSpan);
+                var nameNode = StaticMethodHelpers.FindReferencedName(root, location.Location.SourceSpan);
                 if (nameNode == null)
                     continue;
 
                 if (MethodSymbolHelpers.IsInNameof(nameNode))
                     continue;
 
-                if (IsConditionalAccessCallSite(nameNode) && NeedsConditionalAccessRewrite(nameNode, model))
+                if (StaticMethodHelpers.IsConditionalAccessCallSite(nameNode) && NeedsConditionalAccessRewrite(nameNode, model))
                     throw CreateConditionalAccessException(method);
 
                 var rewrite = ResolveCallSiteRewrite(nameNode, method, model, cancellationToken);
@@ -679,19 +667,6 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         return edits;
     }
 
-    private static SimpleNameSyntax? FindReferencedName(SyntaxNode root, TextSpan span)
-    {
-        var node = root.FindNode(span, getInnermostNodeForTie: true);
-        return node as SimpleNameSyntax
-            ?? node.AncestorsAndSelf().OfType<SimpleNameSyntax>()
-                .FirstOrDefault(name => name.Span.Contains(span) || span.Contains(name.Span));
-    }
-
-
-    private static bool IsConditionalAccessCallSite(SimpleNameSyntax name) =>
-        name.Parent is MemberBindingExpressionSyntax ||
-        name.Ancestors().OfType<ConditionalAccessExpressionSyntax>().Any(conditional =>
-            GetConditionalBindingName(conditional) == name);
 
     private static bool NeedsConditionalAccessRewrite(SimpleNameSyntax name, SemanticModel model)
     {
@@ -701,14 +676,6 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         return name.Parent is not MemberBindingExpressionSyntax;
     }
 
-    private static SimpleNameSyntax? GetConditionalBindingName(ConditionalAccessExpressionSyntax conditional) =>
-        conditional.WhenNotNull switch
-        {
-            MemberBindingExpressionSyntax binding => binding.Name,
-            InvocationExpressionSyntax invocation when invocation.Expression is MemberBindingExpressionSyntax binding =>
-                binding.Name,
-            _ => null
-        };
 
     private static RefactoringException CreateConditionalAccessException(IMethodSymbol method)
     {
@@ -1236,13 +1203,6 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         return method.WithModifiers(modifiers.RemoveAt(index));
     }
 
-    private static string GetSignatureSnippet(MethodDeclarationSyntax method)
-    {
-        var returnType = method.ReturnType.ToString();
-        var modifiers = string.Join(" ", method.Modifiers.Select(token => token.Text));
-        var signature = $"{modifiers} {returnType} {method.Identifier}{method.TypeParameterList}{method.ParameterList}";
-        return signature.Trim();
-    }
 
     private static RefactoringResult CreatePreviewResult(Guid operationId, StaticPlan plan)
     {
