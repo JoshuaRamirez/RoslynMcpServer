@@ -164,6 +164,45 @@ public class ConvertTupleToStructOperationTests
     }
 
     [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecord_CreatesRecordStructWithInitProperties()
+    {
+        const string source = """
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    return (X: 1, Y: 2);
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 7,
+            NewTypeName = "Point",
+            AsRecord = true
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Symbol);
+        Assert.Equal(RoslynMcp.Contracts.Enums.SymbolKind.Record, result.Symbol!.Kind);
+
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public record struct Point", text);
+        Assert.Contains("public int X { get; init; }", text);
+        Assert.Contains("public int Y { get; init; }", text);
+        Assert.Contains("return new Point { X = 1, Y = 2 };", text);
+        Assert.DoesNotContain("public struct Point", text);
+        Assert.DoesNotContain("{ get; set; }", text);
+    }
+
+    [SkippableFact]
     public async Task ConvertTupleToStruct_UnnamedTuple_UsesItemNames()
     {
         const string source = """

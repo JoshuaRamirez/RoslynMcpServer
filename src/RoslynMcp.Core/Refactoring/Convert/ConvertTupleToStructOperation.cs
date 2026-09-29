@@ -16,7 +16,8 @@ namespace RoslynMcp.Core.Refactoring.Convert;
 
 /// <summary>
 /// Converts a C# tuple / <c>ValueTuple</c> creation to a named struct
-/// and replaces same-shape tuple creations that share that tuple type.
+/// or <c>record struct</c> and replaces same-shape tuple creations that
+/// share that tuple type.
 /// </summary>
 public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<ConvertTupleToStructParams>
 {
@@ -106,6 +107,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         ValidateMembersForGeneratedType(members, semanticModel, insertPosition);
         var typeDeclaration = CreateNamedStruct(
             lookupName,
+            @params.AsRecord,
             members,
             semanticModel,
             insertPosition);
@@ -147,7 +149,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             {
                 Name = lookupName,
                 FullyQualifiedName = qualifiedName,
-                Kind = SymbolKind.Struct
+                Kind = @params.AsRecord ? SymbolKind.Record : SymbolKind.Struct
             },
             creations.Count,
             0);
@@ -258,6 +260,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
     internal static TypeDeclarationSyntax CreateNamedStruct(
         string typeName,
+        bool asRecord,
         IReadOnlyList<TupleMember> members,
         SemanticModel semanticModel,
         int insertPosition)
@@ -269,7 +272,8 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             {
                 SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
                     .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)),
-                SyntaxFactory.AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+                SyntaxFactory.AccessorDeclaration(
+                        asRecord ? SyntaxKind.InitAccessorDeclaration : SyntaxKind.SetAccessorDeclaration)
                     .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
             };
 
@@ -278,11 +282,33 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)));
         });
 
-        return SyntaxFactory.StructDeclaration(typeName)
-            .WithIdentifier(CreateIdentifier(typeName))
-            .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
-            .WithMembers(SyntaxFactory.List<MemberDeclarationSyntax>(properties))
-            .NormalizeWhitespace();
+        TypeDeclarationSyntax declaration;
+        if (asRecord)
+        {
+            declaration = SyntaxFactory.RecordDeclaration(
+                    default,
+                    SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)),
+                    SyntaxFactory.Token(SyntaxKind.RecordKeyword),
+                    CreateIdentifier(typeName),
+                    typeParameterList: null,
+                    parameterList: null,
+                    baseList: null,
+                    default,
+                    SyntaxFactory.Token(SyntaxKind.OpenBraceToken),
+                    SyntaxFactory.List<MemberDeclarationSyntax>(properties),
+                    SyntaxFactory.Token(SyntaxKind.CloseBraceToken),
+                    default)
+                .WithClassOrStructKeyword(SyntaxFactory.Token(SyntaxKind.StructKeyword));
+        }
+        else
+        {
+            declaration = SyntaxFactory.StructDeclaration(typeName)
+                .WithIdentifier(CreateIdentifier(typeName))
+                .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
+                .WithMembers(SyntaxFactory.List<MemberDeclarationSyntax>(properties));
+        }
+
+        return declaration.NormalizeWhitespace();
     }
 
     internal static ExpressionSyntax ToNamedCreation(
@@ -833,7 +859,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 {
                     File = oldDoc.FilePath,
                     ChangeType = ChangeKind.Modify,
-                    Description = $"Convert tuple to struct '{@params.NewTypeName}'",
+                    Description = $"Convert tuple to {(@params.AsRecord ? "record struct" : "struct")} '{@params.NewTypeName}'",
                     BeforeSnippet = before.ToString(),
                     AfterSnippet = after.ToString()
                 });
@@ -850,7 +876,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 {
                     File = newDoc.FilePath,
                     ChangeType = ChangeKind.Create,
-                    Description = $"Create struct '{@params.NewTypeName}'",
+                    Description = $"Create {(@params.AsRecord ? "record struct" : "struct")} '{@params.NewTypeName}'",
                     BeforeSnippet = "// (new file)",
                     AfterSnippet = after.ToString()
                 });
@@ -863,7 +889,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             {
                 File = @params.SourceFile,
                 ChangeType = ChangeKind.Modify,
-                Description = $"Convert tuple to struct '{@params.NewTypeName}'",
+                Description = $"Convert tuple to {(@params.AsRecord ? "record struct" : "struct")} '{@params.NewTypeName}'",
                 BeforeSnippet = null,
                 AfterSnippet = null
             });

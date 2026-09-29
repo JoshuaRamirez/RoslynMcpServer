@@ -81,7 +81,11 @@ public class ConvertTupleToStructToolTests
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("newTypeName", out _));
         Assert.True(properties.TryGetProperty("column", out _));
+        Assert.True(properties.TryGetProperty("asRecord", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
+
+        var asRecord = properties.GetProperty("asRecord");
+        Assert.Equal("boolean", asRecord.GetProperty("type").GetString());
 
         var column = properties.GetProperty("column");
         Assert.Equal("integer", column.GetProperty("type").GetString());
