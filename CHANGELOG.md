@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 - Extracted shared `SourceFilePathHelpers.ValidateSourceFilePath` and replaced identical private copies across ExtractBaseClass / ExtractInterface / ExtractMethod / ExtractConstant / ExtractVariable / IntroduceField / PushMembersDown / PullMembersUp / AddParameter / RemoveParameter / ReorderParameters / ChangeSignature / ChangeReturnType / RenameSymbol / RenameNamespace / ConvertToBlockBody (#1495)
+- Folded Query ops + SafeDelete identical inline `PathResolver.IsAbsolutePath` / `IsValidCSharpFilePath` pairs into `SourceFilePathHelpers.ValidateSourceFilePath` (#1502)
 - Folded ExtractConstant / ExtractVariable `FilterAllFilesDocumentsBySourceFile` into `AllFilesDocumentHelpers` (default path) (#1485)
 - Folded IntroduceField / SafeDelete `FilterAllFilesDocumentsBySourceFile` missing-path casing-existence arm into `AllFilesDocumentHelpers` via optional `rejectMissingPathCasingMismatch` (#1481)
 - Extracted shared `AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile` and replaced identical copies across ExtractBaseClass / ExtractInterface / ExtractMethod / PushMembersDown / PullMembersUp (#1474)
