@@ -789,6 +789,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         if (name is not ("Select" or "SelectMany"))
             return false;
 
+        var lambdaIdentity = new List<bool>();
         foreach (var argument in invocation.ArgumentList.Arguments)
         {
             var expr = argument.Expression;
@@ -798,20 +799,41 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
             if (expr is SimpleLambdaExpressionSyntax simple)
             {
                 var parameterName = simple.Parameter.Identifier.ValueText;
-                if (IsIdentityLambdaBody(simple.ExpressionBody, simple.Block, parameterName))
-                    return true;
+                lambdaIdentity.Add(
+                    IsIdentityLambdaBody(simple.ExpressionBody, simple.Block, parameterName));
+                continue;
             }
 
             if (expr is ParenthesizedLambdaExpressionSyntax paren &&
-                paren.ParameterList.Parameters.Count == 1)
+                paren.ParameterList.Parameters.Count >= 1)
             {
-                var parameterName = paren.ParameterList.Parameters[0].Identifier.ValueText;
-                if (IsIdentityLambdaBody(paren.ExpressionBody, paren.Block, parameterName))
-                    return true;
+                // Select((x, index) => x): first parameter.
+                // SelectMany result selector (row, item) => item: last parameter.
+                var first = paren.ParameterList.Parameters[0].Identifier.ValueText;
+                var last = paren.ParameterList.Parameters[^1].Identifier.ValueText;
+                var identity =
+                    IsIdentityLambdaBody(paren.ExpressionBody, paren.Block, first) ||
+                    (paren.ParameterList.Parameters.Count > 1 &&
+                     name == "SelectMany" &&
+                     IsIdentityLambdaBody(paren.ExpressionBody, paren.Block, last));
+                // Indexed Select: body must be the element (first) parameter.
+                if (name == "Select" && paren.ParameterList.Parameters.Count > 1)
+                {
+                    identity = IsIdentityLambdaBody(paren.ExpressionBody, paren.Block, first);
+                }
+
+                lambdaIdentity.Add(identity);
             }
         }
 
-        return false;
+        // Select: any identity selector. SelectMany: every lambda must be identity
+        // so a fresh result selector does not false-alias (Codex P2).
+        if (lambdaIdentity.Count == 0)
+            return false;
+
+        return name == "Select"
+            ? lambdaIdentity.Any(x => x)
+            : lambdaIdentity.All(x => x);
     }
 
     /// <summary>
@@ -940,19 +962,16 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                 if (target != null && storages.Contains(target))
                     return true;
 
-                // Element/indexer receivers (points[0]) have no symbol on the
-                // element access itself. Only reject when the container derives
-                // from converted storage (tracked via CollectStorageAliases /
-                // array creations that embed an alias) — not every unrelated
-                // same-shape tuple container in the file (Codex P2).
-                if (memberAccess.Expression is ElementAccessExpressionSyntax elementAccess)
+                // Element/indexer receivers (points[0], points.AsSpan()[0],
+                // nested[0][0]): reject when the container expression flows from
+                // converted storage (Codex nested-receiver P1).
+                if (memberAccess.Expression is ElementAccessExpressionSyntax elementAccess &&
+                    ExpressionReferencesStorageAlias(
+                        elementAccess.Expression,
+                        storages,
+                        semanticModel))
                 {
-                    var container = elementAccess.Expression;
-                    while (container is ParenthesizedExpressionSyntax parenthesized)
-                        container = parenthesized.Expression;
-                    var containerSymbol = semanticModel.GetSymbolInfo(container).Symbol;
-                    if (containerSymbol != null && storages.Contains(containerSymbol))
-                        return true;
+                    return true;
                 }
             }
         }
