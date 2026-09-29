@@ -1610,6 +1610,123 @@ public class ConvertTupleToStructOperationTests
     }
 
 
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordMemorySpanElementWrite_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    var memory = points.AsMemory();
+                    memory.Span[0].X = 3;
+                    return points;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("element assignments", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordIdentityConvertAllAliasElementWrite_ThrowsAndWritesNothing()
+    {
+        const string source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    var more = Array.ConvertAll(points, x => x);
+                    more[0].X = 5;
+                    return more;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var original = await File.ReadAllTextAsync(workspace.SourcePath);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertTupleToStructParams
+            {
+                SourceFile = workspace.SourcePath,
+                Line = 9,
+                NewTypeName = "Point",
+                AsRecord = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("element assignments", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(original, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ConvertTupleToStruct_AsRecordFreshConvertAll_DoesNotFalseReject()
+    {
+        const string source = """
+            using System;
+
+            namespace TestApp;
+
+            public class Worker
+            {
+                public object Create()
+                {
+                    var point = (X: 1, Y: 2);
+                    var points = new[] { point };
+                    var more = Array.ConvertAll(points, _ => (X: 3, Y: 4));
+                    more[0].X = 5;
+                    return point;
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(source);
+        var operation = new ConvertTupleToStructOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertTupleToStructParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 9,
+            NewTypeName = "Point",
+            AsRecord = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("public record struct Point", text);
+        Assert.Contains("more[0].X = 5", text);
+    }
+
     [SkippableFact]
     public async Task ConvertTupleToStruct_AsRecordInferredContainerElementWrite_ThrowsAndWritesNothing()
     {

@@ -565,7 +565,19 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
                     continue;
 
                 if (SymbolEqualityComparer.Default.Equals(parameter.Type, method.ReturnType))
+                {
+                    // Array.ConvertAll / Select: same constructed types do not
+                    // imply aliasing when the converter synthesizes fresh values.
+                    if (RequiresIdentityConverterToForward(method))
+                    {
+                        if (IsIdentitySelectInvocation(invocation, method) ||
+                            IsIdentityConvertAllInvocation(invocation, method))
+                            return true;
+                        continue;
+                    }
+
                     return true;
+                }
 
                 // Enumerable.ToArray<T>(IEnumerable<T>): parameter is sequence,
                 // return is T[] — preserve when element types match / forward.
@@ -861,6 +873,41 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     /// True for expression-bodied <c>x =&gt; x</c> / <c>x =&gt; (x)</c> or block-bodied
     /// <c>x =&gt; { return x; }</c> identity selectors (Copilot).
     /// </summary>
+
+    private static bool RequiresIdentityConverterToForward(IMethodSymbol method)
+    {
+        var name = (method.ReducedFrom ?? method).OriginalDefinition.Name;
+        return name is "ConvertAll" or "Select" or "SelectMany";
+    }
+
+    private static bool IsIdentityConvertAllInvocation(InvocationExpressionSyntax invocation, IMethodSymbol method)
+    {
+        var name = (method.ReducedFrom ?? method).OriginalDefinition.Name;
+        if (name is not "ConvertAll")
+            return false;
+
+        foreach (var argument in invocation.ArgumentList.Arguments)
+        {
+            var expr = argument.Expression;
+            while (expr is ParenthesizedExpressionSyntax parenthesized)
+                expr = parenthesized.Expression;
+
+            if (expr is SimpleLambdaExpressionSyntax simple &&
+                IsIdentityLambdaBody(simple.ExpressionBody, simple.Block, simple.Parameter.Identifier.ValueText))
+                return true;
+
+            if (expr is ParenthesizedLambdaExpressionSyntax paren &&
+                paren.ParameterList.Parameters.Count >= 1 &&
+                IsIdentityLambdaBody(
+                    paren.ExpressionBody,
+                    paren.Block,
+                    paren.ParameterList.Parameters[0].Identifier.ValueText))
+                return true;
+        }
+
+        return false;
+    }
+
     private static bool IsIdentityLambdaBody(
         ExpressionSyntax? expressionBody,
         BlockSyntax? block,
