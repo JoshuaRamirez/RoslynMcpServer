@@ -1,6 +1,8 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
+using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Core.FileSystem;
+using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using Xunit;
 
@@ -198,6 +200,175 @@ public class AllFilesDocumentHelpersTests
             TryDelete(sharedPath);
             TryDelete(soloPath);
         }
+    }
+
+
+    [Fact]
+    public void FilterAllFilesDocumentsBySourceFile_ExactPath_ReturnsExactAndLinkedSiblings()
+    {
+        using var workspace = new AdhocWorkspace();
+        var projectA = workspace.AddProject("A", LanguageNames.CSharp);
+        var projectB = workspace.AddProject("B", LanguageNames.CSharp);
+
+        var sharedPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-" + Path.GetRandomFileName() + ".cs");
+        var otherPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-other-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(sharedPath, "class Shared {}");
+        File.WriteAllText(otherPath, "class Other {}");
+        try
+        {
+            AddOnDiskDocument(workspace, projectA.Id, sharedPath, "class Shared {}");
+            AddOnDiskDocument(workspace, projectB.Id, sharedPath, "class Shared {}");
+            AddOnDiskDocument(workspace, projectA.Id, otherPath, "class Other {}");
+
+            var docs = AllFilesDocumentHelpers.EnumerateCsharpDocuments(workspace.CurrentSolution);
+            var filtered = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(docs, sharedPath);
+
+            Assert.Equal(2, filtered.Count);
+            Assert.All(filtered, d => Assert.Equal(
+                PathResolver.GetPathComparisonKey(sharedPath),
+                PathResolver.GetPathComparisonKey(d.FilePath!)));
+        }
+        finally
+        {
+            TryDelete(sharedPath);
+            TryDelete(otherPath);
+        }
+    }
+
+    [Fact]
+    public void FilterAllFilesDocumentsBySourceFile_MissingFile_ThrowsSourceFileNotFound()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+        var existing = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-exist-" + Path.GetRandomFileName() + ".cs");
+        var missing = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-missing-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(existing, "class E {}");
+        try
+        {
+            AddOnDiskDocument(workspace, project.Id, existing, "class E {}");
+            var docs = AllFilesDocumentHelpers.EnumerateCsharpDocuments(workspace.CurrentSolution);
+
+            var ex = Assert.Throws<RefactoringException>(() =>
+                AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(docs, missing));
+
+            Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+            Assert.Contains(missing, ex.Message);
+        }
+        finally
+        {
+            TryDelete(existing);
+        }
+    }
+
+    [Fact]
+    public void FilterAllFilesDocumentsBySourceFile_ExistsButNotInWorkspace_ThrowsSourceNotInWorkspace()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+        var inWorkspace = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-inws-" + Path.GetRandomFileName() + ".cs");
+        var onDiskOnly = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-ondisk-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(inWorkspace, "class In {}");
+        File.WriteAllText(onDiskOnly, "class Out {}");
+        try
+        {
+            AddOnDiskDocument(workspace, project.Id, inWorkspace, "class In {}");
+            var docs = AllFilesDocumentHelpers.EnumerateCsharpDocuments(workspace.CurrentSolution);
+
+            var ex = Assert.Throws<RefactoringException>(() =>
+                AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(docs, onDiskOnly));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+            Assert.Contains(onDiskOnly, ex.Message);
+        }
+        finally
+        {
+            TryDelete(inWorkspace);
+            TryDelete(onDiskOnly);
+        }
+    }
+
+
+    [Fact]
+    public void FilterAllFilesDocumentsBySourceFile_IgnoreCaseAlias_ReturnsSingleMatch()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+
+        var exactPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-Case-" + Path.GetRandomFileName() + "-FileA.cs");
+        File.WriteAllText(exactPath, "class FileA {}");
+        try
+        {
+            AddOnDiskDocument(workspace, project.Id, exactPath, "class FileA {}");
+            var docs = AllFilesDocumentHelpers.EnumerateCsharpDocuments(workspace.CurrentSolution);
+            var aliased = FlipAsciiLetterCasing(exactPath);
+            Assert.False(
+                string.Equals(exactPath, aliased, StringComparison.Ordinal),
+                "FlipAsciiLetterCasing must change the request spelling.");
+
+            var filtered = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(docs, aliased);
+
+            Assert.Single(filtered);
+            Assert.Equal(
+                PathResolver.GetPathComparisonKey(exactPath),
+                PathResolver.GetPathComparisonKey(filtered[0].FilePath!));
+        }
+        finally
+        {
+            TryDelete(exactPath);
+        }
+    }
+
+    [SkippableFact]
+    public void FilterAllFilesDocumentsBySourceFile_AmbiguousIgnoreCase_ThrowsSourceNotInWorkspace()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+
+        var dir = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-amb-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(dir);
+        var upperPath = Path.Combine(dir, "FileA.cs");
+        var lowerPath = Path.Combine(dir, "filea.cs");
+        File.WriteAllText(upperPath, "class Upper {}");
+        File.WriteAllText(lowerPath, "class Lower {}");
+        try
+        {
+            Skip.If(
+                string.Equals(
+                    PathResolver.GetPathComparisonKey(upperPath),
+                    PathResolver.GetPathComparisonKey(lowerPath),
+                    StringComparison.Ordinal),
+                "Volume does not preserve case-distinct paths.");
+
+            AddOnDiskDocument(workspace, project.Id, upperPath, "class Upper {}");
+            AddOnDiskDocument(workspace, project.Id, lowerPath, "class Lower {}");
+            var docs = AllFilesDocumentHelpers.EnumerateCsharpDocuments(workspace.CurrentSolution);
+            var ambiguous = FlipAsciiLetterCasing(upperPath);
+
+            var ex = Assert.Throws<RefactoringException>(() =>
+                AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(docs, ambiguous));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+            Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            TryDelete(upperPath);
+            TryDelete(lowerPath);
+            if (Directory.Exists(dir))
+                Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    private static string FlipAsciiLetterCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            if (char.IsLetter(chars[i]))
+                chars[i] = char.IsUpper(chars[i]) ? char.ToLowerInvariant(chars[i]) : char.ToUpperInvariant(chars[i]);
+        }
+
+        return new string(chars);
     }
 
     private static Document AddOnDiskDocument(

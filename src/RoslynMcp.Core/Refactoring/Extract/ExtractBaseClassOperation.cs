@@ -386,7 +386,6 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
             0);
     }
 
-
     /// <summary>
     /// Walks every C# document (<c>FilePath</c> ends with <c>.cs</c>; same
     /// helpers as <c>ExtractInterfaceOperation.ExecuteAllFilesAsync</c> /
@@ -414,7 +413,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-            allDocuments = FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
 
         var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
         var extractedCountByDoc = new Dictionary<DocumentId, int>();
@@ -954,42 +953,6 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
         updatedRoot = updatedRoot.ReplaceNode(updatedTypeDecl, newTypeDecl);
         return updatedDoc.WithSyntaxRoot(updatedRoot).Project.Solution;
-    }
-
-    private static List<Document> FilterAllFilesDocumentsBySourceFile(List<Document> documents, string sourceFile)
-    {
-        var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
-        var exactMatches = documents
-            .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
-            .ToList();
-        if (exactMatches.Count > 0)
-        {
-            var exactKeys = exactMatches
-                .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
-                .ToHashSet(StringComparer.Ordinal);
-            return documents
-                .Where(d => exactKeys.Contains(PathResolver.GetPathComparisonKey(d.FilePath!)))
-                .ToList();
-        }
-
-        var matchedDocuments = DocumentSourceFileFilter.FilterDocumentsBySourceFile(documents, normalizedSourceFile);
-        var distinctPaths = matchedDocuments
-            .Select(d => PathResolver.GetPathComparisonKey(d.FilePath!))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        return distinctPaths.Count switch
-        {
-            0 when !File.Exists(sourceFile) => throw new RefactoringException(
-                ErrorCodes.SourceFileNotFound,
-                $"Source file not found: {sourceFile}"),
-            0 => throw new RefactoringException(
-                ErrorCodes.SourceNotInWorkspace,
-                $"File not found in workspace: {sourceFile}"),
-            > 1 => throw new RefactoringException(
-                ErrorCodes.SourceNotInWorkspace,
-                $"Multiple workspace files match path ignoring case: {sourceFile}. Use the exact file path casing."),
-            _ => matchedDocuments
-        };
     }
 
     /// <summary>
@@ -1783,7 +1746,6 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         return false;
     }
 
-
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,
         ExtractBaseClassParams @params,
@@ -1839,7 +1801,6 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
 
         return RefactoringResult.PreviewResult(operationId, pendingChanges);
     }
-
 
     /// <summary>
     /// Finds a type by <paramref name="typeName"/>. Omitted
@@ -1969,7 +1930,6 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                 ErrorCodes.TypeNotFound,
                 $"Class '{typeName}' not found in file.");
     }
-
 
     private static ClassDeclarationSyntax? RematchTypeDeclaration(
         SyntaxNode root,
