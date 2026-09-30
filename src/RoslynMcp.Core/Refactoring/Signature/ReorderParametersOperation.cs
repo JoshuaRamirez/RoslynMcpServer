@@ -773,57 +773,22 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         Solution solution,
         CancellationToken cancellationToken)
     {
-        var callSites = new List<CallSite>();
-        var seen = new HashSet<(DocumentId Id, TextSpan Span)>();
-
-        foreach (var method in methods)
-        {
-            var references = await SymbolFinder.FindReferencesAsync(method, solution, cancellationToken);
-            foreach (var referenced in references)
+        return await SignatureCallSiteHelpers.CollectInvocationCallSitesAsync(
+            methods,
+            solution,
+            async (document, invocation, method, ct) =>
             {
-                foreach (var location in referenced.Locations)
-                {
-                    if (location.Location.Kind != LocationKind.SourceFile)
-                        continue;
-
-                    var document = location.Document;
-                    var root = await document.GetSyntaxRootAsync(cancellationToken);
-                    if (root == null)
-                        continue;
-
-                    var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
-                    if (SignatureReferenceHelpers.IsDeclarationName(node, location.Location.SourceSpan))
-                        continue;
-
-                    var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-                    if (invocation != null && SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
-                    {
-                        if (!seen.Add((document.Id, invocation.Span)))
-                            continue;
-
-                        var model = await document.GetSemanticModelAsync(cancellationToken);
-                        var invoked = model?.GetSymbolInfo(invocation, cancellationToken).Symbol as IMethodSymbol;
-                        var isReduced = invoked?.MethodKind == MethodKind.ReducedExtension ||
-                                        invoked?.ReducedFrom != null;
-                        var sourceMethod = invoked?.ReducedFrom ?? invoked ?? method;
-                        var parameterNames = sourceMethod.Parameters.Length == fallbackParameterNames.Count
-                            ? sourceMethod.Parameters.Select(p => p.Name).ToArray()
-                            : fallbackParameterNames;
-                        callSites.Add(new CallSite(document, invocation.Span, isReduced, parameterNames));
-                        continue;
-                    }
-
-                    if (SignatureReferenceHelpers.IsNameOfArgument(node))
-                        continue;
-
-                    throw new RefactoringException(
-                        ErrorCodes.UnsupportedCallSite,
-                        $"Method '{method.Name}' is used as a method group or other unsupported reference and cannot be updated automatically.");
-                }
-            }
-        }
-
-        return callSites;
+                var model = await document.GetSemanticModelAsync(ct);
+                var invoked = model?.GetSymbolInfo(invocation, ct).Symbol as IMethodSymbol;
+                var isReduced = invoked?.MethodKind == MethodKind.ReducedExtension ||
+                                invoked?.ReducedFrom != null;
+                var sourceMethod = invoked?.ReducedFrom ?? invoked ?? method;
+                var parameterNames = sourceMethod.Parameters.Length == fallbackParameterNames.Count
+                    ? sourceMethod.Parameters.Select(p => p.Name).ToArray()
+                    : fallbackParameterNames;
+                return new CallSite(document, invocation.Span, isReduced, parameterNames);
+            },
+            cancellationToken);
     }
 
     private static async Task<Solution> ApplyChangesAsync(

@@ -810,49 +810,11 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
         Solution solution,
         CancellationToken cancellationToken)
     {
-        var callSites = new List<CallSite>();
-        var seen = new HashSet<(DocumentId Id, TextSpan Span)>();
-
-        foreach (var method in methods)
-        {
-            var references = await SymbolFinder.FindReferencesAsync(method, solution, cancellationToken);
-            foreach (var referenced in references)
-            {
-                foreach (var location in referenced.Locations)
-                {
-                    if (location.Location.Kind != LocationKind.SourceFile)
-                        continue;
-
-                    var document = location.Document;
-                    var root = await document.GetSyntaxRootAsync(cancellationToken);
-                    if (root == null)
-                        continue;
-
-                    var node = root.FindNode(location.Location.SourceSpan, getInnermostNodeForTie: true);
-                    if (SignatureReferenceHelpers.IsDeclarationName(node, location.Location.SourceSpan))
-                        continue;
-
-                    var invocation = node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault();
-                    if (invocation != null && SignatureReferenceHelpers.IsInvokedMethodName(invocation, location.Location.SourceSpan))
-                    {
-                        if (!seen.Add((document.Id, invocation.Span)))
-                            continue;
-
-                        callSites.Add(new CallSite(document, invocation.Span));
-                        continue;
-                    }
-
-                    if (SignatureReferenceHelpers.IsNameOfArgument(node))
-                        continue;
-
-                    throw new RefactoringException(
-                        ErrorCodes.UnsupportedCallSite,
-                        $"Method '{method.Name}' is used as a method group or other unsupported reference and cannot be updated automatically.");
-                }
-            }
-        }
-
-        return callSites;
+        return await SignatureCallSiteHelpers.CollectInvocationCallSitesAsync(
+            methods,
+            solution,
+            (document, invocation, method, ct) => Task.FromResult(new CallSite(document, invocation.Span)),
+            cancellationToken);
     }
 
     private static async Task<Solution> ApplyChangesAsync(
