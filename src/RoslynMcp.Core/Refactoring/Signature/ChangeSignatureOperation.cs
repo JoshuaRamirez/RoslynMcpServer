@@ -1206,7 +1206,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
                 continue;
             }
 
-            var invocation = RematchInvocation(root, site.Span);
+            var invocation = MethodRematchHelpers.RematchInvocation(root, site.Span);
             if (invocation != null)
                 declaringInvocations.Add(invocation);
         }
@@ -1254,7 +1254,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
             var keys = new List<InvocationExpressionSyntax>();
             foreach (var site in group.OrderByDescending(c => c.Span.Start))
             {
-                var invocation = RematchInvocation(callRoot, site.Span);
+                var invocation = MethodRematchHelpers.RematchInvocation(callRoot, site.Span);
                 if (invocation == null || keys.Contains(invocation))
                     continue;
                 keys.Add(invocation);
@@ -1437,27 +1437,6 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         }
 
         return false;
-    }
-
-    private static InvocationExpressionSyntax? RematchInvocation(SyntaxNode root, TextSpan span)
-    {
-        if (span.Start < 0 || span.End > root.FullSpan.End)
-        {
-            return root.DescendantNodes()
-                .OfType<InvocationExpressionSyntax>()
-                .OrderBy(i => Math.Abs(i.SpanStart - span.Start))
-                .ThenBy(i => i.Span.Length)
-                .FirstOrDefault();
-        }
-
-        var node = root.FindNode(span, getInnermostNodeForTie: true);
-        return node.AncestorsAndSelf().OfType<InvocationExpressionSyntax>().FirstOrDefault()
-            ?? root.DescendantNodes()
-                .OfType<InvocationExpressionSyntax>()
-                .Where(i => i.Span.OverlapsWith(span) || span.OverlapsWith(i.Span))
-                .OrderBy(i => Math.Abs(i.SpanStart - span.Start))
-                .ThenBy(i => i.Span.Length)
-                .FirstOrDefault();
     }
 
     private readonly record struct CallSite(DocumentId DocumentId, TextSpan Span);
