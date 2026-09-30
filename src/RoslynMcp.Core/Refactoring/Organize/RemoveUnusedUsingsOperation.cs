@@ -71,7 +71,8 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
         CancellationToken cancellationToken)
     {
         var document = GetDocumentOrThrow(sourceFile);
-        var rewrite = await TryBuildUnusedUsingsRewriteAsync(document, cancellationToken);
+        var rewrite = await TryBuildUnusedUsingsRewriteAsync(
+            document, cancellationToken, throwOnAnalysisFailure: true);
         if (rewrite is null)
         {
             return RefactoringResult.Succeeded(
@@ -165,7 +166,8 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
                 if (!DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
                     continue;
 
-                var rewrite = await TryBuildUnusedUsingsRewriteAsync(currentDocument, cancellationToken);
+                var rewrite = await TryBuildUnusedUsingsRewriteAsync(
+                    currentDocument, cancellationToken, throwOnAnalysisFailure: false);
                 if (rewrite is null)
                 {
                     sawNoOpEditable = true;
@@ -278,15 +280,25 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
     /// Builds an unused-usings rewrite for one document, or null when no usings
     /// need to be removed.
     /// </summary>
+    /// <param name="throwOnAnalysisFailure">
+    /// When true (single-file path), parse/semantic-model failure throws
+    /// <c>RoslynError</c>. When false (all-files walk), skip the document
+    /// like other all-files peers (Copilot on #1727).
+    /// </param>
     private static async Task<(CompilationUnitSyntax Root, CompilationUnitSyntax NewRoot, List<UsingDirectiveSyntax> UnusedUsings)?> TryBuildUnusedUsingsRewriteAsync(
         Document document,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool throwOnAnalysisFailure)
     {
         var root = await document.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
         if (root == null || semanticModel == null)
+        {
+            if (throwOnAnalysisFailure)
+                throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
             return null;
+        }
 
         // Find unused usings via diagnostics using defined diagnostic IDs
         var unusedUsingDiagnostics = semanticModel.GetDiagnostics(cancellationToken: cancellationToken)
