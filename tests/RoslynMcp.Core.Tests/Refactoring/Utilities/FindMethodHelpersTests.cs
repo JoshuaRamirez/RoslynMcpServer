@@ -263,14 +263,15 @@ public class FindMethodHelpersTests
         const string source = """
             class C
             {
-                public void B() { }
-                public void A(int x) { }
+                public void B(int first, int second, int third) { }
+                public void A() { }
             }
             """;
         var root = CSharpSyntaxTree.ParseText(source).GetRoot();
         var natural = root.DescendantNodes().OfType<MethodDeclarationSyntax>().ToList();
         Assert.Equal(2, natural.Count);
         Assert.True(natural[0].SpanStart < natural[1].SpanStart);
+        Assert.True(natural[0].Span.Length > natural[1].Span.Length);
 
         var ordered = FindMethodHelpers.OrderMethods(natural.AsEnumerable().Reverse());
         Assert.Equal(
