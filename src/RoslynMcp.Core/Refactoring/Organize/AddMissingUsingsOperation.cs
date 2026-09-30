@@ -29,7 +29,11 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
     {
         if (@params.AllFiles)
         {
-            // When processing all files, sourceFile is optional
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -199,25 +203,36 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
 
     /// <summary>
     /// Processes all C# documents in the solution to add missing using directives.
+    /// Optional <c>sourceFile</c> limits the walk via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as FormatDocument / ConvertToBlockBody).
     /// </summary>
     private async Task<RefactoringResult> ExecuteAllFilesAsync(
         Guid operationId,
         AddMissingUsingsParams @params,
         CancellationToken cancellationToken)
     {
-        var solution = Context.Solution;
-        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution);
+        // Accumulate on a local solution snapshot (same as SortUsings / FormatDocument)
+        // so CommitChangesAsync can diff against the original Context.Solution.
+        var currentSolution = Context.Solution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+        }
 
         var totalUsingsAdded = 0;
-        var allFilesModified = new List<string>();
+        var anyChanged = false;
         var allPendingChanges = new List<PendingChange>();
 
         foreach (var document in allDocuments)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var root = await document.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
-            var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+            var currentDocument = currentSolution.GetDocument(document.Id) ?? document;
+            var root = await currentDocument.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
+            var semanticModel = await currentDocument.GetSemanticModelAsync(cancellationToken);
 
             if (root == null || semanticModel == null)
                 continue;
@@ -270,7 +285,7 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             // If preview mode, collect pending changes
             if (@params.Preview)
             {
-                var previewResult = CreatePreviewResult(operationId, document.FilePath!, newUsings, root);
+                var previewResult = CreatePreviewResult(operationId, currentDocument.FilePath!, newUsings, root);
                 if (previewResult.PendingChanges != null)
                     allPendingChanges.AddRange(previewResult.PendingChanges);
                 totalUsingsAdded += newUsings.Count;
@@ -288,13 +303,11 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             var sortedUsings = UsingDirectiveSorter.Sort(allUsingsForFile);
 
             var newRoot = root.WithUsings(SyntaxFactory.List(sortedUsings));
-            var newDocument = document.WithSyntaxRoot(newRoot);
-
-            // Update the solution incrementally so subsequent documents see prior changes
-            Context.UpdateSolution(newDocument.Project.Solution);
+            var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+            currentSolution = newDocument.Project.Solution;
 
             totalUsingsAdded += newUsings.Count;
-            allFilesModified.Add(document.FilePath!);
+            anyChanged = true;
         }
 
         // If preview mode, return aggregated preview
@@ -311,9 +324,9 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         }
 
         // Commit all accumulated changes at once
-        if (allFilesModified.Count > 0)
+        if (anyChanged)
         {
-            var commitResult = await CommitChangesAsync(Context.Solution, cancellationToken);
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
             return new RefactoringResult
             {
                 Success = true,

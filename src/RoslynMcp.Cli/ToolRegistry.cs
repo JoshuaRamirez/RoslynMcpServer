@@ -255,7 +255,7 @@ public sealed class ToolRegistry
 
         // ── Refactoring: Organize (3) ─────────────────────────────────
         r.RegisterRefactoring<AddMissingUsingsOperation, AddMissingUsingsParams>(
-            "add-missing-usings", "Add missing using directives");
+            "add-missing-usings", "Add missing using directives; allFiles (default false) processes every C# file (sourceFile optional when true to limit the walk); preview returns computed changes without applying");
         r.RegisterRefactoring<RemoveUnusedUsingsOperation, RemoveUnusedUsingsParams>(
             "remove-unused-usings", "Remove unused using directives");
         r.RegisterRefactoring<SortUsingsOperation, SortUsingsParams>(
