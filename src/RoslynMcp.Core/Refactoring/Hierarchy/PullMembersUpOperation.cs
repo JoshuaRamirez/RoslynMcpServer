@@ -519,7 +519,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         CancellationToken cancellationToken)
     {
         var names = new List<string>();
-        foreach (var (name, symbol, syntax) in EnumerateDeclaredMembers(
+        foreach (var (name, symbol, syntax) in HierarchyDeclaredMemberHelpers.EnumerateDeclaredMembers(
                      typeDeclaration, semanticModel, cancellationToken))
         {
             if (symbol == null || !HierarchyMemberEligibilityHelpers.IsSupportedMember(symbol))
@@ -765,7 +765,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         var unmatched = new HashSet<string>(requested);
         var found = new List<PullableMember>();
 
-        foreach (var (name, symbol, syntax) in EnumerateDeclaredMembers(typeDeclaration, semanticModel, cancellationToken))
+        foreach (var (name, symbol, syntax) in HierarchyDeclaredMemberHelpers.EnumerateDeclaredMembers(typeDeclaration, semanticModel, cancellationToken))
         {
             if (symbol is IPropertySymbol { IsIndexer: true } indexer)
             {
@@ -834,43 +834,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         }
 
         return found;
-    }
-
-    private static IEnumerable<(string Name, ISymbol? Symbol, MemberDeclarationSyntax Syntax)> EnumerateDeclaredMembers(
-        TypeDeclarationSyntax typeDeclaration,
-        SemanticModel semanticModel,
-        CancellationToken cancellationToken)
-    {
-        foreach (var member in typeDeclaration.Members)
-        {
-            switch (member)
-            {
-                case MethodDeclarationSyntax method:
-                    yield return (method.Identifier.Text, semanticModel.GetDeclaredSymbol(method, cancellationToken), method);
-                    break;
-                case PropertyDeclarationSyntax property:
-                    yield return (property.Identifier.Text, semanticModel.GetDeclaredSymbol(property, cancellationToken), property);
-                    break;
-                case IndexerDeclarationSyntax indexer:
-                    yield return ("this[]", semanticModel.GetDeclaredSymbol(indexer, cancellationToken), indexer);
-                    break;
-                case FieldDeclarationSyntax field:
-                    foreach (var variable in field.Declaration.Variables)
-                    {
-                        yield return (variable.Identifier.Text, semanticModel.GetDeclaredSymbol(variable, cancellationToken), field);
-                    }
-                    break;
-                case EventFieldDeclarationSyntax eventField:
-                    foreach (var variable in eventField.Declaration.Variables)
-                    {
-                        yield return (variable.Identifier.Text, semanticModel.GetDeclaredSymbol(variable, cancellationToken), eventField);
-                    }
-                    break;
-                case EventDeclarationSyntax eventDecl:
-                    yield return (eventDecl.Identifier.Text, semanticModel.GetDeclaredSymbol(eventDecl, cancellationToken), eventDecl);
-                    break;
-            }
-        }
     }
 
     private static void ValidateMembersForPull(
