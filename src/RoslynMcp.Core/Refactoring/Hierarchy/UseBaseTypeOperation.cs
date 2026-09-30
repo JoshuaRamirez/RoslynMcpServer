@@ -198,7 +198,7 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
             if (root == null || semanticModel == null)
                 continue;
 
-            foreach (var typeDecl in CollectTypeDeclarations(root))
+            foreach (var typeDecl in TypeDeclarationHelpers.CollectTypeDeclarations(root))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -249,15 +249,6 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
             },
             null, allRewrites.Count, 0);
     }
-
-    /// <summary>
-    /// Collects every <see cref="TypeDeclarationSyntax"/> in
-    /// <paramref name="root"/> (class/struct/interface, including nested
-    /// and record types). Enums and delegates are not
-    /// <see cref="TypeDeclarationSyntax"/> and stay out of the bulk walk.
-    /// </summary>
-    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTypeDeclarations(SyntaxNode root) =>
-        root.DescendantNodes().OfType<TypeDeclarationSyntax>().ToList();
 
     /// <summary>
     /// Preview description for a file that would rewrite

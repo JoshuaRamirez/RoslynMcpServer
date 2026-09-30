@@ -2598,7 +2598,7 @@ public class UseBaseTypeOperationTests
             """;
 
         var root = CSharpSyntaxTree.ParseText(source).GetRoot();
-        var types = UseBaseTypeOperation.CollectTypeDeclarations(root);
+        var types = TypeDeclarationHelpers.CollectTypeDeclarations(root);
         Assert.Equal(4, types.Count);
         Assert.Contains(types, t => t.Identifier.Text == "C");
         Assert.Contains(types, t => t.Identifier.Text == "S");

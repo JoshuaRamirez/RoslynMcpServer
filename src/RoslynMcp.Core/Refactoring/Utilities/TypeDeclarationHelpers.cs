@@ -6,7 +6,7 @@ using RoslynMcp.Core.Resolution;
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
-/// Shared type-declaration helpers used by Generate-family and MoveType operations.
+/// Shared type-declaration helpers used by Generate-family, Hierarchy (UseBaseType / Pull / Push), Extract, and MoveType operations.
 /// </summary>
 internal static class TypeDeclarationHelpers
 {
