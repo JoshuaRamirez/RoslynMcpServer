@@ -805,8 +805,8 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
     private static ThrowStatementSyntax CreateThrowStatement(ThrowExpressionSyntax throwExpression)
     {
         var statement = SyntaxFactory.ThrowStatement(throwExpression.Expression);
-        var leading = NonWhitespaceTrivia(throwExpression.ThrowKeyword.LeadingTrivia).ToArray();
-        var trailing = NonWhitespaceTrivia(throwExpression.ThrowKeyword.TrailingTrivia).ToArray();
+        var leading = SyntaxTriviaHelpers.NonWhitespaceTrivia(throwExpression.ThrowKeyword.LeadingTrivia).ToArray();
+        var trailing = SyntaxTriviaHelpers.NonWhitespaceTrivia(throwExpression.ThrowKeyword.TrailingTrivia).ToArray();
         if (leading.Length == 0 && trailing.Length == 0)
             return statement;
 
@@ -822,8 +822,8 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
 
     private static StatementSyntax AttachArrowTrivia(StatementSyntax statement, SyntaxToken arrowToken)
     {
-        var arrowTrivia = NonWhitespaceTrivia(arrowToken.LeadingTrivia)
-            .Concat(NonWhitespaceTrivia(arrowToken.TrailingTrivia))
+        var arrowTrivia = SyntaxTriviaHelpers.NonWhitespaceTrivia(arrowToken.LeadingTrivia)
+            .Concat(SyntaxTriviaHelpers.NonWhitespaceTrivia(arrowToken.TrailingTrivia))
             .ToArray();
         if (arrowTrivia.Length == 0)
             return statement;
@@ -831,10 +831,6 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         return statement.WithLeadingTrivia(
             SyntaxFactory.TriviaList(arrowTrivia).AddRange(statement.GetLeadingTrivia()));
     }
-
-    private static IEnumerable<SyntaxTrivia> NonWhitespaceTrivia(SyntaxTriviaList trivia) =>
-        trivia.Where(item => !item.IsKind(SyntaxKind.WhitespaceTrivia)
-            && !item.IsKind(SyntaxKind.EndOfLineTrivia));
 
 
     /// <summary>

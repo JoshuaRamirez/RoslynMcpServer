@@ -493,19 +493,15 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
             return block;
 
         var statement = block.Statements[0];
-        var openTrivia = NonWhitespaceTrivia(block.OpenBraceToken.LeadingTrivia)
-            .Concat(NonWhitespaceTrivia(block.OpenBraceToken.TrailingTrivia));
-        var closeTrivia = NonWhitespaceTrivia(block.CloseBraceToken.LeadingTrivia)
-            .Concat(NonWhitespaceTrivia(block.CloseBraceToken.TrailingTrivia));
+        var openTrivia = SyntaxTriviaHelpers.NonWhitespaceTrivia(block.OpenBraceToken.LeadingTrivia)
+            .Concat(SyntaxTriviaHelpers.NonWhitespaceTrivia(block.OpenBraceToken.TrailingTrivia));
+        var closeTrivia = SyntaxTriviaHelpers.NonWhitespaceTrivia(block.CloseBraceToken.LeadingTrivia)
+            .Concat(SyntaxTriviaHelpers.NonWhitespaceTrivia(block.CloseBraceToken.TrailingTrivia));
 
         return statement
             .WithLeadingTrivia(openTrivia.Concat(statement.GetLeadingTrivia()))
             .WithTrailingTrivia(statement.GetTrailingTrivia().Concat(closeTrivia));
     }
-
-    private static IEnumerable<SyntaxTrivia> NonWhitespaceTrivia(SyntaxTriviaList trivia) =>
-        trivia.Where(item => !item.IsKind(SyntaxKind.WhitespaceTrivia)
-            && !item.IsKind(SyntaxKind.EndOfLineTrivia));
 
     private static string BuildDescription(string scope, int count, string? typeName)
     {
