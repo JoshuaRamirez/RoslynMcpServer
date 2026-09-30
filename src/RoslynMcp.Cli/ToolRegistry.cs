@@ -257,7 +257,7 @@ public sealed class ToolRegistry
         r.RegisterRefactoring<AddMissingUsingsOperation, AddMissingUsingsParams>(
             "add-missing-usings", "Add missing using directives; allFiles (default false) processes every C# file (sourceFile optional when true to limit the walk); preview returns computed changes without applying");
         r.RegisterRefactoring<RemoveUnusedUsingsOperation, RemoveUnusedUsingsParams>(
-            "remove-unused-usings", "Remove unused using directives");
+            "remove-unused-usings", "Remove unused using directives; allFiles (default false) processes every C# file (sourceFile optional when true to limit the walk); preview returns computed changes without applying");
         r.RegisterRefactoring<SortUsingsOperation, SortUsingsParams>(
             "sort-usings", "Sort using directives; systemFirst (default true) places System / System.* first; allFiles (default false) sorts every C# file (sourceFile optional when true)");
 
