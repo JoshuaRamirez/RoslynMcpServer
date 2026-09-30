@@ -5,6 +5,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Rename;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -1269,7 +1270,7 @@ public class MoveTypeToFileOperationTests
             """;
 
         var root = Parse(source);
-        var types = MoveTypeToFileOperation.CollectTopLevelTypes(root);
+        var types = TypeDeclarationHelpers.CollectTopLevelTypes(root);
         var names = types.Select(t => t.Identifier.Text).ToList();
 
         Assert.Contains("C", names);

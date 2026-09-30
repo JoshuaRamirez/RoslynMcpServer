@@ -6,7 +6,7 @@ using RoslynMcp.Core.Resolution;
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
-/// Shared type-declaration helpers used by Generate-family operations.
+/// Shared type-declaration helpers used by Generate-family and MoveType operations.
 /// </summary>
 internal static class TypeDeclarationHelpers
 {
@@ -21,6 +21,19 @@ internal static class TypeDeclarationHelpers
             .OfType<TypeDeclarationSyntax>()
             .OrderBy(type => type.SpanStart)
             .ThenBy(type => type.Span.Length)
+            .ToList();
+
+    /// <summary>
+    /// Collects top-level <see cref="TypeDeclarationSyntax"/> nodes under
+    /// <paramref name="root"/> whose parent is a compilation unit or base
+    /// namespace (classes, structs, interfaces, records — not nested types,
+    /// enums, or delegates). Same body as the prior MoveTypeToFile /
+    /// MoveTypeToNamespace copies.
+    /// </summary>
+    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTopLevelTypes(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<TypeDeclarationSyntax>()
+            .Where(t => t.Parent is CompilationUnitSyntax or BaseNamespaceDeclarationSyntax)
             .ToList();
 
     /// <summary>
