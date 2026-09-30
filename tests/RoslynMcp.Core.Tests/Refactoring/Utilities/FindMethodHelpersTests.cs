@@ -8,9 +8,10 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 
 /// <summary>
-/// Unit tests for <see cref="FindMethodHelpers.FindMethod"/> and
-/// <see cref="FindMethodHelpers.FindMethodDeclaration"/> —
-/// selection / throwing behavior previously covered on Signature private copies.
+/// Unit tests for <see cref="FindMethodHelpers.FindMethod"/>,
+/// <see cref="FindMethodHelpers.FindMethodDeclaration"/>, and
+/// <see cref="FindMethodHelpers.CollectMethods"/> —
+/// selection / throwing / allFiles enumeration previously covered on Signature private copies.
 /// </summary>
 public class FindMethodHelpersTests
 {
@@ -191,6 +192,61 @@ public class FindMethodHelpersTests
         var root = CSharpSyntaxTree.ParseText(source).GetRoot();
         var found = FindMethodHelpers.FindMethodDeclaration(root, "Only", line: null, column: null);
         Assert.Equal("Only", found.Identifier.Text);
+    }
+
+    [Fact]
+    public void CollectMethods_EmptyCompilationUnit_ReturnsEmpty()
+    {
+        var root = CSharpSyntaxTree.ParseText("").GetRoot();
+        Assert.Empty(FindMethodHelpers.CollectMethods(root));
+    }
+
+    [Fact]
+    public void CollectMethods_SingleMethod_ReturnsThatMethod()
+    {
+        const string source = """
+            class C
+            {
+                public void Only(int x) { }
+            }
+            """;
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var methods = FindMethodHelpers.CollectMethods(root);
+        Assert.Single(methods);
+        Assert.Equal("Only", methods[0].Identifier.Text);
+    }
+
+    [Fact]
+    public void CollectMethods_OrdersBySpanStartThenLength()
+    {
+        const string source = """
+            class C
+            {
+                public void B() { }
+                public void A(int x) { } public void A() { }
+            }
+            """;
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var methods = FindMethodHelpers.CollectMethods(root);
+        Assert.Equal(3, methods.Count);
+        Assert.Equal(["B", "A", "A"], methods.Select(m => m.Identifier.Text).ToList());
+
+        // Deterministic allFiles order: SpanStart ascending, then Span.Length.
+        for (var i = 1; i < methods.Count; i++)
+        {
+            Assert.True(
+                methods[i - 1].SpanStart < methods[i].SpanStart
+                || (methods[i - 1].SpanStart == methods[i].SpanStart
+                    && methods[i - 1].Span.Length <= methods[i].Span.Length));
+        }
+
+        // Same-line overloads: shorter declaration before longer when starts equal
+        // is not required here (sequential spans have distinct starts); assert
+        // the two A methods still appear after B and in source order.
+        Assert.Equal("B", methods[0].Identifier.Text);
+        Assert.True(methods[1].SpanStart < methods[2].SpanStart);
+        Assert.True(methods[1].ParameterList.Parameters.Count >= 1);
+        Assert.Empty(methods[2].ParameterList.Parameters);
     }
 
     private static int FindLine(string source, string fragment)

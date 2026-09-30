@@ -7,9 +7,10 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
 /// Shared method-declaration lookup used by Signature-family ops
-/// (add/remove/reorder parameter + change return type). Includes
-/// nullable <see cref="FindMethod"/> / <see cref="StartLine"/> and the
-/// throwing <see cref="FindMethodDeclaration"/> gate.
+/// (add/remove/reorder parameter + change signature + change return type).
+/// Includes nullable <see cref="FindMethod"/> / <see cref="StartLine"/>,
+/// the throwing <see cref="FindMethodDeclaration"/> gate, and allFiles
+/// <see cref="CollectMethods"/>.
 /// </summary>
 internal static class FindMethodHelpers
 {
@@ -156,6 +157,20 @@ internal static class FindMethodHelpers
             ErrorCodes.SymbolAmbiguous,
             $"Multiple methods named '{methodName}' found. Provide line number. Options: {string.Join(", ", optionLines)}");
     }
+
+    /// <summary>
+    /// Enumerates every <see cref="MethodDeclarationSyntax"/> under
+    /// <paramref name="root"/> in deterministic <c>SpanStart</c> then
+    /// <c>Span.Length</c> order. Same body as the prior private copies on
+    /// AddParameter / RemoveParameter / ReorderParameters / ChangeSignature /
+    /// ChangeReturnType allFiles walks.
+    /// </summary>
+    internal static IReadOnlyList<MethodDeclarationSyntax> CollectMethods(SyntaxNode root) =>
+        root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .OrderBy(m => m.SpanStart)
+            .ThenBy(m => m.Span.Length)
+            .ToList();
 
     /// <summary>
     /// 1-based start line of the method declaration (exclusive of trivia
