@@ -249,7 +249,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
                         break;
 
                     Solution? updated = null;
-                    foreach (var methodDecl in CollectMethods(root))
+                    foreach (var methodDecl in FindMethodHelpers.CollectMethods(root))
                     {
                         cancellationToken.ThrowIfCancellationRequested();
 
@@ -381,18 +381,6 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         changedCount == 1
             ? "Reorder parameters"
             : $"Reorder parameters on {changedCount} methods";
-
-    /// <summary>
-    /// Collects every <see cref="MethodDeclarationSyntax"/> in
-    /// <paramref name="root"/> in deterministic <c>SpanStart</c> then
-    /// span-length order.
-    /// </summary>
-    internal static IReadOnlyList<MethodDeclarationSyntax> CollectMethods(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .OrderBy(m => m.SpanStart)
-            .ThenBy(m => m.Span.Length)
-            .ToList();
 
     private async Task<Solution?> TryReorderOneAsync(
         Document document,

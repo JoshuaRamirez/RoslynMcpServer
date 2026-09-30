@@ -8,9 +8,10 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 
 /// <summary>
-/// Unit tests for <see cref="FindMethodHelpers.FindMethod"/> and
-/// <see cref="FindMethodHelpers.FindMethodDeclaration"/> —
-/// selection / throwing behavior previously covered on Signature private copies.
+/// Unit tests for <see cref="FindMethodHelpers.FindMethod"/>,
+/// <see cref="FindMethodHelpers.FindMethodDeclaration"/>, and
+/// <see cref="FindMethodHelpers.CollectMethods"/> / <see cref="FindMethodHelpers.OrderMethods"/> —
+/// selection / throwing / allFiles enumeration previously covered on Signature private copies.
 /// </summary>
 public class FindMethodHelpersTests
 {
@@ -191,6 +192,92 @@ public class FindMethodHelpersTests
         var root = CSharpSyntaxTree.ParseText(source).GetRoot();
         var found = FindMethodHelpers.FindMethodDeclaration(root, "Only", line: null, column: null);
         Assert.Equal("Only", found.Identifier.Text);
+    }
+
+    [Fact]
+    public void CollectMethods_EmptyCompilationUnit_ReturnsEmpty()
+    {
+        var root = CSharpSyntaxTree.ParseText("").GetRoot();
+        Assert.Empty(FindMethodHelpers.CollectMethods(root));
+    }
+
+    [Fact]
+    public void CollectMethods_SingleMethod_ReturnsThatMethod()
+    {
+        const string source = """
+            class C
+            {
+                public void Only(int x) { }
+            }
+            """;
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var methods = FindMethodHelpers.CollectMethods(root);
+        Assert.Single(methods);
+        Assert.Equal("Only", methods[0].Identifier.Text);
+    }
+
+    [Fact]
+    public void CollectMethods_MatchesOrderMethodsOnDescendants()
+    {
+        const string source = """
+            class C
+            {
+                public void B() { }
+                public void A(int x) { } public void A() { }
+            }
+            """;
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var collected = FindMethodHelpers.CollectMethods(root);
+        var ordered = FindMethodHelpers.OrderMethods(
+            root.DescendantNodes().OfType<MethodDeclarationSyntax>());
+        Assert.Equal(
+            ordered.Select(m => (m.SpanStart, m.Span.Length, m.Identifier.Text)),
+            collected.Select(m => (m.SpanStart, m.Span.Length, m.Identifier.Text)));
+        Assert.Equal(["B", "A", "A"], collected.Select(m => m.Identifier.Text).ToList());
+    }
+
+    [Fact]
+    public void OrderMethods_EqualSpanStart_OrdersByLength()
+    {
+        // Independently parsed members share SpanStart 0, so ThenBy Length decides.
+        var longer = (MethodDeclarationSyntax)SyntaxFactory.ParseMemberDeclaration(
+            "void A(int x, int y) { }")!;
+        var shorter = (MethodDeclarationSyntax)SyntaxFactory.ParseMemberDeclaration(
+            "void A() { }")!;
+        Assert.Equal(longer.SpanStart, shorter.SpanStart);
+        Assert.True(shorter.Span.Length < longer.Span.Length);
+
+        var ordered = FindMethodHelpers.OrderMethods([longer, shorter]);
+        Assert.Equal(2, ordered.Count);
+        Assert.Same(shorter, ordered[0]);
+        Assert.Same(longer, ordered[1]);
+
+        var already = FindMethodHelpers.OrderMethods([shorter, longer]);
+        Assert.Same(shorter, already[0]);
+        Assert.Same(longer, already[1]);
+    }
+
+    [Fact]
+    public void OrderMethods_DistinctSpanStart_IgnoresInputOrder()
+    {
+        const string source = """
+            class C
+            {
+                public void B(int first, int second, int third) { }
+                public void A() { }
+            }
+            """;
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var natural = root.DescendantNodes().OfType<MethodDeclarationSyntax>().ToList();
+        Assert.Equal(2, natural.Count);
+        Assert.True(natural[0].SpanStart < natural[1].SpanStart);
+        Assert.True(natural[0].Span.Length > natural[1].Span.Length);
+
+        var ordered = FindMethodHelpers.OrderMethods(natural.AsEnumerable().Reverse());
+        Assert.Equal(
+            natural.Select(m => m.Identifier.Text),
+            ordered.Select(m => m.Identifier.Text));
+        Assert.True(ordered[0].SpanStart < ordered[1].SpanStart);
     }
 
     private static int FindLine(string source, string fragment)

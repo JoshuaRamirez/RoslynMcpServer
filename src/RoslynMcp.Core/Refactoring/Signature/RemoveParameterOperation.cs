@@ -267,7 +267,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                         break;
 
                     Solution? updated = null;
-                    foreach (var methodDecl in CollectMethods(root))
+                    foreach (var methodDecl in FindMethodHelpers.CollectMethods(root))
                     {
                         cancellationToken.ThrowIfCancellationRequested();
 
@@ -398,18 +398,6 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         changedCount == 1
             ? "Remove parameter"
             : $"Remove {changedCount} parameters";
-
-    /// <summary>
-    /// Collects every <see cref="MethodDeclarationSyntax"/> in
-    /// <paramref name="root"/> in deterministic <c>SpanStart</c> then
-    /// span-length order.
-    /// </summary>
-    internal static IReadOnlyList<MethodDeclarationSyntax> CollectMethods(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .OrderBy(m => m.SpanStart)
-            .ThenBy(m => m.Span.Length)
-            .ToList();
 
     /// <summary>
     /// True when removing the parameter at <paramref name="removeIndex"/> would
