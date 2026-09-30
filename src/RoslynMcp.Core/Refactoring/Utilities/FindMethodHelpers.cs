@@ -161,13 +161,22 @@ internal static class FindMethodHelpers
     /// <summary>
     /// Enumerates every <see cref="MethodDeclarationSyntax"/> under
     /// <paramref name="root"/> in deterministic <c>SpanStart</c> then
-    /// <c>Span.Length</c> order. Same body as the prior private copies on
-    /// AddParameter / RemoveParameter / ReorderParameters / ChangeSignature /
-    /// ChangeReturnType allFiles walks.
+    /// <c>Span.Length</c> order. Same collect logic as the prior private
+    /// copies on AddParameter / RemoveParameter / ReorderParameters /
+    /// ChangeSignature / ChangeReturnType allFiles walks.
     /// </summary>
     internal static IReadOnlyList<MethodDeclarationSyntax> CollectMethods(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
+        OrderMethods(root.DescendantNodes().OfType<MethodDeclarationSyntax>());
+
+    /// <summary>
+    /// Deterministic <c>SpanStart</c> then <c>Span.Length</c> order used by
+    /// <see cref="CollectMethods"/>. Factored so equal-start / reverse-input
+    /// ordering can be unit-tested without relying on <c>DescendantNodes</c>
+    /// lexical yield order.
+    /// </summary>
+    internal static IReadOnlyList<MethodDeclarationSyntax> OrderMethods(
+        IEnumerable<MethodDeclarationSyntax> methods) =>
+        methods
             .OrderBy(m => m.SpanStart)
             .ThenBy(m => m.Span.Length)
             .ToList();
