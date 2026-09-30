@@ -39,8 +39,9 @@ internal static class HierarchyTypeDeclarationHelpers
     /// when column is set — a split declaration may put the identifier on
     /// a continuation line. If column is set with line and nothing covers
     /// that position, return null (TypeNotFound) rather than falling back
-    /// to first-match. After the pull (derived rewrite + members added to
-    /// the target), recover the selected type from the per-execution
+    /// to first-match. After a hierarchy rewrite (pull: derived rewrite +
+    /// members added to the target; push: source rewrite + members added
+    /// to derived types), recover the selected type from the per-execution
     /// syntax annotation — do not reuse a pre-rewrite SpanStart or line.
     /// </summary>
     internal static MemberDeclarationSyntax? FindTypeDeclaration(

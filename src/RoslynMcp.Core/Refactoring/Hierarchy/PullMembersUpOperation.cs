@@ -8,7 +8,6 @@ using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
 using RoslynMcp.Core.Refactoring.Generate;
 using RoslynMcp.Core.Refactoring.Utilities;
-using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
 namespace RoslynMcp.Core.Refactoring.Hierarchy;
