@@ -8,7 +8,7 @@ namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 
 /// <summary>
 /// Unit tests for <see cref="TypeDeclarationHelpers"/> —
-/// CollectTypeDeclarations ordering/inclusion, AddMembers trivia shape,
+/// CollectTypeDeclarations / CollectTopLevelTypes ordering/inclusion, AddMembers trivia shape,
 /// FindTypeDeclaration line/column selection, and GetSelfTypeName
 /// identifier / generic formatting.
 /// </summary>
@@ -102,6 +102,47 @@ public class TypeDeclarationHelpersTests
         var types = TypeDeclarationHelpers.CollectTypeDeclarations(root);
         Assert.Equal(new[] { "A", "B" }, types.Select(t => t.Identifier.Text));
         Assert.True(types[0].SpanStart < types[1].SpanStart);
+    }
+
+    [Fact]
+    public void CollectTopLevelTypes_IncludesClassStructInterfaceRecord_ExcludesNestedEnumDelegate()
+    {
+        const string source = """
+            namespace TestApp;
+            public class C { public class Nested { } }
+            public struct S { }
+            public interface I { }
+            public enum E { A }
+            public delegate void D();
+            public record R();
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var types = TypeDeclarationHelpers.CollectTopLevelTypes(root);
+        var names = types.Select(t => t.Identifier.Text).ToList();
+
+        Assert.Contains("C", names);
+        Assert.Contains("S", names);
+        Assert.Contains("I", names);
+        Assert.Contains("R", names);
+        Assert.DoesNotContain("Nested", names);
+        Assert.DoesNotContain("E", names);
+        Assert.DoesNotContain("D", names);
+    }
+
+    [Fact]
+    public void CollectTopLevelTypes_SkipsNested_KeepsOuter()
+    {
+        var root = CSharpSyntaxTree.ParseText(MixedEligibleAndSkipped).GetRoot();
+        var types = TypeDeclarationHelpers.CollectTopLevelTypes(root);
+        var names = types.Select(t => t.Identifier.Text).ToList();
+
+        Assert.Contains("Eligible", names);
+        Assert.Contains("Outer", names);
+        Assert.DoesNotContain("Nested", names);
+        Assert.Equal(
+            new[] { "Eligible", "StaticSkip", "ISkip", "PointSkip", "Outer" },
+            names);
     }
 
     [Fact]

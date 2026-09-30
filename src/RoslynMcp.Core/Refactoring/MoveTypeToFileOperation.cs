@@ -264,7 +264,7 @@ public sealed class MoveTypeToFileOperation
             if (root == null)
                 continue;
 
-            var topLevel = CollectTopLevelTypes(root);
+            var topLevel = TypeDeclarationHelpers.CollectTopLevelTypes(root);
             foreach (var typeDecl in topLevel)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -395,18 +395,6 @@ public sealed class MoveTypeToFileOperation
     }
 
     /// <summary>
-    /// Top-level named types in a file (class, struct, interface, record).
-    /// Nested types are ignored, matching single-site <c>FindTypeInFileAsync</c>.
-    /// Enums and delegates are not <see cref="TypeDeclarationSyntax"/> and
-    /// stay out of the bulk walk.
-    /// </summary>
-    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTopLevelTypes(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .Where(t => t.Parent is CompilationUnitSyntax or BaseNamespaceDeclarationSyntax)
-            .ToList();
-
-    /// <summary>
     /// Builds the destination path as <c>{directory of source}/{TypeName}.cs</c>.
     /// </summary>
     internal static string GetDerivedTargetFile(string sourceFile, string typeName)
@@ -506,7 +494,7 @@ public sealed class MoveTypeToFileOperation
         if (root == null || semanticModel == null)
             return null;
 
-        var match = CollectTopLevelTypes(root).FirstOrDefault(t =>
+        var match = TypeDeclarationHelpers.CollectTopLevelTypes(root).FirstOrDefault(t =>
             t.Identifier.Text == plan.TypeName &&
             GetNamespaceName(t, semanticModel, cancellationToken) == plan.Namespace);
         if (match == null)

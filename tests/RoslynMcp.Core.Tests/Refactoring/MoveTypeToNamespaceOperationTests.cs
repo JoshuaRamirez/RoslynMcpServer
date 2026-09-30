@@ -6,6 +6,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -1917,7 +1918,7 @@ public class MoveTypeToNamespaceOperationTests
     [Fact]
     public void CollectTopLevelTypes_SkipsNested()
     {
-        var types = MoveTypeToNamespaceOperation.CollectTopLevelTypes(Parse(NestedAndOuterSource));
+        var types = TypeDeclarationHelpers.CollectTopLevelTypes(Parse(NestedAndOuterSource));
         Assert.Single(types);
         Assert.Equal("Outer", types[0].Identifier.Text);
     }
@@ -1934,7 +1935,7 @@ public class MoveTypeToNamespaceOperationTests
                 }
             }
             """);
-        var type = MoveTypeToNamespaceOperation.CollectTopLevelTypes(root).Single();
+        var type = TypeDeclarationHelpers.CollectTopLevelTypes(root).Single();
         Assert.Equal("A.B", MoveTypeToNamespaceOperation.GetNamespaceName(type));
     }
 

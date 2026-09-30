@@ -295,7 +295,7 @@ public sealed class MoveTypeToNamespaceOperation
             if (root == null)
                 continue;
 
-            foreach (var typeDecl in CollectTopLevelTypes(root))
+            foreach (var typeDecl in TypeDeclarationHelpers.CollectTopLevelTypes(root))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -429,18 +429,6 @@ public sealed class MoveTypeToNamespaceOperation
     }
 
     /// <summary>
-    /// Top-level named types in a file (class, struct, interface, record).
-    /// Nested types are ignored, matching single-site <c>FindTypeInFileAsync</c>.
-    /// Enums and delegates are not <see cref="TypeDeclarationSyntax"/> and
-    /// stay out of the bulk walk.
-    /// </summary>
-    internal static IReadOnlyList<TypeDeclarationSyntax> CollectTopLevelTypes(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<TypeDeclarationSyntax>()
-            .Where(t => t.Parent is CompilationUnitSyntax or BaseNamespaceDeclarationSyntax)
-            .ToList();
-
-    /// <summary>
     /// Full namespace of a top-level type, including nested namespace
     /// declarations. Prefers the semantic containing namespace when a
     /// model is available.
@@ -483,7 +471,7 @@ public sealed class MoveTypeToNamespaceOperation
             return null;
 
         var expectedNamespace = GetNamespaceName(typeDecl);
-        var match = CollectTopLevelTypes(root).FirstOrDefault(t =>
+        var match = TypeDeclarationHelpers.CollectTopLevelTypes(root).FirstOrDefault(t =>
             t.Identifier.Text == typeName &&
             GetNamespaceName(t) == expectedNamespace);
         if (match == null)
