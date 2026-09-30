@@ -396,14 +396,7 @@ public class AddMissingUsingsOperationTests
         });
 
         Assert.True(result.Success, $"Success=false UsingDirectivesAdded={result.UsingDirectivesAdded} Err={result.Error?.Message}");
-        System.Console.WriteLine($"DEBUG Success={result.Success} UsingAdded={result.UsingDirectivesAdded} Modified={string.Join(',', result.Changes?.FilesModified ?? [])} Preview={result.Preview}");
         var afterA = await File.ReadAllTextAsync(workspace.SourcePaths["MissingA.cs"]);
-        System.Console.WriteLine("DEBUG afterA:\n" + afterA);
-        // also dump diagnostics for MissingA
-        var doc = workspace.Context.GetDocumentByPath(workspace.SourcePaths["MissingA.cs"]);
-        var sm = await doc!.GetSemanticModelAsync();
-        var diags = sm!.GetDiagnostics().Where(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error).Select(d => d.Id + ":" + d.GetMessage()).ToList();
-        System.Console.WriteLine("DEBUG diags: " + string.Join(" | ", diags));
         Assert.Contains("using System.Collections.Generic", afterA);
         Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["MissingB.cs"]));
         Assert.Equal(beforeComplete, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyComplete.cs"]));
