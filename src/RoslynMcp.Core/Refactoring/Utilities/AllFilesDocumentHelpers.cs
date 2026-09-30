@@ -8,7 +8,9 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// Shared allFiles document enumerate / linked-path group / linked-text
 /// coalesce walk used by IntroduceField / ExtractConstant /
 /// IntroduceParameter / InlineMethod / ChangeSignature / ExtractInterface
-/// (and Enumerate / GroupBy peers), plus EnumerateCsharpDocuments for
+/// (and Enumerate / GroupBy peers), plus EnumerateCsharpDocumentsIncludingAdded
+/// for PullMembersUp / PushMembersDown / ExtractInterface / ExtractBaseClass
+/// documentsToCompare (original + newly-added .cs), plus EnumerateCsharpDocuments for
 /// ConvertToBlockBody / AddBraces / RemoveBraces / InvertIf /
 /// ConvertExpressionBody / ConvertToPatternMatching / ConvertProperty /
 /// ConvertForeachLinq / SimplifyName / ConvertToInterpolatedString /
@@ -59,6 +61,32 @@ internal static class AllFilesDocumentHelpers
         return solution.Projects
             .SelectMany(p => p.Documents)
             .Where(d => d.FilePath != null && d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Every C# document from <paramref name="originalSolution"/> plus any
+    /// newly-added <c>.cs</c> documents present only on
+    /// <paramref name="currentSolution"/> (FilePath non-null, EndsWith
+    /// <c>.cs</c> ordinal-ignore-case, <c>originalSolution.GetDocument(Id)</c>
+    /// null). Deduped by DocumentId (first wins) and ordered by FilePath
+    /// ordinal. Same body as the identical <c>documentsToCompare</c> constructions
+    /// on PullMembersUp / PushMembersDown / ExtractInterface / ExtractBaseClass.
+    /// </summary>
+    internal static List<Document> EnumerateCsharpDocumentsIncludingAdded(
+        Solution originalSolution,
+        Solution currentSolution)
+    {
+        return EnumerateCsharpDocuments(originalSolution)
+            .Concat(
+                currentSolution.Projects
+                    .SelectMany(p => p.Documents)
+                    .Where(d => d.FilePath != null &&
+                                d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
+                                originalSolution.GetDocument(d.Id) == null))
+            .GroupBy(d => d.Id)
+            .Select(g => g.First())
             .OrderBy(d => d.FilePath, StringComparer.Ordinal)
             .ToList();
     }

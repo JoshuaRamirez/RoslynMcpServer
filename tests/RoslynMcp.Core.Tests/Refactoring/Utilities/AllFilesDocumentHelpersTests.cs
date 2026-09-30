@@ -424,6 +424,114 @@ public class AllFilesDocumentHelpersTests
         }
     }
 
+
+    [Fact]
+    public void EnumerateCsharpDocumentsIncludingAdded_NoAdded_MatchesEnumerateCsharpDocuments()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+
+        var csB = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-inc-b-" + Path.GetRandomFileName() + ".cs");
+        var csA = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-inc-a-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(csB, "class B {}");
+        File.WriteAllText(csA, "class A {}");
+        try
+        {
+            AddOnDiskDocument(workspace, project.Id, csB, "class B {}");
+            AddOnDiskDocument(workspace, project.Id, csA, "class A {}");
+
+            var solution = workspace.CurrentSolution;
+            var expected = AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution);
+            var result = AllFilesDocumentHelpers.EnumerateCsharpDocumentsIncludingAdded(solution, solution);
+
+            Assert.Equal(expected.Select(d => d.Id), result.Select(d => d.Id));
+            Assert.Equal(expected.Select(d => d.FilePath), result.Select(d => d.FilePath));
+        }
+        finally
+        {
+            TryDelete(csA);
+            TryDelete(csB);
+        }
+    }
+
+    [Fact]
+    public void EnumerateCsharpDocumentsIncludingAdded_IncludesNewlyAddedCs_IgnoresNonCs_OrdersByFilePath()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+
+        var csOriginal = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-inc-orig-" + Path.GetRandomFileName() + ".cs");
+        var csAddedLate = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-inc-z-" + Path.GetRandomFileName() + ".cs");
+        var csAddedEarly = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-inc-early-" + Path.GetRandomFileName() + ".cs");
+        var txtAdded = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-inc-" + Path.GetRandomFileName() + ".txt");
+        File.WriteAllText(csOriginal, "class Orig {}");
+        File.WriteAllText(csAddedLate, "class Late {}");
+        File.WriteAllText(csAddedEarly, "class Early {}");
+        File.WriteAllText(txtAdded, "not csharp");
+        try
+        {
+            AddOnDiskDocument(workspace, project.Id, csOriginal, "class Orig {}");
+            var originalSolution = workspace.CurrentSolution;
+
+            AddOnDiskDocument(workspace, project.Id, csAddedLate, "class Late {}");
+            AddOnDiskDocument(workspace, project.Id, csAddedEarly, "class Early {}");
+            AddOnDiskDocument(workspace, project.Id, txtAdded, "not csharp");
+            var currentSolution = workspace.CurrentSolution;
+
+            var result = AllFilesDocumentHelpers.EnumerateCsharpDocumentsIncludingAdded(
+                originalSolution, currentSolution);
+
+            Assert.Equal(3, result.Count);
+            Assert.DoesNotContain(result, d => d.FilePath == txtAdded);
+            Assert.Contains(result, d => d.FilePath == csOriginal);
+            Assert.Contains(result, d => d.FilePath == csAddedEarly);
+            Assert.Contains(result, d => d.FilePath == csAddedLate);
+            Assert.True(string.CompareOrdinal(result[0].FilePath, result[1].FilePath) < 0);
+            Assert.True(string.CompareOrdinal(result[1].FilePath, result[2].FilePath) < 0);
+            Assert.Equal(
+                new[] { csAddedEarly, csOriginal, csAddedLate }.OrderBy(p => p, StringComparer.Ordinal),
+                result.Select(d => d.FilePath));
+        }
+        finally
+        {
+            TryDelete(csOriginal);
+            TryDelete(csAddedLate);
+            TryDelete(csAddedEarly);
+            TryDelete(txtAdded);
+        }
+    }
+
+    [Fact]
+    public void EnumerateCsharpDocumentsIncludingAdded_NoDuplicateWhenOriginalDocStillPresent()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+
+        var csPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-inc-dup-" + Path.GetRandomFileName() + ".cs");
+        var csAdded = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-inc-dup-add-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(csPath, "class Dup {}");
+        File.WriteAllText(csAdded, "class Add {}");
+        try
+        {
+            var originalDoc = AddOnDiskDocument(workspace, project.Id, csPath, "class Dup {}");
+            var originalSolution = workspace.CurrentSolution;
+            AddOnDiskDocument(workspace, project.Id, csAdded, "class Add {}");
+            var currentSolution = workspace.CurrentSolution;
+
+            var result = AllFilesDocumentHelpers.EnumerateCsharpDocumentsIncludingAdded(
+                originalSolution, currentSolution);
+
+            Assert.Equal(2, result.Count);
+            Assert.Equal(1, result.Count(d => d.Id == originalDoc.Id));
+            Assert.Equal(1, result.Count(d => d.FilePath == csAdded));
+        }
+        finally
+        {
+            TryDelete(csPath);
+            TryDelete(csAdded);
+        }
+    }
+
     private static string FlipAsciiLetterCasing(string path)
     {
         var chars = path.ToCharArray();

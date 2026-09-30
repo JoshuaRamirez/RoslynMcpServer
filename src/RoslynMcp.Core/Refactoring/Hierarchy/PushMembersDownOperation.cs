@@ -496,17 +496,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             }
         } while (madeProgress);
 
-        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution)
-            .Concat(
-                currentSolution.Projects
-                    .SelectMany(p => p.Documents)
-                    .Where(d => d.FilePath != null &&
-                                d.FilePath.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) &&
-                                originalSolution.GetDocument(d.Id) == null))
-            .GroupBy(d => d.Id)
-            .Select(g => g.First())
-            .OrderBy(d => d.FilePath, StringComparer.Ordinal)
-            .ToList();
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocumentsIncludingAdded(originalSolution, currentSolution);
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;
