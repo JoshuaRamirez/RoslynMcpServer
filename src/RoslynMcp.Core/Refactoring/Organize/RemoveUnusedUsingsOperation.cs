@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -29,7 +30,11 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
     {
         if (@params.AllFiles)
         {
-            // When processing all files, sourceFile is optional
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -66,13 +71,222 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
         CancellationToken cancellationToken)
     {
         var document = GetDocumentOrThrow(sourceFile);
+        var rewrite = await TryBuildUnusedUsingsRewriteAsync(document, cancellationToken);
+        if (rewrite is null)
+        {
+            return RefactoringResult.Succeeded(
+                operationId,
+                new FileChanges
+                {
+                    FilesModified = [],
+                    FilesCreated = [],
+                    FilesDeleted = []
+                },
+                null,
+                0,
+                0);
+        }
+
+        var (root, newRoot, unusedUsings) = rewrite.Value;
+
+        // If preview mode, return without applying (but include before/after snippets)
+        if (preview)
+        {
+            return CreatePreviewResult(operationId, sourceFile, unusedUsings, root);
+        }
+
+        var newDocument = document.WithSyntaxRoot(newRoot);
+        var newSolution = newDocument.Project.Solution;
+
+        // Commit changes
+        var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
+
+        return new RefactoringResult
+        {
+            Success = true,
+            OperationId = operationId,
+            Changes = new FileChanges
+            {
+                FilesModified = commitResult.FilesModified,
+                FilesCreated = commitResult.FilesCreated,
+                FilesDeleted = commitResult.FilesDeleted
+            },
+            UsingDirectivesRemoved = unusedUsings.Count
+        };
+    }
+
+    /// <summary>
+    /// Processes all C# documents in the solution to remove unused using directives.
+    /// Optional <c>sourceFile</c> limits the walk via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as FormatDocument / ConvertToBlockBody / AddMissingUsings).
+    /// </summary>
+    private async Task<RefactoringResult> ExecuteAllFilesAsync(
+        Guid operationId,
+        RemoveUnusedUsingsParams @params,
+        CancellationToken cancellationToken)
+    {
+        // Accumulate on a local solution snapshot (same as SortUsings / FormatDocument /
+        // AddMissingUsings) so CommitChangesAsync can diff against the original Context.Solution.
+        var currentSolution = Context.Solution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+        }
+
+        // One physical path may appear as multiple Documents when linked into
+        // several projects. Rewrite once per normalized path and apply the same
+        // text to every sibling DocumentId (ConvertToBlockBody / AddMissingUsings / Copilot).
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
+
+        var totalUsingsRemoved = 0;
+        var anyChanged = false;
+        var allPendingChanges = new List<PendingChange>();
+
+        foreach (var linkedDocuments in documentGroups)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            SourceText? changedText = null;
+            List<UsingDirectiveSyntax>? chosenUnused = null;
+            CompilationUnitSyntax? previewRoot = null;
+            Document? previewDocument = null;
+            // Track no-op editable siblings so rewrite/no-op mixed groups reject
+            // regardless of Document walk order (Codex P2 on linked global usings).
+            var sawNoOpEditable = false;
+
+            foreach (var linked in linkedDocuments)
+            {
+                var currentDocument = currentSolution.GetDocument(linked.Id) ?? linked;
+                if (currentDocument is SourceGeneratedDocument)
+                    continue;
+                if (!DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                    continue;
+
+                var rewrite = await TryBuildUnusedUsingsRewriteAsync(currentDocument, cancellationToken);
+                if (rewrite is null)
+                {
+                    sawNoOpEditable = true;
+                    if (changedText != null)
+                    {
+                        throw new RefactoringException(
+                            ErrorCodes.CannotConvert,
+                            $"Linked workspace documents for '{currentDocument.FilePath}' produce different rewrites under current project contexts.");
+                    }
+
+                    continue;
+                }
+
+                if (sawNoOpEditable)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.CannotConvert,
+                        $"Linked workspace documents for '{currentDocument.FilePath}' produce different rewrites under current project contexts.");
+                }
+
+                var (root, newRoot, unusedUsings) = rewrite.Value;
+                var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+                var afterText = await newDocument.GetTextAsync(cancellationToken);
+
+                if (changedText != null && !changedText.ContentEquals(afterText))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.CannotConvert,
+                        $"Linked workspace documents for '{currentDocument.FilePath}' produce different rewrites under current project contexts.");
+                }
+
+                changedText ??= afterText;
+                chosenUnused ??= unusedUsings;
+                previewRoot ??= root;
+                previewDocument ??= currentDocument;
+            }
+
+            if (changedText == null || chosenUnused == null || previewRoot == null || previewDocument == null)
+                continue;
+
+            if (@params.Preview)
+            {
+                var previewResult = CreatePreviewResult(operationId, previewDocument.FilePath!, chosenUnused, previewRoot);
+                if (previewResult.PendingChanges != null)
+                    allPendingChanges.AddRange(previewResult.PendingChanges);
+                totalUsingsRemoved += chosenUnused.Count;
+                continue;
+            }
+
+            foreach (var linked in linkedDocuments)
+            {
+                var sibling = currentSolution.GetDocument(linked.Id) ?? linked;
+                if (sibling is SourceGeneratedDocument)
+                    continue;
+                if (!DocumentEditableHelpers.IsDocumentEditable(sibling, Context.Workspace))
+                    continue;
+                currentSolution = currentSolution.WithDocumentText(sibling.Id, changedText);
+            }
+
+            totalUsingsRemoved += chosenUnused.Count;
+            anyChanged = true;
+        }
+
+        // If preview mode, return aggregated preview
+        if (@params.Preview)
+        {
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Preview = true,
+                PendingChanges = allPendingChanges,
+                UsingDirectivesRemoved = totalUsingsRemoved
+            };
+        }
+
+        // Commit all accumulated changes at once
+        if (anyChanged)
+        {
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
+            return new RefactoringResult
+            {
+                Success = true,
+                OperationId = operationId,
+                Changes = new FileChanges
+                {
+                    FilesModified = commitResult.FilesModified,
+                    FilesCreated = commitResult.FilesCreated,
+                    FilesDeleted = commitResult.FilesDeleted
+                },
+                UsingDirectivesRemoved = totalUsingsRemoved
+            };
+        }
+
+        // No files needed changes
+        return RefactoringResult.Succeeded(
+            operationId,
+            new FileChanges
+            {
+                FilesModified = [],
+                FilesCreated = [],
+                FilesDeleted = []
+            },
+            null,
+            0,
+            0);
+    }
+
+    /// <summary>
+    /// Builds an unused-usings rewrite for one document, or null when no usings
+    /// need to be removed.
+    /// </summary>
+    private static async Task<(CompilationUnitSyntax Root, CompilationUnitSyntax NewRoot, List<UsingDirectiveSyntax> UnusedUsings)?> TryBuildUnusedUsingsRewriteAsync(
+        Document document,
+        CancellationToken cancellationToken)
+    {
         var root = await document.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
         var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
 
         if (root == null || semanticModel == null)
-        {
-            throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
-        }
+            return null;
 
         // Find unused usings via diagnostics using defined diagnostic IDs
         var unusedUsingDiagnostics = semanticModel.GetDiagnostics(cancellationToken: cancellationToken)
@@ -125,199 +339,16 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
         }
 
         if (unusedUsings.Count == 0)
-        {
-            return RefactoringResult.Succeeded(
-                operationId,
-                new FileChanges
-                {
-                    FilesModified = [],
-                    FilesCreated = [],
-                    FilesDeleted = []
-                },
-                null,
-                0,
-                0);
-        }
-
-        // If preview mode, return without applying (but include before/after snippets)
-        if (preview)
-        {
-            return CreatePreviewResult(operationId, sourceFile, unusedUsings, root);
-        }
+            return null;
 
         // Remove unused usings and re-sort the remaining ones
         var remainingUsings = root.Usings
             .Where(u => !unusedUsings.Contains(u))
             .ToList();
 
-        // Sort remaining usings using the standardized sorter
         var sortedUsings = UsingDirectiveSorter.Sort(remainingUsings);
-
         var newRoot = root.WithUsings(SyntaxFactory.List(sortedUsings));
-        var newDocument = document.WithSyntaxRoot(newRoot);
-        var newSolution = newDocument.Project.Solution;
-
-        // Commit changes
-        var commitResult = await CommitChangesAsync(newSolution, cancellationToken);
-
-        return new RefactoringResult
-        {
-            Success = true,
-            OperationId = operationId,
-            Changes = new FileChanges
-            {
-                FilesModified = commitResult.FilesModified,
-                FilesCreated = commitResult.FilesCreated,
-                FilesDeleted = commitResult.FilesDeleted
-            },
-            UsingDirectivesRemoved = unusedUsings.Count
-        };
-    }
-
-    /// <summary>
-    /// Processes all C# documents in the solution to remove unused using directives.
-    /// </summary>
-    private async Task<RefactoringResult> ExecuteAllFilesAsync(
-        Guid operationId,
-        RemoveUnusedUsingsParams @params,
-        CancellationToken cancellationToken)
-    {
-        var solution = Context.Solution;
-        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution);
-
-        var totalUsingsRemoved = 0;
-        var allFilesModified = new List<string>();
-        var allPendingChanges = new List<PendingChange>();
-
-        foreach (var document in allDocuments)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var root = await document.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
-            var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
-
-            if (root == null || semanticModel == null)
-                continue;
-
-            // Find unused usings via diagnostics
-            var unusedUsingDiagnostics = semanticModel.GetDiagnostics(cancellationToken: cancellationToken)
-                .Where(d => d.Id == DiagnosticIds.UnnecessaryUsing ||
-                            d.Id == DiagnosticIds.UnnecessaryUsingIde)
-                .ToList();
-
-            // Also do semantic analysis for unused usings
-            var usedNamespaces = GetUsedNamespaces(root, semanticModel, cancellationToken);
-            var unusedUsings = new List<UsingDirectiveSyntax>();
-
-            foreach (var usingDirective in root.Usings)
-            {
-                var namespaceName = usingDirective.Name?.ToString();
-                if (namespaceName == null) continue;
-
-                var isUnused = unusedUsingDiagnostics.Any(d =>
-                    d.Location.SourceSpan.IntersectsWith(usingDirective.Span));
-
-                if (!isUnused && !usedNamespaces.Contains(namespaceName))
-                {
-                    var nsSymbol = semanticModel.Compilation.GlobalNamespace
-                        .GetNamespaceMembers()
-                        .FirstOrDefault(n => n.ToDisplayString() == namespaceName);
-
-                    if (nsSymbol == null)
-                    {
-                        isUnused = true;
-                    }
-                }
-
-                if (isUnused)
-                {
-                    unusedUsings.Add(usingDirective);
-                }
-            }
-
-            // Also collect from diagnostics directly
-            foreach (var diagnostic in unusedUsingDiagnostics)
-            {
-                var node = root.FindNode(diagnostic.Location.SourceSpan);
-                if (node is UsingDirectiveSyntax usingNode && !unusedUsings.Contains(usingNode))
-                {
-                    unusedUsings.Add(usingNode);
-                }
-            }
-
-            if (unusedUsings.Count == 0)
-                continue;
-
-            // If preview mode, collect pending changes
-            if (@params.Preview)
-            {
-                var previewResult = CreatePreviewResult(operationId, document.FilePath!, unusedUsings, root);
-                if (previewResult.PendingChanges != null)
-                    allPendingChanges.AddRange(previewResult.PendingChanges);
-                totalUsingsRemoved += unusedUsings.Count;
-                continue;
-            }
-
-            // Remove unused usings and re-sort the remaining ones
-            var remainingUsings = root.Usings
-                .Where(u => !unusedUsings.Contains(u))
-                .ToList();
-
-            var sortedUsings = UsingDirectiveSorter.Sort(remainingUsings);
-
-            var newRoot = root.WithUsings(SyntaxFactory.List(sortedUsings));
-            var newDocument = document.WithSyntaxRoot(newRoot);
-
-            // Update the solution incrementally so subsequent documents see prior changes
-            Context.UpdateSolution(newDocument.Project.Solution);
-
-            totalUsingsRemoved += unusedUsings.Count;
-            allFilesModified.Add(document.FilePath!);
-        }
-
-        // If preview mode, return aggregated preview
-        if (@params.Preview)
-        {
-            return new RefactoringResult
-            {
-                Success = true,
-                OperationId = operationId,
-                Preview = true,
-                PendingChanges = allPendingChanges,
-                UsingDirectivesRemoved = totalUsingsRemoved
-            };
-        }
-
-        // Commit all accumulated changes at once
-        if (allFilesModified.Count > 0)
-        {
-            var commitResult = await CommitChangesAsync(Context.Solution, cancellationToken);
-            return new RefactoringResult
-            {
-                Success = true,
-                OperationId = operationId,
-                Changes = new FileChanges
-                {
-                    FilesModified = commitResult.FilesModified,
-                    FilesCreated = commitResult.FilesCreated,
-                    FilesDeleted = commitResult.FilesDeleted
-                },
-                UsingDirectivesRemoved = totalUsingsRemoved
-            };
-        }
-
-        // No files needed changes
-        return RefactoringResult.Succeeded(
-            operationId,
-            new FileChanges
-            {
-                FilesModified = [],
-                FilesCreated = [],
-                FilesDeleted = []
-            },
-            null,
-            0,
-            0);
+        return (root, newRoot, unusedUsings);
     }
 
     /// <summary>
