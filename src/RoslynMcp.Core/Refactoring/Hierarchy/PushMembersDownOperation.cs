@@ -86,7 +86,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
 
-
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
@@ -451,7 +450,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                             // later visit of that type does not cascade those overloads.
                             foreach (var target in targets)
                             {
-                                var targetProjectId = ResolveSymbolProjectId(currentSolution, target)
+                                var targetProjectId = HierarchyMemberEligibilityHelpers.ResolveSymbolProjectId(currentSolution, target)
                                     ?? currentDocument.Project.Id;
                                 var targetKey = TypeWalkKeyHelpers.TypeWalkKey(targetProjectId, target);
                                 if (!insertedMembersByType.TryGetValue(targetKey, out var insertedOnTarget))
@@ -591,22 +590,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     }
 
     /// <summary>
-    /// Resolves the <see cref="ProjectId"/> that owns
-    /// <paramref name="symbol"/>'s declaring syntax, when available.
-    /// </summary>
-    private static ProjectId? ResolveSymbolProjectId(Solution solution, ISymbol symbol)
-    {
-        foreach (var reference in symbol.DeclaringSyntaxReferences)
-        {
-            var document = solution.GetDocument(reference.SyntaxTree);
-            if (document != null)
-                return document.Project.Id;
-        }
-
-        return null;
-    }
-
-    /// <summary>
     /// Preview description for a file that pushed members from
     /// <paramref name="pushedCount"/> base types.
     /// </summary>
@@ -721,7 +704,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         foreach (var (name, symbol, syntax) in EnumerateDeclaredMembers(
                      typeDeclaration, semanticModel, cancellationToken))
         {
-            if (symbol == null || !IsSupportedMember(symbol))
+            if (symbol == null || !HierarchyMemberEligibilityHelpers.IsSupportedMember(symbol))
                 continue;
 
             // Extern/PInvoke methods stay bodyless; EnsureMethodBody would add a
@@ -1429,7 +1412,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 if (!ImplementInterfaceOperation.MatchesRequestedMember(indexer, requested))
                     continue;
 
-                if (!IsSupportedMember(indexer))
+                if (!HierarchyMemberEligibilityHelpers.IsSupportedMember(indexer))
                 {
                     throw new RefactoringException(
                         ErrorCodes.MemberNotMoveable,
@@ -1459,7 +1442,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                     $"Could not resolve symbol for member '{name}'.");
             }
 
-            if (!IsSupportedMember(symbol))
+            if (!HierarchyMemberEligibilityHelpers.IsSupportedMember(symbol))
             {
                 throw new RefactoringException(
                     ErrorCodes.MemberNotMoveable,
@@ -1517,15 +1500,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
     }
 
-    private static bool IsSupportedMember(ISymbol symbol) => symbol switch
-    {
-        IMethodSymbol method => method.MethodKind == MethodKind.Ordinary,
-        IPropertySymbol => true,
-        IFieldSymbol => true,
-        IEventSymbol => true,
-        _ => false
-    };
-
     private static void ValidateMembersForPush(
         IReadOnlyList<PushableMember> members,
         INamedTypeSymbol source,
@@ -1563,7 +1537,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             {
                 if (!CanMoveMember(MemberAsSeenFromTarget(member.Symbol, source, target), target))
                 {
-                    if (target.TypeKind == TypeKind.Interface && !IsInterfaceCompatible(member.Symbol))
+                    if (target.TypeKind == TypeKind.Interface && !HierarchyMemberEligibilityHelpers.IsInterfaceCompatible(member.Symbol))
                     {
                         throw new RefactoringException(
                             ErrorCodes.MemberNotInterfaceCompatible,
@@ -2508,7 +2482,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (HierarchyConflictHelpers.HasConflict(target, member))
             return false;
 
-        if (target.TypeKind == TypeKind.Interface && !IsInterfaceCompatible(member))
+        if (target.TypeKind == TypeKind.Interface && !HierarchyMemberEligibilityHelpers.IsInterfaceCompatible(member))
             return false;
 
         return true;
@@ -2610,23 +2584,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         }
 
         return false;
-    }
-
-    private static bool IsInterfaceCompatible(ISymbol member)
-    {
-        if (member.IsStatic)
-            return false;
-
-        if (member.DeclaredAccessibility != Accessibility.Public)
-            return false;
-
-        return member switch
-        {
-            IMethodSymbol method => method.MethodKind == MethodKind.Ordinary,
-            IPropertySymbol => true,
-            IEventSymbol => true,
-            _ => false
-        };
     }
 
     private static MemberDeclarationSyntax ConvertForDerived(
