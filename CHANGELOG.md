@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-09-30
+
 ### Changed
 - `add_missing_usings` now honors optional **`sourceFile`** when `allFiles: true`: narrows the walk via `AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile` (default path; peer FormatDocument / ConvertToBlockBody). `ValidateParams` validates a non-blank optional `sourceFile` with `SourceFilePathHelpers.ValidateSourceFilePath` (still skips `File.Exists` under allFiles; filter throws `SourceFileNotFound` / `SourceNotInWorkspace`). `ExecuteAllFilesAsync` apply path keeps a local `currentSolution`, groups via `GroupByLinkedPath` (identical text to linked siblings; divergent rewrites → `CannotConvert`), and commits once (FormatDocument / SortUsings / ConvertToBlockBody) so mid-walk `UpdateSolution` no longer empties `GetChanges`. Omit `sourceFile` to walk the whole solution. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fix RemoveUnusedUsings / SortUsings sourceFile gap. (#1713)
 - `format_document` now honors optional **`sourceFile`** when `allFiles: true`: narrows the walk via `AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile` (default path; peer ConvertToBlockBody). `ValidateParams` validates a non-blank optional `sourceFile` with `SourceFilePathHelpers.ValidateSourceFilePath` (still skips `File.Exists` under allFiles; filter throws `SourceFileNotFound` / `SourceNotInWorkspace`). Omit `sourceFile` to walk the whole solution. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. (#1708)
@@ -488,7 +490,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
-[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.5...HEAD
+[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.6...HEAD
+[0.6.6]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.2...v0.6.3
