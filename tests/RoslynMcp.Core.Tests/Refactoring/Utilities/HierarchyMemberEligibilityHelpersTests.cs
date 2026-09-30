@@ -98,7 +98,7 @@ public class HierarchyMemberEligibilityHelpersTests
     [Fact]
     public async Task ResolveSymbolProjectId_ReturnsOwningProject_WhenDeclaringDocumentExists()
     {
-        var workspace = new AdhocWorkspace();
+        using var workspace = new AdhocWorkspace();
         var project = workspace.AddProject("P", LanguageNames.CSharp)
             .WithMetadataReferences(new[]
             {
@@ -131,7 +131,7 @@ public class HierarchyMemberEligibilityHelpersTests
             """);
         var method = compilation.GetTypeByMetadataName("C")!
             .GetMembers("M").OfType<IMethodSymbol>().Single();
-        var workspace = new AdhocWorkspace();
+        using var workspace = new AdhocWorkspace();
         var project = workspace.AddProject("Empty", LanguageNames.CSharp);
 
         var projectId = HierarchyMemberEligibilityHelpers.ResolveSymbolProjectId(
