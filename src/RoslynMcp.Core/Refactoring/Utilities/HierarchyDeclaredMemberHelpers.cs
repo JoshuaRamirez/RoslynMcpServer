@@ -13,7 +13,8 @@ internal static class HierarchyDeclaredMemberHelpers
     /// <summary>
     /// Yields each declared method / property / indexer / field variable /
     /// event-field variable / event declaration under
-    /// <paramref name="typeDeclaration.Members"/> as
+    /// <paramref name="typeDeclaration"/>'s
+    /// <see cref="TypeDeclarationSyntax.Members"/> as
     /// <c>(Name, Symbol, Syntax)</c>. Indexers use the display name
     /// <c>"this[]"</c> (call sites that need the symbol <c>Name</c> remap
     /// today). Same body as the prior private copies.
