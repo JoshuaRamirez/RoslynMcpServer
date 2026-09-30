@@ -280,6 +280,8 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
     /// Builds an unused-usings rewrite for one document, or null when no usings
     /// need to be removed.
     /// </summary>
+    /// <param name="document">Document to analyze for unused usings.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     /// <param name="throwOnAnalysisFailure">
     /// When true (single-file path), parse/semantic-model failure throws
     /// <c>RoslynError</c>. When false (all-files walk), skip the document
