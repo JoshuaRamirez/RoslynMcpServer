@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
@@ -29,7 +30,11 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
     {
         if (@params.AllFiles)
         {
-            // When processing all files, sourceFile is optional
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -199,102 +204,116 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
 
     /// <summary>
     /// Processes all C# documents in the solution to add missing using directives.
+    /// Optional <c>sourceFile</c> limits the walk via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as FormatDocument / ConvertToBlockBody).
     /// </summary>
     private async Task<RefactoringResult> ExecuteAllFilesAsync(
         Guid operationId,
         AddMissingUsingsParams @params,
         CancellationToken cancellationToken)
     {
-        var solution = Context.Solution;
-        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(solution);
+        // Accumulate on a local solution snapshot (same as SortUsings / FormatDocument)
+        // so CommitChangesAsync can diff against the original Context.Solution.
+        var currentSolution = Context.Solution;
+        var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+        }
+
+        // One physical path may appear as multiple Documents when linked into
+        // several projects. Rewrite once per normalized path and apply the same
+        // text to every sibling DocumentId (ConvertToBlockBody / Copilot).
+        var documentGroups = AllFilesDocumentHelpers.GroupByLinkedPath(allDocuments);
 
         var totalUsingsAdded = 0;
-        var allFilesModified = new List<string>();
+        var anyChanged = false;
         var allPendingChanges = new List<PendingChange>();
 
-        foreach (var document in allDocuments)
+        foreach (var linkedDocuments in documentGroups)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var root = await document.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
-            var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+            SourceText? changedText = null;
+            List<string>? chosenUsings = null;
+            CompilationUnitSyntax? previewRoot = null;
+            Document? previewDocument = null;
+            // Track no-op editable siblings so rewrite/no-op mixed groups reject
+            // regardless of Document walk order (Codex P2 on linked global usings).
+            var sawNoOpEditable = false;
 
-            if (root == null || semanticModel == null)
-                continue;
-
-            // Find unresolved type names using defined diagnostic IDs
-            var diagnostics = semanticModel.GetDiagnostics(cancellationToken: cancellationToken)
-                .Where(d => d.Id == DiagnosticIds.TypeOrNamespaceNotFound ||
-                            d.Id == DiagnosticIds.NameDoesNotExist ||
-                            d.Id == DiagnosticIds.TypeOrNamespaceDoesNotExistInNamespace)
-                .ToList();
-
-            if (diagnostics.Count == 0)
-                continue;
-
-            // Find candidate namespaces for each unresolved symbol
-            var namespacesToAdd = new HashSet<string>();
-            var compilation = semanticModel.Compilation;
-
-            foreach (var diagnostic in diagnostics)
+            foreach (var linked in linkedDocuments)
             {
-                var node = root.FindNode(diagnostic.Location.SourceSpan);
-                var typeName = GetTypeName(node);
-                if (string.IsNullOrEmpty(typeName)) continue;
+                var currentDocument = currentSolution.GetDocument(linked.Id) ?? linked;
+                if (currentDocument is SourceGeneratedDocument)
+                    continue;
+                if (!DocumentEditableHelpers.IsDocumentEditable(currentDocument, Context.Workspace))
+                    continue;
 
-                var candidateNamespaces = FindNamespacesForType(compilation, typeName);
-                if (candidateNamespaces.Count == 1)
+                var rewrite = await TryBuildMissingUsingsRewriteAsync(currentDocument, cancellationToken);
+                if (rewrite is null)
                 {
-                    namespacesToAdd.Add(candidateNamespaces[0]);
+                    sawNoOpEditable = true;
+                    if (changedText != null)
+                    {
+                        throw new RefactoringException(
+                            ErrorCodes.CannotConvert,
+                            $"Linked workspace documents for '{currentDocument.FilePath}' produce different rewrites under current project contexts.");
+                    }
+
+                    continue;
                 }
-                else if (candidateNamespaces.Count > 1)
+
+                if (sawNoOpEditable)
                 {
-                    var best = candidateNamespaces
-                        .OrderBy(n => n.StartsWith("System") ? 0 : 1)
-                        .ThenBy(n => n.Length)
-                        .First();
-                    namespacesToAdd.Add(best);
+                    throw new RefactoringException(
+                        ErrorCodes.CannotConvert,
+                        $"Linked workspace documents for '{currentDocument.FilePath}' produce different rewrites under current project contexts.");
                 }
+
+                var (root, newRoot, newUsings) = rewrite.Value;
+                var newDocument = currentDocument.WithSyntaxRoot(newRoot);
+                var afterText = await newDocument.GetTextAsync(cancellationToken);
+
+                if (changedText != null && !changedText.ContentEquals(afterText))
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.CannotConvert,
+                        $"Linked workspace documents for '{currentDocument.FilePath}' produce different rewrites under current project contexts.");
+                }
+
+                changedText ??= afterText;
+                chosenUsings ??= newUsings;
+                previewRoot ??= root;
+                previewDocument ??= currentDocument;
             }
 
-            if (namespacesToAdd.Count == 0)
+            if (changedText == null || chosenUsings == null || previewRoot == null || previewDocument == null)
                 continue;
 
-            // Get existing usings
-            var existingUsings = root.Usings.Select(u => u.Name?.ToString() ?? "").ToHashSet();
-            var newUsings = namespacesToAdd.Where(n => !existingUsings.Contains(n)).ToList();
-
-            if (newUsings.Count == 0)
-                continue;
-
-            // If preview mode, collect pending changes
             if (@params.Preview)
             {
-                var previewResult = CreatePreviewResult(operationId, document.FilePath!, newUsings, root);
+                var previewResult = CreatePreviewResult(operationId, previewDocument.FilePath!, chosenUsings, previewRoot);
                 if (previewResult.PendingChanges != null)
                     allPendingChanges.AddRange(previewResult.PendingChanges);
-                totalUsingsAdded += newUsings.Count;
+                totalUsingsAdded += chosenUsings.Count;
                 continue;
             }
 
-            // Add the using directives
-            var newUsingDirectives = newUsings
-                .Select(n => SyntaxFactory.UsingDirective(
-                        SyntaxFactory.ParseName(n).WithLeadingTrivia(SyntaxFactory.Space))
-                    .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed))
-                .ToList();
+            foreach (var linked in linkedDocuments)
+            {
+                var sibling = currentSolution.GetDocument(linked.Id) ?? linked;
+                if (sibling is SourceGeneratedDocument)
+                    continue;
+                if (!DocumentEditableHelpers.IsDocumentEditable(sibling, Context.Workspace))
+                    continue;
+                currentSolution = currentSolution.WithDocumentText(sibling.Id, changedText);
+            }
 
-            var allUsingsForFile = root.Usings.AddRange(newUsingDirectives);
-            var sortedUsings = UsingDirectiveSorter.Sort(allUsingsForFile);
-
-            var newRoot = root.WithUsings(SyntaxFactory.List(sortedUsings));
-            var newDocument = document.WithSyntaxRoot(newRoot);
-
-            // Update the solution incrementally so subsequent documents see prior changes
-            Context.UpdateSolution(newDocument.Project.Solution);
-
-            totalUsingsAdded += newUsings.Count;
-            allFilesModified.Add(document.FilePath!);
+            totalUsingsAdded += chosenUsings.Count;
+            anyChanged = true;
         }
 
         // If preview mode, return aggregated preview
@@ -311,9 +330,9 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
         }
 
         // Commit all accumulated changes at once
-        if (allFilesModified.Count > 0)
+        if (anyChanged)
         {
-            var commitResult = await CommitChangesAsync(Context.Solution, cancellationToken);
+            var commitResult = await CommitChangesAsync(currentSolution, cancellationToken);
             return new RefactoringResult
             {
                 Success = true,
@@ -340,6 +359,73 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             null,
             0,
             0);
+    }
+
+    /// <summary>
+    /// Builds a missing-usings rewrite for one document, or null when no usings
+    /// need to be added.
+    /// </summary>
+    private static async Task<(CompilationUnitSyntax Root, CompilationUnitSyntax NewRoot, List<string> NewUsings)?> TryBuildMissingUsingsRewriteAsync(
+        Document document,
+        CancellationToken cancellationToken)
+    {
+        var root = await document.GetSyntaxRootAsync(cancellationToken) as CompilationUnitSyntax;
+        var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+
+        if (root == null || semanticModel == null)
+            return null;
+
+        var diagnostics = semanticModel.GetDiagnostics(cancellationToken: cancellationToken)
+            .Where(d => d.Id == DiagnosticIds.TypeOrNamespaceNotFound ||
+                        d.Id == DiagnosticIds.NameDoesNotExist ||
+                        d.Id == DiagnosticIds.TypeOrNamespaceDoesNotExistInNamespace)
+            .ToList();
+
+        if (diagnostics.Count == 0)
+            return null;
+
+        var namespacesToAdd = new HashSet<string>();
+        var compilation = semanticModel.Compilation;
+
+        foreach (var diagnostic in diagnostics)
+        {
+            var node = root.FindNode(diagnostic.Location.SourceSpan);
+            var typeName = GetTypeName(node);
+            if (string.IsNullOrEmpty(typeName)) continue;
+
+            var candidateNamespaces = FindNamespacesForType(compilation, typeName);
+            if (candidateNamespaces.Count == 1)
+            {
+                namespacesToAdd.Add(candidateNamespaces[0]);
+            }
+            else if (candidateNamespaces.Count > 1)
+            {
+                var best = candidateNamespaces
+                    .OrderBy(n => n.StartsWith("System") ? 0 : 1)
+                    .ThenBy(n => n.Length)
+                    .First();
+                namespacesToAdd.Add(best);
+            }
+        }
+
+        if (namespacesToAdd.Count == 0)
+            return null;
+
+        var existingUsings = root.Usings.Select(u => u.Name?.ToString() ?? "").ToHashSet();
+        var newUsings = namespacesToAdd.Where(n => !existingUsings.Contains(n)).ToList();
+        if (newUsings.Count == 0)
+            return null;
+
+        var newUsingDirectives = newUsings
+            .Select(n => SyntaxFactory.UsingDirective(
+                    SyntaxFactory.ParseName(n).WithLeadingTrivia(SyntaxFactory.Space))
+                .WithTrailingTrivia(SyntaxFactory.CarriageReturnLineFeed))
+            .ToList();
+
+        var allUsingsForFile = root.Usings.AddRange(newUsingDirectives);
+        var sortedUsings = UsingDirectiveSorter.Sort(allUsingsForFile);
+        var newRoot = root.WithUsings(SyntaxFactory.List(sortedUsings));
+        return (root, newRoot, newUsings);
     }
 
     private static string? GetTypeName(SyntaxNode node)

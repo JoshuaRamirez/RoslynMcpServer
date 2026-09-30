@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+- `add_missing_usings` now honors optional **`sourceFile`** when `allFiles: true`: narrows the walk via `AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile` (default path; peer FormatDocument / ConvertToBlockBody). `ValidateParams` validates a non-blank optional `sourceFile` with `SourceFilePathHelpers.ValidateSourceFilePath` (still skips `File.Exists` under allFiles; filter throws `SourceFileNotFound` / `SourceNotInWorkspace`). `ExecuteAllFilesAsync` apply path keeps a local `currentSolution`, groups via `GroupByLinkedPath` (identical text to linked siblings; divergent rewrites → `CannotConvert`), and commits once (FormatDocument / SortUsings / ConvertToBlockBody) so mid-walk `UpdateSolution` no longer empties `GetChanges`. Omit `sourceFile` to walk the whole solution. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fix RemoveUnusedUsings / SortUsings sourceFile gap. (#1713)
+
 ## [0.6.6] - 2026-09-30
 
 ### Changed

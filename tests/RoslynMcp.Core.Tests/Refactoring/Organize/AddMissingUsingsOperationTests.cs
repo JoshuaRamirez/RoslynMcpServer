@@ -3,14 +3,17 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Organize;
+using RoslynMcp.Core.Workspace;
 using Xunit;
 
 namespace RoslynMcp.Core.Tests.Refactoring.Organize;
 
 /// <summary>
-/// Unit tests for AddMissingUsingsOperation semantic validation.
-/// Tests validate using directive resolution behavior.
+/// Unit tests for AddMissingUsingsOperation semantic validation, plus
+/// operation-level <c>allFiles</c> optional <c>sourceFile</c> coverage.
 /// </summary>
 public class AddMissingUsingsOperationTests
 {
@@ -319,6 +322,728 @@ public class AddMissingUsingsOperationTests
             .OrderBy(n => n.StartsWith("System") ? 0 : 1)
             .ThenBy(n => n)
             .ToList();
+    }
+
+    #endregion
+
+    #region AllFiles optional sourceFile
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_WithoutSourceFile_AddsMissingUsings()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("MissingA.cs", MissingA),
+            ("MissingB.cs", MissingB),
+            ("AlreadyComplete.cs", AlreadyComplete));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+        var beforeComplete = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyComplete.cs"]);
+
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams { AllFiles = true });
+
+        Assert.True(result.Success);
+        var afterA = await File.ReadAllTextAsync(workspace.SourcePaths["MissingA.cs"]);
+        var afterB = await File.ReadAllTextAsync(workspace.SourcePaths["MissingB.cs"]);
+        Assert.Contains("using System.Collections.Generic", afterA);
+        Assert.Contains("using System.Collections.Generic", afterB);
+        Assert.Equal(beforeComplete, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyComplete.cs"]));
+        Assert.Equal(2, result.Changes!.FilesModified.Count);
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("MissingA.cs", MissingA),
+            ("MissingB.cs", MissingB),
+            ("AlreadyComplete.cs", AlreadyComplete));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["MissingB.cs"]);
+        var beforeComplete = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyComplete.cs"]);
+
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["MissingA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var afterA = await File.ReadAllTextAsync(workspace.SourcePaths["MissingA.cs"]);
+        Assert.Contains("using System.Collections.Generic", afterA);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["MissingB.cs"]));
+        Assert.Equal(beforeComplete, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyComplete.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["MissingA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("MissingA.cs", MissingA),
+            ("MissingB.cs", MissingB),
+            ("AlreadyComplete.cs", AlreadyComplete));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["MissingB.cs"]);
+        var beforeComplete = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyComplete.cs"]);
+        var flipped = FlipPathCasing(workspace.SourcePaths["MissingA.cs"]);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        var afterA = await File.ReadAllTextAsync(workspace.SourcePaths["MissingA.cs"]);
+        Assert.Contains("using System.Collections.Generic", afterA);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["MissingB.cs"]));
+        Assert.Equal(beforeComplete, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadyComplete.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["MissingA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("MissingA.cs", MissingA),
+            ("MissingB.cs", MissingB));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpAddMissingUsings_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "class Outside { void M(){ List<int> x = new(); } }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new AddMissingUsingsParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("MissingA.cs", MissingA),
+            ("MissingB.cs", MissingB));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpAddMissingUsings_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddMissingUsingsParams
+            {
+                AllFiles = true,
+                SourceFile = missing
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_OptionalSourceFile_ExactCase_PrefersSingleWorkspaceFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("MissingA.cs", MissingA), ("missinga.cs", MissingB)],
+            explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["MissingA.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["missinga.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+        var beforeLower = await File.ReadAllTextAsync(workspace.SourcePaths["missinga.cs"]);
+
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["MissingA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var afterA = await File.ReadAllTextAsync(workspace.SourcePaths["MissingA.cs"]);
+        Assert.Contains("using System.Collections.Generic", afterA);
+        Assert.Equal(beforeLower, await File.ReadAllTextAsync(workspace.SourcePaths["missinga.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["MissingA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_OptionalSourceFile_AmbiguousIgnoreCase_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("MissingA.cs", MissingA), ("missinga.cs", MissingB)],
+            explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["MissingA.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["missinga.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+        var ambiguous = FlipPathCasing(workspace.SourcePaths["MissingA.cs"]);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddMissingUsingsParams
+            {
+                AllFiles = true,
+                SourceFile = ambiguous
+            }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        // Shared filter is OrdinalIgnoreCase, so both case-distinct workspace
+        // files match a flipped spelling whether or not File.Exists(ambiguous).
+        Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_OptionalSourceFile_RelativePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("MissingA.cs", MissingA));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddMissingUsingsParams
+            {
+                AllFiles = true,
+                SourceFile = "MissingA.cs"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_OptionalSourceFile_NonCSharpAbsolutePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("MissingA.cs", MissingA));
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+        var nonCs = Path.Combine(Path.GetTempPath(), "RoslynMcpAddMissingUsings_NonCs_" + Guid.NewGuid().ToString("N") + ".txt");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddMissingUsingsParams
+            {
+                AllFiles = true,
+                SourceFile = nonCs
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_LinkedDocumentViewsThatRewriteIdentically_ReportSingleModifiedFile()
+    {
+        const string sharedSource = """
+            namespace TestApp
+            {
+                public class Shared
+                {
+                    public void M()
+                    {
+                        List<int> items = new List<int>();
+                    }
+                }
+            }
+            """;
+        const string anchorSource = """
+            namespace TestApp
+            {
+                public class Anchor
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorSource, anchorSource);
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathEquals(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new AddMissingUsingsParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Shared.cs"]));
+        var updated = await File.ReadAllTextAsync(workspace.SourcePaths["Shared.cs"]);
+        Assert.Contains("using System.Collections.Generic", updated);
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_LinkedDocumentViewsThatRewriteDifferently_ThrowsCannotConvert()
+    {
+        const string sharedSource = """
+            namespace TestApp
+            {
+                public class Shared
+                {
+                    public void M()
+                    {
+                        Foo f = null!;
+                    }
+                }
+            }
+            """;
+        const string anchorASource = """
+            namespace ProjectANs
+            {
+                public class Foo
+                {
+                }
+            }
+            """;
+        const string anchorBSource = """
+            namespace ProjectBNs
+            {
+                public class Foo
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorASource, anchorBSource);
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathEquals(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddMissingUsingsParams
+            {
+                AllFiles = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("Linked workspace documents", ex.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_LinkedNoOpSiblingVsRewrite_ThrowsCannotConvert()
+    {
+        // Project A (ImplicitUsings disable) needs System.Collections.Generic for List;
+        // Project B (ImplicitUsings enable) resolves List with no rewrite. Copying A's
+        // rewritten text onto B would change a no-op sibling → CannotConvert (Codex).
+        const string sharedSource = """
+            namespace TestApp
+            {
+                public class Shared
+                {
+                    public void M()
+                    {
+                        List<int> items = new List<int>();
+                    }
+                }
+            }
+            """;
+        const string anchorSource = """
+            namespace TestApp
+            {
+                public class Anchor
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorSource, anchorSource, projectBImplicitUsings: true);
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathEquals(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddMissingUsingsParams
+            {
+                AllFiles = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("Linked workspace documents", ex.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_LinkedDocumentViewsRewriteAndNoOp_ThrowsCannotConvert()
+    {
+        // Shared needs System.Collections.Generic. Project A has no global using
+        // (rewrite). Project B already resolves List via global using (no-op).
+        // Propagating A's rewrite into B would still change Shared's text under B.
+        const string sharedSource = """
+            namespace TestApp
+            {
+                public class Shared
+                {
+                    public void M()
+                    {
+                        List<int> items = new List<int>();
+                    }
+                }
+            }
+            """;
+        const string anchorASource = """
+            namespace TestApp
+            {
+                public class Anchor
+                {
+                }
+            }
+            """;
+        const string anchorBSource = """
+            global using System.Collections.Generic;
+
+            namespace TestApp
+            {
+                public class Anchor
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorASource, anchorBSource);
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathEquals(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddMissingUsingsParams
+            {
+                AllFiles = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("Linked workspace documents", ex.Message, StringComparison.Ordinal);
+    }
+
+    private const string MissingA = """
+        namespace TestApp
+        {
+            public class MissingA
+            {
+                public void M()
+                {
+                    List<int> items = new List<int>();
+                }
+            }
+        }
+        """;
+
+    private const string MissingB = """
+        namespace TestApp
+        {
+            public class MissingB
+            {
+                public void M()
+                {
+                    Dictionary<string, int> map = new Dictionary<string, int>();
+                }
+            }
+        }
+        """;
+
+    private const string AlreadyComplete = """
+        using System.Collections.Generic;
+
+        namespace TestApp
+        {
+            public class AlreadyComplete
+            {
+                public void M()
+                {
+                    List<int> items = new List<int>();
+                }
+            }
+        }
+        """;
+
+    private static bool PathEquals(string left, string right) =>
+        string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
+
+    private sealed class TempWorkspace : IAsyncDisposable
+    {
+        public required string DirectoryPath { get; init; }
+        public required string SourcePath { get; init; }
+        public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
+        public required WorkspaceContext Context { get; init; }
+
+        public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Foo.cs") =>
+            CreateWithFilesAsync([(fileName, source)]);
+
+        public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
+            CreateWithFilesAsync(files, explicitCompileItems: false);
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(
+            IReadOnlyList<(string FileName, string Source)> files,
+            bool explicitCompileItems)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpAddMissingUsings_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var projectPath = Path.Combine(directory, "TestApp.csproj");
+            var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            var compileItems = explicitCompileItems
+                ? string.Join(Environment.NewLine, files.Select(f => $"    <Compile Include=\"{f.FileName}\" />"))
+                : string.Empty;
+
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
+            await File.WriteAllTextAsync(projectPath, $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <ImplicitUsings>disable</ImplicitUsings>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                {(explicitCompileItems ? "    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>" : string.Empty)}
+                  </PropertyGroup>
+                {(explicitCompileItems ? $"  <ItemGroup>{Environment.NewLine}{compileItems}{Environment.NewLine}  </ItemGroup>" : string.Empty)}
+                </Project>
+                """);
+
+            foreach (var (fileName, source) in files)
+            {
+                var sourcePath = Path.Combine(directory, fileName);
+                await File.WriteAllTextAsync(sourcePath, source);
+                sourcePaths[fileName] = sourcePath;
+            }
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(projectPath);
+                foreach (var sourcePath in sourcePaths.Values)
+                {
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    SourcePath = sourcePaths.Values.First(),
+                    SourcePaths = sourcePaths,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+
+        public static async Task<TempWorkspace> CreateWithLinkedProjectsAsync(
+            string sharedSource,
+            string anchorASource,
+            string anchorBSource,
+            bool projectBImplicitUsings = false)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpAddMissingUsingsLinked_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            var sharedPath = Path.Combine(directory, "Shared.cs");
+            var rootProjectPath = Path.Combine(directory, "ProjectA.csproj");
+            var referencedProjectPath = Path.Combine(directory, "ProjectB.csproj");
+            var anchorAPath = Path.Combine(directory, "AnchorA.cs");
+            var anchorBPath = Path.Combine(directory, "AnchorB.cs");
+            var projectTypeGuid = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}";
+            var projectAGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+            var projectBGuid = Guid.NewGuid().ToString("B").ToUpperInvariant();
+
+            await File.WriteAllTextAsync(sharedPath, sharedSource);
+            await File.WriteAllTextAsync(anchorAPath, anchorASource);
+            await File.WriteAllTextAsync(anchorBPath, anchorBSource);
+            await File.WriteAllTextAsync(solutionPath, $$"""
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                VisualStudioVersion = 17.0.31903.59
+                MinimumVisualStudioVersion = 10.0.40219.1
+                Project("{{projectTypeGuid}}") = "ProjectA", "ProjectA.csproj", "{{projectAGuid}}"
+                EndProject
+                Project("{{projectTypeGuid}}") = "ProjectB", "ProjectB.csproj", "{{projectBGuid}}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                		Release|Any CPU = Release|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{{projectAGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectAGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectAGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{{projectBGuid}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+                		{{projectBGuid}}.Release|Any CPU.Build.0 = Release|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            await File.WriteAllTextAsync(rootProjectPath, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <ImplicitUsings>disable</ImplicitUsings>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="AnchorA.cs" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            var projectBImplicit = projectBImplicitUsings ? "enable" : "disable";
+            await File.WriteAllTextAsync(referencedProjectPath, $$"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <ImplicitUsings>{{projectBImplicit}}</ImplicitUsings>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="AnchorB.cs" />
+                    <Compile Include="Shared.cs" Link="Shared.cs" />
+                  </ItemGroup>
+                </Project>
+                """);
+
+            var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["Shared.cs"] = sharedPath,
+                ["AnchorA.cs"] = anchorAPath,
+                ["AnchorB.cs"] = anchorBPath
+            };
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                foreach (var sourcePath in sourcePaths.Values)
+                {
+                    if (context.GetDocumentByPath(sourcePath) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    }
+                }
+
+                return new TempWorkspace
+                {
+                    DirectoryPath = directory,
+                    SourcePath = sharedPath,
+                    SourcePaths = sourcePaths,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            Context.Dispose();
+            await Task.Run(() =>
+            {
+                try
+                {
+                    Directory.Delete(DirectoryPath, recursive: true);
+                }
+                catch
+                {
+                    // ignore locked temp files
+                }
+            });
+        }
     }
 
     #endregion
