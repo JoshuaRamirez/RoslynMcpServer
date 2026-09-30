@@ -644,6 +644,110 @@ public class AddMissingUsingsOperationTests
         Assert.Contains("Linked workspace documents", ex.Message, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_LinkedNoOpSiblingVsRewrite_ThrowsCannotConvert()
+    {
+        // Project A (ImplicitUsings disable) needs System.Collections.Generic for List;
+        // Project B (ImplicitUsings enable) resolves List with no rewrite. Copying A's
+        // rewritten text onto B would change a no-op sibling → CannotConvert (Codex).
+        const string sharedSource = """
+            namespace TestApp
+            {
+                public class Shared
+                {
+                    public void M()
+                    {
+                        List<int> items = new List<int>();
+                    }
+                }
+            }
+            """;
+        const string anchorSource = """
+            namespace TestApp
+            {
+                public class Anchor
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorSource, anchorSource, projectBImplicitUsings: true);
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathEquals(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddMissingUsingsParams
+            {
+                AllFiles = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("Linked workspace documents", ex.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task AddMissingUsings_AllFilesTrue_LinkedDocumentViewsRewriteAndNoOp_ThrowsCannotConvert()
+    {
+        // Shared needs System.Collections.Generic. Project A has no global using
+        // (rewrite). Project B already resolves List via global using (no-op).
+        // Propagating A's rewrite into B would still change Shared's text under B.
+        const string sharedSource = """
+            namespace TestApp
+            {
+                public class Shared
+                {
+                    public void M()
+                    {
+                        List<int> items = new List<int>();
+                    }
+                }
+            }
+            """;
+        const string anchorASource = """
+            namespace TestApp
+            {
+                public class Anchor
+                {
+                }
+            }
+            """;
+        const string anchorBSource = """
+            global using System.Collections.Generic;
+
+            namespace TestApp
+            {
+                public class Anchor
+                {
+                }
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateWithLinkedProjectsAsync(
+            sharedSource, anchorASource, anchorBSource);
+        var linkedDocuments = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Where(d => PathEquals(d.FilePath!, workspace.SourcePaths["Shared.cs"]))
+            .ToList();
+        Assert.Equal(2, linkedDocuments.Count);
+
+        var operation = new AddMissingUsingsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new AddMissingUsingsParams
+            {
+                AllFiles = true
+            }));
+
+        Assert.Equal(ErrorCodes.CannotConvert, ex.ErrorCode);
+        Assert.Contains("Linked workspace documents", ex.Message, StringComparison.Ordinal);
+    }
+
     private const string MissingA = """
         namespace TestApp
         {
@@ -798,7 +902,8 @@ public class AddMissingUsingsOperationTests
         public static async Task<TempWorkspace> CreateWithLinkedProjectsAsync(
             string sharedSource,
             string anchorASource,
-            string anchorBSource)
+            string anchorBSource,
+            bool projectBImplicitUsings = false)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -862,12 +967,13 @@ public class AddMissingUsingsOperationTests
                 </Project>
                 """);
 
-            await File.WriteAllTextAsync(referencedProjectPath, """
+            var projectBImplicit = projectBImplicitUsings ? "enable" : "disable";
+            await File.WriteAllTextAsync(referencedProjectPath, $$"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
-                    <ImplicitUsings>disable</ImplicitUsings>
+                    <ImplicitUsings>{{projectBImplicit}}</ImplicitUsings>
                     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
                     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>

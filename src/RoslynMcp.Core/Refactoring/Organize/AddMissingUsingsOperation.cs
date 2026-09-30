@@ -240,6 +240,9 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
             List<string>? chosenUsings = null;
             CompilationUnitSyntax? previewRoot = null;
             Document? previewDocument = null;
+            // Track no-op editable siblings so rewrite/no-op mixed groups reject
+            // regardless of Document walk order (Codex P2 on linked global usings).
+            var sawNoOpEditable = false;
 
             foreach (var linked in linkedDocuments)
             {
@@ -251,7 +254,24 @@ public sealed class AddMissingUsingsOperation : RefactoringOperationBase<AddMiss
 
                 var rewrite = await TryBuildMissingUsingsRewriteAsync(currentDocument, cancellationToken);
                 if (rewrite is null)
+                {
+                    sawNoOpEditable = true;
+                    if (changedText != null)
+                    {
+                        throw new RefactoringException(
+                            ErrorCodes.CannotConvert,
+                            $"Linked workspace documents for '{currentDocument.FilePath}' produce different rewrites under current project contexts.");
+                    }
+
                     continue;
+                }
+
+                if (sawNoOpEditable)
+                {
+                    throw new RefactoringException(
+                        ErrorCodes.CannotConvert,
+                        $"Linked workspace documents for '{currentDocument.FilePath}' produce different rewrites under current project contexts.");
+                }
 
                 var (root, newRoot, newUsings) = rewrite.Value;
                 var newDocument = currentDocument.WithSyntaxRoot(newRoot);
