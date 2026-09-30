@@ -23,7 +23,7 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// ReorderParameters / RenameNamespace / PushMembersDown, plus
 /// FilterAllFilesDocumentsBySourceFile for ExtractBaseClass /
 /// ExtractInterface / ExtractMethod / ExtractConstant / ExtractVariable /
-/// PushMembersDown / PullMembersUp / ConvertToBlockBody / FormatDocument / AddMissingUsings / RemoveUnusedUsings / InlineConstant /
+/// PushMembersDown / PullMembersUp / ConvertToBlockBody / FormatDocument / AddMissingUsings / RemoveUnusedUsings / SortUsings / InlineConstant /
 /// InlineVariable / InlineMethod / MakeStatic / MakeNonStatic / IntroduceParameter /
 /// RenameSymbol / RenameNamespace / AddParameter / RemoveParameter / ReorderParameters /
 /// ChangeSignature / ChangeReturnType / ImplementInterface / ImplementAbstract /
