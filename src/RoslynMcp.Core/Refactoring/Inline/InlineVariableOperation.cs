@@ -350,7 +350,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
                     break;
 
                 Solution? updated = null;
-                foreach (var declarator in CollectLocalDeclarators(root))
+                foreach (var declarator in LocalDeclaratorHelpers.CollectLocalDeclarators(root))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -492,28 +492,6 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         inlinedCount == 1
             ? "Inline variable"
             : $"Inline {inlinedCount} variables";
-
-    /// <summary>
-    /// Collects every local <see cref="VariableDeclaratorSyntax"/> in
-    /// <paramref name="root"/> whose parent is a
-    /// <see cref="LocalDeclarationStatementSyntax"/> (fields and for-loop
-    /// declarators stay excluded). Deterministic <c>SpanStart</c> then
-    /// span-length order.
-    /// </summary>
-    internal static IReadOnlyList<VariableDeclaratorSyntax> CollectLocalDeclarators(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<VariableDeclaratorSyntax>()
-            .Where(IsLocalDeclarator)
-            .OrderBy(declarator => declarator.SpanStart)
-            .ThenBy(declarator => declarator.Span.Length)
-            .ToList();
-
-    private static bool IsLocalDeclarator(VariableDeclaratorSyntax declarator) =>
-        declarator.Parent is VariableDeclarationSyntax
-        {
-            Parent: LocalDeclarationStatementSyntax statement
-        } &&
-        !UsingDeclarationHelpers.IsUsingDeclaration(declarator);
 
     private async Task<Solution?> TryInlineOneAsync(
         Document document,
