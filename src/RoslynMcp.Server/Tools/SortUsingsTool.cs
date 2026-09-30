@@ -32,7 +32,7 @@ public sealed class SortUsingsTool : IToolHandler
     public string Name => "sort_usings";
 
     /// <inheritdoc />
-    public string Description => "Sort using directives in a C# file. When systemFirst is true (default), System / System.* namespaces are placed first within regular and static groups. Process a single file or all files in the solution.";
+    public string Description => "Sort using directives in a C# file. When systemFirst is true (default), System / System.* namespaces are placed first within regular and static groups. Process a single file or all files in the solution. allFiles: true walks every C# file (sourceFile optional when true to limit the walk). preview returns computed changes without applying.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -49,12 +49,12 @@ public sealed class SortUsingsTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file. Required when allFiles is false."
+                description = "Absolute path to the source file. Required when allFiles is false. Optional when allFiles is true to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file).",
                 @default = false
             },
             systemFirst = new

@@ -3,6 +3,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Organize;
 using RoslynMcp.Core.Workspace;
@@ -261,6 +262,207 @@ public class SortUsingsOperationTests
         Assert.Equal(beforeSorted, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySorted.cs"]));
     }
 
+
+    #region AllFiles optional sourceFile
+
+    [SkippableFact]
+    public async Task SortUsings_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("UnsortedA.cs", UnsortedA),
+            ("UnsortedB.cs", UnsortedB),
+            ("AlreadySorted.cs", AlreadySorted));
+        var operation = new SortUsingsOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["UnsortedB.cs"]);
+        var beforeSorted = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySorted.cs"]);
+
+        var result = await operation.ExecuteAsync(new SortUsingsParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["UnsortedA.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "System", "MyApp.Services" },
+            GetUsingKeys(await File.ReadAllTextAsync(workspace.SourcePaths["UnsortedA.cs"])));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["UnsortedB.cs"]));
+        Assert.Equal(beforeSorted, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySorted.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["UnsortedA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SortUsings_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("UnsortedA.cs", UnsortedA),
+            ("UnsortedB.cs", UnsortedB),
+            ("AlreadySorted.cs", AlreadySorted));
+        var operation = new SortUsingsOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["UnsortedB.cs"]);
+        var beforeSorted = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySorted.cs"]);
+        var flipped = FlipPathCasing(workspace.SourcePaths["UnsortedA.cs"]);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new SortUsingsParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "System", "MyApp.Services" },
+            GetUsingKeys(await File.ReadAllTextAsync(workspace.SourcePaths["UnsortedA.cs"])));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["UnsortedB.cs"]));
+        Assert.Equal(beforeSorted, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySorted.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["UnsortedA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SortUsings_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("UnsortedA.cs", UnsortedA),
+            ("UnsortedB.cs", UnsortedB));
+        var operation = new SortUsingsOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpSortUsings_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "using MyApp.Services;\nusing System;\nclass Outside { }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new SortUsingsParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task SortUsings_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("UnsortedA.cs", UnsortedA),
+            ("UnsortedB.cs", UnsortedB));
+        var operation = new SortUsingsOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpSortUsings_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SortUsingsParams
+            {
+                AllFiles = true,
+                SourceFile = missing
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task SortUsings_AllFilesTrue_OptionalSourceFile_ExactCase_PrefersSingleWorkspaceFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("UnsortedA.cs", UnsortedA), ("unsorteda.cs", UnsortedB)],
+            explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["UnsortedA.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["unsorteda.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new SortUsingsOperation(workspace.Context);
+        var beforeLower = await File.ReadAllTextAsync(workspace.SourcePaths["unsorteda.cs"]);
+
+        var result = await operation.ExecuteAsync(new SortUsingsParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["UnsortedA.cs"]
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "System", "MyApp.Services" },
+            GetUsingKeys(await File.ReadAllTextAsync(workspace.SourcePaths["UnsortedA.cs"])));
+        Assert.Equal(beforeLower, await File.ReadAllTextAsync(workspace.SourcePaths["unsorteda.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["UnsortedA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SortUsings_AllFilesTrue_OptionalSourceFile_AmbiguousIgnoreCase_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("UnsortedA.cs", UnsortedA), ("unsorteda.cs", UnsortedB)],
+            explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["UnsortedA.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["unsorteda.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new SortUsingsOperation(workspace.Context);
+        var ambiguous = FlipPathCasing(workspace.SourcePaths["UnsortedA.cs"]);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SortUsingsParams
+            {
+                AllFiles = true,
+                SourceFile = ambiguous
+            }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        // Shared filter is OrdinalIgnoreCase, so both case-distinct workspace
+        // files match a flipped spelling whether or not File.Exists(ambiguous).
+        Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task SortUsings_AllFilesTrue_OptionalSourceFile_RelativePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("UnsortedA.cs", UnsortedA));
+        var operation = new SortUsingsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SortUsingsParams
+            {
+                AllFiles = true,
+                SourceFile = "UnsortedA.cs"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task SortUsings_AllFilesTrue_OptionalSourceFile_NonCSharpAbsolutePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("UnsortedA.cs", UnsortedA));
+        var operation = new SortUsingsOperation(workspace.Context);
+        var nonCs = Path.Combine(Path.GetTempPath(), "RoslynMcpSortUsings_NonCs_" + Guid.NewGuid().ToString("N") + ".txt");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SortUsingsParams
+            {
+                AllFiles = true,
+                SourceFile = nonCs
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    #endregion
+
     private const string UnsortedA = """
         using MyApp.Services;
         using System;
@@ -298,6 +500,23 @@ public class SortUsingsOperationTests
     private static bool PathEquals(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
+
     private static List<string> GetUsingKeys(string source)
     {
         var root = CSharpSyntaxTree.ParseText(source).GetCompilationUnitRoot();
@@ -322,9 +541,14 @@ public class SortUsingsOperationTests
         public required WorkspaceContext Context { get; init; }
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Foo.cs") =>
-            CreateWithFilesAsync((fileName, source));
+            CreateWithFilesAsync([(fileName, source)]);
 
-        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
+        public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
+            CreateWithFilesAsync(files, explicitCompileItems: false);
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(
+            IReadOnlyList<(string FileName, string Source)> files,
+            bool explicitCompileItems)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -332,14 +556,25 @@ public class SortUsingsOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var sourcePaths = new Dictionary<string, string>(StringComparer.Ordinal);
 
-            await File.WriteAllTextAsync(projectPath, """
+            var compileItems = explicitCompileItems
+                ? string.Join(Environment.NewLine, files.Select(f => $"    <Compile Include=\"{f.FileName}\" />"))
+                : string.Empty;
+
+            // Pin authored sources so generated AssemblyInfo / TFM attributes
+            // are not hit by the allFiles .cs document walk.
+            await File.WriteAllTextAsync(projectPath, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    <ImplicitUsings>disable</ImplicitUsings>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                {(explicitCompileItems ? "    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>" : string.Empty)}
                   </PropertyGroup>
+                {(explicitCompileItems ? $"  <ItemGroup>{Environment.NewLine}{compileItems}{Environment.NewLine}  </ItemGroup>" : string.Empty)}
                 </Project>
                 """);
 
