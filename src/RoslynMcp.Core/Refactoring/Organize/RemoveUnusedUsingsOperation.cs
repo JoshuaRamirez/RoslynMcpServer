@@ -328,11 +328,16 @@ public sealed class RemoveUnusedUsingsOperation : RefactoringOperationBase<Remov
             }
         }
 
-        // Also collect from diagnostics directly
+        // Also collect from diagnostics directly — only compilation-unit usings.
+        // Namespace-scoped usings (block / file-scoped) can appear in diagnostics but
+        // are not rewritten by WithUsings(root.Usings); counting them would yield a
+        // non-null rewrite with unchanged text (Copilot on #1727).
         foreach (var diagnostic in unusedUsingDiagnostics)
         {
             var node = root.FindNode(diagnostic.Location.SourceSpan);
-            if (node is UsingDirectiveSyntax usingNode && !unusedUsings.Contains(usingNode))
+            if (node is UsingDirectiveSyntax usingNode &&
+                usingNode.Parent is CompilationUnitSyntax &&
+                !unusedUsings.Contains(usingNode))
             {
                 unusedUsings.Add(usingNode);
             }

@@ -719,6 +719,33 @@ public class RemoveUnusedUsingsOperationTests
         Assert.Contains("Linked workspace documents", ex.Message, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task RemoveUnusedUsings_AllFilesTrue_FileScopedNamespaceUsing_DoesNotFakeRewrite()
+    {
+        // Copilot #1727: unused using inside a file-scoped namespace appears in
+        // diagnostics but is not rewritten via root.Usings / WithUsings. Must not
+        // return a non-null rewrite that claims a removal with identical text.
+        const string source = """
+            namespace TestApp;
+            using System.Text;
+            public class C
+            {
+                public void M() { }
+            }
+            """;
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileScoped.cs", source));
+        var operation = new RemoveUnusedUsingsOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePaths["FileScoped.cs"]);
+
+        var result = await operation.ExecuteAsync(new RemoveUnusedUsingsParams { AllFiles = true });
+
+        Assert.True(result.Success);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePaths["FileScoped.cs"]));
+        Assert.Empty(result.Changes!.FilesModified);
+        Assert.Equal(0, result.UsingDirectivesRemoved);
+    }
+
     private const string UnusedA = """
         using System.Text;
         using System.Collections.Generic;
