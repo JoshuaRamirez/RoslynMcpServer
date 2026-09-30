@@ -85,6 +85,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
 
+
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(
         Guid operationId,
@@ -363,7 +364,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
 
                     // Record names inserted onto the target so a later visit
                     // of that base does not cascade them further.
-                    var targetProjectId = HierarchyMemberEligibilityHelpers.ResolveSymbolProjectId(currentSolution, target)
+                    var targetProjectId = ResolveSymbolProjectId(currentSolution, target)
                         ?? currentDocument.Project.Id;
                     var targetKey = TypeWalkKeyHelpers.TypeWalkKey(targetProjectId, target);
                     if (!insertedMembersByType.TryGetValue(targetKey, out var insertedOnTarget))
@@ -488,6 +489,22 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
     }
 
     /// <summary>
+    /// Resolves the <see cref="ProjectId"/> that owns
+    /// <paramref name="symbol"/>'s declaring syntax, when available.
+    /// </summary>
+    private static ProjectId? ResolveSymbolProjectId(Solution solution, ISymbol symbol)
+    {
+        foreach (var reference in symbol.DeclaringSyntaxReferences)
+        {
+            var document = solution.GetDocument(reference.SyntaxTree);
+            if (document != null)
+                return document.Project.Id;
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Preview description for a file that pulled members from
     /// <paramref name="pulledCount"/> derived types.
     /// </summary>
@@ -522,7 +539,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         foreach (var (name, symbol, syntax) in EnumerateDeclaredMembers(
                      typeDeclaration, semanticModel, cancellationToken))
         {
-            if (symbol == null || !HierarchyMemberEligibilityHelpers.IsSupportedMember(symbol))
+            if (symbol == null || !IsSupportedMember(symbol))
                 continue;
 
             if (symbol is IPropertySymbol { IsIndexer: true } indexer)
@@ -551,7 +568,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 continue;
             }
 
-            if (target.TypeKind == TypeKind.Interface && !HierarchyMemberEligibilityHelpers.IsInterfaceCompatible(symbol))
+            if (target.TypeKind == TypeKind.Interface && !IsInterfaceCompatible(symbol))
                 continue;
 
             names.Add(name);
@@ -785,7 +802,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 if (!ImplementInterfaceOperation.MatchesRequestedMember(indexer, requested))
                     continue;
 
-                if (!HierarchyMemberEligibilityHelpers.IsSupportedMember(indexer))
+                if (!IsSupportedMember(indexer))
                 {
                     throw new RefactoringException(
                         ErrorCodes.MemberNotMoveable,
@@ -815,7 +832,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                     $"Could not resolve symbol for member '{name}'.");
             }
 
-            if (!HierarchyMemberEligibilityHelpers.IsSupportedMember(symbol))
+            if (!IsSupportedMember(symbol))
             {
                 throw new RefactoringException(
                     ErrorCodes.MemberNotMoveable,
@@ -873,6 +890,15 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         }
     }
 
+    private static bool IsSupportedMember(ISymbol symbol) => symbol switch
+    {
+        IMethodSymbol method => method.MethodKind == MethodKind.Ordinary,
+        IPropertySymbol => true,
+        IFieldSymbol => true,
+        IEventSymbol => true,
+        _ => false
+    };
+
     private static void ValidateMembersForPull(
         IReadOnlyList<PullableMember> members,
         INamedTypeSymbol derived,
@@ -904,7 +930,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                     $"Member '{member.Name}' already exists in '{target.Name}'.");
             }
 
-            if (target.TypeKind == TypeKind.Interface && !HierarchyMemberEligibilityHelpers.IsInterfaceCompatible(member.Symbol))
+            if (target.TypeKind == TypeKind.Interface && !IsInterfaceCompatible(member.Symbol))
             {
                 throw new RefactoringException(
                     ErrorCodes.MemberNotInterfaceCompatible,
@@ -941,6 +967,23 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         }
 
         return false;
+    }
+
+    private static bool IsInterfaceCompatible(ISymbol member)
+    {
+        if (member.IsStatic)
+            return false;
+
+        if (member.DeclaredAccessibility != Accessibility.Public)
+            return false;
+
+        return member switch
+        {
+            IMethodSymbol method => method.MethodKind == MethodKind.Ordinary,
+            IPropertySymbol => true,
+            IEventSymbol => true,
+            _ => false
+        };
     }
 
     private static bool CanPullAsAbstract(ISymbol symbol) => symbol switch
