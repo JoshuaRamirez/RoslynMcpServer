@@ -91,6 +91,17 @@ public class FormatDocumentToolTests
     }
 
     [Fact]
+    public void GetDefinition_SourceFileProperty_MentionsLimitWalkWhenAllFiles()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var sourceFile = doc.RootElement.GetProperty("properties").GetProperty("sourceFile");
+        var description = sourceFile.GetProperty("description").GetString();
+        Assert.Contains("limit the walk", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void GetDefinition_AllFilesProperty_DefaultsToFalse()
     {
         var schema = _tool.InputSchema;
@@ -114,6 +125,13 @@ public class FormatDocumentToolTests
 
         Assert.Equal("boolean", preview.GetProperty("type").GetString());
         Assert.False(preview.GetProperty("default").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_Description_MentionsAllFilesOptionalSourceFile()
+    {
+        Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("sourceFile optional", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

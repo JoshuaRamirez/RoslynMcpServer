@@ -24,7 +24,11 @@ public sealed class FormatDocumentOperation : RefactoringOperationBase<FormatDoc
     {
         if (@params.AllFiles)
         {
-            // When processing all files, sourceFile is optional
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -88,7 +92,10 @@ public sealed class FormatDocumentOperation : RefactoringOperationBase<FormatDoc
     }
 
     /// <summary>
-    /// Formats every C# document in the solution.
+    /// Formats every C# document in the solution. Optional <c>sourceFile</c>
+    /// limits the walk via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as ConvertToBlockBody).
     /// </summary>
     private async Task<RefactoringResult> ExecuteAllFilesAsync(
         Guid operationId,
@@ -97,6 +104,11 @@ public sealed class FormatDocumentOperation : RefactoringOperationBase<FormatDoc
     {
         var currentSolution = Context.Solution;
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+        }
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;

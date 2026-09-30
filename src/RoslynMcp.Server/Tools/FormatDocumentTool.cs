@@ -32,7 +32,7 @@ public sealed class FormatDocumentTool : IToolHandler
     public string Name => "format_document";
 
     /// <inheritdoc />
-    public string Description => "Format a C# source file using Roslyn's built-in formatter. Process a single file or all files in the solution. preview returns computed changes without applying.";
+    public string Description => "Format a C# source file using Roslyn's built-in formatter. Process a single file or all files in the solution. allFiles: true walks every C# file (sourceFile optional when true to limit the walk). preview returns computed changes without applying.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -49,12 +49,12 @@ public sealed class FormatDocumentTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file. Required when allFiles is false."
+                description = "Absolute path to the source file. Required when allFiles is false. Optional when allFiles is true to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file).",
                 @default = false
             },
             preview = new
