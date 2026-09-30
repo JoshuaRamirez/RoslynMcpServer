@@ -395,7 +395,7 @@ public class AddMissingUsingsOperationTests
             SourceFile = flipped
         });
 
-        Assert.True(result.Success, $"Success=false UsingDirectivesAdded={result.UsingDirectivesAdded} Err={result.Error?.Message}");
+        Assert.True(result.Success);
         var afterA = await File.ReadAllTextAsync(workspace.SourcePaths["MissingA.cs"]);
         Assert.Contains("using System.Collections.Generic", afterA);
         Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["MissingB.cs"]));
