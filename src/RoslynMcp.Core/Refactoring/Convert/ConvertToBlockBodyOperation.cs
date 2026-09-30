@@ -505,7 +505,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         EnsureAsyncReturnTypeSafeToConvert(method.Modifiers, symbol);
         var stmt = CreateStatement(
             expressionBody,
-            useReturn: !IsNonReturning(method.ReturnType, method.Modifiers, symbol));
+            useReturn: !NonReturningMethodHelpers.IsNonReturning(method.ReturnType, method.Modifiers, symbol));
         var before = FormatExpressionBody(expressionBody.Expression);
         var newMethod = method
             .WithExpressionBody(null)
@@ -526,7 +526,7 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
         EnsureAsyncReturnTypeSafeToConvert(localFunction.Modifiers, symbol);
         var stmt = CreateStatement(
             expressionBody,
-            useReturn: !IsNonReturning(localFunction.ReturnType, localFunction.Modifiers, symbol));
+            useReturn: !NonReturningMethodHelpers.IsNonReturning(localFunction.ReturnType, localFunction.Modifiers, symbol));
         var before = FormatExpressionBody(expressionBody.Expression);
         var converted = localFunction
             .WithExpressionBody(null)
@@ -958,63 +958,13 @@ public sealed class ConvertToBlockBodyOperation : RefactoringOperationBase<Conve
             return;
         if (symbol.ReturnsVoid)
             return;
-        if (IsBclTaskLikeSymbol(symbol.ReturnType))
+        if (NonReturningMethodHelpers.IsBclTaskLikeSymbol(symbol.ReturnType))
             return;
 
         throw new RefactoringException(
             ErrorCodes.CannotConvert,
             "Async member with a custom task-like return type cannot be safely converted to a block body.");
     }
-
-    private static bool IsBclTaskLikeSymbol(ITypeSymbol type)
-    {
-        if (type is not INamedTypeSymbol { Name: "Task" or "ValueTask" } named)
-            return false;
-        if (named.ContainingNamespace?.ToDisplayString() != "System.Threading.Tasks")
-            return false;
-        return !named.IsGenericType || named.TypeArguments.Length == 1;
-    }
-
-    private static bool IsNonReturning(
-        TypeSyntax returnType,
-        SyntaxTokenList modifiers,
-        IMethodSymbol? symbol = null)
-    {
-        if (symbol is { ReturnType.TypeKind: not TypeKind.Error })
-        {
-            if (symbol.ReturnsVoid)
-                return true;
-
-            return modifiers.Any(SyntaxKind.AsyncKeyword) &&
-                   IsNonGenericTaskLikeSymbol(symbol.ReturnType);
-        }
-
-        return IsVoidReturn(returnType) ||
-               (modifiers.Any(SyntaxKind.AsyncKeyword) && IsNonGenericTaskLike(returnType));
-    }
-
-    private static bool IsVoidReturn(TypeSyntax returnType) =>
-        returnType is PredefinedTypeSyntax predefined && predefined.Keyword.IsKind(SyntaxKind.VoidKeyword);
-
-    private static bool IsNonGenericTaskLikeSymbol(ITypeSymbol type)
-    {
-        if (type is INamedTypeSymbol { IsGenericType: true })
-            return false;
-
-        return type.Name is "Task" or "ValueTask" &&
-               type.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks";
-    }
-
-    private static bool IsNonGenericTaskLike(TypeSyntax returnType) => returnType switch
-    {
-        GenericNameSyntax => false,
-        QualifiedNameSyntax qualified => IsNonGenericTaskLike(qualified.Right),
-        AliasQualifiedNameSyntax alias => IsNonGenericTaskLike(alias.Name),
-        IdentifierNameSyntax identifier => IsTaskLikeName(identifier.Identifier.Text),
-        _ => false
-    };
-
-    private static bool IsTaskLikeName(string name) => name is "Task" or "ValueTask";
 
     private static string FormatExpressionBody(ExpressionSyntax expression) =>
         $"=> {expression.NormalizeWhitespace()};";

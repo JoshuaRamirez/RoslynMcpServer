@@ -400,7 +400,7 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
                     throw new RefactoringException(ErrorCodes.CannotConvert, "Method does not have an expression body.");
 
                 var expr = method.ExpressionBody.Expression;
-                var stmt = CreateBlockStatement(expr, useReturn: !IsNonReturning(method, model));
+                var stmt = CreateBlockStatement(expr, useReturn: !NonReturningMethodHelpers.IsNonReturning(method, model));
 
                 var methodBefore = $"=> {expr.NormalizeWhitespace()};";
                 var newMethod = method
@@ -448,42 +448,6 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
 
         return SyntaxFactory.ExpressionStatement(expression);
     }
-
-    private static bool IsNonReturning(MethodDeclarationSyntax method, SemanticModel? model)
-    {
-        if (model?.GetDeclaredSymbol(method) is IMethodSymbol { ReturnType.TypeKind: not TypeKind.Error } symbol)
-        {
-            if (symbol.ReturnsVoid)
-                return true;
-
-            return method.Modifiers.Any(SyntaxKind.AsyncKeyword) &&
-                   IsNonGenericTaskLikeSymbol(symbol.ReturnType);
-        }
-
-        return IsVoidReturn(method.ReturnType) ||
-               (method.Modifiers.Any(SyntaxKind.AsyncKeyword) && IsNonGenericTaskLike(method.ReturnType));
-    }
-
-    private static bool IsVoidReturn(TypeSyntax returnType) =>
-        returnType is PredefinedTypeSyntax predefined && predefined.Keyword.IsKind(SyntaxKind.VoidKeyword);
-
-    private static bool IsNonGenericTaskLikeSymbol(ITypeSymbol type)
-    {
-        if (type is INamedTypeSymbol { IsGenericType: true })
-            return false;
-
-        return type.Name is "Task" or "ValueTask" &&
-               type.ContainingNamespace?.ToDisplayString() == "System.Threading.Tasks";
-    }
-
-    private static bool IsNonGenericTaskLike(TypeSyntax returnType) => returnType switch
-    {
-        GenericNameSyntax => false,
-        QualifiedNameSyntax qualified => IsNonGenericTaskLike(qualified.Right),
-        AliasQualifiedNameSyntax alias => IsNonGenericTaskLike(alias.Name),
-        IdentifierNameSyntax identifier => identifier.Identifier.Text is "Task" or "ValueTask",
-        _ => false
-    };
 
     private static ExpressionSyntax? ExtractExpression(StatementSyntax statement) => statement switch
     {
