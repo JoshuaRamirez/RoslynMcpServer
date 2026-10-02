@@ -33,7 +33,7 @@ public sealed class AddBracesTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Add braces to control statements (if, else, for, foreach, while, using) that have a single-statement body, preserving semantics. Process a single file or all files in the solution. scope is statement (default; wrap the body at line/column; single-file only), file (every braceless control body in the file), or type (bodies inside typeName; single-file only). column (optional) picks the control statement whose keyword span covers that column when set with line (exclusive-end; shortest keyword / First among covering); omitted keeps today's first/leftmost-keyword-on-line-by-SpanStart pick; column without line keeps today's required-line validation. allFiles: true walks every C# file at file scope (omitted scope uses file) and cannot be combined with scope=statement or scope=type.";
+        "Add braces to control statements (if, else, for, foreach, while, using) that have a single-statement body, preserving semantics. Process a single file or all files in the solution. allFiles: true walks every C# file at file scope (sourceFile optional when true to limit the walk; omitted scope uses file; cannot be combined with scope=statement or scope=type). scope is statement (default; wrap the body at line/column; single-file only), file (every braceless control body in the file), or type (bodies inside typeName; single-file only). column (optional) picks the control statement whose keyword span covers that column when set with line (exclusive-end; shortest keyword / First among covering); omitted keeps today's first/leftmost-keyword-on-line-by-SpanStart pick; column without line keeps today's required-line validation.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class AddBracesTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file. Required when allFiles is false."
+                description = "Absolute path to the source file. Required when allFiles is false. Optional when allFiles is true to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with scope=statement or scope=type.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with scope=statement or scope=type.",
                 @default = false
             },
             line = new

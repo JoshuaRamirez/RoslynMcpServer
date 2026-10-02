@@ -68,6 +68,11 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             if (@params.Column.HasValue && @params.Column.Value < 1)
                 throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -251,8 +256,11 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
     /// Applies file-scope brace wrapping to every C# document in the solution
     /// (same document filter as <c>FormatDocumentOperation</c> /
     /// <c>SimplifyNameOperation.ExecuteAllFilesAsync</c>: <c>FilePath</c> ends
-    /// with <c>.cs</c>). Files with nothing to wrap are skipped. When every
-    /// file is a no-op, succeeds with empty changes.
+    /// with <c>.cs</c>). Optional <c>sourceFile</c> limits the walk via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as FormatDocument / SortUsings / AddMissingUsings /
+    /// RemoveUnusedUsings / simplify_name). Files with nothing to wrap are
+    /// skipped. When every file is a no-op, succeeds with empty changes.
     /// </summary>
     private async Task<RefactoringResult> ExecuteAllFilesAsync(
         Guid operationId,
@@ -261,6 +269,11 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
     {
         var currentSolution = Context.Solution;
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+        }
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;
