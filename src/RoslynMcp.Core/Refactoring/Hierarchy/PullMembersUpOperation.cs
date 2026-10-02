@@ -1070,7 +1070,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
 
     private static SyntaxTokenList AdjustBaseClassModifiers(SyntaxTokenList modifiers, bool addVirtual)
     {
-        var tokens = StripModifiers(
+        var tokens = AccessibilityModifiers.StripModifiers(
                 modifiers,
                 SyntaxKind.PrivateKeyword,
                 SyntaxKind.NewKeyword)
@@ -1088,12 +1088,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             tokens.Add(SyntaxFactory.Token(SyntaxKind.VirtualKeyword));
 
         return SyntaxFactory.TokenList(tokens);
-    }
-
-    private static IEnumerable<SyntaxToken> StripModifiers(SyntaxTokenList modifiers, params SyntaxKind[] kinds)
-    {
-        var kindSet = kinds.ToHashSet();
-        return modifiers.Where(token => !kindSet.Contains(token.Kind()));
     }
 
     private static TypeDeclarationSyntax BuildDerivedReplacement(

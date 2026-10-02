@@ -145,4 +145,57 @@ public class AccessibilityModifiersTests
             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
         Assert.True(AccessibilityModifiers.IsPrivateOnlyAccessor(accessor));
     }
+
+    [Fact]
+    public void StripModifiers_RemovesRequestedKinds_PreservesOrder()
+    {
+        var modifiers = SyntaxFactory.TokenList(
+            SyntaxFactory.Token(SyntaxKind.PublicKeyword),
+            SyntaxFactory.Token(SyntaxKind.StaticKeyword),
+            SyntaxFactory.Token(SyntaxKind.VirtualKeyword),
+            SyntaxFactory.Token(SyntaxKind.AsyncKeyword));
+
+        var remaining = AccessibilityModifiers.StripModifiers(
+                modifiers,
+                SyntaxKind.VirtualKeyword,
+                SyntaxKind.AsyncKeyword)
+            .Select(token => token.Kind())
+            .ToList();
+
+        Assert.Equal(
+            new[] { SyntaxKind.PublicKeyword, SyntaxKind.StaticKeyword },
+            remaining);
+    }
+
+    [Fact]
+    public void StripModifiers_EmptyKinds_LeavesAllTokens()
+    {
+        var modifiers = SyntaxFactory.TokenList(
+            SyntaxFactory.Token(SyntaxKind.ProtectedKeyword),
+            SyntaxFactory.Token(SyntaxKind.OverrideKeyword));
+
+        var remaining = AccessibilityModifiers.StripModifiers(modifiers)
+            .Select(token => token.Kind())
+            .ToList();
+
+        Assert.Equal(
+            new[] { SyntaxKind.ProtectedKeyword, SyntaxKind.OverrideKeyword },
+            remaining);
+    }
+
+    [Fact]
+    public void StripModifiers_AllKindsStripped_ReturnsEmpty()
+    {
+        var modifiers = SyntaxFactory.TokenList(
+            SyntaxFactory.Token(SyntaxKind.AbstractKeyword),
+            SyntaxFactory.Token(SyntaxKind.NewKeyword));
+
+        var remaining = AccessibilityModifiers.StripModifiers(
+                modifiers,
+                SyntaxKind.AbstractKeyword,
+                SyntaxKind.NewKeyword)
+            .ToList();
+
+        Assert.Empty(remaining);
+    }
 }
