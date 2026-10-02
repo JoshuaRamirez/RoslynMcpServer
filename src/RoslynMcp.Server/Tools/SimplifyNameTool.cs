@@ -33,7 +33,7 @@ public sealed class SimplifyNameTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Remove redundant namespace qualifications from type (and similar) references when a using directive or the current namespace already makes the short name bind to the same symbol. Process a single file or all files in the solution. scope is file (default; every eligible qualified name in the file) or location (the qualified name at line / optional column; single-file only). column (optional) picks the name whose span covers that column when set with line (exclusive-end; FirstOrDefault among covering names); omitted keeps today's first/leftmost-name-on-line-by-SpanStart pick; column without line keeps today's required-line validation. Names that would become ambiguous or bind differently are skipped and reported. Preview describes the simplifications and writes nothing.";
+        "Remove redundant namespace qualifications from type (and similar) references when a using directive or the current namespace already makes the short name bind to the same symbol. Process a single file or all files in the solution. allFiles: true walks every C# file (sourceFile optional when true to limit the walk). scope is file (default; every eligible qualified name in the file) or location (the qualified name at line / optional column; single-file only). column (optional) picks the name whose span covers that column when set with line (exclusive-end; FirstOrDefault among covering names); omitted keeps today's first/leftmost-name-on-line-by-SpanStart pick; column without line keeps today's required-line validation. Names that would become ambiguous or bind differently are skipped and reported. Preview describes the simplifications and writes nothing.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class SimplifyNameTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file. Required when allFiles is false."
+                description = "Absolute path to the source file. Required when allFiles is false. Optional when allFiles is true to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with scope=location.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with scope=location.",
                 @default = false
             },
             line = new
