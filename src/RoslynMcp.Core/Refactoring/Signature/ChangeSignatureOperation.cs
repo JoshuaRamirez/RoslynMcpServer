@@ -738,7 +738,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         // conversion to the parameter type — `default(string)` must not land on
         // int (Codex). ClassifyConversion on the expression also preserves
         // constant numeric conversions (e.g. byte x = 1) (Codex).
-        if (IsDefaultValueExpression(speculativeExpression))
+        if (ParameterSyntaxHelpers.IsDefaultValueExpression(speculativeExpression))
         {
             var defaultConversion = speculativeModel.ClassifyConversion(speculativeExpression, parameterType);
             return defaultConversion.Exists && defaultConversion.IsImplicit;
@@ -800,10 +800,6 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
 
         return false;
     }
-
-    private static bool IsDefaultValueExpression(ExpressionSyntax expression) =>
-        expression.IsKind(SyntaxKind.DefaultLiteralExpression) ||
-        expression is DefaultExpressionSyntax;
 
     /// <summary>
     /// Every nested <c>nameof(...)</c> argument in <paramref name="expression"/>
