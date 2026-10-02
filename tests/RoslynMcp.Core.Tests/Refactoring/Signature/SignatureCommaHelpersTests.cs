@@ -21,7 +21,7 @@ public class SignatureCommaHelpersTests
         Assert.Equal(2, separators.Count);
         foreach (var sep in separators)
         {
-            Assert.True(sep.IsKind(SyntaxKind.CommaToken));
+            Assert.Equal(SyntaxKind.CommaToken, sep.Kind());
             Assert.Equal(" ", sep.TrailingTrivia.ToFullString());
         }
     }
@@ -30,7 +30,7 @@ public class SignatureCommaHelpersTests
     public void CommaWithSpace_IsCommaTokenWithTrailingSpace()
     {
         var token = SignatureCommaHelpers.CommaWithSpace();
-        Assert.True(token.IsKind(SyntaxKind.CommaToken));
+        Assert.Equal(SyntaxKind.CommaToken, token.Kind());
         Assert.Equal(" ", token.TrailingTrivia.ToFullString());
         Assert.Equal(", ", token.ToFullString());
     }
