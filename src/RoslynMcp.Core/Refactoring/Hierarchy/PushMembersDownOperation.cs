@@ -2676,7 +2676,8 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 .WithExpressionBody(null)
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
-            PropertyDeclarationSyntax property => ToAbstractProperty(property),
+            PropertyDeclarationSyntax property =>
+                HierarchyAbstractEventIndexerHelpers.ToAbstractProperty(property, ToAbstractModifiers(property.Modifiers)),
             IndexerDeclarationSyntax indexer when HierarchyAbstractEventIndexerHelpers.CanMakeIndexerAbstract(indexer) =>
                 HierarchyAbstractEventIndexerHelpers.ToAbstractIndexer(indexer, ToAbstractModifiers(indexer.Modifiers)),
             EventDeclarationSyntax eventDecl when HierarchyAbstractEventIndexerHelpers.CanMakeEventAbstract(eventDecl) =>
@@ -2688,35 +2689,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 "Only methods, properties, indexers, and events can be left as abstract members.")
         };
     }
-
-    private static PropertyDeclarationSyntax ToAbstractProperty(PropertyDeclarationSyntax property)
-    {
-        var accessors = new List<AccessorDeclarationSyntax>();
-        if (property.AccessorList != null)
-        {
-            foreach (var accessor in property.AccessorList.Accessors)
-            {
-                accessors.Add(accessor
-                    .WithBody(null)
-                    .WithExpressionBody(null)
-                    .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-            }
-        }
-        else
-        {
-            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
-                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
-        }
-
-        return property
-            .WithModifiers(ToAbstractModifiers(property.Modifiers))
-            .WithExpressionBody(null)
-            .WithInitializer(null)
-            .WithSemicolonToken(default)
-            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
-            .NormalizeWhitespace();
-    }
-
     private static MemberDeclarationSyntax AddOverrideModifier(
         MemberDeclarationSyntax member,
         ISymbol symbol,

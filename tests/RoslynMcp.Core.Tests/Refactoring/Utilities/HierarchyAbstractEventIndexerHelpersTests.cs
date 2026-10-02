@@ -166,4 +166,73 @@ public class HierarchyAbstractEventIndexerHelpersTests
         Assert.Single(abstractIndexer.AccessorList!.Accessors);
         Assert.True(abstractIndexer.AccessorList.Accessors[0].IsKind(SyntaxKind.GetAccessorDeclaration));
     }
+
+    [Fact]
+    public void ToAbstractProperty_ConvertsAccessorsToSemicolonBodiesAndUsesSuppliedModifiers()
+    {
+        var property = ParseMember<PropertyDeclarationSyntax>(
+            "public virtual int P { get => _p; set { _p = value; } }");
+        var abstractProperty = HierarchyAbstractEventIndexerHelpers.ToAbstractProperty(property, ProtectedAbstract());
+
+        Assert.True(abstractProperty.Modifiers.Any(SyntaxKind.ProtectedKeyword));
+        Assert.True(abstractProperty.Modifiers.Any(SyntaxKind.AbstractKeyword));
+        Assert.False(abstractProperty.Modifiers.Any(SyntaxKind.PublicKeyword));
+        Assert.False(abstractProperty.Modifiers.Any(SyntaxKind.VirtualKeyword));
+        Assert.Null(abstractProperty.ExpressionBody);
+        Assert.Null(abstractProperty.Initializer);
+        Assert.True(abstractProperty.SemicolonToken.IsKind(SyntaxKind.None));
+        Assert.NotNull(abstractProperty.AccessorList);
+        Assert.Equal(2, abstractProperty.AccessorList!.Accessors.Count);
+        Assert.All(abstractProperty.AccessorList.Accessors, a =>
+        {
+            Assert.Null(a.Body);
+            Assert.Null(a.ExpressionBody);
+            Assert.False(a.SemicolonToken.IsKind(SyntaxKind.None));
+        });
+        Assert.Equal("P", abstractProperty.Identifier.Text);
+    }
+
+    [Fact]
+    public void ToAbstractProperty_DropsExpressionBodyAndInitializer()
+    {
+        var property = ParseMember<PropertyDeclarationSyntax>(
+            "public int P { get; set; } = 1;");
+        var abstractProperty = HierarchyAbstractEventIndexerHelpers.ToAbstractProperty(property, ProtectedAbstract());
+
+        Assert.Null(abstractProperty.Initializer);
+        Assert.Null(abstractProperty.ExpressionBody);
+        Assert.NotNull(abstractProperty.AccessorList);
+        Assert.Equal(2, abstractProperty.AccessorList!.Accessors.Count);
+        Assert.All(abstractProperty.AccessorList.Accessors, a =>
+        {
+            Assert.Null(a.Body);
+            Assert.Null(a.ExpressionBody);
+            Assert.False(a.SemicolonToken.IsKind(SyntaxKind.None));
+        });
+    }
+
+    [Fact]
+    public void ToAbstractProperty_WhenNoAccessorList_AddsGetAccessor()
+    {
+        var property = SyntaxFactory.PropertyDeclaration(
+                SyntaxFactory.PredefinedType(SyntaxFactory.Token(SyntaxKind.IntKeyword)),
+                "P")
+            .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
+            .WithExpressionBody(
+                SyntaxFactory.ArrowExpressionClause(
+                    SyntaxFactory.LiteralExpression(
+                        SyntaxKind.NumericLiteralExpression,
+                        SyntaxFactory.Literal(1))))
+            .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
+
+        Assert.Null(property.AccessorList);
+        var abstractProperty = HierarchyAbstractEventIndexerHelpers.ToAbstractProperty(property, ProtectedAbstract());
+        Assert.Null(abstractProperty.ExpressionBody);
+        Assert.True(abstractProperty.SemicolonToken.IsKind(SyntaxKind.None));
+        Assert.NotNull(abstractProperty.AccessorList);
+        Assert.Single(abstractProperty.AccessorList!.Accessors);
+        Assert.True(abstractProperty.AccessorList.Accessors[0].IsKind(SyntaxKind.GetAccessorDeclaration));
+        Assert.True(abstractProperty.Modifiers.Any(SyntaxKind.ProtectedKeyword));
+        Assert.True(abstractProperty.Modifiers.Any(SyntaxKind.AbstractKeyword));
+    }
 }
