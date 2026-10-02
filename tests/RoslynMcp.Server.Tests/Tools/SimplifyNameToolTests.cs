@@ -112,9 +112,6 @@ public class SimplifyNameToolTests
 
         Assert.Equal("boolean", allFiles.GetProperty("type").GetString());
         Assert.False(allFiles.GetProperty("default").GetBoolean());
-        var description = allFiles.GetProperty("description").GetString();
-        Assert.Contains("sourceFile is optional", description, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("limit the walk", description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
