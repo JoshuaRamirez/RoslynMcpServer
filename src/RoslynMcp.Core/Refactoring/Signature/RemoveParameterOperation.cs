@@ -1153,7 +1153,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         {
             var index = originalNodes.IndexOf(node);
             if (index < 0)
-                return SyntaxFactory.SeparatedList(keep, DefaultCommaSeparators(keep.Count));
+                return SyntaxFactory.SeparatedList(keep, SignatureCommaHelpers.DefaultCommaSeparators(keep.Count));
 
             keepIndices.Add(index);
         }
@@ -1166,22 +1166,13 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
             if (to == from + 1 && from < separators.Count)
                 newSeparators.Add(separators[from]);
             else
-                newSeparators.Add(CommaWithSpace());
+                newSeparators.Add(SignatureCommaHelpers.CommaWithSpace());
         }
 
         return SyntaxFactory.SeparatedList(keep, newSeparators);
     }
 
-    private static IReadOnlyList<SyntaxToken> DefaultCommaSeparators(int nodeCount)
-    {
-        if (nodeCount <= 1)
-            return Array.Empty<SyntaxToken>();
 
-        return Enumerable.Repeat(CommaWithSpace(), nodeCount - 1).ToArray();
-    }
-
-    private static SyntaxToken CommaWithSpace() =>
-        SyntaxFactory.Token(SyntaxKind.CommaToken).WithTrailingTrivia(SyntaxFactory.Space);
 
     private sealed record DeclarationTarget(Document Document, TextSpan Span);
 
