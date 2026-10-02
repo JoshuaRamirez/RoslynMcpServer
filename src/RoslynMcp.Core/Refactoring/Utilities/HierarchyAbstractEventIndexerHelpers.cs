@@ -8,8 +8,9 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// Shared event/indexer abstract-member syntax helpers used by
 /// <c>HierarchyAbstractMemberRewriter</c> and <c>push_members_down</c>
 /// when converting concrete members to abstract declarations (extracted
-/// shared implementation). Callers supply abstract modifiers from their
-/// own <c>ToAbstractModifiers</c> (those helpers intentionally differ).
+/// shared implementation). Callers supply abstract modifiers from
+/// <c>HierarchyModifierHelpers.ToAbstractModifiers</c> (push passes
+/// keepOverrideWhenPresent; rewriter does not).
 /// </summary>
 internal static class HierarchyAbstractEventIndexerHelpers
 {

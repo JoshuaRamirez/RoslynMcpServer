@@ -167,42 +167,9 @@ internal static class HierarchyAbstractMemberRewriter
             .NormalizeWhitespace();
     }
 
-    private static SyntaxTokenList ToAbstractModifiers(SyntaxTokenList modifiers)
-    {
-        var tokens = AccessibilityModifiers.StripModifiers(
-                modifiers,
-                SyntaxKind.PrivateKeyword,
-                SyntaxKind.VirtualKeyword,
-                SyntaxKind.OverrideKeyword,
-                SyntaxKind.SealedKeyword,
-                SyntaxKind.AbstractKeyword,
-                SyntaxKind.NewKeyword,
-                SyntaxKind.AsyncKeyword)
-            .ToList();
+    private static SyntaxTokenList ToAbstractModifiers(SyntaxTokenList modifiers) =>
+        HierarchyModifierHelpers.ToAbstractModifiers(modifiers, keepOverrideWhenPresent: false);
 
-        if (!AccessibilityModifiers.HasAccessibility(tokens))
-            tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
-
-        tokens.Add(SyntaxFactory.Token(SyntaxKind.AbstractKeyword));
-        return SyntaxFactory.TokenList(tokens);
-    }
-
-    private static SyntaxTokenList ToOverrideModifiers(SyntaxTokenList modifiers)
-    {
-        var tokens = AccessibilityModifiers.StripModifiers(
-                modifiers,
-                SyntaxKind.PrivateKeyword,
-                SyntaxKind.VirtualKeyword,
-                SyntaxKind.AbstractKeyword,
-                SyntaxKind.OverrideKeyword,
-                SyntaxKind.NewKeyword)
-            .ToList();
-
-        if (modifiers.Any(SyntaxKind.PrivateKeyword) || !AccessibilityModifiers.HasAccessibility(tokens))
-            tokens.Insert(0, SyntaxFactory.Token(SyntaxKind.ProtectedKeyword));
-
-        tokens.Add(SyntaxFactory.Token(SyntaxKind.OverrideKeyword)
-            .WithTrailingTrivia(SyntaxFactory.ElasticSpace));
-        return SyntaxFactory.TokenList(tokens);
-    }
+    private static SyntaxTokenList ToOverrideModifiers(SyntaxTokenList modifiers) =>
+        HierarchyModifierHelpers.ToOverrideModifiers(modifiers, stripSealed: false);
 }

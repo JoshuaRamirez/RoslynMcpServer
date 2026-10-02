@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Folded HierarchyAbstractMemberRewriter / PushMembersDown near-duplicate `ToAbstractModifiers` / `ToOverrideModifiers` onto new `HierarchyModifierHelpers`. Core bodies unchanged; intentional divergences parameterized (`keepOverrideWhenPresent` for push leave-abstract; `stripSealed` for push override path). Thin private forwarders kept on both types. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold AdjustBaseClassModifiers / CreateNotImplementedBlock. (#1789)
+
 - Folded PullMembersUp / PushMembersDown / HierarchyAbstractMemberRewriter identical `StripModifiers` / `StripModifierKinds` onto existing `AccessibilityModifiers`. Filter body unchanged (`HashSet` of kinds + `Where` exclude). Push keeps thin `SyntaxTokenList` wrapper. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold ToAbstractModifiers / ToAbstractProperty (bodies diverge). (#1785)
 
 - Folded AddParameter / ChangeSignature identical `IsDefaultValueExpression` onto existing `ParameterSyntaxHelpers`. Body unchanged (`DefaultLiteralExpression` or `DefaultExpressionSyntax`). Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold Generate AddUnique / MethodSignaturesMatch / PropertySignaturesMatch. (#1777)
