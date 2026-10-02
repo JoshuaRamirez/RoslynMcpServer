@@ -1134,7 +1134,7 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
                 $"'{defaultValue}' is not implicitly convertible to '{parameterType}'.");
         }
 
-        if (IsDefaultValueExpression(initializer))
+        if (ParameterSyntaxHelpers.IsDefaultValueExpression(initializer))
             return;
 
         if (!probeModel.GetConstantValue(initializer).HasValue)
@@ -1144,10 +1144,6 @@ public sealed class AddParameterOperation : RefactoringOperationBase<AddParamete
                 $"'{defaultValue}' is not a compile-time constant or default(T).");
         }
     }
-
-    private static bool IsDefaultValueExpression(ExpressionSyntax expression) =>
-        expression.IsKind(SyntaxKind.DefaultLiteralExpression) ||
-        expression is DefaultExpressionSyntax;
 
     private static SeparatedSyntaxList<T> SeparatedWithSpaces<T>(IReadOnlyList<T> nodes)
         where T : SyntaxNode

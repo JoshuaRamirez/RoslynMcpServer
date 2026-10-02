@@ -56,6 +56,30 @@ public class ParameterSyntaxHelpersTests
         Assert.False(ParameterSyntaxHelpers.IsOptional(neither));
     }
 
+    [Fact]
+    public void IsDefaultValueExpression_True_ForDefaultLiteral()
+    {
+        var expression = SyntaxFactory.ParseExpression("default");
+
+        Assert.True(ParameterSyntaxHelpers.IsDefaultValueExpression(expression));
+    }
+
+    [Fact]
+    public void IsDefaultValueExpression_True_ForDefaultTypedExpression()
+    {
+        var expression = SyntaxFactory.ParseExpression("default(int)");
+
+        Assert.True(ParameterSyntaxHelpers.IsDefaultValueExpression(expression));
+    }
+
+    [Fact]
+    public void IsDefaultValueExpression_False_ForNonDefaultExpression()
+    {
+        var expression = SyntaxFactory.ParseExpression("0");
+
+        Assert.False(ParameterSyntaxHelpers.IsDefaultValueExpression(expression));
+    }
+
     private static ParameterSyntax ParseParameter(string text)
     {
         var root = (CompilationUnitSyntax)CSharpSyntaxTree.ParseText(
