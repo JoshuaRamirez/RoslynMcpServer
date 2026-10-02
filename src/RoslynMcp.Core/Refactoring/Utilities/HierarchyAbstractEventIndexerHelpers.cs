@@ -5,7 +5,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
-/// Shared event/indexer abstract-member syntax helpers used by
+/// Shared property/event/indexer abstract-member syntax helpers used by
 /// <c>HierarchyAbstractMemberRewriter</c> and <c>push_members_down</c>
 /// when converting concrete members to abstract declarations (extracted
 /// shared implementation). Callers supply abstract modifiers from
@@ -66,6 +66,42 @@ internal static class HierarchyAbstractEventIndexerHelpers
             .WithAttributeLists(eventField.AttributeLists)
             .WithModifiers(abstractModifiers)
             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
+            .NormalizeWhitespace();
+    }
+
+    /// <summary>
+    /// Converts a property into an abstract property with
+    /// <paramref name="abstractModifiers"/> and semicolon accessors.
+    /// Drops expression-body / initializer. Same body as the prior private
+    /// copies on HierarchyAbstractMemberRewriter / PushMembersDown.
+    /// </summary>
+    internal static PropertyDeclarationSyntax ToAbstractProperty(
+        PropertyDeclarationSyntax property,
+        SyntaxTokenList abstractModifiers)
+    {
+        var accessors = new List<AccessorDeclarationSyntax>();
+        if (property.AccessorList != null)
+        {
+            foreach (var accessor in property.AccessorList.Accessors)
+            {
+                accessors.Add(accessor
+                    .WithBody(null)
+                    .WithExpressionBody(null)
+                    .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
+            }
+        }
+        else
+        {
+            accessors.Add(SyntaxFactory.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken)));
+        }
+
+        return property
+            .WithModifiers(abstractModifiers)
+            .WithExpressionBody(null)
+            .WithInitializer(null)
+            .WithSemicolonToken(default)
+            .WithAccessorList(SyntaxFactory.AccessorList(SyntaxFactory.List(accessors)))
             .NormalizeWhitespace();
     }
 
