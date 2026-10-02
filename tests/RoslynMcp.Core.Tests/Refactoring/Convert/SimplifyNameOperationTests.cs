@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
 using RoslynMcp.Core.Refactoring.Utilities;
@@ -50,6 +51,30 @@ public class SimplifyNameOperationTests
         SimplifyNameOperation.Validate(new SimplifyNameParams
         {
             AllFiles = true
+        });
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_RelativeSourceFile_ThrowsInvalidSourcePath()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SimplifyNameOperation.Validate(new SimplifyNameParams
+            {
+                AllFiles = true,
+                SourceFile = "QualifiedA.cs"
+            }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_AbsoluteSourceFile_DoesNotRequireExists()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpSimplifyName_ValidateMissing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+        // Path shape is valid; File.Exists is skipped under allFiles (filter throws later).
+        SimplifyNameOperation.Validate(new SimplifyNameParams
+        {
+            AllFiles = true,
+            SourceFile = missing
         });
     }
 
@@ -1206,7 +1231,220 @@ public class SimplifyNameOperationTests
 
     #endregion
 
+    #region AllFiles optional sourceFile
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("QualifiedA.cs", QualifiedA),
+            ("QualifiedB.cs", QualifiedB),
+            ("AlreadySimple.cs", AlreadySimple));
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedB.cs"]);
+        var beforeSimple = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimple.cs"]);
+
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["QualifiedA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedA.cs"]));
+        Assert.DoesNotContain("System.Collections.Generic.List", updatedA, StringComparison.Ordinal);
+        Assert.Contains("List<int>", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedB.cs"]));
+        Assert.Equal(beforeSimple, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimple.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["QualifiedA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("QualifiedA.cs", QualifiedA),
+            ("QualifiedB.cs", QualifiedB),
+            ("AlreadySimple.cs", AlreadySimple));
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedB.cs"]);
+        var beforeSimple = await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimple.cs"]);
+        var flipped = FlipPathCasing(workspace.SourcePaths["QualifiedA.cs"]);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedA.cs"]));
+        Assert.DoesNotContain("System.Collections.Generic.List", updatedA, StringComparison.Ordinal);
+        Assert.Contains("List<int>", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedB.cs"]));
+        Assert.Equal(beforeSimple, await File.ReadAllTextAsync(workspace.SourcePaths["AlreadySimple.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["QualifiedA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("QualifiedA.cs", QualifiedA),
+            ("QualifiedB.cs", QualifiedB));
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpSimplifyName_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, """
+                using System.Collections.Generic;
+
+                namespace TestApp;
+
+                public class Outside
+                {
+                    public System.Collections.Generic.List<int> Items() => new System.Collections.Generic.List<int>();
+                }
+                """);
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new SimplifyNameParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("QualifiedA.cs", QualifiedA),
+            ("QualifiedB.cs", QualifiedB));
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpSimplifyName_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SimplifyNameParams
+            {
+                AllFiles = true,
+                SourceFile = missing
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_OptionalSourceFile_ExactCase_PrefersSingleWorkspaceFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("QualifiedA.cs", QualifiedA), ("qualifieda.cs", QualifiedB)],
+            explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["QualifiedA.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["qualifieda.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var beforeLower = await File.ReadAllTextAsync(workspace.SourcePaths["qualifieda.cs"]);
+
+        var result = await operation.ExecuteAsync(new SimplifyNameParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["QualifiedA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["QualifiedA.cs"]));
+        Assert.DoesNotContain("System.Collections.Generic.List", updatedA, StringComparison.Ordinal);
+        Assert.Contains("List<int>", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeLower, await File.ReadAllTextAsync(workspace.SourcePaths["qualifieda.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["QualifiedA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_OptionalSourceFile_AmbiguousIgnoreCase_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("QualifiedA.cs", QualifiedA), ("qualifieda.cs", QualifiedB)],
+            explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["QualifiedA.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["qualifieda.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var ambiguous = FlipPathCasing(workspace.SourcePaths["QualifiedA.cs"]);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SimplifyNameParams
+            {
+                AllFiles = true,
+                SourceFile = ambiguous
+            }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        // Shared filter is OrdinalIgnoreCase, so both case-distinct workspace
+        // files match a flipped spelling whether or not File.Exists(ambiguous).
+        Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_OptionalSourceFile_RelativePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("QualifiedA.cs", QualifiedA));
+        var operation = new SimplifyNameOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SimplifyNameParams
+            {
+                AllFiles = true,
+                SourceFile = "QualifiedA.cs"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task SimplifyName_AllFilesTrue_OptionalSourceFile_NonCSharpAbsolutePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("QualifiedA.cs", QualifiedA));
+        var operation = new SimplifyNameOperation(workspace.Context);
+        var nonCs = Path.Combine(Path.GetTempPath(), "RoslynMcpSimplifyName_NonCs_" + Guid.NewGuid().ToString("N") + ".txt");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SimplifyNameParams
+            {
+                AllFiles = true,
+                SourceFile = nonCs
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    #endregion
+
     #region Helpers
+
 
     private static async Task AssertCompilesAsync(TempWorkspace workspace)
     {
@@ -1324,6 +1562,23 @@ public class SimplifyNameOperationTests
     private static bool PathEquals(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
+
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpSimplifyNameMissing.cs");
 
@@ -1385,10 +1640,21 @@ public class SimplifyNameOperationTests
             CreateWithFilesAsync(implicitUsings, (fileName, source));
 
         public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
-            CreateWithFilesAsync(implicitUsings: true, files: files);
+            CreateWithFilesAsync(implicitUsings: true, explicitCompileItems: false, files: files);
+
+        public static Task<TempWorkspace> CreateWithFilesAsync(
+            IReadOnlyList<(string FileName, string Source)> files,
+            bool explicitCompileItems) =>
+            CreateWithFilesAsync(implicitUsings: true, explicitCompileItems: explicitCompileItems, files: files.ToArray());
+
+        public static Task<TempWorkspace> CreateWithFilesAsync(
+            bool implicitUsings,
+            params (string FileName, string Source)[] files) =>
+            CreateWithFilesAsync(implicitUsings, explicitCompileItems: false, files: files);
 
         public static async Task<TempWorkspace> CreateWithFilesAsync(
             bool implicitUsings,
+            bool explicitCompileItems,
             params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
@@ -1397,8 +1663,14 @@ public class SimplifyNameOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            // Ordinal keys so case-distinct filenames stay distinct on case-sensitive volumes.
+            var sourcePaths = new Dictionary<string, string>(
+                explicitCompileItems ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
             var implicitUsingsValue = implicitUsings ? "enable" : "disable";
+
+            var compileItems = explicitCompileItems
+                ? string.Join(Environment.NewLine, files.Select(f => $"    <Compile Include=\"{f.FileName}\" />"))
+                : string.Empty;
 
             await File.WriteAllTextAsync(projectPath, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
@@ -1408,7 +1680,9 @@ public class SimplifyNameOperationTests
                     <ImplicitUsings>{implicitUsingsValue}</ImplicitUsings>
                     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
                     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                {(explicitCompileItems ? "    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>" : string.Empty)}
                   </PropertyGroup>
+                {(explicitCompileItems ? $"  <ItemGroup>{Environment.NewLine}{compileItems}{Environment.NewLine}  </ItemGroup>" : string.Empty)}
                 </Project>
                 """);
 

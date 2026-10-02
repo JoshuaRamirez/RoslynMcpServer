@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- `simplify_name` now honors optional **`sourceFile`** when `allFiles: true`: narrows the walk via `AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile` (default path; peer FormatDocument / SortUsings / AddMissingUsings / RemoveUnusedUsings). `Validate` validates a non-blank optional `sourceFile` with `SourceFilePathHelpers.ValidateSourceFilePath` (still skips `File.Exists` under allFiles; filter throws `SourceFileNotFound` / `SourceNotInWorkspace`). Omit `sourceFile` to walk the whole solution. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not invent add_braces / remove_braces / convert_expression_body / invert_if optional sourceFile. (#1794)
+
 - Folded HierarchyAbstractMemberRewriter / PushMembersDown near-duplicate `ToAbstractModifiers` / `ToOverrideModifiers` onto new `HierarchyModifierHelpers`. Core bodies unchanged; intentional divergences parameterized (`keepOverrideWhenPresent` for push leave-abstract; `stripSealed` for push override path). Thin private forwarders kept on both types. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold AdjustBaseClassModifiers / CreateNotImplementedBlock. (#1789)
 
 - Folded PullMembersUp / PushMembersDown / HierarchyAbstractMemberRewriter identical `StripModifiers` / `StripModifierKinds` onto existing `AccessibilityModifiers`. Filter body unchanged (`HashSet` of kinds + `Where` exclude). Push keeps thin `SyntaxTokenList` wrapper. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold ToAbstractModifiers / ToAbstractProperty (bodies diverge). (#1785)

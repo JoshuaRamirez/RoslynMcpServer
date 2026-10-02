@@ -68,7 +68,14 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
 
         if (@params.AllFiles)
+        {
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
+        }
 
         if (string.IsNullOrWhiteSpace(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required when allFiles is false.");
@@ -193,6 +200,9 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
 
     /// <summary>
     /// Applies file-scope simplify to every C# document in the solution.
+    /// Optional <c>sourceFile</c> limits the walk via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as FormatDocument / SortUsings / AddMissingUsings / RemoveUnusedUsings).
     /// Files with nothing to simplify are skipped. When every file is a no-op,
     /// succeeds with empty changes (does not throw <see cref="ErrorCodes.NoSimplifiableNames"/>).
     /// </summary>
@@ -203,6 +213,11 @@ public sealed class SimplifyNameOperation : RefactoringOperationBase<SimplifyNam
     {
         var currentSolution = Context.Solution;
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+        }
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;
