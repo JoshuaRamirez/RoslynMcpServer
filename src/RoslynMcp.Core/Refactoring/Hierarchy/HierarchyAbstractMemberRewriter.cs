@@ -169,7 +169,7 @@ internal static class HierarchyAbstractMemberRewriter
 
     private static SyntaxTokenList ToAbstractModifiers(SyntaxTokenList modifiers)
     {
-        var tokens = StripModifiers(
+        var tokens = AccessibilityModifiers.StripModifiers(
                 modifiers,
                 SyntaxKind.PrivateKeyword,
                 SyntaxKind.VirtualKeyword,
@@ -189,7 +189,7 @@ internal static class HierarchyAbstractMemberRewriter
 
     private static SyntaxTokenList ToOverrideModifiers(SyntaxTokenList modifiers)
     {
-        var tokens = StripModifiers(
+        var tokens = AccessibilityModifiers.StripModifiers(
                 modifiers,
                 SyntaxKind.PrivateKeyword,
                 SyntaxKind.VirtualKeyword,
@@ -205,11 +205,4 @@ internal static class HierarchyAbstractMemberRewriter
             .WithTrailingTrivia(SyntaxFactory.ElasticSpace));
         return SyntaxFactory.TokenList(tokens);
     }
-
-    private static IEnumerable<SyntaxToken> StripModifiers(SyntaxTokenList modifiers, params SyntaxKind[] kinds)
-    {
-        var kindSet = kinds.ToHashSet();
-        return modifiers.Where(token => !kindSet.Contains(token.Kind()));
-    }
-
 }

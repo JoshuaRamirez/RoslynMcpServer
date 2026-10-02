@@ -7,7 +7,8 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// <summary>
 /// Shared modifier-accessibility helpers used by hierarchy pull/push and
 /// override emission when deciding whether an explicit accessibility keyword
-/// is already present on a member, and whether an accessor is non-public.
+/// is already present on a member, whether an accessor is non-public, and
+/// when stripping selected modifier kinds from a token list.
 /// </summary>
 internal static class AccessibilityModifiers
 {
@@ -42,4 +43,18 @@ internal static class AccessibilityModifiers
         accessor.Modifiers.Any(SyntaxKind.PrivateKeyword)
         && !accessor.Modifiers.Any(SyntaxKind.ProtectedKeyword)
         && !accessor.Modifiers.Any(SyntaxKind.InternalKeyword);
+
+    /// <summary>
+    /// Returns modifiers with any token whose kind is in
+    /// <paramref name="kinds"/> removed. Same body as the prior private
+    /// <c>StripModifiers</c> / <c>StripModifierKinds</c> copies on
+    /// PullMembersUp / PushMembersDown / HierarchyAbstractMemberRewriter.
+    /// </summary>
+    internal static IEnumerable<SyntaxToken> StripModifiers(
+        SyntaxTokenList modifiers,
+        params SyntaxKind[] kinds)
+    {
+        var kindSet = kinds.ToHashSet();
+        return modifiers.Where(token => !kindSet.Contains(token.Kind()));
+    }
 }

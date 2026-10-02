@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Folded PullMembersUp / PushMembersDown / HierarchyAbstractMemberRewriter identical `StripModifiers` / `StripModifierKinds` onto existing `AccessibilityModifiers`. Filter body unchanged (`HashSet` of kinds + `Where` exclude). Push keeps thin `SyntaxTokenList` wrapper. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold ToAbstractModifiers / ToAbstractProperty (bodies diverge). (#1785)
+
 - Folded AddParameter / ChangeSignature identical `IsDefaultValueExpression` onto existing `ParameterSyntaxHelpers`. Body unchanged (`DefaultLiteralExpression` or `DefaultExpressionSyntax`). Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold Generate AddUnique / MethodSignaturesMatch / PropertySignaturesMatch. (#1777)
 
 - Folded RemoveParameter / ReorderParameters identical `CommaWithSpace` / `DefaultCommaSeparators` onto new `SignatureCommaHelpers`. Bodies unchanged (comma token + trailing space; empty separators when nodeCount ≤ 1). Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold IsDefaultValueExpression / Generate AddUnique. (#1772)

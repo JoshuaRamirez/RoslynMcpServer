@@ -2914,7 +2914,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     private static SyntaxTokenList ToAbstractModifiers(SyntaxTokenList modifiers)
     {
         var keepOverride = modifiers.Any(SyntaxKind.OverrideKeyword);
-        var tokens = StripModifierKinds(
+        var tokens = AccessibilityModifiers.StripModifiers(
                 modifiers,
                 SyntaxKind.PrivateKeyword,
                 SyntaxKind.VirtualKeyword,
@@ -2940,7 +2940,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
     private static SyntaxTokenList ToOverrideModifiers(SyntaxTokenList modifiers)
     {
-        var tokens = StripModifierKinds(
+        var tokens = AccessibilityModifiers.StripModifiers(
                 modifiers,
                 SyntaxKind.PrivateKeyword,
                 SyntaxKind.VirtualKeyword,
@@ -2959,13 +2959,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
     }
 
     private static SyntaxTokenList StripModifiers(SyntaxTokenList modifiers, params SyntaxKind[] kinds) =>
-        SyntaxFactory.TokenList(StripModifierKinds(modifiers, kinds));
-
-    private static IEnumerable<SyntaxToken> StripModifierKinds(SyntaxTokenList modifiers, params SyntaxKind[] kinds)
-    {
-        var kindSet = kinds.ToHashSet();
-        return modifiers.Where(token => !kindSet.Contains(token.Kind()));
-    }
+        SyntaxFactory.TokenList(AccessibilityModifiers.StripModifiers(modifiers, kinds));
 
     private static TypeDeclarationSyntax BuildSourceReplacement(
         TypeDeclarationSyntax sourceDecl,
