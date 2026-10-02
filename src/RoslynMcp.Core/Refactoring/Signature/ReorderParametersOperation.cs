@@ -1076,7 +1076,7 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         {
             var index = originalNodes.IndexOf(node);
             if (index < 0)
-                return SyntaxFactory.SeparatedList(reordered, DefaultCommaSeparators(reordered.Count));
+                return SyntaxFactory.SeparatedList(reordered, SignatureCommaHelpers.DefaultCommaSeparators(reordered.Count));
 
             newIndices.Add(index);
         }
@@ -1089,22 +1089,13 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
             if (to == from + 1 && from < separators.Count)
                 newSeparators.Add(separators[from]);
             else
-                newSeparators.Add(CommaWithSpace());
+                newSeparators.Add(SignatureCommaHelpers.CommaWithSpace());
         }
 
         return SyntaxFactory.SeparatedList(reordered, newSeparators);
     }
 
-    private static IReadOnlyList<SyntaxToken> DefaultCommaSeparators(int nodeCount)
-    {
-        if (nodeCount <= 1)
-            return Array.Empty<SyntaxToken>();
 
-        return Enumerable.Repeat(CommaWithSpace(), nodeCount - 1).ToArray();
-    }
-
-    private static SyntaxToken CommaWithSpace() =>
-        SyntaxFactory.Token(SyntaxKind.CommaToken).WithTrailingTrivia(SyntaxFactory.Space);
 
     private sealed record DeclarationTarget(Document Document, TextSpan Span);
 
