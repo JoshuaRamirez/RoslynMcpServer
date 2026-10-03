@@ -452,6 +452,46 @@ public class AllFilesDocumentHelpersTests
         }
     }
 
+    [SkippableFact]
+    public void FilterAllFilesDocumentsBySourceFile_CaseDistinctPathExistsOnDiskNotInWorkspace_ThrowsSourceNotInWorkspace()
+    {
+        using var workspace = new AdhocWorkspace();
+        var project = workspace.AddProject("P", LanguageNames.CSharp);
+
+        var dir = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-filter-casedistinct-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(dir);
+        var upperPath = Path.Combine(dir, "Types.cs");
+        var lowerPath = Path.Combine(dir, "types.cs");
+        File.WriteAllText(upperPath, "class Upper {}");
+        File.WriteAllText(lowerPath, "class Lower {}");
+        try
+        {
+            Skip.If(
+                string.Equals(
+                    PathResolver.GetPathComparisonKey(upperPath),
+                    PathResolver.GetPathComparisonKey(lowerPath),
+                    StringComparison.Ordinal),
+                "Volume does not preserve case-distinct paths.");
+
+            // Only the workspace casing is added to the AdhocWorkspace.
+            AddOnDiskDocument(workspace, project.Id, upperPath, "class Upper {}");
+            var docs = AllFilesDocumentHelpers.EnumerateCsharpDocuments(workspace.CurrentSolution);
+
+            var ex = Assert.Throws<RefactoringException>(() =>
+                AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(docs, lowerPath));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+            Assert.Contains(lowerPath, ex.Message);
+        }
+        finally
+        {
+            TryDelete(upperPath);
+            TryDelete(lowerPath);
+            if (Directory.Exists(dir))
+                Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [Fact]
     public void FilterAllFilesDocumentsBySourceFile_CasingMismatchMissingPath_DefaultAllowsIgnoreCaseMatch()
     {

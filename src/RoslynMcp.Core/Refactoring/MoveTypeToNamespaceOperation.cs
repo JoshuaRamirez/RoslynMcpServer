@@ -25,17 +25,17 @@ namespace RoslynMcp.Core.Refactoring;
 /// line keeps that omitted-line path. When column is set with line, picks
 /// the covering top-level type (identifier preferred, then smallest
 /// covering type). Nested types stay unmoveable.
-/// Optional <c>allFiles</c> walks every C# document (or the optional
-/// single <c>sourceFile</c>) and moves every eligible top-level type
-/// whose current namespace is not already <c>targetNamespace</c>
-/// (skip nested / already-there / SameLocation / NameCollision /
-/// uneditable / resolution failures / types today's
+/// Optional <c>allFiles</c> walks every C# document and moves every
+/// eligible top-level type whose current namespace is not already
+/// <c>targetNamespace</c> (skip nested / already-there / SameLocation /
+/// NameCollision / uneditable / resolution failures / types today's
 /// <see cref="ValidateNamespaceChangeAsync"/> or
 /// <see cref="ComputeChangesAsync"/> would reject rather than
-/// throwing). Bulk walks every eligible type, not a broader search
-/// for one symbolName. <c>updateFileLocation</c> stays valid; when
-/// two types would claim the same destination, the later claim is
-/// skipped.
+/// throwing). Optional <c>sourceFile</c> when <c>allFiles</c> is true
+/// limits the walk via <c>FilterAllFilesDocumentsBySourceFile</c>.
+/// Bulk walks every eligible type, not a broader search for one
+/// symbolName. <c>updateFileLocation</c> stays valid; when two types
+/// would claim the same destination, the later claim is skipped.
 /// </summary>
 public sealed class MoveTypeToNamespaceOperation
 {
@@ -202,6 +202,11 @@ public sealed class MoveTypeToNamespaceOperation
                     "allFiles cannot be combined with symbolName, line, or column.");
             }
 
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -232,7 +237,8 @@ public sealed class MoveTypeToNamespaceOperation
     /// <c>EncapsulateFieldOperation.ExecuteAllFilesAsync</c>) and moves
     /// every eligible top-level <c>TypeDeclarationSyntax</c> into
     /// <paramref name="params"/>.TargetNamespace. Optional <c>sourceFile</c>
-    /// limits the walk to that one file. Nested types, types already in
+    /// limits the walk via <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>.
+    /// Nested types, types already in
     /// the target namespace, SameLocation, NameCollision, multi-type
     /// files, multi-declaration <c>partial</c> types, types without a
     /// namespace declaration, uneditable documents, and resolution
@@ -253,22 +259,8 @@ public sealed class MoveTypeToNamespaceOperation
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
         {
-            string wanted;
-            try
-            {
-                wanted = PathResolver.NormalizePath(@params.SourceFile);
-            }
-            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-            {
-                wanted = @params.SourceFile;
-            }
-
-            allDocuments = allDocuments
-                .Where(d => string.Equals(
-                    PathResolver.NormalizePath(d.FilePath!),
-                    wanted,
-                    StringComparison.Ordinal))
-                .ToList();
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(
+                allDocuments, @params.SourceFile!);
         }
 
         var pendingChanges = new List<PendingChange>();
