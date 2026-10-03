@@ -43,6 +43,11 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
                     "allFiles cannot be combined with line or column.");
             }
 
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -157,12 +162,19 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
     /// <summary>
     /// Inverts every distinct eligible if in every C# document (same
     /// document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
-    /// / <c>ConvertToPatternMatchingOperation.ExecuteAllFilesAsync</c>:
-    /// <c>FilePath</c> ends with <c>.cs</c>). Incomplete or otherwise
-    /// ineligible ifs and documents whose text is unchanged are skipped.
-    /// When every file is a no-op, succeeds with empty changes.
-    /// Nested ifs are inverted once each in a single rewrite pass
-    /// (innermost first) so the same node is never double-inverted.
+    /// / <c>ConvertToPatternMatchingOperation.ExecuteAllFilesAsync</c> /
+    /// <c>ConvertExpressionBodyOperation.ExecuteAllFilesAsync</c> /
+    /// <c>RemoveBracesOperation.ExecuteAllFilesAsync</c>:
+    /// <c>FilePath</c> ends with <c>.cs</c>). Optional <c>sourceFile</c>
+    /// limits the walk via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as FormatDocument / SortUsings / AddMissingUsings /
+    /// RemoveUnusedUsings / simplify_name / add_braces / remove_braces /
+    /// convert_expression_body). Incomplete or otherwise ineligible ifs and
+    /// documents whose text is unchanged are skipped. When every file is a
+    /// no-op, succeeds with empty changes. Nested ifs are inverted once each
+    /// in a single rewrite pass (innermost first) so the same node is never
+    /// double-inverted.
     /// </summary>
     private async Task<RefactoringResult> ExecuteAllFilesAsync(
         Guid operationId,
@@ -171,6 +183,11 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
     {
         var currentSolution = Context.Solution;
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+        }
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;

@@ -33,7 +33,7 @@ public sealed class InvertIfTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Flip an if-statement condition and swap the if/else branches, preserving semantics. Comparison operators are inverted; && / || use De Morgan. An if without else gets an empty if body and the original body as else. Preview describes the rewrite and writes nothing. column (optional) picks the if whose IfKeyword span covers that column when set with line (exclusive-end; FirstOrDefault among covering keywords); omitted keeps today's first-IfKeyword-on-line-by-SpanStart pick; column without line keeps today's required-line validation. allFiles: true walks every C# file and inverts every distinct eligible if (sourceFile optional when true; cannot be combined with line or column).";
+        "Flip an if-statement condition and swap the if/else branches, preserving semantics. Comparison operators are inverted; && / || use De Morgan. An if without else gets an empty if body and the original body as else. Preview describes the rewrite and writes nothing. column (optional) picks the if whose IfKeyword span covers that column when set with line (exclusive-end; FirstOrDefault among covering keywords); omitted keeps today's first-IfKeyword-on-line-by-SpanStart pick; column without line keeps today's required-line validation. allFiles: true walks every C# file and inverts every distinct eligible if (sourceFile optional when true to limit the walk; cannot be combined with line or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class InvertIfTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the if statement. Required when allFiles is false."
+                description = "Absolute path to the source file containing the if statement. Required when allFiles is false. Optional when allFiles is true to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with line or column.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with line or column.",
                 @default = false
             },
             line = new
