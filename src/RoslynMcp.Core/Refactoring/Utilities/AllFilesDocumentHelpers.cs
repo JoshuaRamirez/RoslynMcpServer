@@ -21,6 +21,7 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// plus BuildLinkedPathCounts /
 /// DocumentPathHasLinkedMultiView for AddParameter / RemoveParameter /
 /// ReorderParameters / RenameNamespace / PushMembersDown, plus
+/// ChangedDocumentsTouchLinkedMultiView for RenameSymbol / RenameNamespace, plus
 /// FilterAllFilesDocumentsBySourceFile for ExtractBaseClass /
 /// ExtractInterface / ExtractMethod / ExtractConstant / ExtractVariable /
 /// PushMembersDown / PullMembersUp / ConvertToBlockBody / FormatDocument / AddMissingUsings / RemoveUnusedUsings / SortUsings / SimplifyName / AddBraces / RemoveBraces / InlineConstant /
@@ -220,6 +221,31 @@ internal static class AllFilesDocumentHelpers
 
         var pathKey = PathResolver.GetPathComparisonKey(document.FilePath);
         return linkedPathCounts.TryGetValue(pathKey, out var count) && count > 1;
+    }
+
+    /// <summary>
+    /// True when the rewrite from <paramref name="beforeSolution"/> to
+    /// <paramref name="afterSolution"/> touches any document whose path has
+    /// multiple linked views (so coalesce would overwrite siblings). Same
+    /// body as the identical copies on RenameSymbol / RenameNamespace.
+    /// </summary>
+    internal static bool ChangedDocumentsTouchLinkedMultiView(
+        Solution beforeSolution,
+        Solution afterSolution,
+        IReadOnlyDictionary<string, int> linkedPathCounts)
+    {
+        foreach (var projectChange in afterSolution.GetChanges(beforeSolution).GetProjectChanges())
+        {
+            foreach (var documentId in projectChange.GetChangedDocuments())
+            {
+                var document = beforeSolution.GetDocument(documentId)
+                    ?? afterSolution.GetDocument(documentId);
+                if (document != null && DocumentPathHasLinkedMultiView(document, linkedPathCounts))
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
