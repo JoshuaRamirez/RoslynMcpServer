@@ -3,6 +3,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
 using RoslynMcp.Core.Resolution;
@@ -204,6 +205,31 @@ public class ConvertToPatternMatchingOperationTests
         ConvertToPatternMatchingOperation.Validate(new ConvertToPatternMatchingParams
         {
             AllFiles = true
+        });
+    }
+
+
+    [Fact]
+    public void Validate_AllFilesTrue_RelativeSourceFile_ThrowsInvalidSourcePath()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ConvertToPatternMatchingOperation.Validate(new ConvertToPatternMatchingParams
+            {
+                AllFiles = true,
+                SourceFile = "FileA.cs"
+            }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_AbsoluteSourceFile_DoesNotRequireExists()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertToPatternMatching_ValidateMissing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+        // Path shape is valid; File.Exists is skipped under allFiles (filter throws later).
+        ConvertToPatternMatchingOperation.Validate(new ConvertToPatternMatchingParams
+        {
+            AllFiles = true,
+            SourceFile = missing
         });
     }
 
@@ -865,6 +891,224 @@ public class ConvertToPatternMatchingOperationTests
         await AssertCompilesAsync(workspace);
     }
 
+
+    #region AllFiles optional sourceFile
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", SwitchFileA),
+            ("FileB.cs", IfFileB),
+            ("FileC.cs", NothingFileC));
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToPatternMatchingParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain("switch (value)", updatedA, StringComparison.Ordinal);
+        Assert.Contains("=>", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", SwitchFileA),
+            ("FileB.cs", IfFileB),
+            ("FileC.cs", NothingFileC));
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+        var beforeC = await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]);
+        var flipped = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new ConvertToPatternMatchingParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain("switch (value)", updatedA, StringComparison.Ordinal);
+        Assert.Contains("=>", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Equal(beforeC, await File.ReadAllTextAsync(workspace.SourcePaths["FileC.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", SwitchFileA),
+            ("FileB.cs", IfFileB));
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertToPatternMatching_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, """
+                namespace TestApp;
+
+                public class Outside
+                {
+                    public string Describe(object value)
+                    {
+                        switch (value)
+                        {
+                            case 1: return "one";
+                            default: return "other";
+                        }
+                    }
+                }
+                """);
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new ConvertToPatternMatchingParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", SwitchFileA),
+            ("FileB.cs", IfFileB));
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertToPatternMatching_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToPatternMatchingParams
+            {
+                AllFiles = true,
+                SourceFile = missing
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_ExactCase_PrefersSingleWorkspaceFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("FileA.cs", SwitchFileA), ("filea.cs", IfFileB)],
+            explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["FileA.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["filea.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+        var beforeLower = await File.ReadAllTextAsync(workspace.SourcePaths["filea.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToPatternMatchingParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.DoesNotContain("switch (value)", updatedA, StringComparison.Ordinal);
+        Assert.Contains("=>", updatedA, StringComparison.Ordinal);
+        Assert.Equal(beforeLower, await File.ReadAllTextAsync(workspace.SourcePaths["filea.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_AmbiguousIgnoreCase_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("FileA.cs", SwitchFileA), ("filea.cs", IfFileB)],
+            explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["FileA.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["filea.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+        var ambiguous = FlipPathCasing(workspace.SourcePaths["FileA.cs"]);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToPatternMatchingParams
+            {
+                AllFiles = true,
+                SourceFile = ambiguous
+            }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        // Shared filter is OrdinalIgnoreCase, so both case-distinct workspace
+        // files match a flipped spelling whether or not File.Exists(ambiguous).
+        Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_RelativePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", SwitchFileA));
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToPatternMatchingParams
+            {
+                AllFiles = true,
+                SourceFile = "FileA.cs"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_NonCSharpAbsolutePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", SwitchFileA));
+        var operation = new ConvertToPatternMatchingOperation(workspace.Context);
+        var nonCs = Path.Combine(Path.GetTempPath(), "RoslynMcpConvertToPatternMatching_NonCs_" + Guid.NewGuid().ToString("N") + ".txt");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new ConvertToPatternMatchingParams
+            {
+                AllFiles = true,
+                SourceFile = nonCs
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    #endregion
+
     [Fact]
     public void CollectConvertibleStatements_MixedFile_ReturnsOnlyEligible()
     {
@@ -931,6 +1175,23 @@ public class ConvertToPatternMatchingOperationTests
     private static bool PathEquals(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
+
     private static string AbsoluteTestPath() =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpConvertToPatternMatchingMissing.cs");
 
@@ -971,7 +1232,17 @@ public class ConvertToPatternMatchingOperationTests
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
             CreateWithFilesAsync((fileName, source));
 
-        public static async Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files)
+        public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
+            CreateWithFilesAsync(explicitCompileItems: false, files: files);
+
+        public static Task<TempWorkspace> CreateWithFilesAsync(
+            IReadOnlyList<(string FileName, string Source)> files,
+            bool explicitCompileItems) =>
+            CreateWithFilesAsync(explicitCompileItems: explicitCompileItems, files: files.ToArray());
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(
+            bool explicitCompileItems,
+            params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -979,18 +1250,26 @@ public class ConvertToPatternMatchingOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            var sourcePaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            // Ordinal keys so case-distinct filenames stay distinct on case-sensitive volumes.
+            var sourcePaths = new Dictionary<string, string>(
+                explicitCompileItems ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
+
+            var compileItems = explicitCompileItems
+                ? string.Join(Environment.NewLine, files.Select(f => $"    <Compile Include=\"{f.FileName}\" />"))
+                : string.Empty;
 
             // Pin authored sources so generated AssemblyInfo / TFM attributes
             // are not hit by the allFiles .cs document walk.
-            await File.WriteAllTextAsync(projectPath, """
+            await File.WriteAllTextAsync(projectPath, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
                     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
                     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                {(explicitCompileItems ? "    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>" : string.Empty)}
                   </PropertyGroup>
+                {(explicitCompileItems ? $"  <ItemGroup>{Environment.NewLine}{compileItems}{Environment.NewLine}  </ItemGroup>" : string.Empty)}
                 </Project>
                 """);
 

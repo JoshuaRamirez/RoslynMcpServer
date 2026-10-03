@@ -33,7 +33,7 @@ public sealed class ConvertToPatternMatchingTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert if/is chains and switch statements to switch expressions with pattern matching. column (optional) picks the smallest switch or if whose span covers that column on the given line. Omitted keeps today's first start-line switch-then-if pick. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct eligible switch/if-chain (sourceFile optional when true; cannot be combined with line or column).";
+        "Convert if/is chains and switch statements to switch expressions with pattern matching. column (optional) picks the smallest switch or if whose span covers that column on the given line. Omitted keeps today's first start-line switch-then-if pick. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct eligible switch/if-chain (sourceFile optional when true to limit the walk; cannot be combined with line or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class ConvertToPatternMatchingTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file. Required when allFiles is false."
+                description = "Absolute path to the source file. Required when allFiles is false. When allFiles is true, optional — supply to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with line or column.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with line or column.",
                 @default = false
             },
             line = new

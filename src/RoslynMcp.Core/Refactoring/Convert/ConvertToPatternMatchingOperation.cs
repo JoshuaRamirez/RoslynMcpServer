@@ -40,6 +40,11 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
                     "allFiles cannot be combined with line or column.");
             }
 
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -99,7 +104,13 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
     /// Converts every distinct eligible switch or if-chain in every C# document
     /// (same document filter as <c>FormatDocumentOperation.ExecuteAllFilesAsync</c>
     /// / <c>ConvertForeachLinqOperation.ExecuteAllFilesAsync</c>:
-    /// <c>FilePath</c> ends with <c>.cs</c>). Statements that cannot convert
+    /// <c>FilePath</c> ends with <c>.cs</c>). Optional <c>sourceFile</c>
+    /// limits the walk via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as FormatDocument / SortUsings / AddMissingUsings /
+    /// RemoveUnusedUsings / simplify_name / add_braces / remove_braces /
+    /// convert_expression_body / invert_if / convert_foreach_linq /
+    /// convert_property / convert_to_async). Statements that cannot convert
     /// and documents whose text is unchanged are skipped. When every file is
     /// a no-op, succeeds with empty changes.
     /// </summary>
@@ -110,6 +121,11 @@ public sealed class ConvertToPatternMatchingOperation : RefactoringOperationBase
     {
         var currentSolution = Context.Solution;
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+        }
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;
