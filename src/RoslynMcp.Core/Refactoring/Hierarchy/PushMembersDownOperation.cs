@@ -7,7 +7,6 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
-using RoslynMcp.Core.Refactoring.Generate;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Workspace;
 
@@ -1298,7 +1297,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 // and conventional display (this[int i]) — same identity
                 // forms as implement_interface / extract_interface /
                 // extract_base_class / pull_members_up.
-                if (!ImplementInterfaceOperation.MatchesRequestedMember(indexer, requested))
+                if (!MemberDisplayHelpers.MatchesRequestedMember(indexer, requested))
                     continue;
 
                 if (!HierarchyMemberEligibilityHelpers.IsSupportedMember(indexer))
@@ -1311,7 +1310,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
                 found.Add(new PushableMember(indexer.Name, indexer, syntax));
                 foreach (var request in unmatched.ToList())
                 {
-                    if (ImplementInterfaceOperation.MatchesRequestedMember(
+                    if (MemberDisplayHelpers.MatchesRequestedMember(
                             indexer, new HashSet<string> { request }))
                     {
                         unmatched.Remove(request);

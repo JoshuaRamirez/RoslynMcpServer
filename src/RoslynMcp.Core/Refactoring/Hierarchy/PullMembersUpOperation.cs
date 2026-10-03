@@ -6,7 +6,6 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
-using RoslynMcp.Core.Refactoring.Generate;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Workspace;
 
@@ -671,7 +670,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                     continue;
                 }
 
-                if (!ImplementInterfaceOperation.MatchesRequestedMember(indexer, requested))
+                if (!MemberDisplayHelpers.MatchesRequestedMember(indexer, requested))
                     continue;
 
                 if (!HierarchyMemberEligibilityHelpers.IsSupportedMember(indexer))
@@ -684,7 +683,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
                 found.Add(new PullableMember(indexer.Name, indexer, syntax));
                 foreach (var request in unmatched.ToList())
                 {
-                    if (ImplementInterfaceOperation.MatchesRequestedMember(
+                    if (MemberDisplayHelpers.MatchesRequestedMember(
                             indexer, new HashSet<string> { request }))
                     {
                         unmatched.Remove(request);
