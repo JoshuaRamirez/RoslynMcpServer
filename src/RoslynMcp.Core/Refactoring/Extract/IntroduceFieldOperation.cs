@@ -824,7 +824,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             .Where(expr =>
                 expr == original ||
                 (NormalizeExpression(expr) == normalized &&
-                 BindingsEqual(originalBindings, CollectBindings(expr, semanticModel, cancellationToken))))
+                 SymbolBindingHelpers.BindingsEqual(originalBindings, CollectBindings(expr, semanticModel, cancellationToken))))
             .Cast<SyntaxNode>()
             .ToList();
     }
@@ -839,21 +839,6 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
             .Select(id => semanticModel.GetSymbolInfo(id, cancellationToken).Symbol)
             .ToList();
     }
-
-    private static bool BindingsEqual(IReadOnlyList<ISymbol?> left, IReadOnlyList<ISymbol?> right)
-    {
-        if (left.Count != right.Count)
-            return false;
-
-        for (var i = 0; i < left.Count; i++)
-        {
-            if (!SymbolEqualityComparer.Default.Equals(left[i], right[i]))
-                return false;
-        }
-
-        return true;
-    }
-
     private static string NormalizeExpression(ExpressionSyntax expression) =>
         expression.NormalizeWhitespace().ToFullString().Trim();
 
