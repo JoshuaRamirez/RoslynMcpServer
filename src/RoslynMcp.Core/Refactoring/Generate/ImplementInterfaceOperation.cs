@@ -680,7 +680,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             // Only the implementation that actually implements the selected
             // interface member is an exact match — otherwise replacing IA.M
             // can delete IB.M and emit a second IA.M.
-            if (IsExplicitImplementation(member) && !ExplicitlyImplementsSelected(member, selected))
+            if (ExplicitImplementationHelpers.IsExplicitImplementation(member) && !ExplicitlyImplementsSelected(member, selected))
                 continue;
 
             sameName.Add(member);
@@ -719,19 +719,9 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
 
     private static bool MatchesRequestedForm(ISymbol member, bool explicitImplementation)
     {
-        var isExplicit = IsExplicitImplementation(member);
+        var isExplicit = ExplicitImplementationHelpers.IsExplicitImplementation(member);
         return explicitImplementation ? isExplicit : !isExplicit;
     }
-
-    private static bool IsExplicitImplementation(ISymbol member) =>
-        member switch
-        {
-            IMethodSymbol method => method.ExplicitInterfaceImplementations.Length > 0
-                || method.MethodKind == MethodKind.ExplicitInterfaceImplementation,
-            IPropertySymbol property => property.ExplicitInterfaceImplementations.Length > 0,
-            IEventSymbol evt => evt.ExplicitInterfaceImplementations.Length > 0,
-            _ => false
-        };
 
     /// <summary>
     /// True when <paramref name="existing"/> is an explicit implementation of
