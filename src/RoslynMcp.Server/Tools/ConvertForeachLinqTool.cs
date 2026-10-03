@@ -33,7 +33,7 @@ public sealed class ConvertForeachLinqTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert foreach loops with Add/accumulate patterns to LINQ. preferQuerySyntax (default false) keeps today's method syntax (.Where().Select().ToList()); true emits query syntax (from … where … select) for filter / project / ToList patterns. Any / All / FirstOrDefault / Count keep method syntax. column (optional) picks the foreach whose ForEachKeyword span covers that column when set with line (exclusive-end; FirstOrDefault among covering keywords); omitted keeps today's first-ForEachKeyword-on-line-by-SpanStart pick; column without line keeps today's required-line validation. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct eligible foreach (sourceFile optional when true; cannot be combined with line or column).";
+        "Convert foreach loops with Add/accumulate patterns to LINQ. preferQuerySyntax (default false) keeps today's method syntax (.Where().Select().ToList()); true emits query syntax (from … where … select) for filter / project / ToList patterns. Any / All / FirstOrDefault / Count keep method syntax. column (optional) picks the foreach whose ForEachKeyword span covers that column when set with line (exclusive-end; FirstOrDefault among covering keywords); omitted keeps today's first-ForEachKeyword-on-line-by-SpanStart pick; column without line keeps today's required-line validation. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct eligible foreach (sourceFile optional when true to limit the walk; cannot be combined with line or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class ConvertForeachLinqTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file. Required when allFiles is false."
+                description = "Absolute path to the source file. Required when allFiles is false. When allFiles is true, optional — supply to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with line or column.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with line or column.",
                 @default = false
             },
             line = new
