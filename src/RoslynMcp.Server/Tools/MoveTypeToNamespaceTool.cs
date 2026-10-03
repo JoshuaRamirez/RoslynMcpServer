@@ -32,7 +32,7 @@ public sealed class MoveTypeToNamespaceTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Change the namespace of a C# type. Updates all using directives and qualified references. When updateFileLocation is true, also moves the source file to a folder matching the target namespace. line (optional) disambiguates same-named top-level types by start-line equality; omitted with several matches is SymbolAmbiguous; a single match ignores line. column (optional) picks the top-level type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering type); omitted keeps today's symbolName + optional line pick; column without line keeps today's omitted-line path. sourceFile and symbolName are required when allFiles is omitted or false. allFiles: true walks every C# file and moves every eligible top-level type into targetNamespace (sourceFile optional when true — limits the walk to that file; cannot be combined with symbolName, line, or column). updateFileLocation and preview remain valid with allFiles.";
+        "Change the namespace of a C# type. Updates all using directives and qualified references. When updateFileLocation is true, also moves the source file to a folder matching the target namespace. line (optional) disambiguates same-named top-level types by start-line equality; omitted with several matches is SymbolAmbiguous; a single match ignores line. column (optional) picks the top-level type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering type); omitted keeps today's symbolName + optional line pick; column without line keeps today's omitted-line path. sourceFile and symbolName are required when allFiles is omitted or false. allFiles: true walks every C# file and moves every eligible top-level type into targetNamespace (sourceFile optional when true — limits the walk via FilterAllFilesDocumentsBySourceFile; cannot be combined with symbolName, line, or column). updateFileLocation and preview remain valid with allFiles.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -49,12 +49,12 @@ public sealed class MoveTypeToNamespaceTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the type. Required when allFiles is false. When allFiles is true, optional: limits the walk to that one file."
+                description = "Absolute path to the source file containing the type. Required when allFiles is false. When allFiles is true, optional: limits the walk via FilterAllFilesDocumentsBySourceFile."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional and limits the walk to that file when provided. Cannot be combined with symbolName, line, or column. Walks every eligible top-level type into targetNamespace rather than broadening search for one symbolName.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk via FilterAllFilesDocumentsBySourceFile). Cannot be combined with symbolName, line, or column. Walks every eligible top-level type into targetNamespace rather than broadening search for one symbolName.",
                 @default = false
             },
             symbolName = new
