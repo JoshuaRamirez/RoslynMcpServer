@@ -6,16 +6,17 @@ namespace RoslynMcp.Contracts.Models;
 public sealed class EncapsulateFieldParams
 {
     /// <summary>
-    /// Absolute path to the source file.
-    /// Required when <see cref="AllFiles"/> is false.
+    /// Absolute path to the source file. Required when <see cref="AllFiles"/> is false.
+    /// When <see cref="AllFiles"/> is true, optional — limits the walk to that one file.
     /// </summary>
     public string? SourceFile { get; init; }
 
     /// <summary>
     /// When true, process all C# documents in the solution instead of a single field.
-    /// When true, <see cref="SourceFile"/> is optional. Cannot be combined with
-    /// <see cref="FieldName"/>, <see cref="Line"/>, <see cref="Column"/>, or
-    /// <see cref="PropertyName"/> (bulk cannot apply one propertyName).
+    /// When true, <see cref="SourceFile"/> is optional (omit to walk the whole solution;
+    /// supply to limit the walk via <c>FilterAllFilesDocumentsBySourceFile</c>).
+    /// Cannot be combined with <see cref="FieldName"/>, <see cref="Line"/>,
+    /// <see cref="Column"/>, or <see cref="PropertyName"/> (bulk cannot apply one propertyName).
     /// </summary>
     public bool AllFiles { get; init; }
 
