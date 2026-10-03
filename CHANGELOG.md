@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-10-03
+
 ### Changed
 - `convert_property` now honors optional **`sourceFile`** when `allFiles: true`: narrows the walk via `AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile` (default path; peer FormatDocument / SortUsings / AddMissingUsings / RemoveUnusedUsings / simplify_name / add_braces / remove_braces / convert_expression_body / invert_if / convert_foreach_linq). `Validate` validates a non-blank optional `sourceFile` with `SourceFilePathHelpers.ValidateSourceFilePath` (still skips `File.Exists` under allFiles; filter throws `SourceFileNotFound` / `SourceNotInWorkspace`). Omit `sourceFile` to walk the whole solution. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not invent convert_to_async / convert_to_interpolated_string / convert_to_pattern_matching / encapsulate_field / add_null_checks optional sourceFile. (#1859)
 
@@ -525,7 +527,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
-[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.6...HEAD
+[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.7...HEAD
+[0.6.7]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.6...v0.6.7
 [0.6.6]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.3...v0.6.4
