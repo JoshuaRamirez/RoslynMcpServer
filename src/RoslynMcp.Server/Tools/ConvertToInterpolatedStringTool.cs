@@ -33,7 +33,7 @@ public sealed class ConvertToInterpolatedStringTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert string.Format() calls and string concatenation to interpolated strings. column (optional) picks the Format invocation or concatenation whose span covers that column on the given line. Omitted keeps today's first-match on the line. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct convertible Format invocation and outer concatenation (sourceFile optional when true; cannot be combined with line or column).";
+        "Convert string.Format() calls and string concatenation to interpolated strings. column (optional) picks the Format invocation or concatenation whose span covers that column on the given line. Omitted keeps today's first-match on the line. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct convertible Format invocation and outer concatenation (sourceFile optional when true to limit the walk; cannot be combined with line or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class ConvertToInterpolatedStringTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file. Required when allFiles is false."
+                description = "Absolute path to the source file. Required when allFiles is false. When allFiles is true, optional — supply to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with line or column.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with line or column.",
                 @default = false
             },
             line = new
