@@ -104,9 +104,21 @@ public class AddNullChecksToolTests
         Assert.False(allFiles.GetProperty("default").GetBoolean());
         var description = allFiles.GetProperty("description").GetString();
         Assert.Contains("sourceFile is optional", description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("limit the walk", description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("methodName", description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("line", description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("column", description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_SourceFileProperty_MentionsLimitTheWalk()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var sourceFile = doc.RootElement.GetProperty("properties").GetProperty("sourceFile");
+        var description = sourceFile.GetProperty("description").GetString();
+        Assert.Contains("limit the walk", description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -114,6 +126,7 @@ public class AddNullChecksToolTests
     {
         Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("sourceFile optional", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("limit the walk", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion
