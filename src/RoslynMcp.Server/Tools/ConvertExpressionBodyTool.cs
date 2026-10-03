@@ -33,7 +33,7 @@ public sealed class ConvertExpressionBodyTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a C# member between expression body (=>) and block body forms. Direction is ToExpressionBody or ToBlockBody. column (optional) picks the member whose identifier or declaration span covers that column on the given line. Omitted keeps today's first-match on the line. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every eligible supported member (sourceFile optional when true; cannot be combined with memberName, line, or column).";
+        "Convert a C# member between expression body (=>) and block body forms. Direction is ToExpressionBody or ToBlockBody. column (optional) picks the member whose identifier or declaration span covers that column on the given line. Omitted keeps today's first-match on the line. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every eligible supported member (sourceFile optional when true to limit the walk; cannot be combined with memberName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class ConvertExpressionBodyTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file. Required when allFiles is false."
+                description = "Absolute path to the source file. Required when allFiles is false. Optional when allFiles is true to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with memberName, line, or column.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with memberName, line, or column.",
                 @default = false
             },
             direction = new
