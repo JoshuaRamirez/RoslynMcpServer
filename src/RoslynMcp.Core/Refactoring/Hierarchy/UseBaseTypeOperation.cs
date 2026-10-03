@@ -33,8 +33,10 @@ namespace RoslynMcp.Core.Refactoring.Hierarchy;
 /// <c>InvalidSymbolKind</c> / <c>NoCommonBase</c> /
 /// <c>BaseClassNotFound</c> / <c>NoEligibleReferences</c> /
 /// <c>BaseCannotSatisfyUsedMembers</c> / <c>DocumentNotEditable</c>
-/// rather than throwing). Bulk walks every eligible type, not a
-/// broader search for one typeName.
+/// rather than throwing). Optional <c>sourceFile</c> when
+/// <c>allFiles</c> is true limits the walk via
+/// <c>FilterAllFilesDocumentsBySourceFile</c>. Bulk walks every
+/// eligible type, not a broader search for one typeName.
 /// </summary>
 public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeParams>
 {
@@ -64,6 +66,11 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
                     ErrorCodes.MissingRequiredParam,
                     "allFiles cannot be combined with typeName, line, or column.");
             }
+
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
             return;
         }
@@ -166,6 +173,13 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
     /// <c>ConvertPropertyOperation.ExecuteAllFilesAsync</c> /
     /// <c>InvertIfOperation.ExecuteAllFilesAsync</c>) and rewrites eligible
     /// references of every <c>TypeDeclarationSyntax</c> (class/struct/interface).
+    /// Optional <c>sourceFile</c> limits the walk via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as FormatDocument / SortUsings / AddMissingUsings /
+    /// RemoveUnusedUsings / simplify_name / add_braces / remove_braces /
+    /// convert_expression_body / invert_if / convert_foreach_linq /
+    /// convert_property / convert_to_async / convert_to_pattern_matching /
+    /// convert_to_interpolated_string / encapsulate_field / add_null_checks).
     /// Per-type <c>InvalidSymbolKind</c>, <c>NoCommonBase</c>,
     /// <c>BaseClassNotFound</c>, <c>NoEligibleReferences</c>,
     /// <c>BaseCannotSatisfyUsedMembers</c>, <c>DocumentNotEditable</c>, and
@@ -182,6 +196,12 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         CancellationToken cancellationToken)
     {
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(Context.Solution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(
+                allDocuments, @params.SourceFile!);
+        }
 
         var seenTypes = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
         var allRewrites = new List<RewritableReference>();

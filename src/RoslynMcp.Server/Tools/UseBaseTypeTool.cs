@@ -33,7 +33,7 @@ public sealed class UseBaseTypeTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Replace derived-type references with a compatible base type or interface. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick (simple name / single match) or FQN semantic narrowing. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. Preview describes the rewrite and writes nothing. sourceFile and typeName are required when allFiles is omitted or false. allFiles: true walks every C# file and rewrites eligible references of every type declaration (sourceFile optional when true; cannot be combined with typeName, line, or column).";
+        "Replace derived-type references with a compatible base type or interface. line (optional) picks the type whose identifier or declaration span covers that line when several types share the name; omitted keeps today's typeName FirstOrDefault pick (simple name / single match) or FQN semantic narrowing. column (optional) picks the type whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest containing type); omitted keeps today's typeName + optional line pick; column without line keeps today's first-match after the typeName filter. Preview describes the rewrite and writes nothing. sourceFile and typeName are required when allFiles is omitted or false. allFiles: true walks every C# file and rewrites eligible references of every type declaration (sourceFile optional when true to limit the walk; cannot be combined with typeName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class UseBaseTypeTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the derived type. Required when allFiles is false."
+                description = "Absolute path to the source file containing the derived type. Required when allFiles is false. When allFiles is true, optional — supply to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with typeName, line, or column. Walks every eligible type rather than broadening search for one typeName.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with typeName, line, or column. Walks every eligible type rather than broadening search for one typeName.",
                 @default = false
             },
             typeName = new
