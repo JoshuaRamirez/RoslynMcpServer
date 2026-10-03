@@ -1095,7 +1095,7 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
                     return true;
 
                 return SyntaxFactory.AreEquivalent(core, originalCore) &&
-                       BindingsEqual(originalBindings, CollectBindings(core, semanticModel, cancellationToken));
+                       SymbolBindingHelpers.BindingsEqual(originalBindings, CollectBindings(core, semanticModel, cancellationToken));
             })
             .ToList();
 
@@ -1233,21 +1233,6 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             .Select(name => semanticModel.GetSymbolInfo(name, cancellationToken).Symbol)
             .ToList();
     }
-
-    private static bool BindingsEqual(IReadOnlyList<ISymbol?> left, IReadOnlyList<ISymbol?> right)
-    {
-        if (left.Count != right.Count)
-            return false;
-
-        for (var i = 0; i < left.Count; i++)
-        {
-            if (!SymbolEqualityComparer.Default.Equals(left[i], right[i]))
-                return false;
-        }
-
-        return true;
-    }
-
     private static bool HasSideEffects(
         ExpressionSyntax expression,
         SemanticModel semanticModel,
