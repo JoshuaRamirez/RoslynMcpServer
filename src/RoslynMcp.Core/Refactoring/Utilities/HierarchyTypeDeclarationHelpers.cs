@@ -6,12 +6,14 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
 /// Shared type-declaration lookup used by
-/// <c>PullMembersUpOperation</c> and <c>PushMembersDownOperation</c>.
-/// Same body as the prior <c>FindTypeDeclaration</c> copies on those
-/// operations (FQN simpleName strip; enum/delegate in the line set for
-/// InvalidSymbolKind). Intentionally separate from
-/// <see cref="TypeDeclarationHelpers.FindTypeDeclaration"/>, which stays
-/// <see cref="TypeDeclarationSyntax"/>-only.
+/// <c>PullMembersUpOperation</c>, <c>PushMembersDownOperation</c>,
+/// <c>ExtractInterfaceOperation</c>, and <c>GenerateToStringOperation</c>.
+/// Same body as the prior <c>FindTypeDeclaration</c> copies (enum/delegate
+/// in the line set for InvalidSymbolKind). Pull/Push default
+/// <c>stripQualifiedName: true</c> (FQN simpleName strip); ExtractInterface /
+/// GenerateToString pass <c>false</c> (exact identifier text). Intentionally
+/// separate from <see cref="TypeDeclarationHelpers.FindTypeDeclaration"/>,
+/// which stays <see cref="TypeDeclarationSyntax"/>-only.
 /// </summary>
 internal static class HierarchyTypeDeclarationHelpers
 {
@@ -43,20 +45,26 @@ internal static class HierarchyTypeDeclarationHelpers
     /// members added to the target; push: source rewrite + members added
     /// to derived types), recover the selected type from the per-execution
     /// syntax annotation — do not reuse a pre-rewrite SpanStart or line.
+    /// When <paramref name="stripQualifiedName"/> is <see langword="true"/>
+    /// (default; Pull/Push), strip a dotted <paramref name="typeName"/> to
+    /// its final segment before matching identifier text. When
+    /// <see langword="false"/> (ExtractInterface / GenerateToString), match
+    /// <paramref name="typeName"/> exactly.
     /// </summary>
     internal static MemberDeclarationSyntax? FindTypeDeclaration(
         SyntaxNode root,
         string typeName,
         int? line,
-        int? column = null)
+        int? column = null,
+        bool stripQualifiedName = true)
     {
-        var simpleName = typeName.Contains('.')
+        var name = stripQualifiedName && typeName.Contains('.')
             ? typeName[(typeName.LastIndexOf('.') + 1)..]
             : typeName;
 
         var typeCandidates = root.DescendantNodes()
             .OfType<TypeDeclarationSyntax>()
-            .Where(t => t.Identifier.Text == simpleName)
+            .Where(t => t.Identifier.Text == name)
             .ToList();
 
         // Line set (including column+line) uses BaseTypeDeclarationSyntax
@@ -68,11 +76,11 @@ internal static class HierarchyTypeDeclarationHelpers
         var lineCandidates = line.HasValue
             ? root.DescendantNodes()
                 .OfType<BaseTypeDeclarationSyntax>()
-                .Where(t => t.Identifier.Text == simpleName)
+                .Where(t => t.Identifier.Text == name)
                 .Cast<MemberDeclarationSyntax>()
                 .Concat(root.DescendantNodes()
                     .OfType<DelegateDeclarationSyntax>()
-                    .Where(d => d.Identifier.Text == simpleName))
+                    .Where(d => d.Identifier.Text == name))
                 .ToList()
             : typeCandidates.Cast<MemberDeclarationSyntax>().ToList();
 
