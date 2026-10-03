@@ -109,7 +109,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
 
         var solution = document.Project.Solution;
 
-        var relatedMethods = await GetRelatedMethodsAsync(
+        var relatedMethods = await SignatureOverrideHelpers.GetRelatedMethodsAsync(
             methodSymbol,
             @params.UpdateOverrides,
             @params.UpdateImplementations,
@@ -491,7 +491,7 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
         if (overrides.Any())
             return null;
 
-        var relatedMethods = await GetRelatedMethodsAsync(
+        var relatedMethods = await SignatureOverrideHelpers.GetRelatedMethodsAsync(
             methodSymbol,
             @params.UpdateOverrides,
             @params.UpdateImplementations,
@@ -606,71 +606,6 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
                 : $"Parameter '{name}' not found on method '{method.Name}'. Available: {available}");
     }
 
-    private async Task<List<IMethodSymbol>> GetRelatedMethodsAsync(
-        IMethodSymbol method,
-        bool updateOverrides,
-        bool updateImplementations,
-        Solution solution,
-        CancellationToken cancellationToken)
-    {
-        var results = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default) { method };
-
-        if (updateOverrides)
-        {
-            var current = method;
-            while (current.OverriddenMethod != null)
-            {
-                results.Add(current.OverriddenMethod);
-                current = current.OverriddenMethod;
-            }
-
-            foreach (var symbol in results.ToList())
-            {
-                var overrides = await SymbolFinder.FindOverridesAsync(
-                    symbol, solution, cancellationToken: cancellationToken);
-                foreach (var ov in overrides.OfType<IMethodSymbol>())
-                    results.Add(ov);
-            }
-        }
-
-        if (updateImplementations)
-        {
-            foreach (var candidate in results.ToList())
-            {
-                if (candidate.ContainingType.TypeKind == TypeKind.Interface)
-                {
-                    var implementations = await SymbolFinder.FindImplementationsAsync(
-                        candidate, solution, cancellationToken: cancellationToken);
-                    foreach (var impl in implementations.OfType<IMethodSymbol>())
-                        results.Add(impl);
-                    continue;
-                }
-
-                foreach (var iface in candidate.ContainingType.AllInterfaces)
-                {
-                    foreach (var ifaceMethod in iface.GetMembers(candidate.Name).OfType<IMethodSymbol>())
-                    {
-                        var impl = candidate.ContainingType.FindImplementationForInterfaceMember(ifaceMethod);
-                        if (impl is not IMethodSymbol implMethod ||
-                            !SignatureOverrideHelpers.ShareOverrideRoot(implMethod, candidate))
-                        {
-                            continue;
-                        }
-
-                        results.Add(ifaceMethod);
-                        var otherImpls = await SymbolFinder.FindImplementationsAsync(
-                            ifaceMethod,
-                            solution,
-                            cancellationToken: cancellationToken);
-                        foreach (var other in otherImpls.OfType<IMethodSymbol>())
-                            results.Add(other);
-                    }
-                }
-            }
-        }
-
-        return results.Where(SignatureOverrideHelpers.HasSourceDeclaration).ToList();
-    }
 
     private static async Task<List<DeclarationTarget>> CollectDeclarationTargetsAsync(
         IReadOnlyList<IMethodSymbol> methods,

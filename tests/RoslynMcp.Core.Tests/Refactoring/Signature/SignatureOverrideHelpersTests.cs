@@ -1,5 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Text;
 using RoslynMcp.Core.Refactoring.Signature;
 using Xunit;
 
@@ -89,4 +90,97 @@ public class SignatureOverrideHelpersTests
         Assert.True(SignatureOverrideHelpers.ShareOverrideRoot(aM, bM));
         Assert.False(SignatureOverrideHelpers.ShareOverrideRoot(bM, bN));
     }
+
+    [Fact]
+    public async Task GetRelatedMethodsAsync_SeedOnly_WhenFlagsFalse()
+    {
+        var (solution, method) = CreateSolutionWithMethod("""
+            public class C
+            {
+                public virtual void M(int x) { }
+            }
+            public class D : C
+            {
+                public override void M(int x) { }
+            }
+            """, "C", "M");
+
+        var related = await SignatureOverrideHelpers.GetRelatedMethodsAsync(
+            method, updateOverrides: false, updateImplementations: false, solution, default);
+
+        Assert.Single(related);
+        Assert.True(SymbolEqualityComparer.Default.Equals(method, related[0]));
+    }
+
+    [Fact]
+    public async Task GetRelatedMethodsAsync_CollectsOverrides_WhenUpdateOverrides()
+    {
+        var (solution, method) = CreateSolutionWithMethod("""
+            public class C
+            {
+                public virtual void M(int x) { }
+            }
+            public class D : C
+            {
+                public override void M(int x) { }
+            }
+            """, "C", "M");
+
+        var related = await SignatureOverrideHelpers.GetRelatedMethodsAsync(
+            method, updateOverrides: true, updateImplementations: false, solution, default);
+
+        var names = related.Select(m => $"{m.ContainingType.Name}.{m.Name}").OrderBy(n => n).ToList();
+        Assert.Contains("C.M", names);
+        Assert.Contains("D.M", names);
+        Assert.Equal(2, related.Count);
+    }
+
+    [Fact]
+    public async Task GetRelatedMethodsAsync_CollectsInterfaceImplementations_WhenUpdateImplementations()
+    {
+        var (solution, method) = CreateSolutionWithMethod("""
+            public interface I
+            {
+                void M(int x);
+            }
+            public class C : I
+            {
+                public void M(int x) { }
+            }
+            """, "I", "M");
+
+        var related = await SignatureOverrideHelpers.GetRelatedMethodsAsync(
+            method, updateOverrides: false, updateImplementations: true, solution, default);
+
+        var names = related.Select(m => $"{m.ContainingType.Name}.{m.Name}").OrderBy(n => n).ToList();
+        Assert.Contains("I.M", names);
+        Assert.Contains("C.M", names);
+        Assert.Equal(2, related.Count);
+    }
+
+    private static (Solution Solution, IMethodSymbol Method) CreateSolutionWithMethod(
+        string source, string typeMetadataName, string methodName)
+    {
+        var workspace = new AdhocWorkspace();
+        var projectInfo = ProjectInfo.Create(
+            ProjectId.CreateNewId(),
+            VersionStamp.Create(),
+            "P",
+            "P",
+            LanguageNames.CSharp,
+            metadataReferences: new[]
+            {
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+            });
+        var project = workspace.AddProject(projectInfo);
+        var document = workspace.AddDocument(project.Id, "Code.cs", SourceText.From(source));
+        var solution = document.Project.Solution;
+        var compilation = document.Project.GetCompilationAsync().Result
+            ?? throw new InvalidOperationException("No compilation");
+        var type = compilation.GetTypeByMetadataName(typeMetadataName)
+            ?? throw new InvalidOperationException($"Type {typeMetadataName} missing");
+        var method = type.GetMembers(methodName).OfType<IMethodSymbol>().Single();
+        return (solution, method);
+    }
+
 }
