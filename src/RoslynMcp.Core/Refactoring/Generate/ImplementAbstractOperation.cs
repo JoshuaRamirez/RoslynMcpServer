@@ -711,7 +711,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
     {
         if (member.IsImplicitlyDeclared)
             return false;
-        if (IsExplicitImplementation(member))
+        if (ExplicitImplementationHelpers.IsExplicitImplementation(member))
             return false;
 
         return member switch
@@ -723,16 +723,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             _ => false
         };
     }
-
-    private static bool IsExplicitImplementation(ISymbol member) =>
-        member switch
-        {
-            IMethodSymbol method => method.ExplicitInterfaceImplementations.Length > 0
-                || method.MethodKind == MethodKind.ExplicitInterfaceImplementation,
-            IPropertySymbol property => property.ExplicitInterfaceImplementations.Length > 0,
-            IEventSymbol evt => evt.ExplicitInterfaceImplementations.Length > 0,
-            _ => false
-        };
 
     private static bool NamesMatch(ISymbol left, ISymbol right)
     {
