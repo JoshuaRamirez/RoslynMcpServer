@@ -33,7 +33,7 @@ public sealed class ConvertToAsyncTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a synchronous method to async/await pattern. column (optional) picks the method whose identifier or declaration span covers that column. Omitted keeps today's MethodName + Line pick. renameToAsync (default true) rewrites call-site identifiers to the Async name. updateCallers (default false) wraps already-async callers in await and skips synchronous callers that cannot legally await. Preview describes caller updates and writes nothing. allFiles: true walks every C# file and converts every distinct eligible sync method (sourceFile optional when true; cannot be combined with methodName, line, or column).";
+        "Convert a synchronous method to async/await pattern. column (optional) picks the method whose identifier or declaration span covers that column. Omitted keeps today's MethodName + Line pick. renameToAsync (default true) rewrites call-site identifiers to the Async name. updateCallers (default false) wraps already-async callers in await and skips synchronous callers that cannot legally await. Preview describes caller updates and writes nothing. allFiles: true walks every C# file and converts every distinct eligible sync method (sourceFile optional when true to limit the walk; cannot be combined with methodName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class ConvertToAsyncTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file. Required when allFiles is false."
+                description = "Absolute path to the source file. Required when allFiles is false. When allFiles is true, optional — supply to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with methodName, line, or column.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with methodName, line, or column.",
                 @default = false
             },
             methodName = new
