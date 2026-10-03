@@ -7,10 +7,11 @@ using RoslynMcp.Core.Refactoring.Utilities;
 namespace RoslynMcp.Core.Refactoring.Hierarchy;
 
 /// <summary>
-/// Shared <c>makeAbstract</c> member rewrite used by
-/// <see cref="PullMembersUpOperation"/> and
-/// <see cref="RoslynMcp.Core.Refactoring.Extract.ExtractBaseClassOperation"/>
-/// (same shape as <see cref="PushMembersDownOperation"/> <c>leaveAbstract</c>).
+/// Shared abstract-member rewrite used by
+/// <see cref="PullMembersUpOperation"/>,
+/// <see cref="RoslynMcp.Core.Refactoring.Extract.ExtractBaseClassOperation"/>,
+/// and <see cref="PushMembersDownOperation"/> (<c>leaveAbstract</c>).
+/// Push keeps <c>override</c> via <c>keepOverrideWhenPresent</c>; pull/extract default false.
 /// </summary>
 internal static class HierarchyAbstractMemberRewriter
 {
@@ -53,27 +54,31 @@ internal static class HierarchyAbstractMemberRewriter
 
     /// <summary>
     /// Converts a concrete member into an abstract declaration on a base.
+    /// When <paramref name="keepOverrideWhenPresent"/> is true (push
+    /// <c>leaveAbstract</c>), an existing <c>override</c> is retained;
+    /// pull/extract leave the default false.
     /// </summary>
     internal static MemberDeclarationSyntax ConvertToAbstract(
         MemberDeclarationSyntax member,
-        string notMoveableMessage)
+        string notMoveableMessage,
+        bool keepOverrideWhenPresent = false)
     {
         return member switch
         {
             MethodDeclarationSyntax method => method
-                .WithModifiers(ToAbstractModifiers(method.Modifiers))
+                .WithModifiers(ToAbstractModifiers(method.Modifiers, keepOverrideWhenPresent))
                 .WithBody(null)
                 .WithExpressionBody(null)
                 .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
                 .NormalizeWhitespace(),
             PropertyDeclarationSyntax property =>
-                HierarchyAbstractEventIndexerHelpers.ToAbstractProperty(property, ToAbstractModifiers(property.Modifiers)),
+                HierarchyAbstractEventIndexerHelpers.ToAbstractProperty(property, ToAbstractModifiers(property.Modifiers, keepOverrideWhenPresent)),
             IndexerDeclarationSyntax indexer when HierarchyAbstractEventIndexerHelpers.CanMakeIndexerAbstract(indexer) =>
-                HierarchyAbstractEventIndexerHelpers.ToAbstractIndexer(indexer, ToAbstractModifiers(indexer.Modifiers)),
+                HierarchyAbstractEventIndexerHelpers.ToAbstractIndexer(indexer, ToAbstractModifiers(indexer.Modifiers, keepOverrideWhenPresent)),
             EventDeclarationSyntax eventDecl when HierarchyAbstractEventIndexerHelpers.CanMakeEventAbstract(eventDecl) =>
-                HierarchyAbstractEventIndexerHelpers.ToAbstractEvent(eventDecl, ToAbstractModifiers(eventDecl.Modifiers)),
+                HierarchyAbstractEventIndexerHelpers.ToAbstractEvent(eventDecl, ToAbstractModifiers(eventDecl.Modifiers, keepOverrideWhenPresent)),
             EventFieldDeclarationSyntax eventField when HierarchyAbstractEventIndexerHelpers.CanMakeEventAbstract(eventField) =>
-                HierarchyAbstractEventIndexerHelpers.ToAbstractEvent(eventField, ToAbstractModifiers(eventField.Modifiers)),
+                HierarchyAbstractEventIndexerHelpers.ToAbstractEvent(eventField, ToAbstractModifiers(eventField.Modifiers, keepOverrideWhenPresent)),
             _ => throw new RefactoringException(
                 ErrorCodes.MemberNotMoveable,
                 notMoveableMessage)
@@ -139,8 +144,10 @@ internal static class HierarchyAbstractMemberRewriter
         };
     }
 
-    private static SyntaxTokenList ToAbstractModifiers(SyntaxTokenList modifiers) =>
-        HierarchyModifierHelpers.ToAbstractModifiers(modifiers, keepOverrideWhenPresent: false);
+    private static SyntaxTokenList ToAbstractModifiers(
+        SyntaxTokenList modifiers,
+        bool keepOverrideWhenPresent) =>
+        HierarchyModifierHelpers.ToAbstractModifiers(modifiers, keepOverrideWhenPresent);
 
     private static SyntaxTokenList ToOverrideModifiers(SyntaxTokenList modifiers) =>
         HierarchyModifierHelpers.ToOverrideModifiers(modifiers, stripSealed: false);
