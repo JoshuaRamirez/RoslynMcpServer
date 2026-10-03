@@ -15,6 +15,10 @@ namespace RoslynMcp.Core.Refactoring.Rename;
 /// <summary>
 /// Renames a source file so its name matches the primary type declared in it.
 /// Does not rename the type, constructors, or references.
+/// Optional <c>allFiles</c> walks every C# document and renames each
+/// unambiguous mismatched single-type file. Optional <c>sourceFile</c> when
+/// <c>allFiles</c> is true limits the walk via
+/// <c>FilterAllFilesDocumentsBySourceFile</c>.
 /// </summary>
 public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<RenameFileToMatchTypeParams>
 {
@@ -44,6 +48,11 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
                     ErrorCodes.MissingRequiredParam,
                     "allFiles cannot be combined with typeName, line, or column.");
             }
+
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
 
             return;
         }
@@ -205,6 +214,14 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
     /// Renames every C# document in the solution whose file name does not match
     /// its single top-level type (via
     /// <see cref="AllFilesDocumentHelpers.EnumerateCsharpDocuments"/>).
+    /// Optional <c>sourceFile</c> limits the walk via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as FormatDocument / SortUsings / AddMissingUsings /
+    /// RemoveUnusedUsings / simplify_name / add_braces / remove_braces /
+    /// convert_expression_body / invert_if / convert_foreach_linq /
+    /// convert_property / convert_to_async / convert_to_pattern_matching /
+    /// convert_to_interpolated_string / encapsulate_field / add_null_checks /
+    /// use_base_type).
     /// Multi-type, zero-type, already-matching, destination-occupied, and
     /// uneditable documents are skipped. A physical file linked into several
     /// projects is moved once; every owning document and project still receives
@@ -220,6 +237,12 @@ public sealed class RenameFileToMatchTypeOperation : RefactoringOperationBase<Re
         CancellationToken cancellationToken)
     {
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(Context.Solution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(
+                allDocuments, @params.SourceFile!);
+        }
 
         var candidates = new List<FileRenamePlan>();
         var skippedSources = new List<string>();
