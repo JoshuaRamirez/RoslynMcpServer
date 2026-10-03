@@ -2665,29 +2665,12 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             .NormalizeWhitespace();
     }
 
-    private static MemberDeclarationSyntax ConvertToAbstract(MemberDeclarationSyntax member)
-    {
-        return member switch
-        {
-            MethodDeclarationSyntax method => method
-                .WithModifiers(ToAbstractModifiers(method.Modifiers))
-                .WithBody(null)
-                .WithExpressionBody(null)
-                .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken))
-                .NormalizeWhitespace(),
-            PropertyDeclarationSyntax property =>
-                HierarchyAbstractEventIndexerHelpers.ToAbstractProperty(property, ToAbstractModifiers(property.Modifiers)),
-            IndexerDeclarationSyntax indexer when HierarchyAbstractEventIndexerHelpers.CanMakeIndexerAbstract(indexer) =>
-                HierarchyAbstractEventIndexerHelpers.ToAbstractIndexer(indexer, ToAbstractModifiers(indexer.Modifiers)),
-            EventDeclarationSyntax eventDecl when HierarchyAbstractEventIndexerHelpers.CanMakeEventAbstract(eventDecl) =>
-                HierarchyAbstractEventIndexerHelpers.ToAbstractEvent(eventDecl, ToAbstractModifiers(eventDecl.Modifiers)),
-            EventFieldDeclarationSyntax eventField when HierarchyAbstractEventIndexerHelpers.CanMakeEventAbstract(eventField) =>
-                HierarchyAbstractEventIndexerHelpers.ToAbstractEvent(eventField, ToAbstractModifiers(eventField.Modifiers)),
-            _ => throw new RefactoringException(
-                ErrorCodes.MemberNotMoveable,
-                "Only methods, properties, indexers, and events can be left as abstract members.")
-        };
-    }
+    private static MemberDeclarationSyntax ConvertToAbstract(MemberDeclarationSyntax member) =>
+        HierarchyAbstractMemberRewriter.ConvertToAbstract(
+            member,
+            "Only methods, properties, indexers, and events can be left as abstract members.",
+            keepOverrideWhenPresent: true);
+
     private static MemberDeclarationSyntax AddOverrideModifier(
         MemberDeclarationSyntax member,
         ISymbol symbol,
@@ -2881,9 +2864,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
 
         return (T)member.AddModifiers(SyntaxFactory.Token(SyntaxKind.VirtualKeyword));
     }
-
-    private static SyntaxTokenList ToAbstractModifiers(SyntaxTokenList modifiers) =>
-        HierarchyModifierHelpers.ToAbstractModifiers(modifiers, keepOverrideWhenPresent: true);
 
     private static SyntaxTokenList ToOverrideModifiers(SyntaxTokenList modifiers) =>
         HierarchyModifierHelpers.ToOverrideModifiers(modifiers, stripSealed: true);
