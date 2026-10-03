@@ -23,12 +23,13 @@ namespace RoslynMcp.Core.Refactoring;
 /// line keeps that omitted-line path. When column is set with line, picks
 /// the covering top-level type (identifier preferred, then smallest
 /// covering type). Nested types stay unmoveable.
-/// Optional <c>allFiles</c> walks every C# document (or the optional
-/// single <c>sourceFile</c>) and extracts every eligible top-level type
-/// into <c>{directory}/{TypeName}.cs</c> (skip nested / already
-/// well-placed / SameLocation / NameCollision / occupied destinations /
-/// uneditable / resolution failures rather than throwing). Bulk walks
-/// every eligible type, not a broader search for one symbolName.
+/// Optional <c>allFiles</c> walks every C# document and extracts every
+/// eligible top-level type into <c>{directory}/{TypeName}.cs</c> (skip
+/// nested / already well-placed / SameLocation / NameCollision / occupied
+/// destinations / uneditable / resolution failures rather than throwing).
+/// Optional <c>sourceFile</c> when <c>allFiles</c> is true limits the walk
+/// via <c>FilterAllFilesDocumentsBySourceFile</c>. Bulk walks every
+/// eligible type, not a broader search for one symbolName.
 /// </summary>
 public sealed class MoveTypeToFileOperation
 {
@@ -158,6 +159,11 @@ public sealed class MoveTypeToFileOperation
                     "allFiles cannot be combined with symbolName, targetFile, line, or column.");
             }
 
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -208,7 +214,8 @@ public sealed class MoveTypeToFileOperation
     /// <c>EncapsulateFieldOperation.ExecuteAllFilesAsync</c>) and extracts
     /// every eligible top-level <c>TypeDeclarationSyntax</c> into
     /// <c>{directory}/{TypeName}.cs</c>. Optional <c>sourceFile</c> limits
-    /// the walk to that one file. Nested types, already well-placed
+    /// the walk via <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>.
+    /// Nested types, already well-placed
     /// single-type matching files, SameLocation, NameCollision / occupied
     /// destinations today's <see cref="ValidateTargetAsync"/> would reject,
     /// uneditable documents, and resolution failures are skipped. When two
@@ -226,22 +233,8 @@ public sealed class MoveTypeToFileOperation
 
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
         {
-            string wanted;
-            try
-            {
-                wanted = PathResolver.NormalizePath(@params.SourceFile);
-            }
-            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-            {
-                wanted = @params.SourceFile;
-            }
-
-            allDocuments = allDocuments
-                .Where(d => string.Equals(
-                    PathResolver.NormalizePath(d.FilePath!),
-                    wanted,
-                    StringComparison.Ordinal))
-                .ToList();
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(
+                allDocuments, @params.SourceFile!);
         }
 
         var plans = new List<TypeMovePlan>();

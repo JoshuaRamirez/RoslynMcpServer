@@ -3,6 +3,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Rename;
 using RoslynMcp.Core.Refactoring.Utilities;
@@ -243,6 +244,31 @@ public class MoveTypeToFileOperationTests
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
         Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+
+    [Fact]
+    public void Validate_AllFilesTrue_RelativeSourceFile_ThrowsInvalidSourcePath()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToFileOperation.Validate(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                SourceFile = "Foo.cs"
+            }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_AbsoluteSourceFile_DoesNotRequireExists()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToFile_ValidateMissing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+        // Path shape is valid; File.Exists is skipped under allFiles (filter throws later).
+        MoveTypeToFileOperation.Validate(new MoveTypeToFileParams
+        {
+            AllFiles = true,
+            SourceFile = missing
+        });
     }
 
     [Fact]
@@ -1209,6 +1235,190 @@ public class MoveTypeToFileOperationTests
     }
 
     [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", MultiTypeSource),
+            ("Mismatched.cs", MismatchedNameSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var typesPath = workspace.FilePaths["Types.cs"];
+        var beforeMismatched = await File.ReadAllTextAsync(workspace.FilePaths["Mismatched.cs"]);
+        var flipped = FlipPathCasing(typesPath);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(workspace.TargetPath("Alpha.cs")));
+        Assert.True(File.Exists(workspace.TargetPath("Beta.cs")));
+        Assert.False(File.Exists(workspace.TargetPath("Gamma.cs")));
+        Assert.Equal(beforeMismatched, await File.ReadAllTextAsync(workspace.FilePaths["Mismatched.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", MultiTypeSource),
+            ("Mismatched.cs", MismatchedNameSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToFile_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "namespace TestApp; public class Outside { }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new MoveTypeToFileParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+            Assert.True(File.Exists(workspace.FilePaths["Types.cs"]));
+            Assert.True(File.Exists(workspace.FilePaths["Mismatched.cs"]));
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", MultiTypeSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToFile_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                SourceFile = missing
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+        Assert.True(File.Exists(workspace.FilePaths["Types.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_OptionalSourceFile_ExactCase_PrefersSingleWorkspaceFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithExplicitCompileItemsAsync(
+            ("Types.cs", MultiTypeSource),
+            ("types.cs", MismatchedNameSource));
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(Path.Combine(workspace.DirectoryPath, "Types.cs")),
+                PathResolver.GetPathComparisonKey(Path.Combine(workspace.DirectoryPath, "types.cs")),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var lowerPath = Path.Combine(workspace.DirectoryPath, "types.cs");
+        // Prefer exact workspace path casing for SourceFile.
+        var exactUpper = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Select(d => d.FilePath!)
+            .First(p => Path.GetFileName(p) == "Types.cs");
+        var beforeLower = await File.ReadAllTextAsync(lowerPath);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToFileParams
+        {
+            AllFiles = true,
+            SourceFile = exactUpper
+        });
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(workspace.TargetPath("Alpha.cs")));
+        Assert.True(File.Exists(workspace.TargetPath("Beta.cs")));
+        Assert.True(File.Exists(lowerPath));
+        Assert.Equal(beforeLower, await File.ReadAllTextAsync(lowerPath));
+        Assert.False(File.Exists(workspace.TargetPath("Gamma.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_OptionalSourceFile_AmbiguousIgnoreCase_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithExplicitCompileItemsAsync(
+            ("Types.cs", MultiTypeSource),
+            ("types.cs", MismatchedNameSource));
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(Path.Combine(workspace.DirectoryPath, "Types.cs")),
+                PathResolver.GetPathComparisonKey(Path.Combine(workspace.DirectoryPath, "types.cs")),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var exactUpper = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Select(d => d.FilePath!)
+            .First(p => Path.GetFileName(p) == "Types.cs");
+        var ambiguous = FlipPathCasing(exactUpper);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                SourceFile = ambiguous
+            }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        // Shared filter is OrdinalIgnoreCase, so both case-distinct workspace
+        // files match a flipped spelling whether or not File.Exists(ambiguous).
+        Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "Types.cs")));
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "types.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_OptionalSourceFile_RelativePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", MultiTypeSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                SourceFile = "Types.cs"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+        Assert.True(File.Exists(workspace.FilePaths["Types.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToFile_AllFilesTrue_OptionalSourceFile_NonCSharpAbsolutePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", MultiTypeSource));
+        var operation = new MoveTypeToFileOperation(workspace.Context);
+        var nonCs = Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToFile_NonCs_" + Guid.NewGuid().ToString("N") + ".txt");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToFileParams
+            {
+                AllFiles = true,
+                SourceFile = nonCs
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+        Assert.True(File.Exists(workspace.FilePaths["Types.cs"]));
+    }
+
+
+    [SkippableFact]
     public async Task MoveTypeToFile_AllFilesTrue_CreateTargetFileFalse_SkipsMissingDestination()
     {
         await using var workspace = await TempWorkspace.CreateAsync(
@@ -1528,6 +1738,23 @@ public class MoveTypeToFileOperationTests
 
     private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
 
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
+
     private static string AbsoluteTestPath(string name = "Missing.cs") =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToFile_" + name);
 
@@ -1587,15 +1814,32 @@ public class MoveTypeToFileOperationTests
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
             CreateAsync((fileName, source));
 
-        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
+        public static Task<TempWorkspace> CreateWithExplicitCompileItemsAsync(
+            params (string FileName, string Source)[] files)
         {
-            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+            var compileItems = string.Join(
+                Environment.NewLine,
+                files.Select(f => $"    <Compile Include=\"{f.FileName}\" />"));
+            var projectXml = $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                    <EnableDefaultItems>false</EnableDefaultItems>
+                    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+                    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+                    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                  </PropertyGroup>
+                  <ItemGroup>
+                {compileItems}
+                  </ItemGroup>
+                </Project>
+                """;
+            return CreateAsync(projectXml, files);
+        }
 
-            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToFile_" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(directory);
-
-            var projectPath = Path.Combine(directory, "TestApp.csproj");
-            await File.WriteAllTextAsync(projectPath, """
+        public static Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files) =>
+            CreateAsync("""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
@@ -1604,7 +1848,19 @@ public class MoveTypeToFileOperationTests
                     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
                   </PropertyGroup>
                 </Project>
-                """);
+                """, files);
+
+        public static async Task<TempWorkspace> CreateAsync(
+            string projectXml,
+            params (string FileName, string Source)[] files)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToFile_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+
+            var projectPath = Path.Combine(directory, "TestApp.csproj");
+            await File.WriteAllTextAsync(projectPath, projectXml);
 
             var filePaths = new Dictionary<string, string>(StringComparer.Ordinal);
             string? sourcePath = null;
