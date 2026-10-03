@@ -1759,6 +1759,50 @@ public class MoveTypeToNamespaceOperationTests
     }
 
     [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_OptionalSourceFile_CaseDistinctOnDiskOnly_ThrowsSourceNotInWorkspace()
+    {
+        await using var workspace = await TempWorkspace.CreateWithExplicitCompileItemsAsync(
+            ("Types.cs", AlphaSource));
+        var upperPath = Path.Combine(workspace.DirectoryPath, "Types.cs");
+        var lowerPath = Path.Combine(workspace.DirectoryPath, "types.cs");
+        await File.WriteAllTextAsync(lowerPath, "namespace TestApp; public class OnDiskOnly { }");
+        try
+        {
+            Skip.If(
+                string.Equals(
+                    PathResolver.GetPathComparisonKey(upperPath),
+                    PathResolver.GetPathComparisonKey(lowerPath),
+                    StringComparison.Ordinal),
+                "Volume does not preserve case-distinct paths.");
+
+            var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+            var beforeUpper = await File.ReadAllTextAsync(upperPath);
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new MoveTypeToNamespaceParams
+                {
+                    AllFiles = true,
+                    SourceFile = lowerPath,
+                    TargetNamespace = "New.Ns"
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+            Assert.Equal(beforeUpper, await File.ReadAllTextAsync(upperPath));
+        }
+        finally
+        {
+            if (File.Exists(lowerPath)
+                && !string.Equals(
+                    PathResolver.GetPathComparisonKey(upperPath),
+                    PathResolver.GetPathComparisonKey(lowerPath),
+                    StringComparison.Ordinal))
+            {
+                File.Delete(lowerPath);
+            }
+        }
+    }
+
+    [SkippableFact]
     public async Task MoveTypeToNamespace_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
     {
         await using var workspace = await TempWorkspace.CreateAsync(

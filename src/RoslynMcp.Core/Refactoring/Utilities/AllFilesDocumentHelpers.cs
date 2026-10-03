@@ -273,6 +273,14 @@ internal static class AllFilesDocumentHelpers
     /// GenerateConstructor / GenerateEqualsHashCode / GenerateToString /
     /// EncapsulateField / AddNullChecks / UseBaseType / RenameFileToMatchType /
     /// MoveTypeToFile / MoveTypeToNamespace.
+    /// On the default path, also reject a single ignore-case hit when
+    /// <paramref name="sourceFile"/> exists on disk as a case-distinct path
+    /// that is not the matched workspace document (throws
+    /// <see cref="ErrorCodes.SourceNotInWorkspace"/>); the intentional
+    /// ignore-case fallback remains when that flipped spelling does not exist
+    /// on disk. On case-insensitive volumes,
+    /// <see cref="PathResolver.GetPathComparisonKey"/> canonicalizes so the
+    /// same physical file is not falsely rejected.
     /// When
     /// <paramref name="rejectMissingPathCasingMismatch"/>
     /// is true (IntroduceField / SafeDelete), also reject an ignore-case hit
@@ -285,9 +293,7 @@ internal static class AllFilesDocumentHelpers
         bool rejectMissingPathCasingMismatch = false)
     {
         var normalizedSourceFile = PathResolver.NormalizePath(sourceFile);
-        var sourceFileKey = rejectMissingPathCasingMismatch
-            ? PathResolver.GetPathComparisonKey(sourceFile)
-            : null;
+        var sourceFileKey = PathResolver.GetPathComparisonKey(sourceFile);
         var exactMatches = documents
             .Where(d => string.Equals(PathResolver.NormalizePath(d.FilePath!), normalizedSourceFile, StringComparison.Ordinal))
             .ToList();
@@ -323,6 +329,11 @@ internal static class AllFilesDocumentHelpers
                 throw new RefactoringException(
                     ErrorCodes.SourceFileNotFound,
                     $"Source file not found: {sourceFile}"),
+            _ when File.Exists(sourceFile)
+                && !string.Equals(distinctPaths[0], sourceFileKey, StringComparison.Ordinal) =>
+                throw new RefactoringException(
+                    ErrorCodes.SourceNotInWorkspace,
+                    $"File not found in workspace: {sourceFile}"),
             _ => matchedDocuments
         };
     }
