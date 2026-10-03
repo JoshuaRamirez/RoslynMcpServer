@@ -1832,6 +1832,67 @@ public class EncapsulateFieldOperationTests
     }
 
     [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_OptionalSourceFile_Preview_IncludesReferenceOnlyDocs()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("Caller.cs", CallerOfFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var beforeA = await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]);
+        var beforeCaller = await File.ReadAllTextAsync(workspace.SourcePaths["Caller.cs"]);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            UpdateReferences = true,
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["Caller.cs"]));
+        Assert.DoesNotContain(result.PendingChanges, c => PathEquals(c.File, workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains(result.PendingChanges, c =>
+            PathEquals(c.File, workspace.SourcePaths["Caller.cs"]) &&
+            c.Description.Contains("Update references of encapsulated fields", StringComparison.Ordinal));
+        Assert.Equal(beforeA, await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        Assert.Equal(beforeCaller, await File.ReadAllTextAsync(workspace.SourcePaths["Caller.cs"]));
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task EncapsulateField_AllFilesTrue_OptionalSourceFile_UpdateReferences_RewritesExternalCaller()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleFileA),
+            ("Caller.cs", CallerOfFileA),
+            ("FileB.cs", EligibleFileB));
+        var operation = new EncapsulateFieldOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new EncapsulateFieldParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            UpdateReferences = true
+        });
+
+        Assert.True(result.Success);
+        var caller = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Caller.cs"]));
+        Assert.Contains("person.Name", caller, StringComparison.Ordinal);
+        Assert.DoesNotContain("person._name", caller, StringComparison.Ordinal);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Caller.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+    }
+
+    [SkippableFact]
     public async Task EncapsulateField_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
     {
         await using var workspace = await TempWorkspace.CreateWithFilesAsync(
