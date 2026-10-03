@@ -6,15 +6,17 @@ namespace RoslynMcp.Contracts.Models;
 public sealed class AddNullChecksParams
 {
     /// <summary>
-    /// Absolute path to the source file.
-    /// Required when <see cref="AllFiles"/> is false.
+    /// Absolute path to the source file. Required when <see cref="AllFiles"/> is false.
+    /// When <see cref="AllFiles"/> is true, optional — limits the walk to that one file.
     /// </summary>
     public string? SourceFile { get; init; }
 
     /// <summary>
     /// When true, process all C# documents in the solution instead of a single method.
-    /// When true, <see cref="SourceFile"/> is optional. Cannot be combined with
-    /// <see cref="MethodName"/>, <see cref="Line"/>, or <see cref="Column"/>.
+    /// When true, <see cref="SourceFile"/> is optional (omit to walk the whole solution;
+    /// supply to limit the walk via <c>FilterAllFilesDocumentsBySourceFile</c>).
+    /// Cannot be combined with <see cref="MethodName"/>, <see cref="Line"/>, or
+    /// <see cref="Column"/>.
     /// </summary>
     public bool AllFiles { get; init; }
 

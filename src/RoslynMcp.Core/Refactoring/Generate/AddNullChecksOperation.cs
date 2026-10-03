@@ -41,6 +41,11 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
                     "allFiles cannot be combined with methodName, line, or column.");
             }
 
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -152,10 +157,16 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
     /// <c>ConvertPropertyOperation.ExecuteAllFilesAsync</c> /
     /// <c>InvertIfOperation.ExecuteAllFilesAsync</c>) and inserts null checks
     /// at the start of every method or constructor with a block body whose
-    /// parameters still need them. Methods with no parameters requiring
-    /// checks, no body, an expression body, or every eligible parameter
-    /// already guarded are skipped. When every file is a no-op, succeeds
-    /// with empty changes.
+    /// parameters still need them. Optional <c>sourceFile</c> limits the walk
+    /// via <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as FormatDocument / SortUsings / AddMissingUsings /
+    /// RemoveUnusedUsings / simplify_name / add_braces / remove_braces /
+    /// convert_expression_body / invert_if / convert_foreach_linq /
+    /// convert_property / convert_to_async / convert_to_pattern_matching /
+    /// convert_to_interpolated_string / encapsulate_field). Methods with no
+    /// parameters requiring checks, no body, an expression body, or every
+    /// eligible parameter already guarded are skipped. When every file is a
+    /// no-op, succeeds with empty changes.
     /// </summary>
     private async Task<RefactoringResult> ExecuteAllFilesAsync(
         Guid operationId,
@@ -166,6 +177,12 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
                              string.Equals(@params.Style, "throw", StringComparison.OrdinalIgnoreCase);
         var currentSolution = Context.Solution;
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(
+                allDocuments, @params.SourceFile!);
+        }
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;

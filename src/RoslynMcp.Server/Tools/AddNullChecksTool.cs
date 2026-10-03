@@ -33,7 +33,7 @@ public sealed class AddNullChecksTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Add null-check statements to method or constructor parameters for non-nullable reference types. column (optional) picks the smallest method or constructor whose identifier or declaration span covers that column. Omitted keeps today's MethodName and optional Line start-line pick. style is throw (ArgumentNullException.ThrowIfNull) or guard (if-throw). Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and adds checks to every eligible method or constructor with a block body (sourceFile optional when true; cannot be combined with methodName, line, or column).";
+        "Add null-check statements to method or constructor parameters for non-nullable reference types. column (optional) picks the smallest method or constructor whose identifier or declaration span covers that column. Omitted keeps today's MethodName and optional Line start-line pick. style is throw (ArgumentNullException.ThrowIfNull) or guard (if-throw). Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and adds checks to every eligible method or constructor with a block body (sourceFile optional when true to limit the walk; cannot be combined with methodName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class AddNullChecksTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the method. Required when allFiles is false."
+                description = "Absolute path to the source file containing the method. Required when allFiles is false. When allFiles is true, optional — supply to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with methodName, line, or column.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with methodName, line, or column.",
                 @default = false
             },
             methodName = new
