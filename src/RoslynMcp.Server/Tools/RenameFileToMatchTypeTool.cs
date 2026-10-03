@@ -33,7 +33,7 @@ public sealed class RenameFileToMatchTypeTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Rename a source file so its name matches the primary type declared in it, without renaming the type or its references. Process a single file or all files in the solution. allFiles: true walks every C# file and renames each unambiguous mismatched single-type file (sourceFile optional when true; cannot be combined with typeName, line, or column). column (optional) picks the smallest type whose identifier or declaration span covers that column when set with line (identifier preferred, then smallest covering declaration); omitted keeps today's typeName + optional line pick; column without line keeps today's omitted-line path.";
+        "Rename a source file so its name matches the primary type declared in it, without renaming the type or its references. Process a single file or all files in the solution. allFiles: true walks every C# file and renames each unambiguous mismatched single-type file (sourceFile optional when true to limit the walk; cannot be combined with typeName, line, or column). column (optional) picks the smallest type whose identifier or declaration span covers that column when set with line (identifier preferred, then smallest covering declaration); omitted keeps today's typeName + optional line pick; column without line keeps today's omitted-line path.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class RenameFileToMatchTypeTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file to rename. Required when allFiles is false."
+                description = "Absolute path to the source file to rename. Required when allFiles is false. When allFiles is true, optional — supply to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with typeName, line, or column.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with typeName, line, or column.",
                 @default = false
             },
             typeName = new
