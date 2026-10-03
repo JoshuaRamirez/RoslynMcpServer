@@ -33,7 +33,7 @@ public sealed class EncapsulateFieldTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a field to a property with backing field. line (optional) picks the field whose identifier or declaration span covers that line when several fields share the name; omitted keeps today's fieldName FirstOrDefault pick. column (optional) picks the field whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering declarator/field); omitted keeps today's fieldName + optional line pick; column without line keeps today's first-match after the fieldName filter. updateReferences (default true) rewrites external references to the new property; false still encapsulates (private field + property) but leaves external callers on the field. Same-class references stay on the field. Preview describes whether references will be updated and writes nothing. allFiles: true walks every C# file and encapsulates every eligible field (sourceFile optional when true; cannot be combined with fieldName, line, column, or propertyName).";
+        "Convert a field to a property with backing field. line (optional) picks the field whose identifier or declaration span covers that line when several fields share the name; omitted keeps today's fieldName FirstOrDefault pick. column (optional) picks the field whose identifier or declaration span covers that 1-based column when set with line (identifier preferred, then smallest covering declarator/field); omitted keeps today's fieldName + optional line pick; column without line keeps today's first-match after the fieldName filter. updateReferences (default true) rewrites external references to the new property; false still encapsulates (private field + property) but leaves external callers on the field. Same-class references stay on the field. Preview describes whether references will be updated and writes nothing. allFiles: true walks every C# file and encapsulates every eligible field (sourceFile optional when true to limit the walk; cannot be combined with fieldName, line, column, or propertyName).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class EncapsulateFieldTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file containing the field. Required when allFiles is false."
+                description = "Absolute path to the source file containing the field. Required when allFiles is false. When allFiles is true, optional — supply to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with fieldName, line, column, or propertyName.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with fieldName, line, column, or propertyName.",
                 @default = false
             },
             fieldName = new

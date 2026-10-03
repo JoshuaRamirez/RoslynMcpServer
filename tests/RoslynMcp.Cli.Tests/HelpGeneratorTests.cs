@@ -1002,6 +1002,7 @@ public class HelpGeneratorTests
         Assert.Contains("updateReferences", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("limit the walk", tool.Description, StringComparison.OrdinalIgnoreCase);
 
         Assert.True(help.IndexOf("REQUIRED:") < 0, "sourceFile is optional when allFiles is true; no required params");
 

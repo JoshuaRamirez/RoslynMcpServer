@@ -63,6 +63,11 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
                     "allFiles cannot be combined with fieldName, line, column, or propertyName.");
             }
 
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -252,11 +257,22 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
     /// <c>ConvertPropertyOperation.ExecuteAllFilesAsync</c> /
     /// <c>InvertIfOperation.ExecuteAllFilesAsync</c>) and encapsulates
     /// every eligible field <c>VariableDeclaratorSyntax</c> (same filter
-    /// as <see cref="FindFieldDeclarator"/>; locals excluded). Const
-    /// fields, fields whose derived property name already exists, and
-    /// other per-field failures are skipped. Property names are derived
-    /// per field via <see cref="DerivePropertyName"/>. When every file
-    /// is a no-op, succeeds with empty changes.
+    /// as <see cref="FindFieldDeclarator"/>; locals excluded). Optional
+    /// <c>sourceFile</c> limits the <em>field-selection walk</em> via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as FormatDocument / SortUsings / AddMissingUsings /
+    /// RemoveUnusedUsings / simplify_name / add_braces / remove_braces /
+    /// convert_expression_body / invert_if / convert_foreach_linq /
+    /// convert_property / convert_to_async / convert_to_pattern_matching /
+    /// convert_to_interpolated_string). The unfiltered document list is
+    /// preserved for PendingChanges / preview so cross-file reference
+    /// rewrites under <c>updateReferences: true</c> still appear even when
+    /// <c>sourceFile</c> scoped the walk (same as InlineMethod / InlineConstant /
+    /// InlineVariable / ConvertToAsync). Const fields, fields whose derived
+    /// property name already exists, and other per-field failures are
+    /// skipped. Property names are derived per field via
+    /// <see cref="DerivePropertyName"/>. When every file is a no-op,
+    /// succeeds with empty changes.
     /// </summary>
     private async Task<RefactoringResult> ExecuteAllFilesAsync(
         Guid operationId,
@@ -266,10 +282,20 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
         var originalSolution = Context.Solution;
         var currentSolution = originalSolution;
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+        // Optional sourceFile limits which docs are scanned for fields to
+        // encapsulate; keep the full list for documentsToCompare so
+        // updateReferences cross-file callers still appear in preview /
+        // PendingChanges (peer InlineMethod / InlineConstant / ConvertToAsync).
+        var documentsToWalk = allDocuments;
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            documentsToWalk = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(
+                allDocuments, @params.SourceFile!);
+        }
 
         var encapsulatedCountByDoc = new Dictionary<DocumentId, int>();
 
-        foreach (var document in allDocuments)
+        foreach (var document in documentsToWalk)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -321,10 +347,12 @@ public sealed class EncapsulateFieldOperation : RefactoringOperationBase<Encapsu
             }
         }
 
+        var documentsToCompare = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
+
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;
 
-        foreach (var document in allDocuments)
+        foreach (var document in documentsToCompare)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
