@@ -8,7 +8,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 /// <summary>
 /// Unit tests for <see cref="HierarchyTypeDeclarationHelpers"/> —
 /// FindTypeDeclaration previously duplicated on PullMembersUp /
-/// PushMembersDown (FQN simpleName strip; enum/delegate in the line set).
+/// PushMembersDown (FQN simpleName strip; enum/delegate in the line set)
+/// and on ExtractInterface / GenerateToString (exact name; no FQN strip).
 /// </summary>
 public class HierarchyTypeDeclarationHelpersTests
 {
@@ -108,6 +109,48 @@ public class HierarchyTypeDeclarationHelpersTests
         var root = CSharpSyntaxTree.ParseText(source).GetRoot();
         var found = HierarchyTypeDeclarationHelpers.FindTypeDeclaration(
             root, "TestApp.Animal", line: null);
+
+        Assert.NotNull(found);
+        Assert.IsType<ClassDeclarationSyntax>(found);
+        Assert.Equal("Animal", ((ClassDeclarationSyntax)found).Identifier.Text);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_FqnTypeName_WithoutStrip_ReturnsNull()
+    {
+        const string source = """
+            namespace TestApp
+            {
+                public class Animal
+                {
+                    public string Name { get; set; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var found = HierarchyTypeDeclarationHelpers.FindTypeDeclaration(
+            root, "TestApp.Animal", line: null, stripQualifiedName: false);
+
+        Assert.Null(found);
+    }
+
+    [Fact]
+    public void FindTypeDeclaration_SimpleName_WithoutStrip_PicksClass()
+    {
+        const string source = """
+            namespace TestApp
+            {
+                public class Animal
+                {
+                    public string Name { get; set; }
+                }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var found = HierarchyTypeDeclarationHelpers.FindTypeDeclaration(
+            root, "Animal", line: null, stripQualifiedName: false);
 
         Assert.NotNull(found);
         Assert.IsType<ClassDeclarationSyntax>(found);
