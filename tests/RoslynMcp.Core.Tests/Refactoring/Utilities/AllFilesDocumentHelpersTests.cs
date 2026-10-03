@@ -202,6 +202,66 @@ public class AllFilesDocumentHelpersTests
         }
     }
 
+    [Fact]
+    public void ChangedDocumentsTouchLinkedMultiView_TrueWhenChangedDocumentIsLinked()
+    {
+        using var workspace = new AdhocWorkspace();
+        var projectA = workspace.AddProject("A", LanguageNames.CSharp);
+        var projectB = workspace.AddProject("B", LanguageNames.CSharp);
+
+        var sharedPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-touch-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(sharedPath, "class Shared {}");
+        try
+        {
+            var sharedA = AddOnDiskDocument(workspace, projectA.Id, sharedPath, "class Shared {}");
+            AddOnDiskDocument(workspace, projectB.Id, sharedPath, "class Shared {}");
+
+            var before = workspace.CurrentSolution;
+            var counts = AllFilesDocumentHelpers.BuildLinkedPathCounts(before);
+            var after = before.GetDocument(sharedA.Id)!
+                .WithText(SourceText.From("class Shared { void M() {} }"))
+                .Project.Solution;
+
+            Assert.True(AllFilesDocumentHelpers.ChangedDocumentsTouchLinkedMultiView(before, after, counts));
+            Assert.False(AllFilesDocumentHelpers.ChangedDocumentsTouchLinkedMultiView(before, before, counts));
+        }
+        finally
+        {
+            TryDelete(sharedPath);
+        }
+    }
+
+    [Fact]
+    public void ChangedDocumentsTouchLinkedMultiView_FalseWhenOnlySoloDocumentChanges()
+    {
+        using var workspace = new AdhocWorkspace();
+        var projectA = workspace.AddProject("A", LanguageNames.CSharp);
+        var projectB = workspace.AddProject("B", LanguageNames.CSharp);
+
+        var sharedPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-touch-shared-" + Path.GetRandomFileName() + ".cs");
+        var soloPath = Path.Combine(Path.GetTempPath(), "roslyn-mcp-afdh-touch-solo-" + Path.GetRandomFileName() + ".cs");
+        File.WriteAllText(sharedPath, "class Shared {}");
+        File.WriteAllText(soloPath, "class Solo {}");
+        try
+        {
+            AddOnDiskDocument(workspace, projectA.Id, sharedPath, "class Shared {}");
+            AddOnDiskDocument(workspace, projectB.Id, sharedPath, "class Shared {}");
+            var solo = AddOnDiskDocument(workspace, projectA.Id, soloPath, "class Solo {}");
+
+            var before = workspace.CurrentSolution;
+            var counts = AllFilesDocumentHelpers.BuildLinkedPathCounts(before);
+            var after = before.GetDocument(solo.Id)!
+                .WithText(SourceText.From("class Solo { void M() {} }"))
+                .Project.Solution;
+
+            Assert.False(AllFilesDocumentHelpers.ChangedDocumentsTouchLinkedMultiView(before, after, counts));
+        }
+        finally
+        {
+            TryDelete(sharedPath);
+            TryDelete(soloPath);
+        }
+    }
 
     [Fact]
     public void FilterAllFilesDocumentsBySourceFile_ExactPath_ReturnsExactAndLinkedSiblings()

@@ -543,7 +543,7 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
 
         // Renamer may rewrite references on linked multi-view paths; coalesce
         // would then copy onto siblings. Skip-not-throw (Copilot / remove_parameter).
-        if (ChangedDocumentsTouchLinkedMultiView(beforeSolution, newSolution, linkedPathCounts))
+        if (AllFilesDocumentHelpers.ChangedDocumentsTouchLinkedMultiView(beforeSolution, newSolution, linkedPathCounts))
             return (null, null);
 
         ValidateChangedDocumentsAreEditable(Context.Solution, newSolution);
@@ -609,29 +609,6 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         ReferToSameDirectory(left, right) ||
         IsUnderOrEqual(left, right) ||
         IsUnderOrEqual(right, left);
-
-    /// <summary>
-    /// True when the rename rewrite touches any document whose path has
-    /// multiple linked views (so Coalesce would overwrite siblings).
-    /// </summary>
-    internal static bool ChangedDocumentsTouchLinkedMultiView(
-        Solution beforeSolution,
-        Solution afterSolution,
-        IReadOnlyDictionary<string, int> linkedPathCounts)
-    {
-        foreach (var projectChange in afterSolution.GetChanges(beforeSolution).GetProjectChanges())
-        {
-            foreach (var documentId in projectChange.GetChangedDocuments())
-            {
-                var document = beforeSolution.GetDocument(documentId)
-                    ?? afterSolution.GetDocument(documentId);
-                if (document != null && AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(document, linkedPathCounts))
-                    return true;
-            }
-        }
-
-        return false;
-    }
 
     /// <summary>
     /// Rebuilds project XML remaps from the original on-disk texts for every

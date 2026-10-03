@@ -672,7 +672,7 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
                 cancellationToken);
         }
 
-        if (ChangedDocumentsTouchLinkedMultiView(beforeSolution, newSolution, linkedPathCounts))
+        if (AllFilesDocumentHelpers.ChangedDocumentsTouchLinkedMultiView(beforeSolution, newSolution, linkedPathCounts))
             return (null, null);
 
         ValidateAllFilesChangedDocumentsAreEditable(beforeSolution, newSolution);
@@ -853,29 +853,6 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
             var node = syntaxRef.GetSyntax();
             if (node.Span.Contains(span) || span.Contains(node.Span) || node.Span.OverlapsWith(span))
                 return true;
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// True when the rename rewrite touches any document whose path has
-    /// multiple linked views (so Coalesce would overwrite siblings).
-    /// </summary>
-    internal static bool ChangedDocumentsTouchLinkedMultiView(
-        Solution beforeSolution,
-        Solution afterSolution,
-        IReadOnlyDictionary<string, int> linkedPathCounts)
-    {
-        foreach (var projectChange in afterSolution.GetChanges(beforeSolution).GetProjectChanges())
-        {
-            foreach (var documentId in projectChange.GetChangedDocuments())
-            {
-                var document = beforeSolution.GetDocument(documentId)
-                    ?? afterSolution.GetDocument(documentId);
-                if (document != null && AllFilesDocumentHelpers.DocumentPathHasLinkedMultiView(document, linkedPathCounts))
-                    return true;
-            }
         }
 
         return false;
