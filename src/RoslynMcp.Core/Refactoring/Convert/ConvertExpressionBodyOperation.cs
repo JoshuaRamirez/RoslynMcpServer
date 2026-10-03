@@ -50,6 +50,11 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
                     "allFiles cannot be combined with memberName, line, or column.");
             }
 
+            // When processing all files, sourceFile is optional; validate path
+            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
+            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
+
             return;
         }
 
@@ -143,9 +148,12 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
     /// (same document filter as <c>AddBracesOperation.ExecuteAllFilesAsync</c> /
     /// <c>RemoveBracesOperation.ExecuteAllFilesAsync</c> /
     /// <c>SimplifyNameOperation.ExecuteAllFilesAsync</c>: <c>FilePath</c> ends
-    /// with <c>.cs</c>). Already-in-target-form and otherwise ineligible
-    /// members or documents are skipped. When every file is a no-op, succeeds
-    /// with empty changes.
+    /// with <c>.cs</c>). Optional <c>sourceFile</c> limits the walk via
+    /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
+    /// (default path; same as FormatDocument / SortUsings / AddMissingUsings /
+    /// RemoveUnusedUsings / simplify_name / add_braces / remove_braces).
+    /// Already-in-target-form and otherwise ineligible members or documents
+    /// are skipped. When every file is a no-op, succeeds with empty changes.
     /// </summary>
     private async Task<RefactoringResult> ExecuteAllFilesAsync(
         Guid operationId,
@@ -155,6 +163,11 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
         var direction = Enum.Parse<ConversionDirection>(@params.Direction, ignoreCase: true);
         var currentSolution = Context.Solution;
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(currentSolution);
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+        }
 
         var allPendingChanges = new List<PendingChange>();
         var anyChanged = false;
