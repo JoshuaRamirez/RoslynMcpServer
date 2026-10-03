@@ -163,7 +163,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         if (@params.Members != null && @params.Members.Count > 0)
         {
             var requestedSet = new HashSet<string>(@params.Members, StringComparer.Ordinal);
-            eligibleMembers = eligibleMembers.Where(m => MatchesRequestedMember(m, requestedSet)).ToList();
+            eligibleMembers = eligibleMembers.Where(m => MemberDisplayHelpers.MatchesRequestedMember(m, requestedSet)).ToList();
         }
 
         if (eligibleMembers.Count == 0)
@@ -810,23 +810,6 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             IEventSymbol evt => evt.IsAbstract,
             _ => false
         };
-    }
-
-    internal static bool MatchesRequestedMember(ISymbol member, HashSet<string> requested)
-    {
-        if (requested.Contains(member.Name))
-            return true;
-
-        if (member is not IPropertySymbol { IsIndexer: true } indexer)
-            return false;
-
-        var withNames = $"this[{string.Join(", ", indexer.Parameters.Select(MemberDisplayHelpers.FormatIndexerParameterDisplay))}]";
-        var typesOnly = $"this[{string.Join(",", indexer.Parameters.Select(p => p.Type.ToDisplayString()))}]";
-        var typesOnlySpaced = $"this[{string.Join(", ", indexer.Parameters.Select(p => p.Type.ToDisplayString()))}]";
-        return requested.Contains(indexer.MetadataName)
-            || requested.Contains(withNames)
-            || requested.Contains(typesOnly)
-            || requested.Contains(typesOnlySpaced);
     }
 
     private static List<MemberDeclarationSyntax> GenerateImplementations(

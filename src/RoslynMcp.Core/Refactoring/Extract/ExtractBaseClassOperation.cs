@@ -8,7 +8,6 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
-using RoslynMcp.Core.Refactoring.Generate;
 using RoslynMcp.Core.Refactoring.Hierarchy;
 using RoslynMcp.Core.Refactoring.Rename;
 using RoslynMcp.Core.Refactoring.Utilities;
@@ -1069,7 +1068,7 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                     || indexerDecl.ExplicitInterfaceSpecifier != null)
                 {
                     if (makeAbstract
-                        && ImplementInterfaceOperation.MatchesRequestedMember(indexer, requestedSet))
+                        && MemberDisplayHelpers.MatchesRequestedMember(indexer, requestedSet))
                     {
                         throw new RefactoringException(
                             ErrorCodes.MemberNotMoveable,
@@ -1079,13 +1078,13 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
                     continue;
                 }
 
-                if (ImplementInterfaceOperation.MatchesRequestedMember(indexer, requestedSet))
+                if (MemberDisplayHelpers.MatchesRequestedMember(indexer, requestedSet))
                 {
                     result.Add(member);
                     symbols[GetIndexerRemovalKey(indexerDecl)] = indexer;
                     foreach (var requested in unmatched.ToList())
                     {
-                        if (ImplementInterfaceOperation.MatchesRequestedMember(
+                        if (MemberDisplayHelpers.MatchesRequestedMember(
                                 indexer, new HashSet<string> { requested }))
                         {
                             unmatched.Remove(requested);

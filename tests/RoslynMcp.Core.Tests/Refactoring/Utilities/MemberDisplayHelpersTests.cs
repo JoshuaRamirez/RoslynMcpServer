@@ -52,6 +52,67 @@ public class MemberDisplayHelpersTests
         Assert.Equal("member", MemberDisplayHelpers.DescribeMemberKind(type));
     }
 
+
+    [Fact]
+    public void MatchesRequestedMember_OrdinaryName_ReturnsTrue()
+    {
+        var compilation = Compile("""
+            class C
+            {
+                public void M() { }
+            }
+            """);
+        var method = compilation.GetTypeByMetadataName("C")!.GetMembers("M").OfType<IMethodSymbol>().Single();
+
+        Assert.True(MemberDisplayHelpers.MatchesRequestedMember(method, ["M"]));
+        Assert.False(MemberDisplayHelpers.MatchesRequestedMember(method, ["Other"]));
+    }
+
+    [Fact]
+    public void MatchesRequestedMember_Indexer_MatchesMetadataNameAndDisplayForms()
+    {
+        var compilation = Compile("""
+            class C
+            {
+                public int this[int i] => i;
+            }
+            """);
+        var indexer = compilation.GetTypeByMetadataName("C")!.GetMembers()
+            .OfType<IPropertySymbol>().Single(p => p.IsIndexer);
+
+        Assert.True(MemberDisplayHelpers.MatchesRequestedMember(indexer, ["Item"]));
+        Assert.True(MemberDisplayHelpers.MatchesRequestedMember(
+            indexer,
+            ["this[int i]"]));
+        Assert.True(MemberDisplayHelpers.MatchesRequestedMember(
+            indexer,
+            ["this[int]"])); // typesOnly / typesOnlySpaced coincide for one param
+        Assert.False(MemberDisplayHelpers.MatchesRequestedMember(indexer, ["P"]));
+    }
+
+    [Fact]
+    public void MatchesRequestedMember_Indexer_MultiParam_MatchesWithNamesAndTypesOnlyForms()
+    {
+        var compilation = Compile("""
+            class C
+            {
+                public int this[int i, string s] => i;
+            }
+            """);
+        var indexer = compilation.GetTypeByMetadataName("C")!.GetMembers()
+            .OfType<IPropertySymbol>().Single(p => p.IsIndexer);
+        var withNames = $"this[{string.Join(", ", indexer.Parameters.Select(MemberDisplayHelpers.FormatIndexerParameterDisplay))}]";
+        var typesOnly = $"this[{string.Join(",", indexer.Parameters.Select(p => p.Type.ToDisplayString()))}]";
+        var typesOnlySpaced = $"this[{string.Join(", ", indexer.Parameters.Select(p => p.Type.ToDisplayString()))}]";
+
+        Assert.Equal("this[int i, string s]", withNames);
+        Assert.Equal("this[int,string]", typesOnly);
+        Assert.Equal("this[int, string]", typesOnlySpaced);
+        Assert.True(MemberDisplayHelpers.MatchesRequestedMember(indexer, [withNames]));
+        Assert.True(MemberDisplayHelpers.MatchesRequestedMember(indexer, [typesOnly]));
+        Assert.True(MemberDisplayHelpers.MatchesRequestedMember(indexer, [typesOnlySpaced]));
+    }
+
     private static Compilation Compile(string source)
     {
         var tree = CSharpSyntaxTree.ParseText(source);

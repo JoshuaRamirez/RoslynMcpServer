@@ -3,9 +3,10 @@ using Microsoft.CodeAnalysis;
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
-/// Shared member display strings used by ImplementAbstract /
-/// ImplementInterface for indexer parameter labels and pending-change
-/// member-kind wording. Same bodies as the two private copies.
+/// Shared member display / request-match helpers used by ImplementAbstract /
+/// ImplementInterface for indexer parameter labels, pending-change
+/// member-kind wording, and member-name request matching. Same bodies as
+/// the prior private copies.
 /// </summary>
 internal static class MemberDisplayHelpers
 {
@@ -38,4 +39,29 @@ internal static class MemberDisplayHelpers
         IEventSymbol => "event",
         _ => "member"
     };
+
+    /// <summary>
+    /// True when <paramref name="member"/> is named in <paramref name="requested"/>
+    /// (ordinary <see cref="ISymbol.Name"/>), or when it is an indexer whose
+    /// <see cref="ISymbol.MetadataName"/> or <c>this[…]</c> display forms
+    /// (withNames / typesOnly / typesOnlySpaced via
+    /// <see cref="FormatIndexerParameterDisplay"/>) appear in the set.
+    /// Same body as the prior ImplementInterface / ImplementAbstract copies.
+    /// </summary>
+    internal static bool MatchesRequestedMember(ISymbol member, HashSet<string> requested)
+    {
+        if (requested.Contains(member.Name))
+            return true;
+
+        if (member is not IPropertySymbol { IsIndexer: true } indexer)
+            return false;
+
+        var withNames = $"this[{string.Join(", ", indexer.Parameters.Select(FormatIndexerParameterDisplay))}]";
+        var typesOnly = $"this[{string.Join(",", indexer.Parameters.Select(p => p.Type.ToDisplayString()))}]";
+        var typesOnlySpaced = $"this[{string.Join(", ", indexer.Parameters.Select(p => p.Type.ToDisplayString()))}]";
+        return requested.Contains(indexer.MetadataName)
+            || requested.Contains(withNames)
+            || requested.Contains(typesOnly)
+            || requested.Contains(typesOnlySpaced);
+    }
 }

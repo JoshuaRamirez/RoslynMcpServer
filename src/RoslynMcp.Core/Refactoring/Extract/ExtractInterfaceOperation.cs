@@ -6,7 +6,6 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring.Base;
-using RoslynMcp.Core.Refactoring.Generate;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
@@ -784,12 +783,12 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
         // conventional display (this[int i]) — same identity forms as
         // implement_interface.
         var filtered = allMembers
-            .Where(m => ImplementInterfaceOperation.MatchesRequestedMember(m, requestedSet))
+            .Where(m => MemberDisplayHelpers.MatchesRequestedMember(m, requestedSet))
             .ToList();
 
         var notFound = requestedMembers
             .Where(n => !allMembers.Any(m =>
-                ImplementInterfaceOperation.MatchesRequestedMember(m, new HashSet<string> { n })))
+                MemberDisplayHelpers.MatchesRequestedMember(m, new HashSet<string> { n })))
             .ToList();
 
         if (notFound.Count > 0)
