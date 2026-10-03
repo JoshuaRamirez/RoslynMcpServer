@@ -2,8 +2,8 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
-using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Convert;
 using RoslynMcp.Core.Resolution;
@@ -1087,6 +1087,44 @@ public class ConvertToAsyncOperationTests
         }
         """;
 
+    /// <summary>
+    /// Same eligible Process as <see cref="EligibleFileA"/> but without an
+    /// in-file caller — paired with <see cref="CrossFileCallerOfProcess"/> so
+    /// optional sourceFile + renameToAsync must still rewrite the other file.
+    /// </summary>
+    private const string EligibleProcessOnlyFileA = """
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class FileA
+        {
+            public void Process()
+            {
+                Task.Delay(1);
+            }
+        }
+        """;
+
+    private const string CrossFileCallerOfProcess = """
+        using System.Threading.Tasks;
+
+        namespace TestApp;
+
+        public class ExternalCaller
+        {
+            public void Use()
+            {
+                new FileA().Process();
+            }
+
+            public async Task UseAsync()
+            {
+                new FileA().Process();
+            }
+        }
+        """;
+
     private const string IneligibleFileC = """
         using System.Collections.Generic;
         using System.Threading.Tasks;
@@ -1846,6 +1884,61 @@ public class ConvertToAsyncOperationTests
             }));
 
         Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_CrossFileCaller_Renamed()
+    {
+        // sourceFile limits the candidate walk to FileA, but default renameToAsync
+        // must still rewrite ExternalCaller.cs (Process -> ProcessAsync).
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleProcessOnlyFileA),
+            ("ExternalCaller.cs", CrossFileCallerOfProcess),
+            ("FileB.cs", EligibleFileB));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+        var beforeB = await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["FileA.cs"]));
+        var updatedCaller = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["ExternalCaller.cs"]));
+        Assert.Contains("async Task ProcessAsync()", updatedA);
+        Assert.Contains("await Task.Delay(1)", updatedA);
+        Assert.Contains("new FileA().ProcessAsync()", updatedCaller);
+        Assert.DoesNotContain("new FileA().Process()", updatedCaller);
+        Assert.Equal(beforeB, await File.ReadAllTextAsync(workspace.SourcePaths["FileB.cs"]));
+        Assert.Contains(result.Changes!.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileA.cs"]));
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["ExternalCaller.cs"]));
+        Assert.DoesNotContain(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["FileB.cs"]));
+        await AssertCompilesAsync(workspace);
+    }
+
+    [SkippableFact]
+    public async Task Convert_AllFilesTrue_OptionalSourceFile_CrossFileCaller_UpdateCallersAwaitsAsync()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("FileA.cs", EligibleProcessOnlyFileA),
+            ("ExternalCaller.cs", CrossFileCallerOfProcess));
+        var operation = new ConvertToAsyncOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ConvertToAsyncParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["FileA.cs"],
+            UpdateCallers = true
+        });
+
+        Assert.True(result.Success);
+        var updatedCaller = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["ExternalCaller.cs"]));
+        Assert.Contains("new FileA().ProcessAsync()", GetMethodBody(updatedCaller, "Use"));
+        Assert.DoesNotContain("await", GetMethodBody(updatedCaller, "Use"));
+        Assert.Contains("await new FileA().ProcessAsync()", GetMethodBody(updatedCaller, "UseAsync"));
+        await AssertCompilesAsync(workspace);
     }
 
     #endregion

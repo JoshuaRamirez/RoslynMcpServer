@@ -302,11 +302,14 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
     /// / <c>ConvertPropertyOperation.ExecuteAllFilesAsync</c> /
     /// <c>InvertIfOperation.ExecuteAllFilesAsync</c>:
     /// <c>FilePath</c> ends with <c>.cs</c>). Optional <c>sourceFile</c>
-    /// limits the walk via
+    /// limits the <em>candidate walk</em> via
     /// <see cref="AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile"/>
     /// (default path; same as FormatDocument / SortUsings / AddMissingUsings /
     /// RemoveUnusedUsings / simplify_name / add_braces / remove_braces /
     /// convert_expression_body / invert_if / convert_foreach_linq / convert_property).
+    /// The unfiltered document list is preserved for call-site rewrites so
+    /// cross-file callers of a converted method stay in the rewrite set
+    /// (rename / await) even when <c>sourceFile</c> scoped the walk.
     /// Already-async, iterator, unresolved, override, and otherwise unsupported
     /// methods or documents whose text is unchanged are skipped. Project
     /// entry-point / traditional static <c>Main</c> is converted in place
@@ -326,14 +329,18 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
     {
         var originalSolution = Context.Solution;
         var allDocuments = AllFilesDocumentHelpers.EnumerateCsharpDocuments(originalSolution);
-
+        // Optional sourceFile limits which docs are scanned for candidates to
+        // convert; keep the full list for documentsToRewrite so CollectCallSites
+        // cross-file callers (renameToAsync / updateCallers) can still be rewritten.
+        var documentsToWalk = allDocuments;
         if (!string.IsNullOrWhiteSpace(@params.SourceFile))
         {
-            allDocuments = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(allDocuments, @params.SourceFile!);
+            documentsToWalk = AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile(
+                allDocuments, @params.SourceFile!);
         }
 
         var candidates = new List<ConversionCandidate>();
-        foreach (var document in allDocuments)
+        foreach (var document in documentsToWalk)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
