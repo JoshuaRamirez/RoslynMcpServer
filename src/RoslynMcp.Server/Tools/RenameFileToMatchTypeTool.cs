@@ -50,7 +50,7 @@ public sealed class RenameFileToMatchTypeTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file to rename. Required when allFiles is false. When allFiles is true, optional and limits the walk to that one file."
+                description = "Absolute path to the source file to rename. Required when allFiles is false. When allFiles is true, optional — supply to limit the walk to that one file."
             },
             allFiles = new
             {
