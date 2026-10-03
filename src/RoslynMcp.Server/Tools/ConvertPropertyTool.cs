@@ -33,7 +33,7 @@ public sealed class ConvertPropertyTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Convert a C# property between auto-property and full property with backing field. column (optional) picks the smallest property whose identifier or declaration span covers that column on the given line. Omitted keeps today's propertyName and/or line start-line pick. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct eligible property (sourceFile optional when true; cannot be combined with propertyName, line, or column).";
+        "Convert a C# property between auto-property and full property with backing field. column (optional) picks the smallest property whose identifier or declaration span covers that column on the given line. Omitted keeps today's propertyName and/or line start-line pick. Preview describes the rewrite and writes nothing. allFiles: true walks every C# file and converts every distinct eligible property (sourceFile optional when true to limit the walk; cannot be combined with propertyName, line, or column).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,12 +50,12 @@ public sealed class ConvertPropertyTool : IToolHandler
             sourceFile = new
             {
                 type = "string",
-                description = "Absolute path to the source file. Required when allFiles is false."
+                description = "Absolute path to the source file. Required when allFiles is false. When allFiles is true, optional — supply to limit the walk to that one file."
             },
             allFiles = new
             {
                 type = "boolean",
-                description = "Process all C# files in the solution. When true, sourceFile is optional. Cannot be combined with propertyName, line, or column.",
+                description = "Process all C# files in the solution. When true, sourceFile is optional (omit to walk the whole solution; supply to limit the walk to that one file). Cannot be combined with propertyName, line, or column.",
                 @default = false
             },
             direction = new

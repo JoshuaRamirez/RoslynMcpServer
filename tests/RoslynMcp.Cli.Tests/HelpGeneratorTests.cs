@@ -1650,6 +1650,7 @@ public class HelpGeneratorTests
         Assert.Contains("column", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("allFiles", tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("sourceFile optional", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("limit the walk", tool.Description, StringComparison.OrdinalIgnoreCase);
 
         var requiredIdx = help.IndexOf("REQUIRED:");
         var optionalIdx = help.IndexOf("OPTIONAL:");
