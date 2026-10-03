@@ -7,6 +7,7 @@ using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Hierarchy;
 using RoslynMcp.Core.Refactoring.Utilities;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 using Xunit;
@@ -151,6 +152,30 @@ public class UseBaseTypeOperationTests
 
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
         Assert.Contains("column", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_RelativeSourceFile_ThrowsInvalidSourcePath()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            UseBaseTypeOperation.Validate(new UseBaseTypeParams
+            {
+                AllFiles = true,
+                SourceFile = "Dog.cs"
+            }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_AbsoluteSourceFile_DoesNotRequireExists()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpUseBaseType_ValidateMissing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+        // Path shape is valid; File.Exists is skipped under allFiles (filter throws later).
+        UseBaseTypeOperation.Validate(new UseBaseTypeParams
+        {
+            AllFiles = true,
+            SourceFile = missing
+        });
     }
 
     #endregion
@@ -2608,6 +2633,218 @@ public class UseBaseTypeOperationTests
         Assert.DoesNotContain(types, t => t.Identifier.Text == "D");
     }
 
+
+    #region AllFiles optional sourceFile
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_OptionalSourceFile_LimitsWalk()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", EligibleDogSource),
+            ("Cat.cs", EligibleCatSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var beforeCat = await File.ReadAllTextAsync(workspace.SourcePaths["Cat.cs"]);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["Dog.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedDog = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Dog.cs"]));
+        Assert.Contains("Feed(Animal dog)", updatedDog);
+        Assert.DoesNotContain("Feed(Dog dog)", updatedDog);
+        Assert.Equal(beforeCat, await File.ReadAllTextAsync(workspace.SourcePaths["Cat.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Dog.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", EligibleDogSource),
+            ("Cat.cs", EligibleCatSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var beforeCat = await File.ReadAllTextAsync(workspace.SourcePaths["Cat.cs"]);
+        var flipped = FlipPathCasing(workspace.SourcePaths["Dog.cs"]);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            AllFiles = true,
+            SourceFile = flipped
+        });
+
+        Assert.True(result.Success);
+        var updatedDog = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Dog.cs"]));
+        Assert.Contains("Feed(Animal dog)", updatedDog);
+        Assert.Equal(beforeCat, await File.ReadAllTextAsync(workspace.SourcePaths["Cat.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Dog.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", EligibleDogSource),
+            ("Cat.cs", EligibleCatSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpUseBaseType_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, """
+                namespace TestApp;
+
+                public class Outside : Animal
+                {
+                }
+
+                public static class OutsideUse
+                {
+                    public static int Feed(Outside o) => o.Eat();
+                }
+                """);
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new UseBaseTypeParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", EligibleDogSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpUseBaseType_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                AllFiles = true,
+                SourceFile = missing
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_OptionalSourceFile_ExactCase_PrefersSingleWorkspaceFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("Animal.cs", AnimalSource), ("Dog.cs", EligibleDogSource), ("dog.cs", EligibleCatSource)],
+            explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["Dog.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["dog.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var beforeLower = await File.ReadAllTextAsync(workspace.SourcePaths["dog.cs"]);
+
+        var result = await operation.ExecuteAsync(new UseBaseTypeParams
+        {
+            AllFiles = true,
+            SourceFile = workspace.SourcePaths["Dog.cs"]
+        });
+
+        Assert.True(result.Success);
+        var updatedDog = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Dog.cs"]));
+        Assert.Contains("Feed(Animal dog)", updatedDog);
+        Assert.Equal(beforeLower, await File.ReadAllTextAsync(workspace.SourcePaths["dog.cs"]));
+        Assert.Single(result.Changes!.FilesModified);
+        Assert.Contains(result.Changes.FilesModified, p => PathEquals(p, workspace.SourcePaths["Dog.cs"]));
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_OptionalSourceFile_AmbiguousIgnoreCase_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            [("Animal.cs", AnimalSource), ("Dog.cs", EligibleDogSource), ("dog.cs", EligibleCatSource)],
+            explicitCompileItems: true);
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["Dog.cs"]),
+                PathResolver.GetPathComparisonKey(workspace.SourcePaths["dog.cs"]),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var ambiguous = FlipPathCasing(workspace.SourcePaths["Dog.cs"]);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                AllFiles = true,
+                SourceFile = ambiguous
+            }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        // Shared filter is OrdinalIgnoreCase, so both case-distinct workspace
+        // files match a flipped spelling whether or not File.Exists(ambiguous).
+        Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_OptionalSourceFile_RelativePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", EligibleDogSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                AllFiles = true,
+                SourceFile = "Dog.cs"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task UseBaseType_AllFilesTrue_OptionalSourceFile_NonCSharpAbsolutePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Animal.cs", AnimalSource),
+            ("Dog.cs", EligibleDogSource));
+        var operation = new UseBaseTypeOperation(workspace.Context);
+        var nonCs = Path.Combine(Path.GetTempPath(), "RoslynMcpUseBaseType_NonCs_" + Guid.NewGuid().ToString("N") + ".txt");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new UseBaseTypeParams
+            {
+                AllFiles = true,
+                SourceFile = nonCs
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    #endregion
+
     #endregion
 
     #region Helpers
@@ -2620,6 +2857,24 @@ public class UseBaseTypeOperationTests
 
     private static string NormalizeNewlines(string text) =>
         text.Replace("\r\n", "\n");
+
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
 
     private static int FindLine(string source, string snippet)
     {
@@ -2673,12 +2928,22 @@ public class UseBaseTypeOperationTests
         public IReadOnlyDictionary<string, string> SourcePaths => FilePaths;
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Types.cs") =>
-            CreateAsync((fileName, source));
+            CreateWithFilesAsync((fileName, source));
 
         public static Task<TempWorkspace> CreateWithFilesAsync(params (string FileName, string Source)[] files) =>
-            CreateAsync(files);
+            CreateWithFilesAsync(explicitCompileItems: false, files: files);
 
-        public static async Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files)
+        public static Task<TempWorkspace> CreateWithFilesAsync(
+            IReadOnlyList<(string FileName, string Source)> files,
+            bool explicitCompileItems) =>
+            CreateWithFilesAsync(explicitCompileItems: explicitCompileItems, files: files.ToArray());
+
+        public static Task<TempWorkspace> CreateAsync(params (string FileName, string Source)[] files) =>
+            CreateWithFilesAsync(explicitCompileItems: false, files: files);
+
+        public static async Task<TempWorkspace> CreateWithFilesAsync(
+            bool explicitCompileItems,
+            params (string FileName, string Source)[] files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -2686,20 +2951,29 @@ public class UseBaseTypeOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
+            // Ordinal keys so case-distinct filenames stay distinct on case-sensitive volumes.
+            var filePaths = new Dictionary<string, string>(
+                explicitCompileItems ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
+
+            var compileItems = explicitCompileItems
+                ? string.Join(Environment.NewLine, files.Select(f => $"    <Compile Include=\"{f.FileName}\" />"))
+                : string.Empty;
+
             // Pin authored sources so generated AssemblyInfo / TFM attributes
             // are not hit by the allFiles .cs document walk.
-            await File.WriteAllTextAsync(projectPath, """
+            await File.WriteAllTextAsync(projectPath, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
                     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
                     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+                {(explicitCompileItems ? "    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>" : string.Empty)}
                   </PropertyGroup>
+                {(explicitCompileItems ? $"  <ItemGroup>{Environment.NewLine}{compileItems}{Environment.NewLine}  </ItemGroup>" : string.Empty)}
                 </Project>
                 """);
 
-            var filePaths = new Dictionary<string, string>(StringComparer.Ordinal);
             string? sourcePath = null;
             foreach (var (fileName, source) in files)
             {
@@ -2718,10 +2992,13 @@ public class UseBaseTypeOperationTests
             {
                 var provider = new MSBuildWorkspaceProvider();
                 var context = await provider.CreateContextAsync(projectPath);
-                if (context.GetDocumentByPath(sourcePath) == null)
+                foreach (var path in filePaths.Values)
                 {
-                    context.Dispose();
-                    throw new InvalidOperationException($"Workspace loaded but did not include {sourcePath}.");
+                    if (context.GetDocumentByPath(path) == null)
+                    {
+                        context.Dispose();
+                        throw new InvalidOperationException($"Workspace loaded but did not include {path}.");
+                    }
                 }
 
                 return new TempWorkspace
