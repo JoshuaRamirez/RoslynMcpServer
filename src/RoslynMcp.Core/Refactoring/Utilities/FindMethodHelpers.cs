@@ -7,8 +7,9 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
 /// Shared method-declaration lookup used by Signature-family ops
-/// (add/remove/reorder parameter + change signature + change return type).
-/// Includes nullable <see cref="FindMethod"/> / <see cref="StartLine"/>,
+/// (add/remove/reorder parameter + change signature + change return type)
+/// and convert_to_async. Includes nullable <see cref="FindMethod"/> /
+/// <see cref="FindMethodPreferFirst"/> / <see cref="StartLine"/>,
 /// the throwing <see cref="FindMethodDeclaration"/> gate, and allFiles
 /// <see cref="CollectMethods"/>.
 /// </summary>
@@ -60,6 +61,52 @@ internal static class FindMethodHelpers
 
         var startLineMatches = methods.Where(m => StartLine(m) == line.Value).ToList();
         return startLineMatches.Count == 1 ? startLineMatches[0] : null;
+    }
+
+    /// <summary>
+    /// Finds a method using PreferFirst semantics (same body as the prior
+    /// private <c>FindMethod</c> copies on ChangeSignature /
+    /// ConvertToAsync). Column coverage matches <see cref="FindMethod"/>;
+    /// when column is omitted and several name matches share a start line
+    /// (or line is omitted with several name matches), returns the first
+    /// match instead of <c>null</c>. Distinct from <see cref="FindMethod"/>,
+    /// which stays ambiguous (<c>null</c>) on several start-line hits.
+    /// </summary>
+    internal static MethodDeclarationSyntax? FindMethodPreferFirst(
+        SyntaxNode root,
+        string methodName,
+        int? line,
+        int? column)
+    {
+        var methods = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .Where(m => m.Identifier.Text == methodName)
+            .ToList();
+
+        if (column.HasValue)
+        {
+            // When column is set, do not require the declaration to start
+            // on `line` — a split signature's identifier may live on a
+            // continuation line whose declaration span still covers that
+            // column.
+            return methods
+                .Where(m => MethodCoverage.MethodCoversColumn(m, line ?? StartLine(m), column.Value))
+                .OrderBy(m => MethodCoverage.IdentifierCoversColumn(m, line ?? StartLine(m), column.Value) ? 0 : 1)
+                .ThenBy(m => m.Span.Length)
+                .FirstOrDefault();
+        }
+
+        // Omitted column keeps today's MethodName + Line pick: a single
+        // name match is used as-is (Line is only for disambiguation).
+        // More than one match uses the first whose declaration starts on
+        // `line`.
+        if (methods.Count <= 1)
+            return methods.FirstOrDefault();
+
+        if (!line.HasValue)
+            return methods.FirstOrDefault();
+
+        return methods.FirstOrDefault(m => StartLine(m) == line.Value);
     }
 
     /// <summary>
