@@ -8,14 +8,16 @@ public sealed class MoveTypeToNamespaceParams
     /// <summary>
     /// Absolute path to the source file containing the type.
     /// Required when <see cref="AllFiles"/> is false. When
-    /// <see cref="AllFiles"/> is true, optional: limits the walk to that
+    /// <see cref="AllFiles"/> is true, optional — limits the walk to that
     /// one file, or omit to walk the whole solution.
     /// </summary>
     public string? SourceFile { get; init; }
 
     /// <summary>
     /// When true, process all C# documents in the solution instead of a single type.
-    /// When true, <see cref="SourceFile"/> is optional. Cannot be combined with
+    /// When true, <see cref="SourceFile"/> is optional (omit to walk the whole
+    /// solution; supply to limit the walk via
+    /// <c>FilterAllFilesDocumentsBySourceFile</c>). Cannot be combined with
     /// <see cref="SymbolName"/>, <see cref="Line"/>, or <see cref="Column"/>.
     /// Bulk moves every eligible top-level type whose current namespace is
     /// not already <see cref="TargetNamespace"/>.

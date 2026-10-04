@@ -254,6 +254,32 @@ public class MoveTypeToNamespaceOperationTests
     }
 
     [Fact]
+    public void Validate_AllFilesTrue_RelativeSourceFile_ThrowsInvalidSourcePath()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                SourceFile = "Foo.cs",
+                TargetNamespace = "New.Ns"
+            }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void Validate_AllFilesTrue_AbsoluteSourceFile_DoesNotRequireExists()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToNamespace_ValidateMissing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+        // Path shape is valid; File.Exists is skipped under allFiles (filter throws later).
+        MoveTypeToNamespaceOperation.Validate(new MoveTypeToNamespaceParams
+        {
+            AllFiles = true,
+            SourceFile = missing,
+            TargetNamespace = "New.Ns"
+        });
+    }
+
+    [Fact]
     public void Validate_AllFilesTrue_InvalidTargetNamespace_Throws()
     {
         var ex = Assert.Throws<RefactoringException>(() =>
@@ -1708,6 +1734,236 @@ public class MoveTypeToNamespaceOperationTests
     }
 
     [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_OptionalSourceFile_MatchesIgnoreCase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Alpha.cs", AlphaSource),
+            ("Beta.cs", BetaSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var alphaPath = workspace.GetPath("Alpha.cs");
+        var beforeBeta = await File.ReadAllTextAsync(workspace.GetPath("Beta.cs"));
+        var flipped = FlipPathCasing(alphaPath);
+
+        // Shared AllFilesDocumentHelpers default path returns ignore-case workspace
+        // matches even when File.Exists(flipped) is false (case-sensitive volumes).
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            AllFiles = true,
+            SourceFile = flipped,
+            TargetNamespace = "New.Ns"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(workspace.GetPath("Alpha.cs")));
+        Assert.Equal(beforeBeta, await File.ReadAllTextAsync(workspace.GetPath("Beta.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_OptionalSourceFile_CaseDistinctOnDiskOnly_ThrowsSourceNotInWorkspace()
+    {
+        await using var workspace = await TempWorkspace.CreateWithExplicitCompileItemsAsync(
+            ("Types.cs", AlphaSource));
+        var upperPath = Path.Combine(workspace.DirectoryPath, "Types.cs");
+        var lowerPath = Path.Combine(workspace.DirectoryPath, "types.cs");
+        await File.WriteAllTextAsync(lowerPath, "namespace TestApp; public class OnDiskOnly { }");
+        try
+        {
+            Skip.If(
+                string.Equals(
+                    PathResolver.GetPathComparisonKey(upperPath),
+                    PathResolver.GetPathComparisonKey(lowerPath),
+                    StringComparison.Ordinal),
+                "Volume does not preserve case-distinct paths.");
+
+            var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+            var beforeUpper = await File.ReadAllTextAsync(upperPath);
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new MoveTypeToNamespaceParams
+                {
+                    AllFiles = true,
+                    SourceFile = lowerPath,
+                    TargetNamespace = "New.Ns"
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+            Assert.Equal(beforeUpper, await File.ReadAllTextAsync(upperPath));
+        }
+        finally
+        {
+            if (File.Exists(lowerPath)
+                && !string.Equals(
+                    PathResolver.GetPathComparisonKey(upperPath),
+                    PathResolver.GetPathComparisonKey(lowerPath),
+                    StringComparison.Ordinal))
+            {
+                File.Delete(lowerPath);
+            }
+        }
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_OptionalSourceFile_OutsideWorkspace_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Alpha.cs", AlphaSource),
+            ("Beta.cs", BetaSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToNamespace_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "namespace TestApp; public class Outside { }");
+
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+                operation.ExecuteAsync(new MoveTypeToNamespaceParams
+                {
+                    AllFiles = true,
+                    SourceFile = outsidePath,
+                    TargetNamespace = "New.Ns"
+                }));
+
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+            Assert.True(File.Exists(workspace.GetPath("Alpha.cs")));
+            Assert.True(File.Exists(workspace.GetPath("Beta.cs")));
+        }
+        finally
+        {
+            Directory.Delete(outsideDir, recursive: true);
+        }
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_OptionalSourceFile_MissingPath_ThrowsSourceFileNotFound()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Alpha.cs", AlphaSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var missing = Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToNamespace_Missing_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                SourceFile = missing,
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+        Assert.True(File.Exists(workspace.GetPath("Alpha.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_OptionalSourceFile_ExactCase_PrefersSingleWorkspaceFile()
+    {
+        await using var workspace = await TempWorkspace.CreateWithExplicitCompileItemsAsync(
+            ("Types.cs", AlphaSource),
+            ("types.cs", BetaSource));
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(Path.Combine(workspace.DirectoryPath, "Types.cs")),
+                PathResolver.GetPathComparisonKey(Path.Combine(workspace.DirectoryPath, "types.cs")),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var lowerPath = Path.Combine(workspace.DirectoryPath, "types.cs");
+        // Prefer exact workspace path casing for SourceFile.
+        var exactUpper = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Select(d => d.FilePath!)
+            .First(p => Path.GetFileName(p) == "Types.cs");
+        var beforeLower = await File.ReadAllTextAsync(lowerPath);
+
+        var result = await operation.ExecuteAsync(new MoveTypeToNamespaceParams
+        {
+            AllFiles = true,
+            SourceFile = exactUpper,
+            TargetNamespace = "New.Ns"
+        });
+
+        Assert.True(result.Success);
+        Assert.Contains("namespace New.Ns;", await File.ReadAllTextAsync(exactUpper));
+        Assert.True(File.Exists(lowerPath));
+        Assert.Equal(beforeLower, await File.ReadAllTextAsync(lowerPath));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_OptionalSourceFile_AmbiguousIgnoreCase_Throws()
+    {
+        await using var workspace = await TempWorkspace.CreateWithExplicitCompileItemsAsync(
+            ("Types.cs", AlphaSource),
+            ("types.cs", BetaSource));
+        Skip.If(
+            string.Equals(
+                PathResolver.GetPathComparisonKey(Path.Combine(workspace.DirectoryPath, "Types.cs")),
+                PathResolver.GetPathComparisonKey(Path.Combine(workspace.DirectoryPath, "types.cs")),
+                StringComparison.Ordinal),
+            "Volume does not preserve case-distinct paths.");
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var exactUpper = workspace.Context.Solution.Projects
+            .SelectMany(p => p.Documents)
+            .Select(d => d.FilePath!)
+            .First(p => Path.GetFileName(p) == "Types.cs");
+        var ambiguous = FlipPathCasing(exactUpper);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                SourceFile = ambiguous,
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        // Shared filter is OrdinalIgnoreCase, so both case-distinct workspace
+        // files match a flipped spelling whether or not File.Exists(ambiguous).
+        Assert.Contains("exact file path casing", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "Types.cs")));
+        Assert.True(File.Exists(Path.Combine(workspace.DirectoryPath, "types.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_OptionalSourceFile_RelativePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Alpha.cs", AlphaSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                SourceFile = "Alpha.cs",
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+        Assert.True(File.Exists(workspace.GetPath("Alpha.cs")));
+    }
+
+    [SkippableFact]
+    public async Task MoveTypeToNamespace_AllFilesTrue_OptionalSourceFile_NonCSharpAbsolutePath_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Alpha.cs", AlphaSource));
+        var operation = new MoveTypeToNamespaceOperation(workspace.Context);
+        var nonCs = Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToNamespace_NonCs_" + Guid.NewGuid().ToString("N") + ".txt");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new MoveTypeToNamespaceParams
+            {
+                AllFiles = true,
+                SourceFile = nonCs,
+                TargetNamespace = "New.Ns"
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+        Assert.True(File.Exists(workspace.GetPath("Alpha.cs")));
+    }
+
+    [SkippableFact]
     public async Task MoveTypeToNamespace_AllFilesTrue_UpdateFileLocation_MovesEligibleFiles()
     {
         await using var workspace = await TempWorkspace.CreateAsync(
@@ -1950,6 +2206,23 @@ public class MoveTypeToNamespaceOperationTests
             StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeNewlines(string text) => text.Replace("\r\n", "\n");
+
+    private static string FlipPathCasing(string path)
+    {
+        var chars = path.ToCharArray();
+        for (var i = chars.Length - 1; i >= 0; i--)
+        {
+            if (char.IsLetter(chars[i]))
+            {
+                chars[i] = char.IsUpper(chars[i])
+                    ? char.ToLowerInvariant(chars[i])
+                    : char.ToUpperInvariant(chars[i]);
+                break;
+            }
+        }
+
+        return new string(chars);
+    }
 
     private static string AbsoluteTestPath(string name = "Missing.cs") =>
         Path.Combine(Path.GetTempPath(), "RoslynMcpMoveTypeToNamespace_" + name);
