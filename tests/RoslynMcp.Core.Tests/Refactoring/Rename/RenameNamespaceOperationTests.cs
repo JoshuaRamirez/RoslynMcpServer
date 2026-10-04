@@ -744,7 +744,6 @@ public class RenameNamespaceOperationTests
         Assert.DoesNotContain("\"OldNs\"", text);
     }
 
-
     [SkippableFact]
     public async Task RenameNamespace_FullRewrite_FlagsEnabled_LeavesCommentAndStringUntouched()
     {
