@@ -233,69 +233,14 @@ public sealed class AnalyzeDataFlowOperation : QueryOperationBase<AnalyzeDataFlo
     }
 
     /// <summary>
-    /// Builds the analysis region span. Omitted columns keep today's
-    /// whole-line span (start of <paramref name="params"/>.<c>StartLine</c>
-    /// through <c>TextLine.End</c> of <c>EndLine</c>). Set
-    /// <c>startColumn</c> uses that 1-based column on the start line
-    /// (Roslyn <c>Character = column - 1</c>). Set <c>endColumn</c> uses
-    /// that 1-based column on the end line. One omitted, the other set:
-    /// omitted start stays start-of-line; omitted end stays end-of-line.
-    /// Combined span must be start &lt;= end in absolute positions.
+    /// Thin forwarder to <see cref="SyntaxLineHelpers.BuildRegionSpan"/>.
+    /// Existing unit tests call this operation type.
     /// </summary>
-    internal static TextSpan BuildRegionSpan(SourceText text, AnalyzeDataFlowParams @params)
-    {
-        // Convert 1-based lines to 0-based
-        var startLine = @params.StartLine - 1;
-        var endLine = @params.EndLine - 1;
-
-        if (startLine >= text.Lines.Count || endLine >= text.Lines.Count)
-            throw new RefactoringException(ErrorCodes.InvalidRegion, "Line range exceeds file length.");
-
-        var startLineInfo = text.Lines[startLine];
-        var endLineInfo = text.Lines[endLine];
-
-        // Omitted startColumn: today's start of startLine. Set: that
-        // 1-based column on startLine (Character = column - 1). Do not
-        // force column 1 when omitted. A column past TextLine.End would
-        // leak into later lines — reject as InvalidColumnNumber (same
-        // line-local bound as SymbolResolver / ExtractMethod).
-        var startPosition = startLineInfo.Start;
-        if (@params.StartColumn is int startColumn)
-            startPosition = GetColumnPosition(startLineInfo, @params.StartLine, startColumn);
-
-        // Omitted endColumn: today's TextLine.End of endLine (exclusive-ish
-        // of the line break). Set: that 1-based column on endLine.
-        var endPosition = endLineInfo.End;
-        if (@params.EndColumn is int endColumn)
-            endPosition = GetColumnPosition(endLineInfo, @params.EndLine, endColumn);
-
-        if (startPosition < 0 || endPosition < 0 ||
-            startPosition > text.Length || endPosition > text.Length ||
-            startPosition > endPosition)
-        {
-            throw new RefactoringException(ErrorCodes.InvalidRegion, "Region start must be <= end.");
-        }
-
-        return TextSpan.FromBounds(startPosition, endPosition);
-    }
-
-    /// <summary>
-    /// Converts a 1-based column on <paramref name="lineInfo"/> to an
-    /// absolute position. Valid columns are 1 through
-    /// <c>lineLength + 1</c> (the exclusive <see cref="TextLine.End"/>).
-    /// Past that would cross the line break into later lines.
-    /// </summary>
-    private static int GetColumnPosition(TextLine lineInfo, int lineNumber, int column)
-    {
-        var columnIndex = column - 1;
-        var lineLength = lineInfo.End - lineInfo.Start;
-        if (columnIndex < 0 || columnIndex > lineLength)
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidColumnNumber,
-                $"Column {column} is out of range for line {lineNumber} (line has {lineLength} characters).");
-        }
-
-        return lineInfo.Start + columnIndex;
-    }
+    internal static TextSpan BuildRegionSpan(SourceText text, AnalyzeDataFlowParams @params) =>
+        SyntaxLineHelpers.BuildRegionSpan(
+            text,
+            @params.StartLine,
+            @params.EndLine,
+            @params.StartColumn,
+            @params.EndColumn);
 }
