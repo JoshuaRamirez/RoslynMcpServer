@@ -963,19 +963,8 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
             ? "Extract interface"
             : $"Extract {extractedCount} interfaces";
 
-    private static void ThrowIfSiblingTargetExists(ExtractInterfaceParams @params, string targetFile)
-    {
-        // Explicit targetFile keeps today's path; only the computed sibling is rejected.
-        if (!string.IsNullOrWhiteSpace(@params.TargetFile) || !@params.SeparateFile)
-            return;
-
-        if (!File.Exists(targetFile))
-            return;
-
-        throw new RefactoringException(
-            ErrorCodes.TargetFileExists,
-            $"Destination file already exists: {targetFile}");
-    }
+    private static void ThrowIfSiblingTargetExists(ExtractInterfaceParams @params, string targetFile) =>
+        TargetFilePathHelpers.ThrowIfSiblingTargetExists(@params.TargetFile, @params.SeparateFile, targetFile);
 
     private static RefactoringResult CreatePreviewResult(
         Guid operationId,

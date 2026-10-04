@@ -1529,19 +1529,8 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
         return PathResolver.Combine(directory, @params.BaseClassName! + ".cs");
     }
 
-    private static void ThrowIfSiblingTargetExists(ExtractBaseClassParams @params, string targetFile)
-    {
-        // Explicit targetFile keeps today's path; only the computed sibling is rejected.
-        if (!string.IsNullOrWhiteSpace(@params.TargetFile) || !@params.SeparateFile)
-            return;
-
-        if (!File.Exists(targetFile))
-            return;
-
-        throw new RefactoringException(
-            ErrorCodes.TargetFileExists,
-            $"Destination file already exists: {targetFile}");
-    }
+    private static void ThrowIfSiblingTargetExists(ExtractBaseClassParams @params, string targetFile) =>
+        TargetFilePathHelpers.ThrowIfSiblingTargetExists(@params.TargetFile, @params.SeparateFile, targetFile);
 
     /// <summary>
     /// When default compile items are disabled, add an explicit
