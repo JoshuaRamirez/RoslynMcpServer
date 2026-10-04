@@ -186,5 +186,5 @@ internal static class FindMethodHelpers
     /// that does not affect <see cref="SyntaxNode.GetLocation"/>).
     /// </summary>
     internal static int StartLine(MethodDeclarationSyntax method) =>
-        method.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        SyntaxLineHelpers.StartLine(method);
 }

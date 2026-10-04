@@ -12,12 +12,23 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 internal static class SyntaxLineHelpers
 {
     /// <summary>
+    /// 1-based start line of <paramref name="node"/> via
+    /// <see cref="SyntaxNode.GetLocation"/>. Same body as the identical
+    /// private copies on convert_to_async / convert_expression_body /
+    /// convert_property / change_signature / inline_variable /
+    /// add_null_checks (and the typed forwarder on
+    /// <see cref="FindMethodHelpers.StartLine"/>).
+    /// </summary>
+    internal static int StartLine(SyntaxNode node) =>
+        node.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+    /// <summary>
     /// True when <paramref name="node"/>'s start line (1-based) equals
     /// <paramref name="line"/>. Same body as the two private copies on
     /// convert_to_interpolated_string / convert_to_pattern_matching.
     /// </summary>
     internal static bool StartsOnLine(SyntaxNode node, int line) =>
-        node.GetLocation().GetLineSpan().StartLinePosition.Line + 1 == line;
+        StartLine(node) == line;
 
     /// <summary>
     /// Maps a 1-based inclusive start / exclusive-end style line+column
