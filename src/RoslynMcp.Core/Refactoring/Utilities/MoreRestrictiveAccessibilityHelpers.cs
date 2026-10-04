@@ -3,9 +3,9 @@ using Microsoft.CodeAnalysis;
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
-/// Shared accessibility ranking used by EqualityMemberCollector /
-/// generate_constructor when deciding member accessibility (Internal before
-/// Protected). Same bodies as the two private copies. Distinct from
+/// Shared accessibility ranking and visible-from checks used by
+/// EqualityMemberCollector / generate_constructor when deciding member
+/// accessibility (Internal before Protected). Same bodies as the two private copies. Distinct from
 /// <see cref="AccessibilityRankHelpers"/> (Protected before Internal;
 /// unknown defaults to 5) used by convert_anonymous_to_class /
 /// convert_tuple_to_struct.
@@ -43,4 +43,28 @@ internal static class MoreRestrictiveAccessibilityHelpers
     /// </summary>
     internal static bool SameAssembly(ISymbol member, INamedTypeSymbol fromType) =>
         SymbolEqualityComparer.Default.Equals(member.ContainingAssembly, fromType.ContainingAssembly);
+
+    /// <summary>
+    /// True when <paramref name="accessibility"/> (declared or narrowed by an
+    /// accessor) on <paramref name="member"/> is visible from
+    /// <paramref name="fromType"/>: public / protected / protected-internal
+    /// always; internal and private-protected only when
+    /// <see cref="SameAssembly"/>; anything else false. Same switch as the
+    /// EqualityMemberCollector / generate_constructor
+    /// <c>IsAccessibleFrom</c> / <c>IsAccessorAccessibleFrom</c> /
+    /// <c>IsConstructorAccessibleFrom</c> copies.
+    /// </summary>
+    internal static bool IsAccessibilityVisibleFrom(
+        Accessibility accessibility,
+        ISymbol member,
+        INamedTypeSymbol fromType) =>
+        accessibility switch
+        {
+            Accessibility.Public => true,
+            Accessibility.Protected => true,
+            Accessibility.ProtectedOrInternal => true,
+            Accessibility.Internal => SameAssembly(member, fromType),
+            Accessibility.ProtectedAndInternal => SameAssembly(member, fromType),
+            _ => false
+        };
 }

@@ -902,15 +902,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
         if (member is IPropertySymbol { SetMethod: { } setter })
             accessibility = MoreRestrictiveAccessibilityHelpers.MoreRestrictive(accessibility, setter.DeclaredAccessibility);
 
-        return accessibility switch
-        {
-            Accessibility.Public => true,
-            Accessibility.Protected => true,
-            Accessibility.ProtectedOrInternal => true,
-            Accessibility.Internal => MoreRestrictiveAccessibilityHelpers.SameAssembly(member, fromType),
-            Accessibility.ProtectedAndInternal => MoreRestrictiveAccessibilityHelpers.SameAssembly(member, fromType),
-            _ => false
-        };
+        return MoreRestrictiveAccessibilityHelpers.IsAccessibilityVisibleFrom(accessibility, member, fromType);
     }
 
     /// <summary>
@@ -933,15 +925,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     }
 
     private static bool IsAccessorAccessibleFrom(IMethodSymbol accessor, INamedTypeSymbol fromType) =>
-        accessor.DeclaredAccessibility switch
-        {
-            Accessibility.Public => true,
-            Accessibility.Protected => true,
-            Accessibility.ProtectedOrInternal => true,
-            Accessibility.Internal => MoreRestrictiveAccessibilityHelpers.SameAssembly(accessor, fromType),
-            Accessibility.ProtectedAndInternal => MoreRestrictiveAccessibilityHelpers.SameAssembly(accessor, fromType),
-            _ => false
-        };
+        MoreRestrictiveAccessibilityHelpers.IsAccessibilityVisibleFrom(accessor.DeclaredAccessibility, accessor, fromType);
 
     /// <summary>
     /// True when <paramref name="constructor"/> has the same parameter count, types
@@ -1325,15 +1309,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
     /// when the same assembly.
     /// </summary>
     private static bool IsConstructorAccessibleFrom(IMethodSymbol constructor, INamedTypeSymbol fromType) =>
-        constructor.DeclaredAccessibility switch
-        {
-            Accessibility.Public => true,
-            Accessibility.Protected => true,
-            Accessibility.ProtectedOrInternal => true,
-            Accessibility.Internal => MoreRestrictiveAccessibilityHelpers.SameAssembly(constructor, fromType),
-            Accessibility.ProtectedAndInternal => MoreRestrictiveAccessibilityHelpers.SameAssembly(constructor, fromType),
-            _ => false
-        };
+        MoreRestrictiveAccessibilityHelpers.IsAccessibilityVisibleFrom(constructor.DeclaredAccessibility, constructor, fromType);
 
     /// <summary>
     /// Result of resolving a non-copy <c>callBase</c> initializer.
