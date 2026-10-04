@@ -26,7 +26,7 @@ public sealed class GetTypeHierarchyResult
     public required IReadOnlyList<TypeHierarchyEntry> BaseTypes { get; init; }
 
     /// <summary>
-    /// Derived types (descendants).
+    /// Derived types (descendants; may be truncated when maxResults is set).
     /// </summary>
     public required IReadOnlyList<TypeHierarchyEntry> DerivedTypes { get; init; }
 
@@ -34,6 +34,16 @@ public sealed class GetTypeHierarchyResult
     /// Implemented interfaces.
     /// </summary>
     public required IReadOnlyList<TypeHierarchyEntry> Interfaces { get; init; }
+
+    /// <summary>
+    /// Total count of derived types found (may exceed DerivedTypes.Count if truncated).
+    /// </summary>
+    public required int TotalCount { get; init; }
+
+    /// <summary>
+    /// Whether DerivedTypes was truncated due to maxResults.
+    /// </summary>
+    public bool Truncated { get; init; }
 }
 
 /// <summary>

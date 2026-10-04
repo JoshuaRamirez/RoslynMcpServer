@@ -314,7 +314,7 @@ public sealed class ToolRegistry
 
         // ── Query: Type Hierarchy (1) ────────────────────────────────
         r.RegisterQuery<GetTypeHierarchyOperation, GetTypeHierarchyParams, GetTypeHierarchyResult>(
-            "get-type-hierarchy", "Get the inheritance hierarchy for a type");
+            "get-type-hierarchy", "Get the inheritance hierarchy for a type; maxResults (optional) caps the returned DerivedTypes list (omit = no cap); result includes Truncated when capped");
 
         // ── Diagnose (1) — special, no workspace required ────────────
         r.RegisterManual("diagnose",
