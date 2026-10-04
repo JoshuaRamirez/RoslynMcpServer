@@ -557,7 +557,7 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         }
         else
         {
-            expression = FindEnclosingExpression(node, span);
+            expression = ExpressionSelectionHelpers.FindEnclosingExpression(node, span);
             if (expression == null || IsTypeContext(expression))
             {
                 throw new RefactoringException(
@@ -776,25 +776,6 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
                 return symbol != null && SymbolEqualityComparer.Default.Equals(symbol, local);
             })
             .ToList();
-    }
-
-    private static ExpressionSyntax? FindEnclosingExpression(SyntaxNode node, TextSpan span)
-    {
-        ExpressionSyntax? bestMatch = null;
-        var current = node;
-
-        while (current != null)
-        {
-            if (current is ExpressionSyntax expr && current.Span.Contains(span))
-            {
-                if (bestMatch == null || current.Span.Length <= bestMatch.Span.Length)
-                    bestMatch = expr;
-            }
-
-            current = current.Parent;
-        }
-
-        return bestMatch;
     }
 
     private static List<SyntaxNode> FindMatchingExpressions(
