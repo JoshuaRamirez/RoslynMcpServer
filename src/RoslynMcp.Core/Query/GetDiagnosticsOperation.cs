@@ -37,6 +37,9 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
             var valid = string.Join(", ", Enum.GetNames<DiagnosticSeverityFilter>());
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, $"Invalid severityFilter. Valid values: {valid}");
         }
+
+        if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
     }
 
     /// <inheritdoc />
@@ -97,10 +100,18 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
             }
         }
 
+        var totalCount = diagnostics.Count;
+        IReadOnlyList<DiagnosticInfo> returned = diagnostics;
+        if (@params.MaxResults.HasValue && diagnostics.Count > @params.MaxResults.Value)
+        {
+            returned = diagnostics.Take(@params.MaxResults.Value).ToList();
+        }
+
         var result = new GetDiagnosticsResult
         {
-            Diagnostics = diagnostics,
-            TotalCount = diagnostics.Count
+            Diagnostics = returned,
+            TotalCount = totalCount,
+            Truncated = totalCount > returned.Count
         };
 
         return QueryResult<GetDiagnosticsResult>.Succeeded(operationId, result);

@@ -368,6 +368,30 @@ public class QueryParamsValidationTests
         ValidateGetDiagnosticsParams(new GetDiagnosticsParams { SeverityFilter = "warning" });
     }
 
+    [Fact]
+    public void GetDiagnostics_InvalidMaxResults_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetDiagnosticsParams(new GetDiagnosticsParams { MaxResults = 0 }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal("maxResults must be >= 1.", ex.Message);
+    }
+
+    [Fact]
+    public void GetDiagnostics_NegativeMaxResults_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetDiagnosticsParams(new GetDiagnosticsParams { MaxResults = -1 }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GetDiagnostics_ValidMaxResults_PassesValidation()
+    {
+        ValidateGetDiagnosticsParams(new GetDiagnosticsParams { MaxResults = 1 });
+        ValidateGetDiagnosticsParams(new GetDiagnosticsParams { MaxResults = 50 });
+    }
+
     #endregion
 
     #region GetCodeMetricsParams Validation
@@ -687,6 +711,8 @@ public class QueryParamsValidationTests
             var valid = string.Join(", ", Enum.GetNames<RoslynMcp.Contracts.Enums.DiagnosticSeverityFilter>());
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, $"Invalid severityFilter. Valid values: {valid}");
         }
+        if (p.MaxResults.HasValue && p.MaxResults.Value < 1)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
     }
 
     private static void ValidateGetCodeMetricsParams(GetCodeMetricsParams p)

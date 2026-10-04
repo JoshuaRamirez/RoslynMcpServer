@@ -15,4 +15,9 @@ public sealed class GetDiagnosticsParams
     /// Valid values: Error, Warning, Info, Hidden, All.
     /// </summary>
     public string? SeverityFilter { get; init; }
+
+    /// <summary>
+    /// Maximum number of diagnostics to return. Omit for no cap (return all matching diagnostics).
+    /// </summary>
+    public int? MaxResults { get; init; }
 }

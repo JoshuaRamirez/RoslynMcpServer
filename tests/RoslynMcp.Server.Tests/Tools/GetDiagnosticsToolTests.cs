@@ -70,6 +70,7 @@ public class GetDiagnosticsToolTests
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
         Assert.True(properties.TryGetProperty("severityFilter", out _));
+        Assert.True(properties.TryGetProperty("maxResults", out _));
     }
 
     [Fact]

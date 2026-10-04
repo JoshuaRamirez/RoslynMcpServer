@@ -32,7 +32,7 @@ public sealed class GetDiagnosticsTool : IToolHandler
     public string Name => "get_diagnostics";
 
     /// <inheritdoc />
-    public string Description => "Get compiler diagnostics (errors, warnings) for the solution or a specific file. Useful for checking compilation status before or after refactoring.";
+    public string Description => "Get compiler diagnostics (errors, warnings) for the solution or a specific file. Useful for checking compilation status before or after refactoring. Optional maxResults caps the returned list (omit = no cap).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -56,6 +56,12 @@ public sealed class GetDiagnosticsTool : IToolHandler
                 type = "string",
                 description = "Minimum severity: Error, Warning (default), Info, Hidden, or All",
                 @default = "Warning"
+            },
+            maxResults = new
+            {
+                type = "integer",
+                description = "Maximum number of diagnostics to return (optional; omit = no cap)",
+                minimum = 1
             }
         },
         additionalProperties = false
@@ -79,7 +85,8 @@ public sealed class GetDiagnosticsTool : IToolHandler
             var @params = new GetDiagnosticsParams
             {
                 SourceFile = args.SourceFile,
-                SeverityFilter = args.SeverityFilter
+                SeverityFilter = args.SeverityFilter,
+                MaxResults = args.MaxResults
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -108,5 +115,6 @@ public sealed class GetDiagnosticsTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string? SourceFile { get; init; }
         public string? SeverityFilter { get; init; }
+        public int? MaxResults { get; init; }
     }
 }

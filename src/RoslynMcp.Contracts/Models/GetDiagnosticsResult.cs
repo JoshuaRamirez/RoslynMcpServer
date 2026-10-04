@@ -6,14 +6,19 @@ namespace RoslynMcp.Contracts.Models;
 public sealed class GetDiagnosticsResult
 {
     /// <summary>
-    /// List of diagnostics found.
+    /// List of diagnostics found (may be truncated when maxResults is set).
     /// </summary>
     public required IReadOnlyList<DiagnosticInfo> Diagnostics { get; init; }
 
     /// <summary>
-    /// Total count of diagnostics.
+    /// Total count of matching diagnostics (may exceed Diagnostics.Count if truncated).
     /// </summary>
     public required int TotalCount { get; init; }
+
+    /// <summary>
+    /// Whether the result was truncated due to maxResults.
+    /// </summary>
+    public bool Truncated { get; init; }
 }
 
 /// <summary>
