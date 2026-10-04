@@ -387,22 +387,12 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
 
     private static bool PlanConflictsWithClaimedSpans(
         StaticPlan plan,
-        HashSet<(SyntaxTree Tree, TextSpan Span)> claimedSpans)
-    {
-        foreach (var declaration in plan.Declarations)
-        {
-            if (claimedSpans.Contains((declaration.SyntaxTree, declaration.Span)))
-                return true;
-        }
+        HashSet<(SyntaxTree Tree, TextSpan Span)> claimedSpans) =>
+        StaticMethodHelpers.PlanConflictsWithClaimedSpans(
+            plan.Declarations.Select(declaration => (declaration.SyntaxTree, declaration.Span)),
+            plan.CallSites.Select(callSite => (callSite.SyntaxTree, callSite.Span)),
+            claimedSpans);
 
-        foreach (var callSite in plan.CallSites)
-        {
-            if (claimedSpans.Contains((callSite.SyntaxTree, callSite.Span)))
-                return true;
-        }
-
-        return false;
-    }
 
     internal static TextSpan GetSelectionSpan(SourceText sourceText, MakeNonStaticParams @params) =>
         SyntaxLineHelpers.GetSelectionSpan(
