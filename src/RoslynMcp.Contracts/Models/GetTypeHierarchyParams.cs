@@ -29,4 +29,10 @@ public sealed class GetTypeHierarchyParams
     /// Direction: Ancestors, Descendants, or Both. Default: Both.
     /// </summary>
     public string? Direction { get; init; }
+
+    /// <summary>
+    /// Maximum number of derived types to return. Omit for no cap (return all derived types).
+    /// Does not cap BaseTypes or Interfaces.
+    /// </summary>
+    public int? MaxResults { get; init; }
 }

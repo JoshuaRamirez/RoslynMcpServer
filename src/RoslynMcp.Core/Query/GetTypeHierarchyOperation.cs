@@ -44,6 +44,9 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, $"Invalid direction. Valid values: {valid}");
         }
 
+        if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
+
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
@@ -103,14 +106,23 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
             interfaces.Add(CreateEntry(iface));
         }
 
+        var totalCount = derivedTypes.Count;
+        IReadOnlyList<TypeHierarchyEntry> returnedDerived = derivedTypes;
+        if (@params.MaxResults.HasValue && derivedTypes.Count > @params.MaxResults.Value)
+        {
+            returnedDerived = derivedTypes.Take(@params.MaxResults.Value).ToList();
+        }
+
         var result = new GetTypeHierarchyResult
         {
             TypeName = typeSymbol.Name,
             FullyQualifiedName = typeSymbol.ToDisplayString(),
             Kind = typeSymbol.TypeKind.ToString(),
             BaseTypes = baseTypes,
-            DerivedTypes = derivedTypes,
-            Interfaces = interfaces
+            DerivedTypes = returnedDerived,
+            Interfaces = interfaces,
+            TotalCount = totalCount,
+            Truncated = totalCount > returnedDerived.Count
         };
 
         return QueryResult<GetTypeHierarchyResult>.Succeeded(operationId, result);

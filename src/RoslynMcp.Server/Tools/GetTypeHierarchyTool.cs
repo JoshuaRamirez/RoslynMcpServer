@@ -32,7 +32,7 @@ public sealed class GetTypeHierarchyTool : IToolHandler
     public string Name => "get_type_hierarchy";
 
     /// <inheritdoc />
-    public string Description => "Get the type hierarchy for a C# type: base types (ancestors), derived types (descendants), and implemented interfaces.";
+    public string Description => "Get the type hierarchy for a C# type: base types (ancestors), derived types (descendants), and implemented interfaces. Optional maxResults caps the returned DerivedTypes list (omit = no cap). BaseTypes and Interfaces are not capped.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -72,6 +72,12 @@ public sealed class GetTypeHierarchyTool : IToolHandler
             {
                 type = "string",
                 description = "Hierarchy direction: Ancestors, Descendants, or Both (default: Both)"
+            },
+            maxResults = new
+            {
+                type = "integer",
+                description = "Maximum number of derived types to return (optional; omit = no cap). Does not cap BaseTypes or Interfaces.",
+                minimum = 1
             }
         },
         additionalProperties = false
@@ -98,7 +104,8 @@ public sealed class GetTypeHierarchyTool : IToolHandler
                 SymbolName = args.SymbolName,
                 Line = args.Line,
                 Column = args.Column,
-                Direction = args.Direction
+                Direction = args.Direction,
+                MaxResults = args.MaxResults
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -130,5 +137,6 @@ public sealed class GetTypeHierarchyTool : IToolHandler
         public int? Line { get; init; }
         public int? Column { get; init; }
         public string? Direction { get; init; }
+        public int? MaxResults { get; init; }
     }
 }

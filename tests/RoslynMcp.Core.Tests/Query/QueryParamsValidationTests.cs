@@ -662,6 +662,35 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void GetTypeHierarchy_InvalidMaxResults_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetTypeHierarchyParams(new GetTypeHierarchyParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", MaxResults = 0 }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal("maxResults must be >= 1.", ex.Message);
+    }
+
+    [Fact]
+    public void GetTypeHierarchy_NegativeMaxResults_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetTypeHierarchyParams(new GetTypeHierarchyParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", MaxResults = -1 }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GetTypeHierarchy_ValidMaxResults_PassesValidation()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetTypeHierarchyParams(new GetTypeHierarchyParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", MaxResults = 1 }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+
+        ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetTypeHierarchyParams(new GetTypeHierarchyParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", MaxResults = 50 }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
     #endregion
 
     #region GetDocumentOutlineParams Validation
@@ -829,6 +858,8 @@ public class QueryParamsValidationTests
             var valid = string.Join(", ", Enum.GetNames<RoslynMcp.Contracts.Enums.HierarchyDirection>());
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, $"Invalid direction. Valid values: {valid}");
         }
+        if (p.MaxResults.HasValue && p.MaxResults.Value < 1)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
         if (!File.Exists(p.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
     }
