@@ -89,6 +89,13 @@ public class GoToDefinitionToolTests
         Assert.True(properties.TryGetProperty("symbolName", out _));
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("column", out _));
+        Assert.True(properties.TryGetProperty("maxResults", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsMaxResults()
+    {
+        Assert.Contains("maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion

@@ -28,9 +28,6 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
 
         SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
 
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
-
         if (!@params.Line.HasValue && string.IsNullOrWhiteSpace(@params.SymbolName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Either line/column or symbolName must be provided.");
 
@@ -39,6 +36,12 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
+
+        if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
+
+        if (!File.Exists(@params.SourceFile))
+            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
     }
 
     /// <inheritdoc />
@@ -83,7 +86,19 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
             });
         }
 
-        var result = new GoToDefinitionResult { Definitions = definitions };
+        var totalCount = definitions.Count;
+        IReadOnlyList<DefinitionLocation> returned = definitions;
+        if (@params.MaxResults.HasValue && definitions.Count > @params.MaxResults.Value)
+        {
+            returned = definitions.Take(@params.MaxResults.Value).ToList();
+        }
+
+        var result = new GoToDefinitionResult
+        {
+            Definitions = returned,
+            TotalCount = totalCount,
+            Truncated = totalCount > returned.Count
+        };
         return QueryResult<GoToDefinitionResult>.Succeeded(operationId, result);
     }
 }
