@@ -3,6 +3,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -27,6 +28,14 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
 
         if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
+
+            if (!File.Exists(@params.SourceFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+        }
     }
 
     /// <inheritdoc />
@@ -72,11 +81,30 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
                 var fqn = symbol.ToDisplayString();
                 if (entries.Any(e => e.FullyQualifiedName == fqn)) continue;
 
+                Location? location;
+                if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                {
+                    // Match any in-source declaration (partial types/methods may declare
+                    // across files). FirstOrDefault on Locations alone would miss a later part.
+                    location = symbol.Locations.FirstOrDefault(l =>
+                        l.IsInSource &&
+                        string.Equals(
+                            l.GetLineSpan().Path,
+                            @params.SourceFile,
+                            StringComparison.OrdinalIgnoreCase));
+                    if (location == null) continue;
+                }
+                else
+                {
+                    location = null;
+                }
+
                 totalCount++;
 
                 if (entries.Count < maxResults)
                 {
-                    var location = symbol.Locations.FirstOrDefault(l => l.IsInSource);
+                    // Prefer the sourceFile-matching location when filtering; otherwise first in-source.
+                    location ??= symbol.Locations.FirstOrDefault(l => l.IsInSource);
                     if (location == null) continue;
 
                     var lineSpan = location.GetLineSpan();

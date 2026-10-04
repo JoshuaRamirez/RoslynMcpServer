@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- `search_symbols` now honors optional **`sourceFile`**: when set, validates with `SourceFilePathHelpers.ValidateSourceFilePath` + `File.Exists` (`SourceFileNotFound`; same as `get_diagnostics`; does not invent `SourceNotInWorkspace`) and restricts results to symbols whose in-source declaration location path equals that file (`OrdinalIgnoreCase` on `GetLineSpan().Path`). Omit `sourceFile` to search the whole solution. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not invent further query sourceFile honors beyond search_symbols. (#2104)
+
 ### Changed
 
 - Folded MakeStatic / MakeNonStatic identical `ResolveSelectedSymbol` onto existing `SymbolSelectionHelpers`. Body unchanged (token-overlap declared/identifier symbol, then innermost declared with `DeclarationIdentifiers.IdentifierOverlaps`; optional `symbolName` via `ConfirmSymbolName`). Thin typed forwarders retained on each operation. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold SafeDelete `ResolveSelectedSymbol` (broader private `IdentifierOverlaps`). Does not fold `PlanConflictsWithClaimedSpans`. (#2095)

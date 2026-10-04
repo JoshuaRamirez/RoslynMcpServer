@@ -32,7 +32,7 @@ public sealed class SearchSymbolsTool : IToolHandler
     public string Name => "search_symbols";
 
     /// <inheritdoc />
-    public string Description => "Search for C# symbols by name pattern across the solution. Supports substring matching and filtering by symbol kind (Class, Method, Property, etc.).";
+    public string Description => "Search for C# symbols by name pattern across the solution or a specific file. Supports substring matching and filtering by symbol kind (Class, Method, Property, etc.). Optional sourceFile restricts results to symbols declared in that file.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -61,6 +61,11 @@ public sealed class SearchSymbolsTool : IToolHandler
                 type = "integer",
                 description = "Maximum number of results to return (default: 50)",
                 minimum = 1
+            },
+            sourceFile = new
+            {
+                type = "string",
+                description = "Absolute path to a .cs file to restrict results to symbols declared in that file (optional)"
             }
         },
         additionalProperties = false
@@ -85,7 +90,8 @@ public sealed class SearchSymbolsTool : IToolHandler
             {
                 Query = args.Query,
                 KindFilter = args.KindFilter,
-                MaxResults = args.MaxResults
+                MaxResults = args.MaxResults,
+                SourceFile = args.SourceFile
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -115,5 +121,6 @@ public sealed class SearchSymbolsTool : IToolHandler
         public string Query { get; init; } = "";
         public string? KindFilter { get; init; }
         public int? MaxResults { get; init; }
+        public string? SourceFile { get; init; }
     }
 }
