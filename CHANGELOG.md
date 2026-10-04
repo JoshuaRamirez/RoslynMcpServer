@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- Folded ChangeSignature / ConvertToAsync identical `FindMethod` onto existing `FindMethodHelpers` as `FindMethodPreferFirst`. Body unchanged (column coverage + omitted-column PreferFirst / FirstOrDefault). Distinct from stricter `FindMethodHelpers.FindMethod` (null on ambiguous start-line hits). Thin forwarders retained on each operation; dead private `StartLine` forwarders removed (only used by the folded body). Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not change `FindMethodDeclaration` / Signature Collect path. (#2172)
+
 - Folded MakeStatic / MakeNonStatic identical `PlanConflictsWithClaimedSpans` onto existing `StaticMethodHelpers`. Body unchanged (declaration spans then call-site spans against `claimedSpans`). Thin typed forwarders retained on each operation (project private `StaticPlan` edits to `(SyntaxTree, Span)`). Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold SafeDelete `ResolveSelectedSymbol`. (#2160)
 
 - Folded MakeStatic / MakeNonStatic identical `ResolveSelectedSymbol` onto existing `SymbolSelectionHelpers`. Body unchanged (token-overlap declared/identifier symbol, then innermost declared with `DeclarationIdentifiers.IdentifierOverlaps`; optional `symbolName` via `ConfirmSymbolName`). Thin typed forwarders retained on each operation. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold SafeDelete `ResolveSelectedSymbol` (broader private `IdentifierOverlaps`). Does not fold `PlanConflictsWithClaimedSpans`. (#2095)

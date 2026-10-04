@@ -1426,52 +1426,19 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     private readonly record struct CallSite(DocumentId DocumentId, TextSpan Span);
 
     /// <summary>
-    /// Finds a method. Omitted <paramref name="column"/> keeps today's
-    /// first-match (MethodName; Line when more than one match, start-line
-    /// filter). When set, picks the smallest method whose identifier or
-    /// declaration span covers that 1-based column. Do not require the
-    /// declaration to start on <paramref name="line"/> when column is set
-    /// — a split signature may put the identifier on a continuation line.
+    /// Thin forwarder to <see cref="FindMethodHelpers.FindMethodPreferFirst"/>
+    /// (identical PreferFirst body formerly private here and on ConvertToAsync).
+    /// Omitted <paramref name="column"/> keeps today's first-match
+    /// (MethodName; Line when more than one match, start-line filter).
+    /// When set, picks the smallest method whose identifier or declaration
+    /// span covers that 1-based column.
     /// </summary>
     internal static MethodDeclarationSyntax? FindMethod(
         SyntaxNode root,
         string methodName,
         int? line,
-        int? column)
-    {
-        var methods = root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .Where(m => m.Identifier.Text == methodName)
-            .ToList();
-
-        if (column.HasValue)
-        {
-            // When column is set, do not require the declaration to start
-            // on `line` — a split signature's identifier may live on a
-            // continuation line whose declaration span still covers that
-            // column.
-            return methods
-                .Where(m => MethodCoverage.MethodCoversColumn(m, line ?? StartLine(m), column.Value))
-                .OrderBy(m => MethodCoverage.IdentifierCoversColumn(m, line ?? StartLine(m), column.Value) ? 0 : 1)
-                .ThenBy(m => m.Span.Length)
-                .FirstOrDefault();
-        }
-
-        // Omitted column keeps today's MethodName + Line pick: a single
-        // name match is used as-is (Line is only for disambiguation).
-        // More than one match uses the first whose declaration starts on
-        // `line`.
-        if (methods.Count <= 1)
-            return methods.FirstOrDefault();
-
-        if (!line.HasValue)
-            return methods.FirstOrDefault();
-
-        return methods.FirstOrDefault(m => StartLine(m) == line.Value);
-    }
-
-    private static int StartLine(MethodDeclarationSyntax method) =>
-        SyntaxLineHelpers.StartLine(method);
+        int? column) =>
+        FindMethodHelpers.FindMethodPreferFirst(root, methodName, line, column);
 
     private static void EnsureProjectedParameterNamesAreUnique(IReadOnlyList<ParameterChange> changes)
     {
