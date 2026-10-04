@@ -81,23 +81,30 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
                 var fqn = symbol.ToDisplayString();
                 if (entries.Any(e => e.FullyQualifiedName == fqn)) continue;
 
-                // When sourceFile is set, restrict to symbols declared in that file
-                // (same OrdinalIgnoreCase path match as GetDiagnostics). Omit = whole solution.
+                Location? location;
                 if (!string.IsNullOrWhiteSpace(@params.SourceFile))
                 {
-                    var filterLocation = symbol.Locations.FirstOrDefault(l => l.IsInSource);
-                    if (filterLocation == null) continue;
-
-                    var filterPath = filterLocation.GetLineSpan().Path;
-                    if (!string.Equals(filterPath, @params.SourceFile, StringComparison.OrdinalIgnoreCase))
-                        continue;
+                    // Match any in-source declaration (partial types/methods may declare
+                    // across files). FirstOrDefault on Locations alone would miss a later part.
+                    location = symbol.Locations.FirstOrDefault(l =>
+                        l.IsInSource &&
+                        string.Equals(
+                            l.GetLineSpan().Path,
+                            @params.SourceFile,
+                            StringComparison.OrdinalIgnoreCase));
+                    if (location == null) continue;
+                }
+                else
+                {
+                    location = null;
                 }
 
                 totalCount++;
 
                 if (entries.Count < maxResults)
                 {
-                    var location = symbol.Locations.FirstOrDefault(l => l.IsInSource);
+                    // Prefer the sourceFile-matching location when filtering; otherwise first in-source.
+                    location ??= symbol.Locations.FirstOrDefault(l => l.IsInSource);
                     if (location == null) continue;
 
                     var lineSpan = location.GetLineSpan();

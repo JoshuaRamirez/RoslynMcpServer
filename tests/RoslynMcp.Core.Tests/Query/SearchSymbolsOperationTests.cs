@@ -125,6 +125,31 @@ public class SearchSymbolsOperationTests
     }
 
     [SkippableFact]
+    public async Task SearchSymbols_WithSourceFile_MatchesPartialDeclaredInRequestedFile()
+    {
+        // First location is PartA; request PartB so FirstOrDefault-only would wrongly miss.
+        await using var workspace = await TempWorkspace.CreateMultiFileAsync(
+            ("PartA.cs", "partial class UniquePartial { public void A() { } }\n"),
+            ("PartB.cs", "partial class UniquePartial { public void B() { } }\n"));
+
+        var partB = workspace.SourcePaths["PartB.cs"];
+        var operation = new SearchSymbolsOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "UniquePartial",
+            SourceFile = partB
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Contains(result.Data.Symbols, s => s.Name == "UniquePartial");
+        Assert.All(result.Data.Symbols.Where(s => s.Name == "UniquePartial"), s =>
+            Assert.True(
+                string.Equals(s.File, partB, StringComparison.OrdinalIgnoreCase),
+                $"Expected file {partB}, got {s.File}"));
+    }
+
+    [SkippableFact]
     public async Task SearchSymbols_WithSourceFile_CaseInsensitivePathMatch()
     {
         await using var workspace = await TempWorkspace.CreateMultiFileAsync(
