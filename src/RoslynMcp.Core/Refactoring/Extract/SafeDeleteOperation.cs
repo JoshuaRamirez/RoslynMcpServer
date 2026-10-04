@@ -566,28 +566,14 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
                method.ReturnType.Name is "Task" or "ValueTask";
     }
 
-    internal static TextSpan GetSelectionSpan(SourceText sourceText, SafeDeleteParams @params)
-    {
-        var startLineNumber = @params.StartLine!.Value;
-        var startColumn = @params.StartColumn!.Value;
-        var endLineNumber = @params.EndLine!.Value;
-        var endColumn = @params.EndColumn!.Value;
+    internal static TextSpan GetSelectionSpan(SourceText sourceText, SafeDeleteParams @params) =>
+        SyntaxLineHelpers.GetSelectionSpan(
+            sourceText,
+            @params.StartLine!.Value,
+            @params.StartColumn!.Value,
+            @params.EndLine!.Value,
+            @params.EndColumn!.Value);
 
-        if (startLineNumber > sourceText.Lines.Count || endLineNumber > sourceText.Lines.Count)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Selection is outside the file.");
-
-        var startLine = sourceText.Lines[startLineNumber - 1];
-        var endLine = sourceText.Lines[endLineNumber - 1];
-        if (startColumn - 1 > startLine.Span.Length || endColumn - 1 > endLine.SpanIncludingLineBreak.Length)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Selection column is outside the line.");
-
-        var startPosition = startLine.Start + startColumn - 1;
-        var endPosition = endLine.Start + endColumn - 1;
-        if (endPosition < startPosition)
-            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
-
-        return TextSpan.FromBounds(startPosition, endPosition);
-    }
 
     private static ISymbol ResolveSelectedSymbol(
         SyntaxNode root,
