@@ -609,6 +609,143 @@ public class RenameNamespaceOperationTests
 
     #endregion
 
+    #region RenameInComments / RenameInStrings
+
+    private const string NamespaceCommentAndStringSource = """
+        namespace OldNs;
+
+        // OldNs helper
+        public class Foo
+        {
+            public string Label => "OldNs";
+        }
+        """;
+
+    [Fact]
+    public void RenameNamespace_RenameInComments_DefaultsFalse()
+    {
+        var @params = new RenameNamespaceParams
+        {
+            SourceFile = "C:\\test\\file.cs",
+            NamespaceName = "OldNs",
+            NewName = "NewNs"
+        };
+
+        Assert.False(@params.RenameInComments);
+        Assert.False(@params.RenameInStrings);
+    }
+
+    [Fact]
+    public void RenameNamespace_RenameInCommentsAndStrings_CanBeEnabled()
+    {
+        var @params = new RenameNamespaceParams
+        {
+            SourceFile = "C:\\test\\file.cs",
+            NamespaceName = "OldNs",
+            NewName = "NewNs",
+            RenameInComments = true,
+            RenameInStrings = true
+        };
+
+        Assert.True(@params.RenameInComments);
+        Assert.True(@params.RenameInStrings);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_Default_LeavesCommentAndStringOccurrencesUntouched()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            NamespaceCommentAndStringSource, "Foo.cs");
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var path = workspace.SourcePath;
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = path,
+            NamespaceName = "OldNs",
+            NewName = "NewNs"
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(path);
+        Assert.Contains("namespace NewNs;", text);
+        Assert.Contains("// OldNs helper", text);
+        Assert.Contains("\"OldNs\"", text);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_RenameInCommentsTrue_RewritesCommentOccurrence()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            NamespaceCommentAndStringSource, "Foo.cs");
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var path = workspace.SourcePath;
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = path,
+            NamespaceName = "OldNs",
+            NewName = "NewNs",
+            RenameInComments = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(path);
+        Assert.Contains("namespace NewNs;", text);
+        Assert.Contains("// NewNs helper", text);
+        Assert.Contains("\"OldNs\"", text);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_RenameInStringsTrue_RewritesStringOccurrence()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            NamespaceCommentAndStringSource, "Foo.cs");
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var path = workspace.SourcePath;
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = path,
+            NamespaceName = "OldNs",
+            NewName = "NewNs",
+            RenameInStrings = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(path);
+        Assert.Contains("namespace NewNs;", text);
+        Assert.Contains("// OldNs helper", text);
+        Assert.Contains("\"NewNs\"", text);
+    }
+
+    [SkippableFact]
+    public async Task RenameNamespace_AllFiles_RenameInCommentsAndStrings_HonorsBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            NamespaceCommentAndStringSource, "Foo.cs");
+        var operation = new RenameNamespaceOperation(workspace.Context);
+        var path = workspace.SourcePath;
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            AllFiles = true,
+            NewName = "NewNs",
+            RenameInComments = true,
+            RenameInStrings = true
+        });
+
+        Assert.True(result.Success);
+        var text = await File.ReadAllTextAsync(path);
+        Assert.Contains("namespace NewNs;", text);
+        Assert.Contains("// NewNs helper", text);
+        Assert.Contains("\"NewNs\"", text);
+        Assert.DoesNotContain("// OldNs helper", text);
+        Assert.DoesNotContain("\"OldNs\"", text);
+    }
+
+    #endregion
+
     #region Happy Path
 
     [SkippableFact]
