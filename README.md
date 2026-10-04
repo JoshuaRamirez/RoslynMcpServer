@@ -298,7 +298,7 @@ These tools analyze your code without making changes. Use them to understand cod
 | `analyze_data_flow` | Analyze data flow for a code region: variables read/written inside, data flowing in/out, captured variables. Optional `startColumn` / `endColumn` trim the region (1-based; Roslyn `Character = column - 1`; exclusive-ish end as `TextLine.End`); omitted keeps today's whole-line span (start of `startLine` through end of `endLine`). Do not force column 1 when omitted. | `sourceFile`, `startLine`, `endLine`, `startColumn`, `endColumn` |
 | `find_callers` | Find all callers of a symbol across the entire solution. | `sourceFile`, `symbolName`, `line`, `column`, `maxResults` |
 | `get_type_hierarchy` | Retrieve the type hierarchy (base types and/or derived types) for a given type. | `sourceFile`, `symbolName`, `line`, `column`, `direction` |
-| `get_document_outline` | Get a hierarchical outline of all symbols in a file (namespaces, types, members). | `sourceFile` |
+| `get_document_outline` | Get a hierarchical outline of all symbols in a file (namespaces, types, members). Optional `maxResults` caps the returned outline tree via DFS pre-order (omit = no cap; peer of `get_diagnostics` / `search_symbols` / `find_references`); result includes `Truncated` when capped. | `sourceFile`, `maxResults` |
 
 ### Code Generation
 
