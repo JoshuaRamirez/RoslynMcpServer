@@ -463,28 +463,14 @@ public sealed class IntroduceFieldOperation : RefactoringOperationBase<Introduce
         return newDocument.Project.Solution;
     }
 
-    private static TextSpan GetSelectionSpan(SourceText sourceText, IntroduceFieldParams @params)
-    {
-        var startLineNum = @params.StartLine!.Value;
-        var startColumn = @params.StartColumn!.Value;
-        var endLineNum = @params.EndLine!.Value;
-        var endColumn = @params.EndColumn!.Value;
+    private static TextSpan GetSelectionSpan(SourceText sourceText, IntroduceFieldParams @params) =>
+        SyntaxLineHelpers.GetSelectionSpan(
+            sourceText,
+            @params.StartLine!.Value,
+            @params.StartColumn!.Value,
+            @params.EndLine!.Value,
+            @params.EndColumn!.Value);
 
-        if (startLineNum > sourceText.Lines.Count || endLineNum > sourceText.Lines.Count)
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "Selection is outside the file.");
-
-        var startLine = sourceText.Lines[startLineNum - 1];
-        var endLine = sourceText.Lines[endLineNum - 1];
-        if (startColumn - 1 > startLine.Span.Length || endColumn - 1 > endLine.SpanIncludingLineBreak.Length)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Selection column is outside the line.");
-
-        var startPosition = startLine.Start + startColumn - 1;
-        var endPosition = endLine.Start + endColumn - 1;
-        if (endPosition < startPosition)
-            throw new RefactoringException(ErrorCodes.InvalidSelectionRange, "End must be after start.");
-
-        return TextSpan.FromBounds(startPosition, endPosition);
-    }
 
     private static FieldPlan BuildPlan(
         SyntaxNode node,

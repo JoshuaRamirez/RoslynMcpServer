@@ -1,5 +1,8 @@
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
+using RoslynMcp.Contracts.Errors;
+using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using Xunit;
 
@@ -51,6 +54,55 @@ public class SyntaxLineHelpersTests
 
         Assert.True(SyntaxLineHelpers.StartsOnLine(root, 1));
         Assert.False(SyntaxLineHelpers.StartsOnLine(root, 2));
+    }
+
+    [Fact]
+    public void GetSelectionSpan_MapsOneBasedLineColumnToSpan()
+    {
+        var text = SourceText.From("""
+            class C
+            {
+                void M() { }
+            }
+            """);
+
+        // "void" on line 3 starts at column 5 (1-based) in the indented snippet.
+        var span = SyntaxLineHelpers.GetSelectionSpan(text, 3, 5, 3, 9);
+
+        Assert.Equal("void", text.ToString(span));
+    }
+
+    [Fact]
+    public void GetSelectionSpan_InvalidLine_ThrowsInvalidLineNumber()
+    {
+        var text = SourceText.From("class C { }");
+
+        var ex = Assert.Throws<RefactoringException>(
+            () => SyntaxLineHelpers.GetSelectionSpan(text, 99, 1, 99, 2));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GetSelectionSpan_InvalidColumn_ThrowsInvalidColumnNumber()
+    {
+        var text = SourceText.From("class C { }");
+
+        var ex = Assert.Throws<RefactoringException>(
+            () => SyntaxLineHelpers.GetSelectionSpan(text, 1, 1, 1, 500));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GetSelectionSpan_EndBeforeStart_ThrowsInvalidSelectionRange()
+    {
+        var text = SourceText.From("class C { }");
+
+        var ex = Assert.Throws<RefactoringException>(
+            () => SyntaxLineHelpers.GetSelectionSpan(text, 1, 5, 1, 2));
+
+        Assert.Equal(ErrorCodes.InvalidSelectionRange, ex.ErrorCode);
     }
 
     private static CompilationUnitSyntax Parse(string source) =>
