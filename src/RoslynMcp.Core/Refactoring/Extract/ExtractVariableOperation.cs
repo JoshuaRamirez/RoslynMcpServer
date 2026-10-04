@@ -132,7 +132,7 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
 
         // Find expression at span
         var node = root.FindNode(span);
-        var expression = FindEnclosingExpression(node, span);
+        var expression = ExpressionSelectionHelpers.FindEnclosingExpression(node, span);
 
         if (expression == null)
         {
@@ -1280,34 +1280,6 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         }
 
         return false;
-    }
-
-    private static ExpressionSyntax? FindEnclosingExpression(SyntaxNode node, TextSpan span)
-    {
-        // Walk up to find the smallest expression that contains the span
-        var current = node;
-        ExpressionSyntax? bestMatch = null;
-
-        while (current != null)
-        {
-            if (current is ExpressionSyntax expr && current.Span.Contains(span))
-            {
-                // Prefer expressions that more closely match the selection
-                if (bestMatch == null || current.Span.Length <= bestMatch.Span.Length)
-                {
-                    bestMatch = expr;
-                }
-            }
-            current = current.Parent;
-        }
-
-        // Avoid extracting entire statements as expressions
-        if (bestMatch?.Parent is ExpressionStatementSyntax)
-        {
-            return bestMatch;
-        }
-
-        return bestMatch;
     }
 
     private static RefactoringResult CreatePreviewResult(
