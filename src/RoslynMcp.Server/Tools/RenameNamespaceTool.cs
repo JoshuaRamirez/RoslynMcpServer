@@ -33,7 +33,7 @@ public sealed class RenameNamespaceTool : IToolHandler
 
     /// <inheritdoc />
     public string Description =>
-        "Rename a C# namespace across the solution, updating declarations, using directives, and qualified name references. When updateFolders is true, also move folders whose path matches the old namespace. column (optional) picks the smallest namespace whose name or declaration span covers that column when set with line (name preferred, then smallest covering declaration); omitted keeps today's namespaceName + optional line pick; column without line keeps today's omitted-line path. sourceFile and namespaceName are required when allFiles is omitted or false. allFiles: true walks every C# file and renames every eligible top-level namespace declaration to newName under today's single-site validation (sourceFile optional when true; cannot be combined with namespaceName, line, or column; newName remains required). updateFolders / preview remain valid with allFiles.";
+        "Rename a C# namespace across the solution, updating declarations, using directives, and qualified name references. When updateFolders is true, also move folders whose path matches the old namespace. column (optional) picks the smallest namespace whose name or declaration span covers that column when set with line (name preferred, then smallest covering declaration); omitted keeps today's namespaceName + optional line pick; column without line keeps today's omitted-line path. sourceFile and namespaceName are required when allFiles is omitted or false. allFiles: true walks every C# file and renames every eligible top-level namespace declaration to newName under today's single-site validation (sourceFile optional when true; cannot be combined with namespaceName, line, or column; newName remains required). updateFolders / renameInComments / renameInStrings / preview remain valid with allFiles. Omitted / false renameInComments / renameInStrings keep today's no-comment / no-string rewrite on the last-segment Renamer path; full-namespace rewrites stay declaration + reference only.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -84,6 +84,18 @@ public sealed class RenameNamespaceTool : IToolHandler
             {
                 type = "boolean",
                 description = "Also move folders whose path matches the old namespace (for example src/Old/Ns to src/New/Ns). Default false leaves folders in place. Valid with allFiles; later destination claims are skipped on collision.",
+                @default = false
+            },
+            renameInComments = new
+            {
+                type = "boolean",
+                description = "Also rename matching identifier text inside comments on the last-segment Renamer path. Default false (today's behavior). Valid with allFiles. Full-namespace rewrites stay declaration + reference only.",
+                @default = false
+            },
+            renameInStrings = new
+            {
+                type = "boolean",
+                description = "Also rename matching identifier text inside string literals on the last-segment Renamer path. Default false (today's behavior). Valid with allFiles. Full-namespace rewrites stay declaration + reference only.",
                 @default = false
             },
             preview = new
@@ -160,6 +172,8 @@ public sealed class RenameNamespaceTool : IToolHandler
                 Line = args.Line,
                 Column = args.Column,
                 UpdateFolders = args.UpdateFolders ?? false,
+                RenameInComments = args.RenameInComments ?? false,
+                RenameInStrings = args.RenameInStrings ?? false,
                 Preview = args.Preview ?? false
             };
 
@@ -195,6 +209,8 @@ public sealed class RenameNamespaceTool : IToolHandler
         public int? Line { get; init; }
         public int? Column { get; init; }
         public bool? UpdateFolders { get; init; }
+        public bool? RenameInComments { get; init; }
+        public bool? RenameInStrings { get; init; }
         public bool? Preview { get; init; }
     }
 }

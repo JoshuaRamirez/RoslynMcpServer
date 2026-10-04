@@ -61,6 +61,24 @@ public sealed class RenameNamespaceParams
     public bool UpdateFolders { get; init; }
 
     /// <summary>
+    /// Whether to rename matching identifier text inside comments on the
+    /// last-segment Roslyn Renamer path. Default: false (today's behavior).
+    /// Valid with <see cref="AllFiles"/>. Has no extra effect on the full-
+    /// namespace rewrite path (<c>RewriteFullNamespaceAsync</c>), which stays
+    /// declaration + reference only.
+    /// </summary>
+    public bool RenameInComments { get; init; }
+
+    /// <summary>
+    /// Whether to rename matching identifier text inside string literals on
+    /// the last-segment Roslyn Renamer path. Default: false (today's behavior).
+    /// Valid with <see cref="AllFiles"/>. Has no extra effect on the full-
+    /// namespace rewrite path (<c>RewriteFullNamespaceAsync</c>), which stays
+    /// declaration + reference only.
+    /// </summary>
+    public bool RenameInStrings { get; init; }
+
+    /// <summary>
     /// Return computed changes without applying. Default: false.
     /// Valid with <see cref="AllFiles"/>.
     /// </summary>

@@ -36,6 +36,8 @@ public class RenameNamespaceToolTests
         Assert.Contains("column", _tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("smallest namespace", _tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("allFiles", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("renameInComments", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("renameInStrings", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -109,6 +111,25 @@ public class RenameNamespaceToolTests
     }
 
     [Fact]
+    public void GetDefinition_HasOptionalRenameInCommentsAndStrings()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("renameInComments", out var comments));
+        Assert.Equal("boolean", comments.GetProperty("type").GetString());
+        Assert.False(comments.GetProperty("default").GetBoolean());
+        Assert.Contains("comments", comments.GetProperty("description").GetString()!, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(properties.TryGetProperty("renameInStrings", out var strings));
+        Assert.Equal("boolean", strings.GetProperty("type").GetString());
+        Assert.False(strings.GetProperty("default").GetBoolean());
+        Assert.Contains("string", strings.GetProperty("description").GetString()!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void GetDefinition_HasProperties_ForAllParameters()
     {
         var schema = _tool.InputSchema;
@@ -124,6 +145,8 @@ public class RenameNamespaceToolTests
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("updateFolders", out _));
+        Assert.True(properties.TryGetProperty("renameInComments", out _));
+        Assert.True(properties.TryGetProperty("renameInStrings", out _));
         Assert.True(properties.TryGetProperty("preview", out _));
         Assert.False(RequiredFieldsContains(doc, "column"));
 

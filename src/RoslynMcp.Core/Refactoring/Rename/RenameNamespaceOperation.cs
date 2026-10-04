@@ -156,6 +156,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             namespaceSymbol,
             oldFullName,
             newFullName,
+            @params.RenameInComments,
+            @params.RenameInStrings,
             cancellationToken);
 
         ValidateChangedDocumentsAreEditable(Context.Solution, newSolution);
@@ -295,6 +297,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
                                 namespaceDecl,
                                 newFullName,
                                 @params.UpdateFolders,
+                                @params.RenameInComments,
+                                @params.RenameInStrings,
                                 renamedKeys,
                                 claimedFolderPaths,
                                 linkedPathCounts,
@@ -506,6 +510,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         BaseNamespaceDeclarationSyntax namespaceDecl,
         string newFullName,
         bool updateFolders,
+        bool renameInComments,
+        bool renameInStrings,
         HashSet<(ProjectId ProjectId, string FullName)> renamedKeys,
         List<string> claimedFolderPaths,
         IReadOnlyDictionary<string, int> linkedPathCounts,
@@ -539,6 +545,8 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
             namespaceSymbol,
             oldFullName,
             newFullName,
+            renameInComments,
+            renameInStrings,
             cancellationToken);
 
         // Renamer may rewrite references on linked multi-view paths; coalesce
@@ -1092,14 +1100,16 @@ public sealed class RenameNamespaceOperation : RefactoringOperationBase<RenameNa
         INamespaceSymbol namespaceSymbol,
         string oldFullName,
         string newFullName,
+        bool renameInComments,
+        bool renameInStrings,
         CancellationToken cancellationToken)
     {
         if (IsLastSegmentRename(oldFullName, newFullName))
         {
             var options = new SymbolRenameOptions(
                 RenameOverloads: false,
-                RenameInStrings: false,
-                RenameInComments: false,
+                RenameInStrings: renameInStrings,
+                RenameInComments: renameInComments,
                 RenameFile: false);
 
             return await Renamer.RenameSymbolAsync(
