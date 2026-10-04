@@ -62,6 +62,37 @@ public class MoreRestrictiveAccessibilityHelpersTests
         Assert.False(MoreRestrictiveAccessibilityHelpers.SameAssembly(field, typeB));
     }
 
+    [Theory]
+    [InlineData(Accessibility.Public, true, true)]
+    [InlineData(Accessibility.Protected, true, true)]
+    [InlineData(Accessibility.ProtectedOrInternal, true, true)]
+    [InlineData(Accessibility.Internal, true, true)]
+    [InlineData(Accessibility.ProtectedAndInternal, true, true)]
+    [InlineData(Accessibility.Private, true, false)]
+    [InlineData(Accessibility.NotApplicable, true, false)]
+    [InlineData(Accessibility.Public, false, true)]
+    [InlineData(Accessibility.Protected, false, true)]
+    [InlineData(Accessibility.ProtectedOrInternal, false, true)]
+    [InlineData(Accessibility.Internal, false, false)]
+    [InlineData(Accessibility.ProtectedAndInternal, false, false)]
+    [InlineData(Accessibility.Private, false, false)]
+    [InlineData(Accessibility.NotApplicable, false, false)]
+    public void IsAccessibilityVisibleFrom_HonorsAccessibilityAndAssembly(
+        Accessibility accessibility,
+        bool sameAssembly,
+        bool expected)
+    {
+        var compilationA = CreateCompilation("AsmA", "public class A { public int F; }");
+        var field = compilationA.GetTypeByMetadataName("A")!.GetMembers("F").Single();
+        var fromType = sameAssembly
+            ? compilationA.GetTypeByMetadataName("A")!
+            : CreateCompilation("AsmB", "public class B { }").GetTypeByMetadataName("B")!;
+
+        Assert.Equal(
+            expected,
+            MoreRestrictiveAccessibilityHelpers.IsAccessibilityVisibleFrom(accessibility, field, fromType));
+    }
+
     private static CSharpCompilation CreateCompilation(string assemblyName, string source)
     {
         var tree = CSharpSyntaxTree.ParseText(source);

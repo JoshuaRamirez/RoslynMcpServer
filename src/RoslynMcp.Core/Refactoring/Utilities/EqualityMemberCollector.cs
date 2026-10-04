@@ -131,15 +131,7 @@ public static class EqualityMemberCollector
         if (member is IPropertySymbol { GetMethod: { } getter })
             accessibility = MoreRestrictiveAccessibilityHelpers.MoreRestrictive(accessibility, getter.DeclaredAccessibility);
 
-        return accessibility switch
-        {
-            Accessibility.Public => true,
-            Accessibility.Protected => true,
-            Accessibility.ProtectedOrInternal => true,
-            Accessibility.Internal => MoreRestrictiveAccessibilityHelpers.SameAssembly(member, fromType),
-            Accessibility.ProtectedAndInternal => MoreRestrictiveAccessibilityHelpers.SameAssembly(member, fromType),
-            _ => false
-        };
+        return MoreRestrictiveAccessibilityHelpers.IsAccessibilityVisibleFrom(accessibility, member, fromType);
     }
 
 }
