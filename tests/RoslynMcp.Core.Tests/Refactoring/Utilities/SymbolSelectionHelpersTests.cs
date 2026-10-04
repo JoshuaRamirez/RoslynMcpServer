@@ -1,5 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
@@ -122,6 +123,103 @@ public class SymbolSelectionHelpersTests
         var otherLocation = other.Locations.Single(l => l.IsInSource);
 
         Assert.False(SymbolSelectionHelpers.IsDefinitionLocation(m, otherLocation));
+    }
+
+
+    [Fact]
+    public void ResolveSelectedSymbol_ReturnsDeclaredMethod_WhenIdentifierSelected()
+    {
+        var (root, model) = Parse("""
+            class C
+            {
+                public void M() { }
+            }
+            """);
+        var method = root.DescendantNodes().OfType<MethodDeclarationSyntax>().Single(m => m.Identifier.Text == "M");
+        var span = method.Identifier.Span;
+
+        var symbol = SymbolSelectionHelpers.ResolveSelectedSymbol(
+            root, model, span, symbolName: null, CancellationToken.None);
+
+        Assert.Equal("M", symbol.Name);
+        Assert.Equal(SymbolKind.Method, symbol.Kind);
+    }
+
+    [Fact]
+    public void ResolveSelectedSymbol_ReturnsSymbol_WhenSymbolNameMatches()
+    {
+        var (root, model) = Parse("""
+            class C
+            {
+                public void M() { }
+            }
+            """);
+        var method = root.DescendantNodes().OfType<MethodDeclarationSyntax>().Single(m => m.Identifier.Text == "M");
+        var span = method.Identifier.Span;
+
+        var symbol = SymbolSelectionHelpers.ResolveSelectedSymbol(
+            root, model, span, symbolName: "M", CancellationToken.None);
+
+        Assert.Equal("M", symbol.Name);
+    }
+
+    [Fact]
+    public void ResolveSelectedSymbol_Throws_WhenSymbolNameDiffers()
+    {
+        var (root, model) = Parse("""
+            class C
+            {
+                public void M() { }
+            }
+            """);
+        var method = root.DescendantNodes().OfType<MethodDeclarationSyntax>().Single(m => m.Identifier.Text == "M");
+        var span = method.Identifier.Span;
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SymbolSelectionHelpers.ResolveSelectedSymbol(
+                root, model, span, symbolName: "Other", CancellationToken.None));
+        Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        Assert.Contains("Other", ex.Message);
+    }
+
+    [Fact]
+    public void ResolveSelectedSymbol_Throws_WhenNoSymbolAtSelection()
+    {
+        var (root, model) = Parse("""
+            class C
+            {
+                public void M()
+                {
+                    var x = 1;
+                }
+            }
+            """);
+        var literal = root.DescendantNodes().OfType<LiteralExpressionSyntax>().Single();
+        var span = literal.Span;
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            SymbolSelectionHelpers.ResolveSelectedSymbol(
+                root, model, span, symbolName: null, CancellationToken.None));
+        Assert.Equal(ErrorCodes.SymbolNotFound, ex.ErrorCode);
+        Assert.Contains("No symbol found", ex.Message);
+    }
+
+    private static (SyntaxNode Root, SemanticModel Model) Parse(string source)
+    {
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var refs = new[]
+        {
+            MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
+        };
+        var compilation = CSharpCompilation.Create(
+            "SymbolSelectionHelpersTests_Parse",
+            new[] { tree },
+            refs,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        var diagnostics = compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).ToArray();
+        Assert.True(diagnostics.Length == 0, string.Join("\n", diagnostics.Select(d => d.ToString())));
+        return (tree.GetRoot(), compilation.GetSemanticModel(tree));
     }
 
     private static Compilation Compile(string source)
