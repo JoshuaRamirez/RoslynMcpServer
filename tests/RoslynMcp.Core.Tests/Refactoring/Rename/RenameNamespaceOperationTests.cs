@@ -744,6 +744,58 @@ public class RenameNamespaceOperationTests
         Assert.DoesNotContain("\"OldNs\"", text);
     }
 
+
+    [SkippableFact]
+    public async Task RenameNamespace_FullRewrite_FlagsEnabled_LeavesCommentAndStringUntouched()
+    {
+        // A.B -> X.Y is not a last-segment rename, so RewriteFullNamespaceAsync runs.
+        // Flags must be harmless: declarations/refs rewrite; comments/strings stay.
+        const string source = """
+            namespace A.B;
+
+            // A.B helper
+            public class Foo
+            {
+                public string Label => "A.B";
+            }
+            """;
+        const string consumer = """
+            namespace Other;
+
+            public class Consumer
+            {
+                public A.B.Foo Create() => new A.B.Foo();
+            }
+            """;
+
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Foo.cs", source),
+            ("Consumer.cs", consumer));
+        var operation = new RenameNamespaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new RenameNamespaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            NamespaceName = "A.B",
+            NewName = "X.Y",
+            RenameInComments = true,
+            RenameInStrings = true
+        });
+
+        Assert.True(result.Success);
+        var declaration = await File.ReadAllTextAsync(workspace.SourcePath);
+        Assert.Contains("namespace X.Y;", declaration);
+        Assert.DoesNotContain("namespace A.B;", declaration);
+        Assert.Contains("// A.B helper", declaration);
+        Assert.Contains("\"A.B\"", declaration);
+        Assert.DoesNotContain("// X.Y helper", declaration);
+        Assert.DoesNotContain("\"X.Y\"", declaration);
+
+        var usages = await File.ReadAllTextAsync(workspace.SecondarySourcePath);
+        Assert.Contains("X.Y.Foo", usages);
+        Assert.DoesNotContain("A.B.Foo", usages);
+    }
+
     #endregion
 
     #region Happy Path
