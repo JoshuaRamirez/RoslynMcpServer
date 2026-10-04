@@ -19,4 +19,11 @@ public sealed class SearchSymbolsParams
     /// Maximum number of results to return.
     /// </summary>
     public int? MaxResults { get; init; }
+
+    /// <summary>
+    /// Absolute path to a source file to restrict results to. When set, only symbols
+    /// whose in-source declaration location is that file are returned. When omitted,
+    /// searches the whole solution.
+    /// </summary>
+    public string? SourceFile { get; init; }
 }

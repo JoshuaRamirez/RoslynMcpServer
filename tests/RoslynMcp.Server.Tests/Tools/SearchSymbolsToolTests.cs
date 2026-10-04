@@ -88,6 +88,7 @@ public class SearchSymbolsToolTests
         // Assert - Optional properties
         Assert.True(properties.TryGetProperty("kindFilter", out _));
         Assert.True(properties.TryGetProperty("maxResults", out _));
+        Assert.True(properties.TryGetProperty("sourceFile", out _));
     }
 
     #endregion

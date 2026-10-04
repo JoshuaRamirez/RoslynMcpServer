@@ -177,8 +177,7 @@ public class QueryParamsValidationTests
     [Fact]
     public void SearchSymbols_ValidParams_PassesValidation()
     {
-        // SearchSymbols doesn't need sourceFile, so valid params should not throw here
-        // (no file existence check)
+        // SearchSymbols sourceFile is optional; omit = whole solution (no file existence check)
         ValidateSearchSymbolsParams(new SearchSymbolsParams { Query = "Foo" });
     }
 
@@ -200,6 +199,37 @@ public class QueryParamsValidationTests
     public void SearchSymbols_CaseInsensitiveKindFilter_PassesValidation()
     {
         ValidateSearchSymbolsParams(new SearchSymbolsParams { Query = "Foo", KindFilter = "method" });
+    }
+
+    [Fact]
+    public void SearchSymbols_RelativePath_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateSearchSymbolsParams(new SearchSymbolsParams { Query = "Foo", SourceFile = "file.cs" }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void SearchSymbols_NonCsFile_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateSearchSymbolsParams(new SearchSymbolsParams { Query = "Foo", SourceFile = AbsoluteTestPath(".txt") }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void SearchSymbols_MissingPath_ThrowsSourceFileNotFound()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateSearchSymbolsParams(new SearchSymbolsParams { Query = "Foo", SourceFile = AbsoluteTestPath() }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void SearchSymbols_NoSourceFile_PassesValidation()
+    {
+        // No sourceFile is valid — searches the whole solution
+        ValidateSearchSymbolsParams(new SearchSymbolsParams { Query = "Foo" });
     }
 
     #endregion
@@ -279,6 +309,15 @@ public class QueryParamsValidationTests
         {
             var validKinds = string.Join(", ", System.Enum.GetNames<RoslynMcp.Contracts.Enums.SymbolKind>());
             throw new RefactoringException(ErrorCodes.InvalidSymbolKind, $"Invalid kindFilter '{p.KindFilter}'. Valid values: {validKinds}");
+        }
+        if (!string.IsNullOrWhiteSpace(p.SourceFile))
+        {
+            if (!PathResolver.IsAbsolutePath(p.SourceFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
+            if (!PathResolver.IsValidCSharpFilePath(p.SourceFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+            if (!File.Exists(p.SourceFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
         }
     }
 

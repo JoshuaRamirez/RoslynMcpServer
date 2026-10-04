@@ -296,7 +296,7 @@ public sealed class ToolRegistry
         r.RegisterQuery<GoToDefinitionOperation, GoToDefinitionParams, GoToDefinitionResult>(
             "go-to-definition", "Navigate to the definition of a symbol");
         r.RegisterQuery<SearchSymbolsOperation, SearchSymbolsParams, SearchSymbolsResult>(
-            "search-symbols", "Search for symbols by name pattern");
+            "search-symbols", "Search for symbols by name pattern; sourceFile (optional) restricts results to symbols declared in that absolute .cs file");
 
         // ── Query: Analysis (6) ──────────────────────────────────────
         r.RegisterQuery<GetDiagnosticsOperation, GetDiagnosticsParams, GetDiagnosticsResult>(

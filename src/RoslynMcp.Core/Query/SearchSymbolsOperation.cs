@@ -3,6 +3,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Refactoring;
+using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
 using RoslynMcp.Core.Workspace;
 
@@ -27,6 +28,14 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
 
         if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
+
+        if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+        {
+            SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
+
+            if (!File.Exists(@params.SourceFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+        }
     }
 
     /// <inheritdoc />
@@ -71,6 +80,18 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
                 // Skip duplicates (same symbol can appear in multiple compilations)
                 var fqn = symbol.ToDisplayString();
                 if (entries.Any(e => e.FullyQualifiedName == fqn)) continue;
+
+                // When sourceFile is set, restrict to symbols declared in that file
+                // (same OrdinalIgnoreCase path match as GetDiagnostics). Omit = whole solution.
+                if (!string.IsNullOrWhiteSpace(@params.SourceFile))
+                {
+                    var filterLocation = symbol.Locations.FirstOrDefault(l => l.IsInSource);
+                    if (filterLocation == null) continue;
+
+                    var filterPath = filterLocation.GetLineSpan().Path;
+                    if (!string.Equals(filterPath, @params.SourceFile, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                }
 
                 totalCount++;
 
