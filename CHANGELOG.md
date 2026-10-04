@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- Folded MakeStatic / MakeNonStatic identical `PlanConflictsWithClaimedSpans` onto existing `StaticMethodHelpers`. Body unchanged (declaration spans then call-site spans against `claimedSpans`). Thin typed forwarders retained on each operation (project private `StaticPlan` edits to `(SyntaxTree, Span)`). Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold SafeDelete `ResolveSelectedSymbol`. (#2160)
+
 - Folded MakeStatic / MakeNonStatic identical `ResolveSelectedSymbol` onto existing `SymbolSelectionHelpers`. Body unchanged (token-overlap declared/identifier symbol, then innermost declared with `DeclarationIdentifiers.IdentifierOverlaps`; optional `symbolName` via `ConfirmSymbolName`). Thin typed forwarders retained on each operation. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold SafeDelete `ResolveSelectedSymbol` (broader private `IdentifierOverlaps`). Does not fold `PlanConflictsWithClaimedSpans`. (#2095)
 
 - Folded convert_to_async / convert_expression_body / convert_property / change_signature / inline_variable / add_null_checks identical `StartLine` onto existing `SyntaxLineHelpers` (and pointed `FindMethodHelpers.StartLine` / `StartsOnLine` at it). Body unchanged (`GetLocation().GetLineSpan().StartLinePosition.Line + 1`). Thin typed forwarders retained on each operation. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold InlineMethod `StartLine` (Identifier location). (#2082)

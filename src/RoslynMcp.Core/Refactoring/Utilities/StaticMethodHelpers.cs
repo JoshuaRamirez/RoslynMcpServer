@@ -73,4 +73,31 @@ internal static class StaticMethodHelpers
         var signature = $"{modifiers} {returnType} {method.Identifier}{method.TypeParameterList}{method.ParameterList}";
         return signature.Trim();
     }
+
+    /// <summary>
+    /// True when any declaration or call-site span is already present in
+    /// <paramref name="claimedSpans"/>. Same body as the prior private
+    /// <c>PlanConflictsWithClaimedSpans</c> copies on MakeStatic /
+    /// MakeNonStatic (span-pair projection — private <c>StaticPlan</c>
+    /// stays on each operation).
+    /// </summary>
+    internal static bool PlanConflictsWithClaimedSpans(
+        IEnumerable<(SyntaxTree Tree, TextSpan Span)> declarationSpans,
+        IEnumerable<(SyntaxTree Tree, TextSpan Span)> callSiteSpans,
+        HashSet<(SyntaxTree Tree, TextSpan Span)> claimedSpans)
+    {
+        foreach (var declaration in declarationSpans)
+        {
+            if (claimedSpans.Contains(declaration))
+                return true;
+        }
+
+        foreach (var callSite in callSiteSpans)
+        {
+            if (claimedSpans.Contains(callSite))
+                return true;
+        }
+
+        return false;
+    }
 }
