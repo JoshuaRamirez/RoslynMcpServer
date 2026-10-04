@@ -196,7 +196,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName!);
         root = await document.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
-        sourceDecl = RecoverAnnotatedType(
+        sourceDecl = TypePartRematch.RecoverAnnotatedType(
             root,
             sourceTypeAnnotation,
             sourceDecl,
@@ -1064,24 +1064,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         int? line,
         int? column = null) =>
         HierarchyTypeDeclarationHelpers.FindTypeDeclaration(root, typeName, line, column);
-
-    private static TypeDeclarationSyntax RecoverAnnotatedType(
-        SyntaxNode root,
-        SyntaxAnnotation sourceTypeAnnotation,
-        TypeDeclarationSyntax original,
-        string typeName)
-    {
-        var annotated = root.GetAnnotatedNodes(sourceTypeAnnotation)
-            .OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault();
-        if (annotated != null)
-            return annotated;
-
-        return TypePartRematch.RematchTypeDeclaration(root, original)
-            ?? throw new RefactoringException(
-                ErrorCodes.TypeNotFound,
-                $"Type '{typeName}' not found in file.");
-    }
 
     /// <summary>
     /// Folds descendant derived-type replacements that

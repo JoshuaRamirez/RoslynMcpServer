@@ -1,5 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using RoslynMcp.Contracts.Errors;
 
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
@@ -30,4 +31,28 @@ internal static class TypePartRematch
         root.DescendantNodes()
             .OfType<TypeDeclarationSyntax>()
             .FirstOrDefault(t => t.SpanStart == original.SpanStart && t.Identifier.Text == original.Identifier.Text);
+
+    /// <summary>
+    /// Recovers a type declaration after a per-execution annotation rewrite:
+    /// prefer the annotated node, else rematch by SpanStart + Identifier, else
+    /// throw <see cref="ErrorCodes.TypeNotFound"/>. Same body as the prior
+    /// PullMembersUp / PushMembersDown private copies.
+    /// </summary>
+    internal static TypeDeclarationSyntax RecoverAnnotatedType(
+        SyntaxNode root,
+        SyntaxAnnotation typeAnnotation,
+        TypeDeclarationSyntax original,
+        string typeName)
+    {
+        var annotated = root.GetAnnotatedNodes(typeAnnotation)
+            .OfType<TypeDeclarationSyntax>()
+            .FirstOrDefault();
+        if (annotated != null)
+            return annotated;
+
+        return RematchTypeDeclaration(root, original)
+            ?? throw new RefactoringException(
+                ErrorCodes.TypeNotFound,
+                $"Type '{typeName}' not found in file.");
+    }
 }

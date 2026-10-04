@@ -1,5 +1,8 @@
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using RoslynMcp.Contracts.Errors;
+using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using Xunit;
 
@@ -79,5 +82,51 @@ public class TypePartRematchTests
         Assert.Same(nested, TypePartRematch.RematchTypeDeclaration(root, nested));
         Assert.Same(topLevel, TypePartRematch.RematchTypeDeclaration(root, topLevel));
         Assert.NotSame(nested, topLevel);
+    }
+
+    [Fact]
+    public void RecoverAnnotatedType_ReturnsAnnotatedNode_WhenPresent()
+    {
+        var tree = CSharpSyntaxTree.ParseText("class A { } class B { }");
+        var root = tree.GetRoot();
+        var original = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .Single(t => t.Identifier.Text == "A");
+        var annotation = new SyntaxAnnotation("test-recover");
+        var annotatedOriginal = original.WithAdditionalAnnotations(annotation);
+        root = root.ReplaceNode(original, annotatedOriginal);
+
+        var recovered = TypePartRematch.RecoverAnnotatedType(root, annotation, original, "A");
+
+        Assert.True(recovered.HasAnnotation(annotation));
+        Assert.Equal("A", recovered.Identifier.Text);
+    }
+
+    [Fact]
+    public void RecoverAnnotatedType_FallsBackToRematch_WhenAnnotationMissing()
+    {
+        var tree = CSharpSyntaxTree.ParseText("class A { } class B { }");
+        var root = tree.GetRoot();
+        var original = root.DescendantNodes().OfType<TypeDeclarationSyntax>()
+            .Single(t => t.Identifier.Text == "A");
+
+        var recovered = TypePartRematch.RecoverAnnotatedType(
+            root, new SyntaxAnnotation("missing"), original, "A");
+
+        Assert.Same(original, recovered);
+    }
+
+    [Fact]
+    public void RecoverAnnotatedType_ThrowsTypeNotFound_WhenRematchFails()
+    {
+        var originalTree = CSharpSyntaxTree.ParseText("class A { }");
+        var original = originalTree.GetRoot().DescendantNodes().OfType<TypeDeclarationSyntax>().Single();
+        var otherRoot = CSharpSyntaxTree.ParseText("class B { }").GetRoot();
+
+        var ex = Assert.Throws<RefactoringException>(() =>
+            TypePartRematch.RecoverAnnotatedType(
+                otherRoot, new SyntaxAnnotation("missing"), original, "A"));
+
+        Assert.Equal(ErrorCodes.TypeNotFound, ex.ErrorCode);
+        Assert.Contains("Type 'A' not found in file.", ex.Message);
     }
 }

@@ -174,7 +174,7 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
             ?? DocumentForTreeHelpers.GetDocumentForTree(annotatedSolution, previousTree, @params.TypeName!);
         root = await document.GetSyntaxRootAsync(cancellationToken)
             ?? throw new RefactoringException(ErrorCodes.RoslynError, "Could not parse file.");
-        derivedDecl = RecoverAnnotatedType(
+        derivedDecl = TypePartRematch.RecoverAnnotatedType(
             root,
             targetTypeAnnotation,
             derivedDecl,
@@ -559,24 +559,6 @@ public sealed class PullMembersUpOperation : RefactoringOperationBase<PullMember
         int? line,
         int? column = null) =>
         HierarchyTypeDeclarationHelpers.FindTypeDeclaration(root, typeName, line, column);
-
-    private static TypeDeclarationSyntax RecoverAnnotatedType(
-        SyntaxNode root,
-        SyntaxAnnotation targetTypeAnnotation,
-        TypeDeclarationSyntax original,
-        string typeName)
-    {
-        var annotated = root.GetAnnotatedNodes(targetTypeAnnotation)
-            .OfType<TypeDeclarationSyntax>()
-            .FirstOrDefault();
-        if (annotated != null)
-            return annotated;
-
-        return TypePartRematch.RematchTypeDeclaration(root, original)
-            ?? throw new RefactoringException(
-                ErrorCodes.TypeNotFound,
-                $"Type '{typeName}' not found in file.");
-    }
 
     internal static INamedTypeSymbol GetTargetBaseType(INamedTypeSymbol derived, string? targetTypeName)
     {
