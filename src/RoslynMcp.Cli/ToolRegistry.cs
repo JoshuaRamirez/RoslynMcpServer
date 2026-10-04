@@ -300,7 +300,7 @@ public sealed class ToolRegistry
 
         // ── Query: Analysis (6) ──────────────────────────────────────
         r.RegisterQuery<GetDiagnosticsOperation, GetDiagnosticsParams, GetDiagnosticsResult>(
-            "get-diagnostics", "Get compiler diagnostics for the solution or a file");
+            "get-diagnostics", "Get compiler diagnostics for the solution or a file; maxResults (optional) caps the returned list (omit = no cap); result includes Truncated when capped");
         r.RegisterQuery<GetCodeMetricsOperation, GetCodeMetricsParams, GetCodeMetricsResult>(
             "get-code-metrics", "Calculate code metrics (complexity, coupling, etc.); column (optional) disambiguates same-named symbols the same way find_callers does when set with line; omitted keeps today's Line-only / file-level path; column without line keeps today's SymbolResolver omitted-line path");
         r.RegisterQuery<AnalyzeControlFlowOperation, AnalyzeControlFlowParams, AnalyzeControlFlowResult>(

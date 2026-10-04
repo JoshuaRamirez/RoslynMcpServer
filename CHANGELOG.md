@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- `get_diagnostics` now honors optional **`maxResults`**: when set (>= 1), caps the returned `Diagnostics` list to the first N matches in today's enumeration order; `TotalCount` remains the full match count and `Truncated` is true when capped (peer `search_symbols` / `find_references` / `find_callers` / `find_implementations`). Omit `maxResults` for no cap (today's full-list behavior). `maxResults < 1` → `MissingRequiredParam` "maxResults must be >= 1.". Does not change `severityFilter` / `sourceFile` behavior. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not invent projectFilter. (#2119)
+
 - `search_symbols` now honors optional **`sourceFile`**: when set, validates with `SourceFilePathHelpers.ValidateSourceFilePath` + `File.Exists` (`SourceFileNotFound`; same as `get_diagnostics`; does not invent `SourceNotInWorkspace`) and restricts results to symbols whose in-source declaration location path equals that file (`OrdinalIgnoreCase` on `GetLineSpan().Path`). Omit `sourceFile` to search the whole solution. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not invent further query sourceFile honors beyond search_symbols. (#2104)
 
 ### Changed
