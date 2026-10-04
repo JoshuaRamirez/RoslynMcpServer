@@ -517,7 +517,7 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
     }
 
     private static int StartLine(PropertyDeclarationSyntax property) =>
-        property.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        SyntaxLineHelpers.StartLine(property);
 
 
     /// <summary>

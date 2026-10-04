@@ -293,7 +293,7 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
     }
 
     private static int StartLine(MemberDeclarationSyntax member) =>
-        member.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        SyntaxLineHelpers.StartLine(member);
 
     private static string? GetMemberName(MemberDeclarationSyntax member) => member switch
     {

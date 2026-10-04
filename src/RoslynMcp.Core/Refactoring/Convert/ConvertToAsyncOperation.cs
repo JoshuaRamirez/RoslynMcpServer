@@ -824,7 +824,7 @@ public sealed class ConvertToAsyncOperation : RefactoringOperationBase<ConvertTo
     }
 
     private static int StartLine(MethodDeclarationSyntax method) =>
-        method.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        SyntaxLineHelpers.StartLine(method);
 
     private static async Task<List<CallSite>> CollectCallSitesAsync(
         IMethodSymbol methodSymbol,

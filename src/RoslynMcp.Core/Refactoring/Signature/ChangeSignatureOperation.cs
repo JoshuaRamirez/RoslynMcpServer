@@ -1471,7 +1471,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     }
 
     private static int StartLine(MethodDeclarationSyntax method) =>
-        method.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        SyntaxLineHelpers.StartLine(method);
 
     private static void EnsureProjectedParameterNamesAreUnique(IReadOnlyList<ParameterChange> changes)
     {

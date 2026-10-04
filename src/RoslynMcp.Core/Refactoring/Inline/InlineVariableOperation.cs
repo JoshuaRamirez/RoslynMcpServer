@@ -755,7 +755,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
     }
 
     private static int StartLine(VariableDeclaratorSyntax declarator) =>
-        declarator.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        SyntaxLineHelpers.StartLine(declarator);
 
     private static bool DeclaratorCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
         LocalCoverage.IdentifierCoversColumn(declarator, line, column) ||

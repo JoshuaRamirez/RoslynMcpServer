@@ -399,7 +399,7 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
     }
 
     private static int StartLine(SyntaxNode node) =>
-        node.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        SyntaxLineHelpers.StartLine(node);
 
     private static BlockSyntax? GetBody(SyntaxNode node) => node switch
     {

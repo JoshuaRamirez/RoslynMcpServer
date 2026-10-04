@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- Folded convert_to_async / convert_expression_body / convert_property / change_signature / inline_variable / add_null_checks identical `StartLine` onto existing `SyntaxLineHelpers` (and pointed `FindMethodHelpers.StartLine` / `StartsOnLine` at it). Body unchanged (`GetLocation().GetLineSpan().StartLinePosition.Line + 1`). Thin typed forwarders retained on each operation. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold InlineMethod `StartLine` (Identifier location). (#2082)
+
 - Folded ExtractVariable / IntroduceField near-identical `FindEnclosingExpression` onto new `ExpressionSelectionHelpers`. Shared walk body unchanged (smallest enclosing `ExpressionSyntax` whose span contains the selection; null when none). ExtractVariable's trailing ExpressionStatement branch was a no-op and is omitted. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold CollectBindings / PreferTypeName / SanitizeIdentifierSeed. Does not fold ResolveSelectedSymbol. (#2075)
 
 - Folded MakeStatic / MakeNonStatic / SafeDelete / IntroduceField identical `GetSelectionSpan` onto existing `SyntaxLineHelpers`. Body unchanged (1-based line/column → `TextSpan`; `InvalidLineNumber` / `InvalidColumnNumber` / `InvalidSelectionRange`). Thin typed forwarders retained on each operation. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold PreferTypeName / SanitizeIdentifierSeed. Does not fold ResolveSelectedSymbol. (#2070)

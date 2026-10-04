@@ -57,6 +57,50 @@ public class SyntaxLineHelpersTests
     }
 
     [Fact]
+    public void StartLine_ReturnsOneBasedStartLine()
+    {
+        var root = Parse("""
+            class C
+            {
+                void M()
+                {
+                    var x = 1;
+                }
+            }
+            """);
+        var local = root.DescendantNodes().OfType<LocalDeclarationStatementSyntax>().Single();
+        var method = root.DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+
+        // Local starts on line 5; method on line 3 (1-based) in the snippet above.
+        Assert.Equal(5, SyntaxLineHelpers.StartLine(local));
+        Assert.Equal(3, SyntaxLineHelpers.StartLine(method));
+    }
+
+    [Fact]
+    public void StartLine_RootStartsOnLineOne()
+    {
+        var root = Parse("class C { }");
+
+        Assert.Equal(1, SyntaxLineHelpers.StartLine(root));
+    }
+
+    [Fact]
+    public void StartsOnLine_MatchesStartLine()
+    {
+        var root = Parse("""
+            class C
+            {
+                void M() { }
+            }
+            """);
+        var method = root.DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+        var line = SyntaxLineHelpers.StartLine(method);
+
+        Assert.True(SyntaxLineHelpers.StartsOnLine(method, line));
+        Assert.False(SyntaxLineHelpers.StartsOnLine(method, line + 1));
+    }
+
+    [Fact]
     public void GetSelectionSpan_MapsOneBasedLineColumnToSpan()
     {
         var text = SourceText.From("""
