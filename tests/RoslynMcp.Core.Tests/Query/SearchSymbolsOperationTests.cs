@@ -178,6 +178,45 @@ public class SearchSymbolsOperationTests
         Assert.Contains(result.Data.Symbols, s => s.Name == "UniqueAlpha");
     }
 
+    [SkippableFact]
+    public async Task SearchSymbols_WithSourceFile_ExistingOutsideWorkspace_ReturnsSuccessEmpty()
+    {
+        // Existing absolute .cs outside the loaded workspace is valid: File.Exists
+        // passes and path filtering yields no declarations (not SourceNotInWorkspace).
+        await using var workspace = await TempWorkspace.CreateAsync("class UniqueAlpha {}");
+        var outsideDir = Path.Combine(Path.GetTempPath(), "RoslynMcpSearchSymbols_Outside_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        var outsidePath = Path.Combine(outsideDir, "Outside.cs");
+
+        try
+        {
+            await File.WriteAllTextAsync(outsidePath, "class OutsideUnique { }\n");
+
+            var operation = new SearchSymbolsOperation(workspace.Context);
+            var result = await operation.ExecuteAsync(new SearchSymbolsParams
+            {
+                Query = "UniqueAlpha",
+                SourceFile = outsidePath
+            });
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+            Assert.Empty(result.Data.Symbols);
+            Assert.Equal(0, result.Data.TotalCount);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(outsideDir, recursive: true);
+            }
+            catch
+            {
+                // ignore cleanup failures
+            }
+        }
+    }
+
     #endregion
 
     private static string FlipAsciiCase(string name)
