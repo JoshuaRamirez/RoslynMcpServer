@@ -9,6 +9,7 @@ namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 
 /// <summary>
 /// Unit tests for <see cref="FindMethodHelpers.FindMethod"/>,
+/// <see cref="FindMethodHelpers.FindMethodPreferFirst"/>,
 /// <see cref="FindMethodHelpers.FindMethodDeclaration"/>, and
 /// <see cref="FindMethodHelpers.CollectMethods"/> / <see cref="FindMethodHelpers.OrderMethods"/> —
 /// selection / throwing / allFiles enumeration previously covered on Signature private copies.
@@ -278,6 +279,60 @@ public class FindMethodHelpersTests
             natural.Select(m => m.Identifier.Text),
             ordered.Select(m => m.Identifier.Text));
         Assert.True(ordered[0].SpanStart < ordered[1].SpanStart);
+    }
+
+    [Fact]
+    public void FindMethodPreferFirst_OmittedColumn_SameLineOverloads_ReturnsFirst()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineOverloadsSource).GetRoot();
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x) { }");
+        var preferred = FindMethodHelpers.FindMethodPreferFirst(root, "Process", line, column: null);
+        var strict = FindMethodHelpers.FindMethod(root, "Process", line, column: null);
+
+        Assert.NotNull(preferred);
+        Assert.Null(strict);
+        Assert.Single(preferred.ParameterList.Parameters);
+    }
+
+    [Fact]
+    public void FindMethodPreferFirst_ColumnPicksIdentifierCoverage()
+    {
+        var root = CSharpSyntaxTree.ParseText(SameLineOverloadsSource).GetRoot();
+        var line = FindLine(SameLineOverloadsSource, "public void Process(int x) { }");
+        var first = FindMethodHelpers.FindMethodPreferFirst(
+            root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x) { }"));
+        var second = FindMethodHelpers.FindMethodPreferFirst(
+            root, "Process", line, ColumnOf(SameLineOverloadsSource, "Process(int x, int y)"));
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Single(first.ParameterList.Parameters);
+        Assert.Equal(2, second.ParameterList.Parameters.Count);
+    }
+
+    [Fact]
+    public void FindMethodPreferFirst_ColumnOnContinuationLine_PicksMethod()
+    {
+        const string source = """
+            class C
+            {
+                public void
+                Process(int x) { }
+
+                public void Process(int x, int y) { }
+            }
+            """;
+
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+        var identifierLine = FindLine(source, "Process(int x) { }");
+        var byStartLineOnly = FindMethodHelpers.FindMethodPreferFirst(
+            root, "Process", identifierLine, column: null);
+        var byColumn = FindMethodHelpers.FindMethodPreferFirst(
+            root, "Process", identifierLine, ColumnOf(source, "Process(int x) { }"));
+
+        Assert.Null(byStartLineOnly);
+        Assert.NotNull(byColumn);
+        Assert.Single(byColumn.ParameterList.Parameters);
     }
 
     private static int FindLine(string source, string fragment)
