@@ -167,6 +167,98 @@ public class ParameterTypeMatchHelpersTests
         Assert.False(ParameterTypeMatchHelpers.ParameterTypesMatch(method.Parameters[0].Type, stringType));
     }
 
+    [Fact]
+    public void ParameterListsMatch_empty_lists_returns_true()
+    {
+        var (a, b) = GetMethodPair("""
+            public class C
+            {
+                public void A() { }
+                public void B() { }
+            }
+            """);
+
+        Assert.True(ParameterTypeMatchHelpers.ParameterListsMatch(a.Parameters, b.Parameters));
+    }
+
+    [Fact]
+    public void ParameterListsMatch_length_mismatch_returns_false()
+    {
+        var (a, b) = GetMethodPair("""
+            public class C
+            {
+                public void A(int x) { }
+                public void B(int x, int y) { }
+            }
+            """);
+
+        Assert.False(ParameterTypeMatchHelpers.ParameterListsMatch(a.Parameters, b.Parameters));
+        Assert.False(ParameterTypeMatchHelpers.ParameterListsMatch(b.Parameters, a.Parameters));
+    }
+
+    [Fact]
+    public void ParameterListsMatch_ref_kind_mismatch_returns_false()
+    {
+        var (a, b) = GetMethodPair("""
+            public class C
+            {
+                public void A(ref int x) { }
+                public void B(out int x) { x = 0; }
+            }
+            """);
+
+        Assert.False(ParameterTypeMatchHelpers.ParameterListsMatch(a.Parameters, b.Parameters));
+    }
+
+    [Fact]
+    public void ParameterListsMatch_type_mismatch_returns_false()
+    {
+        var (a, b) = GetMethodPair("""
+            public class C
+            {
+                public void A(int x, string y) { }
+                public void B(int x, object y) { }
+            }
+            """);
+
+        Assert.False(ParameterTypeMatchHelpers.ParameterListsMatch(a.Parameters, b.Parameters));
+    }
+
+    [Fact]
+    public void ParameterListsMatch_method_type_params_by_ordinal_and_same_ref_kinds_returns_true()
+    {
+        var (a, b) = GetMethodPair("""
+            public class C
+            {
+                public void A<T>(in T x, ref int y, T[] z) { }
+                public void B<U>(in U x, ref int y, U[] z) { }
+            }
+            """);
+
+        Assert.True(ParameterTypeMatchHelpers.ParameterListsMatch(a.Parameters, b.Parameters));
+    }
+
+    [Fact]
+    public void ParameterListsMatch_indexer_parameters_match_returns_true()
+    {
+        var compilation = CreateCompilation("""
+            public class A { public int this[int i, string s] => 0; }
+            public class B { public int this[int j, string t] => 0; }
+            """);
+        var a = compilation.GetTypeByMetadataName("A")!.GetMembers().OfType<IPropertySymbol>().Single();
+        var b = compilation.GetTypeByMetadataName("B")!.GetMembers().OfType<IPropertySymbol>().Single();
+
+        Assert.True(ParameterTypeMatchHelpers.ParameterListsMatch(a.Parameters, b.Parameters));
+    }
+
+    private static (IMethodSymbol A, IMethodSymbol B) GetMethodPair(string source)
+    {
+        var type = CreateCompilation(source).GetTypeByMetadataName("C")!;
+        return (
+            type.GetMembers("A").OfType<IMethodSymbol>().Single(),
+            type.GetMembers("B").OfType<IMethodSymbol>().Single());
+    }
+
     private static CSharpCompilation CreateCompilation(string source)
     {
         var tree = CSharpSyntaxTree.ParseText(source);

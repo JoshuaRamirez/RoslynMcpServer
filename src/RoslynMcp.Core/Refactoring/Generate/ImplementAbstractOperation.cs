@@ -756,18 +756,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             return false;
         if (left.Arity != right.Arity)
             return false;
-        if (left.Parameters.Length != right.Parameters.Length)
-            return false;
-
-        for (var i = 0; i < left.Parameters.Length; i++)
-        {
-            if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
-                return false;
-            if (!ParameterTypeMatchHelpers.ParameterTypesMatch(left.Parameters[i].Type, right.Parameters[i].Type))
-                return false;
-        }
-
-        return true;
+        return ParameterTypeMatchHelpers.ParameterListsMatch(left.Parameters, right.Parameters);
     }
 
     private static bool PropertySignaturesMatch(IPropertySymbol left, IPropertySymbol right)
@@ -776,18 +765,7 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             return false;
         if (!left.IsIndexer)
             return string.Equals(left.Name, right.Name, StringComparison.Ordinal);
-        if (left.Parameters.Length != right.Parameters.Length)
-            return false;
-
-        for (var i = 0; i < left.Parameters.Length; i++)
-        {
-            if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
-                return false;
-            if (!ParameterTypeMatchHelpers.ParameterTypesMatch(left.Parameters[i].Type, right.Parameters[i].Type))
-                return false;
-        }
-
-        return true;
+        return ParameterTypeMatchHelpers.ParameterListsMatch(left.Parameters, right.Parameters);
     }
 
     /// <summary>
