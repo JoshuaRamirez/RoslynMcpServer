@@ -690,6 +690,35 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void GetDocumentOutline_InvalidMaxResults_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetDocumentOutlineParams(new GetDocumentOutlineParams { SourceFile = AbsoluteTestPath(), MaxResults = 0 }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal("maxResults must be >= 1.", ex.Message);
+    }
+
+    [Fact]
+    public void GetDocumentOutline_NegativeMaxResults_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetDocumentOutlineParams(new GetDocumentOutlineParams { SourceFile = AbsoluteTestPath(), MaxResults = -1 }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GetDocumentOutline_ValidMaxResults_PassesValidation()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetDocumentOutlineParams(new GetDocumentOutlineParams { SourceFile = AbsoluteTestPath(), MaxResults = 1 }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+
+        ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetDocumentOutlineParams(new GetDocumentOutlineParams { SourceFile = AbsoluteTestPath(), MaxResults = 50 }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
     #endregion
 
     #region New Validation Helpers
@@ -812,6 +841,8 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
         if (!PathResolver.IsValidCSharpFilePath(p.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        if (p.MaxResults.HasValue && p.MaxResults.Value < 1)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
         if (!File.Exists(p.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
     }

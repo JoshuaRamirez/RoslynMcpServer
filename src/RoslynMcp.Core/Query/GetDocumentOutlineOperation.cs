@@ -31,6 +31,9 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+
+        if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
     }
 
     /// <inheritdoc />
@@ -77,14 +80,93 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
                 del.GetLocation(), GetAccessibility(del.Modifiers), del.ReturnType.ToString()));
         }
 
+        IReadOnlyList<OutlineEntry> returned = entries;
+        if (@params.MaxResults.HasValue && totalCount > @params.MaxResults.Value)
+        {
+            returned = PruneOutlineForest(entries, @params.MaxResults.Value);
+        }
+
         var result = new GetDocumentOutlineResult
         {
             File = @params.SourceFile,
-            Entries = entries,
-            TotalCount = totalCount
+            Entries = returned,
+            TotalCount = totalCount,
+            Truncated = totalCount > CountNodes(returned)
         };
 
         return QueryResult<GetDocumentOutlineResult>.Succeeded(operationId, result);
+    }
+
+    /// <summary>
+    /// Prefix-prunes an outline forest with a DFS pre-order node budget.
+    /// Includes a node only while remaining budget > 0 (decrement once per included node),
+    /// then recurses into its children with the remaining budget.
+    /// </summary>
+    private static IReadOnlyList<OutlineEntry> PruneOutlineForest(IReadOnlyList<OutlineEntry> entries, int maxResults)
+    {
+        var remaining = maxResults;
+        var pruned = new List<OutlineEntry>();
+        foreach (var entry in entries)
+        {
+            var node = PruneOutlineEntry(entry, ref remaining);
+            if (node == null)
+                break;
+            pruned.Add(node);
+            if (remaining <= 0)
+                break;
+        }
+
+        return pruned;
+    }
+
+    private static OutlineEntry? PruneOutlineEntry(OutlineEntry entry, ref int remaining)
+    {
+        if (remaining <= 0)
+            return null;
+
+        remaining--;
+
+        IReadOnlyList<OutlineEntry>? children = null;
+        if (entry.Children is { Count: > 0 } && remaining > 0)
+        {
+            var prunedChildren = new List<OutlineEntry>();
+            foreach (var child in entry.Children)
+            {
+                var prunedChild = PruneOutlineEntry(child, ref remaining);
+                if (prunedChild == null)
+                    break;
+                prunedChildren.Add(prunedChild);
+                if (remaining <= 0)
+                    break;
+            }
+
+            if (prunedChildren.Count > 0)
+                children = prunedChildren;
+        }
+
+        return new OutlineEntry
+        {
+            Name = entry.Name,
+            Kind = entry.Kind,
+            Line = entry.Line,
+            Column = entry.Column,
+            Accessibility = entry.Accessibility,
+            ReturnType = entry.ReturnType,
+            Children = children
+        };
+    }
+
+    private static int CountNodes(IReadOnlyList<OutlineEntry> entries)
+    {
+        var count = 0;
+        foreach (var entry in entries)
+        {
+            count++;
+            if (entry.Children is { Count: > 0 })
+                count += CountNodes(entry.Children);
+        }
+
+        return count;
     }
 
     private static OutlineEntry BuildNamespaceEntry(BaseNamespaceDeclarationSyntax ns, ref int totalCount)

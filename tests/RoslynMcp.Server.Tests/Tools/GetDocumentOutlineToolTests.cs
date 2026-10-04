@@ -60,6 +60,25 @@ public class GetDocumentOutlineToolTests
     }
 
     [Fact]
+    public void GetDefinition_HasProperties_ForAllParameters()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("solutionPath", out _));
+        Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("maxResults", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsMaxResults()
+    {
+        Assert.Contains("maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_NullArguments_ReturnsError()
     {
         var result = await _tool.ExecuteAsync(null);

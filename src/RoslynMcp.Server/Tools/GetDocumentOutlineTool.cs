@@ -32,7 +32,7 @@ public sealed class GetDocumentOutlineTool : IToolHandler
     public string Name => "get_document_outline";
 
     /// <inheritdoc />
-    public string Description => "Get a structured outline of all declarations in a C# file: namespaces, types, methods, properties, fields, and events with their line numbers and accessibility.";
+    public string Description => "Get a structured outline of all declarations in a C# file: namespaces, types, methods, properties, fields, and events with their line numbers and accessibility. Optional maxResults caps the returned outline tree via DFS pre-order (omit = no cap).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -50,6 +50,12 @@ public sealed class GetDocumentOutlineTool : IToolHandler
             {
                 type = "string",
                 description = "Absolute path to the source file"
+            },
+            maxResults = new
+            {
+                type = "integer",
+                description = "Maximum number of outline nodes to return via DFS pre-order (optional; omit = no cap)",
+                minimum = 1
             }
         },
         additionalProperties = false
@@ -72,7 +78,8 @@ public sealed class GetDocumentOutlineTool : IToolHandler
             var operation = new GetDocumentOutlineOperation(context);
             var @params = new GetDocumentOutlineParams
             {
-                SourceFile = args.SourceFile
+                SourceFile = args.SourceFile,
+                MaxResults = args.MaxResults
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -100,5 +107,6 @@ public sealed class GetDocumentOutlineTool : IToolHandler
     {
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
+        public int? MaxResults { get; init; }
     }
 }

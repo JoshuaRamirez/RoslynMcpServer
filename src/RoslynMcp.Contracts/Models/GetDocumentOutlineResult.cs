@@ -11,14 +11,19 @@ public sealed class GetDocumentOutlineResult
     public required string File { get; init; }
 
     /// <summary>
-    /// Top-level outline entries.
+    /// Top-level outline entries (may be truncated when maxResults is set).
     /// </summary>
     public required IReadOnlyList<OutlineEntry> Entries { get; init; }
 
     /// <summary>
-    /// Total count of symbols in the outline.
+    /// Total count of symbols in the outline (may exceed the node count in Entries if truncated).
     /// </summary>
     public required int TotalCount { get; init; }
+
+    /// <summary>
+    /// Whether the result was truncated due to maxResults.
+    /// </summary>
+    public bool Truncated { get; init; }
 }
 
 /// <summary>

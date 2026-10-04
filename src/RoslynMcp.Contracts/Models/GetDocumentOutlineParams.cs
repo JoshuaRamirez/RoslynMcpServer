@@ -9,4 +9,9 @@ public sealed class GetDocumentOutlineParams
     /// Absolute path to the source file.
     /// </summary>
     public required string SourceFile { get; init; }
+
+    /// <summary>
+    /// Maximum number of outline nodes to return (DFS pre-order budget). Omit for no cap (return full tree).
+    /// </summary>
+    public int? MaxResults { get; init; }
 }
