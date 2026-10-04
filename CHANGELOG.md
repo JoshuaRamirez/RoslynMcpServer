@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- Folded MakeStatic / MakeNonStatic identical `ResolveSelectedSymbol` onto existing `SymbolSelectionHelpers`. Body unchanged (token-overlap declared/identifier symbol, then innermost declared with `DeclarationIdentifiers.IdentifierOverlaps`; optional `symbolName` via `ConfirmSymbolName`). Thin typed forwarders retained on each operation. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold SafeDelete `ResolveSelectedSymbol` (broader private `IdentifierOverlaps`). Does not fold `PlanConflictsWithClaimedSpans`. (#2095)
+
 - Folded convert_to_async / convert_expression_body / convert_property / change_signature / inline_variable / add_null_checks identical `StartLine` onto existing `SyntaxLineHelpers` (and pointed `FindMethodHelpers.StartLine` / `StartsOnLine` at it). Body unchanged (`GetLocation().GetLineSpan().StartLinePosition.Line + 1`). Thin typed forwarders retained on each operation. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold InlineMethod `StartLine` (Identifier location). (#2082)
 
 - Folded ExtractVariable / IntroduceField near-identical `FindEnclosingExpression` onto new `ExpressionSelectionHelpers`. Shared walk body unchanged (smallest enclosing `ExpressionSyntax` whose span contains the selection; null when none). ExtractVariable's trailing ExpressionStatement branch was a no-op and is omitted. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold CollectBindings / PreferTypeName / SanitizeIdentifierSeed. Does not fold ResolveSelectedSymbol. (#2075)

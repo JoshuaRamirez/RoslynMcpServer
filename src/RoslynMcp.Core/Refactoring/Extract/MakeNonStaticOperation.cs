@@ -418,37 +418,9 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         SemanticModel semanticModel,
         TextSpan span,
         MakeNonStaticParams @params,
-        CancellationToken cancellationToken)
-    {
-        var token = root.FindToken(span.Start);
-        if (token.Span.OverlapsWith(span) || span.OverlapsWith(token.Span))
-        {
-            var tokenNode = token.Parent;
-            if (tokenNode != null)
-            {
-                var declaredOnToken = semanticModel.GetDeclaredSymbol(tokenNode, cancellationToken);
-                if (declaredOnToken != null && DeclarationIdentifiers.IdentifierOverlaps(tokenNode, span))
-                    return SymbolSelectionHelpers.ConfirmSymbolName(declaredOnToken, @params.SymbolName);
-
-                if (token.IsKind(SyntaxKind.IdentifierToken))
-                {
-                    var tokenSymbol = semanticModel.GetSymbolInfo(tokenNode, cancellationToken).Symbol;
-                    if (tokenSymbol != null)
-                        return SymbolSelectionHelpers.ConfirmSymbolName(tokenSymbol, @params.SymbolName);
-                }
-            }
-        }
-
-        var node = root.FindNode(span, getInnermostNodeForTie: true);
-        var declared = semanticModel.GetDeclaredSymbol(node, cancellationToken);
-        if (declared != null && DeclarationIdentifiers.IdentifierOverlaps(node, span))
-            return SymbolSelectionHelpers.ConfirmSymbolName(declared, @params.SymbolName);
-
-        throw new RefactoringException(
-            ErrorCodes.SymbolNotFound,
-            "No symbol found at the specified selection.");
-    }
-
+        CancellationToken cancellationToken) =>
+        SymbolSelectionHelpers.ResolveSelectedSymbol(
+            root, semanticModel, span, @params.SymbolName, cancellationToken);
 
     private static void ValidateMethodCanBeMadeNonStatic(IMethodSymbol method)
     {
