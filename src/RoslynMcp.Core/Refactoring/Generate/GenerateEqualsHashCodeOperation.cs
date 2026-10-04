@@ -610,7 +610,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             if (member.IsImplicitlyDeclared || member.Parameters.Length != 1)
                 continue;
 
-            var paramType = UnwrapNullable(member.Parameters[0].Type);
+            var paramType = NullableTypeHelpers.UnwrapNullable(member.Parameters[0].Type);
             if (SymbolEqualityComparer.Default.Equals(paramType, typeSymbol))
                 return true;
         }
@@ -743,7 +743,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             if (method.IsImplicitlyDeclared || method.Parameters.Length != 1)
                 continue;
 
-            var paramType = UnwrapNullable(method.Parameters[0].Type);
+            var paramType = NullableTypeHelpers.UnwrapNullable(method.Parameters[0].Type);
             var isObjectEquals = paramType.SpecialType == SpecialType.System_Object;
             var isTypedEquals = implementIEquatable &&
                 SymbolEqualityComparer.Default.Equals(paramType, typeSymbol);
@@ -821,18 +821,6 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
             && SymbolEqualityComparer.Default.Equals(symbol.TypeArguments[0], selfType);
     }
 
-    private static ITypeSymbol UnwrapNullable(ITypeSymbol type)
-    {
-        if (type is INamedTypeSymbol named &&
-            named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T &&
-            named.TypeArguments.Length == 1)
-        {
-            return named.TypeArguments[0];
-        }
-
-        return type;
-    }
-
     private static TypeSyntax SelfTypeSyntax(string selfTypeName) =>
         SyntaxFactory.ParseTypeName(selfTypeName);
 
@@ -870,7 +858,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                 if (method.IsStatic || method.Parameters.Length != 1)
                     continue;
 
-                var paramType = UnwrapNullable(method.Parameters[0].Type);
+                var paramType = NullableTypeHelpers.UnwrapNullable(method.Parameters[0].Type);
                 if (paramType.SpecialType == SpecialType.System_Object)
                     return method;
             }

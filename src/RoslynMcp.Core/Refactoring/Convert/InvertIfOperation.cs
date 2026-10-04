@@ -498,19 +498,13 @@ public sealed class InvertIfOperation : RefactoringOperationBase<InvertIfParams>
 
     private static bool IsFloatingPoint(ITypeSymbol? type)
     {
-        var underlying = UnwrapNullable(type);
+        var underlying = NullableTypeHelpers.UnwrapNullable(type);
         return underlying?.SpecialType is SpecialType.System_Single or SpecialType.System_Double;
     }
 
     private static bool IsNullableValueType(ITypeSymbol? type) =>
         type is INamedTypeSymbol named &&
         named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
-
-    private static ITypeSymbol? UnwrapNullable(ITypeSymbol? type) =>
-        type is INamedTypeSymbol named &&
-        named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T
-            ? named.TypeArguments[0]
-            : type;
 
     private static ExpressionSyntax InvertIsPattern(IsPatternExpressionSyntax isPattern)
     {
