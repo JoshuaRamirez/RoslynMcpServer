@@ -114,6 +114,35 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void GoToDefinition_InvalidMaxResults_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGoToDefinitionParams(new GoToDefinitionParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", MaxResults = 0 }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal("maxResults must be >= 1.", ex.Message);
+    }
+
+    [Fact]
+    public void GoToDefinition_NegativeMaxResults_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGoToDefinitionParams(new GoToDefinitionParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", MaxResults = -1 }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GoToDefinition_ValidMaxResults_PassesValidation()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGoToDefinitionParams(new GoToDefinitionParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", MaxResults = 1 }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+
+        ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGoToDefinitionParams(new GoToDefinitionParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", MaxResults = 50 }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
     #endregion
 
     #region GetSymbolInfoParams Validation
@@ -264,6 +293,8 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be an absolute path.");
         if (!PathResolver.IsValidCSharpFilePath(p.SourceFile))
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
+        if (p.MaxResults.HasValue && p.MaxResults.Value < 1)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
         if (!p.Line.HasValue && string.IsNullOrWhiteSpace(p.SymbolName))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Either line/column or symbolName must be provided.");
         if (!File.Exists(p.SourceFile))
