@@ -736,37 +736,8 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
                 || string.Equals(right.MetadataName, "Item", StringComparison.Ordinal));
     }
 
-    internal static bool SignaturesMatch(ISymbol left, ISymbol right)
-    {
-        if (left is IMethodSymbol leftMethod && right is IMethodSymbol rightMethod)
-            return MethodSignaturesMatch(leftMethod, rightMethod);
-
-        if (left is IPropertySymbol leftProp && right is IPropertySymbol rightProp)
-            return PropertySignaturesMatch(leftProp, rightProp);
-
-        if (left is IEventSymbol leftEvent && right is IEventSymbol rightEvent)
-            return string.Equals(leftEvent.Name, rightEvent.Name, StringComparison.Ordinal);
-
-        return false;
-    }
-
-    private static bool MethodSignaturesMatch(IMethodSymbol left, IMethodSymbol right)
-    {
-        if (!string.Equals(left.Name, right.Name, StringComparison.Ordinal))
-            return false;
-        if (left.Arity != right.Arity)
-            return false;
-        return ParameterTypeMatchHelpers.ParameterListsMatch(left.Parameters, right.Parameters);
-    }
-
-    private static bool PropertySignaturesMatch(IPropertySymbol left, IPropertySymbol right)
-    {
-        if (left.IsIndexer != right.IsIndexer)
-            return false;
-        if (!left.IsIndexer)
-            return string.Equals(left.Name, right.Name, StringComparison.Ordinal);
-        return ParameterTypeMatchHelpers.ParameterListsMatch(left.Parameters, right.Parameters);
-    }
+    internal static bool SignaturesMatch(ISymbol left, ISymbol right) =>
+        MemberSignatureMatchHelpers.SignaturesMatch(left, right, static symbol => symbol.Name);
 
     /// <summary>
     /// Abstract methods, properties/indexers, and events that are visible
