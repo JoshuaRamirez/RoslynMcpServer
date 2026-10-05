@@ -811,18 +811,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             return false;
         if (left.Arity != right.Arity)
             return false;
-        if (left.Parameters.Length != right.Parameters.Length)
-            return false;
-
-        for (var i = 0; i < left.Parameters.Length; i++)
-        {
-            if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
-                return false;
-            if (!ParameterTypeMatchHelpers.ParameterTypesMatch(left.Parameters[i].Type, right.Parameters[i].Type))
-                return false;
-        }
-
-        return true;
+        return ParameterTypeMatchHelpers.ParameterListsMatch(left.Parameters, right.Parameters);
     }
 
     private static bool PropertySignaturesMatch(IPropertySymbol left, IPropertySymbol right)
@@ -831,18 +820,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             return false;
         if (!left.IsIndexer)
             return string.Equals(UnqualifiedName(left), UnqualifiedName(right), StringComparison.Ordinal);
-        if (left.Parameters.Length != right.Parameters.Length)
-            return false;
-
-        for (var i = 0; i < left.Parameters.Length; i++)
-        {
-            if (left.Parameters[i].RefKind != right.Parameters[i].RefKind)
-                return false;
-            if (!ParameterTypeMatchHelpers.ParameterTypesMatch(left.Parameters[i].Type, right.Parameters[i].Type))
-                return false;
-        }
-
-        return true;
+        return ParameterTypeMatchHelpers.ParameterListsMatch(left.Parameters, right.Parameters);
     }
 
     private static List<MemberDeclarationSyntax> GenerateImplementations(

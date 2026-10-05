@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 
 namespace RoslynMcp.Core.Refactoring.Utilities;
@@ -49,6 +50,32 @@ internal static class ParameterTypeMatchHelpers
             return ParameterTypesMatch(leftPtr.PointedAtType, rightPtr.PointedAtType);
 
         return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="left"/> and <paramref name="right"/> have the
+    /// same length and each parameter pair shares its <see cref="RefKind"/>
+    /// and matches via <see cref="ParameterTypesMatch"/>. Shared by the
+    /// method and indexer signature checks on implement_interface /
+    /// implement_abstract (exact RefKind; unlike
+    /// <see cref="HierarchyConflictHelpers"/>, ref/in/out stay distinct).
+    /// </summary>
+    internal static bool ParameterListsMatch(
+        ImmutableArray<IParameterSymbol> left,
+        ImmutableArray<IParameterSymbol> right)
+    {
+        if (left.Length != right.Length)
+            return false;
+
+        for (var i = 0; i < left.Length; i++)
+        {
+            if (left[i].RefKind != right[i].RefKind)
+                return false;
+            if (!ParameterTypesMatch(left[i].Type, right[i].Type))
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>
