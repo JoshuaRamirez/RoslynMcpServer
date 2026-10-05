@@ -657,6 +657,37 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void FindCallers_CallerFileRelativePath_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateFindCallersCallerFile(new FindCallersParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", CallerFile = "file.cs" }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindCallers_CallerFileNonCsFile_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateFindCallersCallerFile(new FindCallersParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", CallerFile = AbsoluteTestPath(".txt") }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindCallers_CallerFileMissingPath_ThrowsSourceFileNotFound()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateFindCallersCallerFile(new FindCallersParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", CallerFile = AbsoluteTestPath() }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindCallers_NoCallerFile_PassesCallerFileValidation()
+    {
+        // No callerFile is valid — reports call sites across the whole solution
+        ValidateFindCallersCallerFile(new FindCallersParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo" });
+    }
+
     #endregion
 
     #region GetTypeHierarchyParams Validation
@@ -877,6 +908,19 @@ public class QueryParamsValidationTests
         }
         if (!File.Exists(p.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
+    }
+
+    private static void ValidateFindCallersCallerFile(FindCallersParams p)
+    {
+        if (!string.IsNullOrWhiteSpace(p.CallerFile))
+        {
+            if (!PathResolver.IsAbsolutePath(p.CallerFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "callerFile must be an absolute path.");
+            if (!PathResolver.IsValidCSharpFilePath(p.CallerFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "callerFile must be a .cs file.");
+            if (!File.Exists(p.CallerFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.CallerFile}");
+        }
     }
 
     private static void ValidateFindCallersParams(FindCallersParams p)

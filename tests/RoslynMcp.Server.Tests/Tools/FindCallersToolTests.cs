@@ -60,6 +60,36 @@ public class FindCallersToolTests
     }
 
     [Fact]
+    public void GetDefinition_HasExpectedProperties()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var properties = doc.RootElement.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("solutionPath", out _));
+        Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("symbolName", out _));
+        Assert.True(properties.TryGetProperty("line", out _));
+        Assert.True(properties.TryGetProperty("column", out _));
+        Assert.True(properties.TryGetProperty("maxResults", out _));
+        Assert.True(properties.TryGetProperty("callerFile", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_CallerFile_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var callerFile = doc.RootElement.GetProperty("properties").GetProperty("callerFile");
+
+        Assert.Equal("string", callerFile.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("callerFile", required);
+        Assert.Contains("callerFile", _tool.Description);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_NullArguments_ReturnsError()
     {
         var result = await _tool.ExecuteAsync(null);

@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.FindSymbols;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
@@ -41,6 +42,18 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+
+        if (!string.IsNullOrWhiteSpace(@params.CallerFile))
+        {
+            if (!PathResolver.IsAbsolutePath(@params.CallerFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "callerFile must be an absolute path.");
+
+            if (!PathResolver.IsValidCSharpFilePath(@params.CallerFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "callerFile must be a .cs file.");
+
+            if (!File.Exists(@params.CallerFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.CallerFile}");
+        }
     }
 
     /// <inheritdoc />
@@ -58,17 +71,28 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         var callers = new List<CallerInfo>();
         var totalCount = 0;
         var maxResults = @params.MaxResults ?? int.MaxValue;
+        var callerFile = string.IsNullOrWhiteSpace(@params.CallerFile) ? null : @params.CallerFile;
 
         foreach (var caller in callerResults)
         {
             foreach (var location in caller.Locations)
             {
                 if (!location.IsInSource) continue;
+
+                var lineSpan = location.GetLineSpan();
+
+                // Optional callerFile filter runs before maxResults so TotalCount / Truncated
+                // reflect the filtered set.
+                if (callerFile != null &&
+                    !string.Equals(lineSpan.Path, callerFile, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
                 totalCount++;
 
                 if (callers.Count < maxResults)
                 {
-                    var lineSpan = location.GetLineSpan();
                     var snippet = await GetSnippetAsync(location, cancellationToken);
 
                     callers.Add(new CallerInfo

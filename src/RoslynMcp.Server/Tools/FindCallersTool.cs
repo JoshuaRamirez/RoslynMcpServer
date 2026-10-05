@@ -32,7 +32,7 @@ public sealed class FindCallersTool : IToolHandler
     public string Name => "find_callers";
 
     /// <inheritdoc />
-    public string Description => "Find all callers of a C# method or symbol across the solution. Returns the calling symbol name, file location, and a code snippet for each call site.";
+    public string Description => "Find all callers of a C# method or symbol across the solution. Returns the calling symbol name, file location, and a code snippet for each call site. sourceFile locates the target symbol; optional callerFile restricts reported call sites to callers located in that file (applied before maxResults, so totalCount/truncated reflect the filtered set).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -73,6 +73,11 @@ public sealed class FindCallersTool : IToolHandler
                 type = "integer",
                 description = "Maximum number of callers to return",
                 minimum = 1
+            },
+            callerFile = new
+            {
+                type = "string",
+                description = "Absolute path to a .cs file to restrict reported call sites to callers located in that file (optional; omit for the whole solution)"
             }
         },
         additionalProperties = false
@@ -99,7 +104,8 @@ public sealed class FindCallersTool : IToolHandler
                 SymbolName = args.SymbolName,
                 Line = args.Line,
                 Column = args.Column,
-                MaxResults = args.MaxResults
+                MaxResults = args.MaxResults,
+                CallerFile = args.CallerFile
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -131,5 +137,6 @@ public sealed class FindCallersTool : IToolHandler
         public int? Line { get; init; }
         public int? Column { get; init; }
         public int? MaxResults { get; init; }
+        public string? CallerFile { get; init; }
     }
 }
