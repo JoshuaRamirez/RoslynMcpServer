@@ -12,7 +12,8 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// <c>MoveTypeToFile</c> keeps interleaved source/target checks so relative
 /// <c>targetFile</c> still yields <c>InvalidTargetPath</c> ahead of a non-.cs
 /// <c>sourceFile</c>.
-/// Also hosts the shared computed-sibling existence gate
+/// Also hosts the shared destination resolver
+/// (<see cref="ResolveTargetFile"/>) and the computed-sibling existence gate
 /// (<see cref="ThrowIfSiblingTargetExists"/>).
 /// </summary>
 internal static class TargetFilePathHelpers
@@ -31,6 +32,41 @@ internal static class TargetFilePathHelpers
 
         if (!PathResolver.IsValidCSharpFilePath(targetFile))
             throw new RefactoringException(ErrorCodes.InvalidTargetPath, "targetFile must be a .cs file.");
+    }
+
+    /// <summary>
+    /// Resolves the destination file for an extracted type (ExtractBaseClass /
+    /// ExtractInterface). An explicit <paramref name="targetFile"/> always wins;
+    /// inline extraction (neither <paramref name="separateFile"/> nor
+    /// <paramref name="allFiles"/>) returns <paramref name="sourceFile"/>;
+    /// otherwise (allFiles forces a sibling) returns
+    /// <c>{directory of sourceFile}/{siblingTypeName}.cs</c>. Throws
+    /// <see cref="ErrorCodes.InvalidSourcePath"/> ("sourceFile must have a
+    /// parent directory.") when <paramref name="sourceFile"/> has no parent
+    /// directory, matching the prior private copies.
+    /// </summary>
+    internal static string ResolveTargetFile(
+        string? targetFile,
+        string? sourceFile,
+        bool separateFile,
+        bool allFiles,
+        string? siblingTypeName)
+    {
+        if (!string.IsNullOrWhiteSpace(targetFile))
+            return targetFile!;
+
+        if (!separateFile && !allFiles)
+            return sourceFile!;
+
+        var directory = Path.GetDirectoryName(sourceFile!);
+        if (string.IsNullOrEmpty(directory))
+        {
+            throw new RefactoringException(
+                ErrorCodes.InvalidSourcePath,
+                "sourceFile must have a parent directory.");
+        }
+
+        return PathResolver.Combine(directory, siblingTypeName! + ".cs");
     }
 
     /// <summary>
