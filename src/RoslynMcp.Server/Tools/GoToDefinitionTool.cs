@@ -32,7 +32,7 @@ public sealed class GoToDefinitionTool : IToolHandler
     public string Name => "go_to_definition";
 
     /// <inheritdoc />
-    public string Description => "Navigate to a C# symbol's definition. Returns the file, line, and column where the symbol is declared, including support for partial classes with multiple locations.";
+    public string Description => "Navigate to a C# symbol's definition. Returns the file, line, and column where the symbol is declared, including support for partial classes with multiple locations. Optional maxResults caps the returned Definitions list (omit = no cap).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -67,6 +67,12 @@ public sealed class GoToDefinitionTool : IToolHandler
                 type = "integer",
                 description = "1-based column number for position-based symbol resolution",
                 minimum = 1
+            },
+            maxResults = new
+            {
+                type = "integer",
+                description = "Maximum number of definition locations to return (optional; omit = no cap).",
+                minimum = 1
             }
         },
         additionalProperties = false
@@ -92,7 +98,8 @@ public sealed class GoToDefinitionTool : IToolHandler
                 SourceFile = args.SourceFile,
                 SymbolName = args.SymbolName,
                 Line = args.Line,
-                Column = args.Column
+                Column = args.Column,
+                MaxResults = args.MaxResults
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -123,5 +130,6 @@ public sealed class GoToDefinitionTool : IToolHandler
         public string? SymbolName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
+        public int? MaxResults { get; init; }
     }
 }

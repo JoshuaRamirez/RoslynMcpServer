@@ -24,4 +24,9 @@ public sealed class GoToDefinitionParams
     /// 1-based column number for position-based resolution.
     /// </summary>
     public int? Column { get; init; }
+
+    /// <summary>
+    /// Maximum number of definition locations to return. Omit for no cap (return all definitions).
+    /// </summary>
+    public int? MaxResults { get; init; }
 }

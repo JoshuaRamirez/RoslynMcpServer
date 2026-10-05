@@ -28,6 +28,9 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
 
         SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
 
+        if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
+
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
 
@@ -83,7 +86,19 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
             });
         }
 
-        var result = new GoToDefinitionResult { Definitions = definitions };
+        var totalCount = definitions.Count;
+        IReadOnlyList<DefinitionLocation> returnedDefinitions = definitions;
+        if (@params.MaxResults.HasValue && definitions.Count > @params.MaxResults.Value)
+        {
+            returnedDefinitions = definitions.Take(@params.MaxResults.Value).ToList();
+        }
+
+        var result = new GoToDefinitionResult
+        {
+            Definitions = returnedDefinitions,
+            TotalCount = totalCount,
+            Truncated = totalCount > returnedDefinitions.Count
+        };
         return QueryResult<GoToDefinitionResult>.Succeeded(operationId, result);
     }
 }
