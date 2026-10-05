@@ -105,4 +105,37 @@ public class ArgsToJsonConverterTests
         var doc = JsonDocument.Parse(json);
         Assert.Equal(3_000_000_000L, doc.RootElement.GetProperty("bigValue").GetInt64());
     }
+
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData("TRUE", true)]
+    public void SearchSymbols_CaseSensitive_RoundTripsToParams(string value, bool expected)
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["query"] = "ID",
+            ["case-sensitive"] = value
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal(expected, doc.RootElement.GetProperty("caseSensitive").GetBoolean());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.SearchSymbolsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("ID", p.Query);
+        Assert.Equal(expected, p.CaseSensitive);
+    }
+
+    [Fact]
+    public void SearchSymbols_CaseSensitiveOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string> { ["query"] = "ID" });
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.SearchSymbolsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.CaseSensitive);
+    }
 }

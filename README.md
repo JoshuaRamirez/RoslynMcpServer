@@ -284,7 +284,7 @@ These read-only tools let you explore and understand your codebase without makin
 | `go_to_definition` | Navigate to the source definition of a symbol. Supports partial classes with multiple definition locations. Optional `maxResults` caps the returned Definitions list (omit = no cap; peer of `get_type_hierarchy` / `find_implementations`); result includes `Truncated` when capped. | `sourceFile`, `symbolName`, `line`, `column`, `maxResults` |
 | `get_symbol_info` | Get detailed metadata for any symbol: kind, accessibility, modifiers, base types, interfaces, members, parameters, return type, and XML documentation. | `sourceFile`, `symbolName`, `line`, `column` |
 | `find_implementations` | Find all implementations of an interface or overrides of an abstract/virtual member. | `sourceFile`, `symbolName`, `line`, `column`, `maxResults` |
-| `search_symbols` | Search for symbols by name pattern across the entire workspace or a specific file. Filter by kind (class, method, property, etc.). Optional `sourceFile` restricts results to symbols whose in-source declaration location is that file (peer of `get_diagnostics`; omit = whole solution). | `query`, `kindFilter`, `maxResults`, `sourceFile` |
+| `search_symbols` | Search for symbols by name pattern across the entire workspace or a specific file. Filter by kind (class, method, property, etc.). Optional `sourceFile` restricts results to symbols whose in-source declaration location is that file (peer of `get_diagnostics`; omit = whole solution). Optional `caseSensitive` (default `false`) set to `true` matches `query` case-sensitively (ordinal) before `maxResults` is applied. | `query`, `kindFilter`, `maxResults`, `sourceFile`, `caseSensitive` |
 
 ### Analysis & Metrics
 

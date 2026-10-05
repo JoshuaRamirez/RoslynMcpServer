@@ -1900,4 +1900,30 @@ public class HelpGeneratorTests
         Assert.Contains("--column", optionalSection);
         Assert.Contains("--preview", optionalSection);
     }
+
+    [Fact]
+    public void GenerateToolHelp_SearchSymbols_ShowsCaseSensitive()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("search-symbols")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("search-symbols", help);
+        Assert.Contains("caseSensitive", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("default false", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--query", requiredSection);
+        Assert.DoesNotContain("--case-sensitive", requiredSection);
+        Assert.Contains("--case-sensitive", optionalSection);
+        Assert.Contains("--kind-filter", optionalSection);
+        Assert.Contains("--max-results", optionalSection);
+        Assert.Contains("--source-file", optionalSection);
+    }
 }

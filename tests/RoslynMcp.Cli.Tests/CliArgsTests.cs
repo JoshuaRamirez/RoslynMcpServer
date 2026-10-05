@@ -129,4 +129,20 @@ public class CliArgsTests
         Assert.Equal("DoStuff", result.Options["new-name"]);
         Assert.Equal("true", result.Options["preview"]);
     }
+
+    [Fact]
+    public void SearchSymbols_CaseSensitiveFlag_ParsesAsTrue()
+    {
+        var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "ID", "--case-sensitive"]);
+        Assert.Equal("search-symbols", result.ToolName);
+        Assert.Equal("ID", result.Options["query"]);
+        Assert.Equal("true", result.Options["case-sensitive"]);
+    }
+
+    [Fact]
+    public void SearchSymbols_CaseSensitiveExplicitFalse_ParsesAsFalse()
+    {
+        var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "ID", "--case-sensitive", "false"]);
+        Assert.Equal("false", result.Options["case-sensitive"]);
+    }
 }
