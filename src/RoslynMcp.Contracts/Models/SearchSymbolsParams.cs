@@ -26,4 +26,12 @@ public sealed class SearchSymbolsParams
     /// searches the whole solution.
     /// </summary>
     public string? SourceFile { get; init; }
+
+    /// <summary>
+    /// Whether <see cref="Query"/> is matched case-sensitively. Omit or <c>false</c> for today's
+    /// case-insensitive substring match (<c>StringComparison.OrdinalIgnoreCase</c>); <c>true</c>
+    /// uses <c>StringComparison.Ordinal</c>, applied before <see cref="MaxResults"/> so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the case-sensitive match set.
+    /// </summary>
+    public bool? CaseSensitive { get; init; }
 }

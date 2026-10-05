@@ -32,7 +32,7 @@ public sealed class SearchSymbolsTool : IToolHandler
     public string Name => "search_symbols";
 
     /// <inheritdoc />
-    public string Description => "Search for C# symbols by name pattern across the solution or a specific file. Supports substring matching and filtering by symbol kind (Class, Method, Property, etc.). Optional sourceFile restricts results to symbols declared in that file.";
+    public string Description => "Search for C# symbols by name pattern across the solution or a specific file. Supports substring matching and filtering by symbol kind (Class, Method, Property, etc.). Optional sourceFile restricts results to symbols declared in that file. Optional caseSensitive (default false) set to true matches query case-sensitively (ordinal) instead of case-insensitively.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -66,6 +66,11 @@ public sealed class SearchSymbolsTool : IToolHandler
             {
                 type = "string",
                 description = "Absolute path to a .cs file to restrict results to symbols declared in that file (optional)"
+            },
+            caseSensitive = new
+            {
+                type = "boolean",
+                description = "Match query case-sensitively (ordinal) when true (default false = case-insensitive substring match); applied before maxResults so totalCount/truncated reflect the case-sensitive set"
             }
         },
         additionalProperties = false
@@ -91,7 +96,8 @@ public sealed class SearchSymbolsTool : IToolHandler
                 Query = args.Query,
                 KindFilter = args.KindFilter,
                 MaxResults = args.MaxResults,
-                SourceFile = args.SourceFile
+                SourceFile = args.SourceFile,
+                CaseSensitive = args.CaseSensitive
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -122,5 +128,6 @@ public sealed class SearchSymbolsTool : IToolHandler
         public string? KindFilter { get; init; }
         public int? MaxResults { get; init; }
         public string? SourceFile { get; init; }
+        public bool? CaseSensitive { get; init; }
     }
 }

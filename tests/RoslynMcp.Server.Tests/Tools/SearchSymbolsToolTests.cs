@@ -89,6 +89,31 @@ public class SearchSymbolsToolTests
         Assert.True(properties.TryGetProperty("kindFilter", out _));
         Assert.True(properties.TryGetProperty("maxResults", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
+        Assert.True(properties.TryGetProperty("caseSensitive", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_CaseSensitive_IsOptionalBoolean()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var caseSensitive = doc.RootElement.GetProperty("properties").GetProperty("caseSensitive");
+
+        Assert.Equal("boolean", caseSensitive.GetProperty("type").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(caseSensitive.GetProperty("description").GetString()));
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("caseSensitive", required);
+        Assert.Contains("caseSensitive", _tool.Description);
+    }
+
+    [Fact]
+    public void GetDefinition_DisallowsAdditionalProperties()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
     }
 
     #endregion
@@ -146,6 +171,42 @@ public class SearchSymbolsToolTests
 
         // Assert
         Assert.True(result.IsError);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CaseSensitiveBoolean_ParsesAndReachesWorkspace()
+    {
+        // Arrange - well-formed caseSensitive parses; the throwing provider proves parsing succeeded
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""query"": ""ID"",
+            ""caseSensitive"": true
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_CaseSensitiveNonBoolean_ReturnsParseError()
+    {
+        // Arrange - a string is not a boolean; deserialization fails before workspace creation
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""query"": ""ID"",
+            ""caseSensitive"": ""yes""
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", GetResultText(result));
     }
 
     #endregion

@@ -296,7 +296,7 @@ public sealed class ToolRegistry
         r.RegisterQuery<GoToDefinitionOperation, GoToDefinitionParams, GoToDefinitionResult>(
             "go-to-definition", "Navigate to the definition of a symbol; maxResults (optional) caps the returned Definitions list (omit = no cap); result includes Truncated when capped");
         r.RegisterQuery<SearchSymbolsOperation, SearchSymbolsParams, SearchSymbolsResult>(
-            "search-symbols", "Search for symbols by name pattern; sourceFile (optional) restricts results to symbols declared in that absolute .cs file");
+            "search-symbols", "Search for symbols by name pattern; sourceFile (optional) restricts results to symbols declared in that absolute .cs file; caseSensitive (optional, default false) set to true matches query case-sensitively (ordinal), applied before maxResults");
 
         // ── Query: Analysis (6) ──────────────────────────────────────
         r.RegisterQuery<GetDiagnosticsOperation, GetDiagnosticsParams, GetDiagnosticsResult>(

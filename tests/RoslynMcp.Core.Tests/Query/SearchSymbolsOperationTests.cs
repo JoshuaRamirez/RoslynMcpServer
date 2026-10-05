@@ -9,7 +9,8 @@ namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
 /// Operation-level tests for <see cref="SearchSymbolsOperation"/> optional <c>sourceFile</c>
-/// filtering (peer of <see cref="GetDiagnosticsOperation"/>).
+/// filtering (peer of <see cref="GetDiagnosticsOperation"/>) and optional <c>caseSensitive</c>
+/// name matching.
 /// </summary>
 public class SearchSymbolsOperationTests
 {
@@ -215,6 +216,194 @@ public class SearchSymbolsOperationTests
                 // ignore cleanup failures
             }
         }
+    }
+
+    #endregion
+
+    #region caseSensitive
+
+    // Mixed-case names: case-insensitive "ID" matches all of Ids/Id/ID/Identity/Validate/Width/IDGenerator;
+    // case-sensitive "ID" matches only ID and IDGenerator.
+    private const string MixedCaseSource = """
+        class Ids
+        {
+            public int Id;
+            public int ID;
+            public int Identity;
+            public void Validate() { }
+            public int Width;
+        }
+        class IDGenerator { }
+        """;
+
+    private static readonly string[] CaseInsensitiveIdNames =
+        ["Ids", "Id", "ID", "Identity", "Validate", "Width", "IDGenerator"];
+
+    [Fact]
+    public void CaseSensitive_DefaultsToNull()
+    {
+        var @params = new SearchSymbolsParams { Query = "Foo" };
+        Assert.Null(@params.CaseSensitive);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_OmittedCaseSensitive_MatchesCaseInsensitively()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedCaseSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "ID" });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var names = result.Data.Symbols.Select(s => s.Name).ToList();
+        Assert.All(CaseInsensitiveIdNames, n => Assert.Contains(n, names));
+        Assert.Equal(CaseInsensitiveIdNames.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_CaseSensitiveFalse_MatchesOmitted()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedCaseSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "ID" });
+        var explicitFalse = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "ID", CaseSensitive = false });
+
+        Assert.True(omitted.Success);
+        Assert.True(explicitFalse.Success);
+        Assert.NotNull(omitted.Data);
+        Assert.NotNull(explicitFalse.Data);
+        Assert.Equal(omitted.Data.TotalCount, explicitFalse.Data.TotalCount);
+        Assert.Equal(omitted.Data.Truncated, explicitFalse.Data.Truncated);
+        Assert.Equal(
+            omitted.Data.Symbols.Select(s => (s.FullyQualifiedName, s.Kind, s.Line, s.Column)),
+            explicitFalse.Data.Symbols.Select(s => (s.FullyQualifiedName, s.Kind, s.Line, s.Column)));
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_CaseSensitiveTrue_MatchesExactCaseOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedCaseSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "ID", CaseSensitive = true });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(
+            new[] { "ID", "IDGenerator" },
+            result.Data.Symbols.Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal(2, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_CaseSensitiveTrue_LowercaseQuery_MatchesLowercaseSubstringOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedCaseSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "id", CaseSensitive = true });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(
+            new[] { "Validate", "Width" },
+            result.Data.Symbols.Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal(2, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_CaseSensitiveTrue_WithKindFilter_AppliesBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedCaseSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var fields = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "ID",
+            CaseSensitive = true,
+            KindFilter = "Field"
+        });
+        var classes = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "ID",
+            CaseSensitive = true,
+            KindFilter = "Class"
+        });
+
+        Assert.True(fields.Success);
+        Assert.NotNull(fields.Data);
+        var field = Assert.Single(fields.Data.Symbols);
+        Assert.Equal("ID", field.Name);
+        Assert.Equal(1, fields.Data.TotalCount);
+
+        Assert.True(classes.Success);
+        Assert.NotNull(classes.Data);
+        var type = Assert.Single(classes.Data.Symbols);
+        Assert.Equal("IDGenerator", type.Name);
+        Assert.Equal(1, classes.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_CaseSensitiveTrue_WithMaxResults_TotalCountReflectsCaseSensitiveSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedCaseSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var sensitive = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "ID",
+            CaseSensitive = true,
+            MaxResults = 1
+        });
+        var insensitive = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "ID",
+            MaxResults = 1
+        });
+
+        Assert.True(sensitive.Success);
+        Assert.NotNull(sensitive.Data);
+        var only = Assert.Single(sensitive.Data.Symbols);
+        Assert.Contains(only.Name, new[] { "ID", "IDGenerator" });
+        Assert.Equal(2, sensitive.Data.TotalCount);
+        Assert.True(sensitive.Data.Truncated);
+
+        Assert.True(insensitive.Success);
+        Assert.NotNull(insensitive.Data);
+        Assert.Single(insensitive.Data.Symbols);
+        Assert.Equal(CaseInsensitiveIdNames.Length, insensitive.Data.TotalCount);
+        Assert.True(insensitive.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_CaseSensitiveTrue_WithSourceFile_AppliesBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateMultiFileAsync(
+            ("Alpha.cs", "class IDAlpha { public int Id; }\n"),
+            ("Beta.cs", "class IDBeta { public int ID; }\n"));
+
+        var alphaPath = workspace.SourcePaths["Alpha.cs"];
+        var operation = new SearchSymbolsOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "ID",
+            CaseSensitive = true,
+            SourceFile = alphaPath
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var only = Assert.Single(result.Data.Symbols);
+        Assert.Equal("IDAlpha", only.Name);
+        Assert.True(
+            string.Equals(only.File, alphaPath, StringComparison.OrdinalIgnoreCase),
+            $"Expected file {alphaPath}, got {only.File}");
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
     }
 
     #endregion
