@@ -63,11 +63,15 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         var locations = new List<ReferenceLocationInfo>();
         var totalCount = 0;
         var maxResults = @params.MaxResults ?? int.MaxValue;
+        var includeDeclaration = @params.IncludeDeclaration ?? true;
 
         foreach (var referencedSymbol in referencedSymbols)
         {
-            // Add the definition itself
-            foreach (var defLocation in referencedSymbol.Definition.Locations.Where(l => l.IsInSource))
+            // Add the definition itself (skipped entirely when includeDeclaration is false)
+            var definitionLocations = includeDeclaration
+                ? referencedSymbol.Definition.Locations.Where(l => l.IsInSource)
+                : Enumerable.Empty<Location>();
+            foreach (var defLocation in definitionLocations)
             {
                 totalCount++;
                 if (locations.Count < maxResults)

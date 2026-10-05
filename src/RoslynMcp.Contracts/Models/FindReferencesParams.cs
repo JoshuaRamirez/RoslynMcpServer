@@ -29,4 +29,11 @@ public sealed class FindReferencesParams
     /// Maximum number of references to return.
     /// </summary>
     public int? MaxResults { get; init; }
+
+    /// <summary>
+    /// Whether to include the symbol's own definition locations (<c>IsDefinition = true</c>).
+    /// Omit or <c>true</c> for today's behavior; <c>false</c> returns usages only, applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the usage-only set.
+    /// </summary>
+    public bool? IncludeDeclaration { get; init; }
 }

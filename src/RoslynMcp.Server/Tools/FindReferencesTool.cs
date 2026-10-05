@@ -32,7 +32,7 @@ public sealed class FindReferencesTool : IToolHandler
     public string Name => "find_references";
 
     /// <inheritdoc />
-    public string Description => "Find all references to a C# symbol across the solution. Returns file locations, context snippets, and whether each reference is a definition or usage.";
+    public string Description => "Find all references to a C# symbol across the solution. Returns file locations, context snippets, and whether each reference is a definition or usage. Optional includeDeclaration (default true) set to false returns usages only, excluding the symbol's own definition locations before maxResults is applied.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -73,6 +73,11 @@ public sealed class FindReferencesTool : IToolHandler
                 type = "integer",
                 description = "Maximum number of references to return",
                 minimum = 1
+            },
+            includeDeclaration = new
+            {
+                type = "boolean",
+                description = "Include the symbol's own definition locations (default true). false returns usages only; applied before maxResults so totalCount/truncated reflect usages only"
             }
         },
         additionalProperties = false
@@ -99,7 +104,8 @@ public sealed class FindReferencesTool : IToolHandler
                 SymbolName = args.SymbolName,
                 Line = args.Line,
                 Column = args.Column,
-                MaxResults = args.MaxResults
+                MaxResults = args.MaxResults,
+                IncludeDeclaration = args.IncludeDeclaration
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -131,5 +137,6 @@ public sealed class FindReferencesTool : IToolHandler
         public int? Line { get; init; }
         public int? Column { get; init; }
         public int? MaxResults { get; init; }
+        public bool? IncludeDeclaration { get; init; }
     }
 }

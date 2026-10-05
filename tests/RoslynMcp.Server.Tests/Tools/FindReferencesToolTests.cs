@@ -90,6 +90,21 @@ public class FindReferencesToolTests
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("maxResults", out _));
+        Assert.True(properties.TryGetProperty("includeDeclaration", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_IncludeDeclaration_IsOptionalBoolean()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var includeDeclaration = doc.RootElement.GetProperty("properties").GetProperty("includeDeclaration");
+
+        Assert.Equal("boolean", includeDeclaration.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("includeDeclaration", required);
+        Assert.Contains("includeDeclaration", _tool.Description);
     }
 
     #endregion
