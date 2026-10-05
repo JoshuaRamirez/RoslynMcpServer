@@ -71,7 +71,14 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         var callers = new List<CallerInfo>();
         var totalCount = 0;
         var maxResults = @params.MaxResults ?? int.MaxValue;
-        var callerFile = string.IsNullOrWhiteSpace(@params.CallerFile) ? null : @params.CallerFile;
+        // Compare canonical path keys so aliases such as "src/../Caller.cs" or wrong-cased
+        // paths on case-insensitive volumes still match Roslyn's canonical location paths.
+        var callerFileKey = string.IsNullOrWhiteSpace(@params.CallerFile)
+            ? null
+            : PathResolver.GetPathComparisonKey(@params.CallerFile);
+        var locationKeyCache = callerFileKey == null
+            ? null
+            : new Dictionary<string, string>(StringComparer.Ordinal);
 
         foreach (var caller in callerResults)
         {
@@ -83,10 +90,19 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
 
                 // Optional callerFile filter runs before maxResults so TotalCount / Truncated
                 // reflect the filtered set.
-                if (callerFile != null &&
-                    !string.Equals(lineSpan.Path, callerFile, StringComparison.OrdinalIgnoreCase))
+                if (callerFileKey != null)
                 {
-                    continue;
+                    var locationPath = lineSpan.Path;
+                    if (!locationKeyCache!.TryGetValue(locationPath, out var locationKey))
+                    {
+                        locationKey = string.IsNullOrWhiteSpace(locationPath)
+                            ? locationPath
+                            : PathResolver.GetPathComparisonKey(locationPath);
+                        locationKeyCache[locationPath] = locationKey;
+                    }
+
+                    if (!string.Equals(locationKey, callerFileKey, StringComparison.Ordinal))
+                        continue;
                 }
 
                 totalCount++;

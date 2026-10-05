@@ -215,6 +215,47 @@ public class FindCallersOperationTests
         Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
     }
 
+    [SkippableFact]
+    public async Task FindCallers_NonCsCallerFile_ReturnsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync();
+        var operation = new FindCallersOperation(workspace.Context);
+        var textFile = workspace.PathOf("notes.txt");
+        await File.WriteAllTextAsync(textFile, "not C#");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() => operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            CallerFile = textFile
+        }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_AliasedCallerFilePath_StillMatchesCallSites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync();
+        var operation = new FindCallersOperation(workspace.Context);
+        Directory.CreateDirectory(workspace.PathOf("sub"));
+        var aliased = Path.Combine(workspace.DirectoryPath, "sub", "..", "CallerA.cs");
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            CallerFile = aliased
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(2, result.Data.Callers.Count);
+        Assert.All(result.Data.Callers, c => Assert.True(SamePath(c.File, workspace.PathOf("CallerA.cs"))));
+        Assert.Equal(2, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
     private static bool SamePath(string a, string b) =>
         string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
 
