@@ -288,7 +288,7 @@ public sealed class ToolRegistry
 
         // ── Query: Navigation (5) ────────────────────────────────────
         r.RegisterQuery<FindReferencesOperation, FindReferencesParams, FindReferencesResult>(
-            "find-references", "Find all references to a symbol across the solution");
+            "find-references", "Find all references to a symbol across the solution; includeDeclaration (optional, default true) set to false returns usages only, excluded before maxResults");
         r.RegisterQuery<FindCallersOperation, FindCallersParams, FindCallersResult>(
             "find-callers", "Find all callers of a method");
         r.RegisterQuery<FindImplementationsOperation, FindImplementationsParams, FindImplementationsResult>(
