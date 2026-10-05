@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-05
+
 ### Added
 
 - `find_references` now honors optional **`includeDeclaration`**: omit or `true` keeps today's behavior (definition locations with `IsDefinition = true` first); `false` skips the symbol's own definition locations entirely, before `maxResults`, so `TotalCount` / `Truncated` reflect the usage-only set (LSP `ReferenceContext.includeDeclaration` peer). `ReferenceLocationInfo` shape and symbol resolution unchanged. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. (#2257)
@@ -24,6 +26,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- Folded ExtractBaseClass / ExtractInterface identical private `ResolveTargetFile` onto existing `TargetFilePathHelpers` (explicit `targetFile` wins; otherwise the computed sibling path next to the source file). Body unchanged; thin typed forwarders retained on each operation. No behavior change. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. (#2279)
+- Inlined the remaining private `StartLine` forwarders in ConvertExpressionBody / ConvertProperty / AddNullChecks / InlineVariable onto direct `SyntaxLineHelpers.StartLine` calls. No behavior change. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. (#2236)
+- Folded ImplementInterface / ImplementAbstract identical parameter-list comparison loops onto shared `ParameterTypeMatchHelpers.ParameterListsMatch`. No behavior change. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. (#2226)
+- Folded PullMembersUp / PushMembersDown identical `RecoverAnnotatedType` onto existing `TypePartRematch.RecoverAnnotatedType` (annotation, then rematch, then `TypeNotFound`). No behavior change. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. (#2134)
 - Folded ImplementInterface / ImplementAbstract private `MethodSignaturesMatch` / `PropertySignaturesMatch` copies and their `SignaturesMatch` dispatcher onto new shared `MemberSignatureMatchHelpers` with a `nameOf` selector (implement_interface passes its explicit-interface-stripping `UnqualifiedName`, implement_abstract passes `symbol.Name`). The copies were identical except for how the member name is read. Each operation's `SignaturesMatch` is now a one-line delegation; generate_overrides keeps its own simpler copies. No behavior change. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. (#2270)
 
 - Folded ExtractMethod / ExtractVariable private `PreferTypeName` / `SanitizeIdentifierSeed` copies onto new shared `IdentifierSeedHelpers` with a `capitalizeFirstWord` flag (`true` keeps ExtractMethod's PascalCase method-name seeds, `false` keeps ExtractVariable's camelCase variable-name seeds). The copies were identical except for how the first letter is cased. Private copies and now-unused `System.Text` imports removed. `FinalizeMethodName` / `FinalizeVariableName` unchanged. No behavior change. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. (#2264)
@@ -46,13 +52,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - Folded MakeStatic / MakeNonStatic / SafeDelete / IntroduceField identical `GetSelectionSpan` onto existing `SyntaxLineHelpers`. Body unchanged (1-based line/column → `TextSpan`; `InvalidLineNumber` / `InvalidColumnNumber` / `InvalidSelectionRange`). Thin typed forwarders retained on each operation. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold PreferTypeName / SanitizeIdentifierSeed. Does not fold ResolveSelectedSymbol. (#2070)
 
+- `move_type_to_namespace` now honors optional **`sourceFile`** when `allFiles: true`: narrows the walk via `AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile` (default path; peer FormatDocument / SortUsings / AddMissingUsings / RemoveUnusedUsings / simplify_name / add_braces / remove_braces / convert_expression_body / invert_if / convert_foreach_linq / convert_property / convert_to_async / convert_to_pattern_matching / convert_to_interpolated_string / encapsulate_field / add_null_checks / use_base_type / rename_file_to_match_type / move_type_to_file). `Validate` validates a non-blank optional `sourceFile` with `SourceFilePathHelpers.ValidateSourceFilePath` (still skips `File.Exists` under allFiles; filter throws `SourceFileNotFound` / `SourceNotInWorkspace`). Shared filter default path also rejects a case-distinct on-disk path that is not the matched workspace document (`SourceNotInWorkspace`; ignore-case fallback kept when `File.Exists` is false). Omit `sourceFile` to walk the whole solution. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not invent further allFiles sourceFile honors. (#1966)
+
 ## [0.6.8] - 2026-10-04
 
 ### Changed
 
 - `move_type_to_file` now honors optional **`sourceFile`** when `allFiles: true`: narrows the walk via `AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile` (default path; peer FormatDocument / SortUsings / AddMissingUsings / RemoveUnusedUsings / simplify_name / add_braces / remove_braces / convert_expression_body / invert_if / convert_foreach_linq / convert_property / convert_to_async / convert_to_pattern_matching / convert_to_interpolated_string / encapsulate_field / add_null_checks / use_base_type / rename_file_to_match_type). `Validate` validates a non-blank optional `sourceFile` with `SourceFilePathHelpers.ValidateSourceFilePath` (still skips `File.Exists` under allFiles; filter throws `SourceFileNotFound` / `SourceNotInWorkspace`). Omit `sourceFile` to walk the whole solution. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not invent move_type_to_namespace optional sourceFile Filter fold. (#1960)
-
-- `move_type_to_namespace` now honors optional **`sourceFile`** when `allFiles: true`: narrows the walk via `AllFilesDocumentHelpers.FilterAllFilesDocumentsBySourceFile` (default path; peer FormatDocument / SortUsings / AddMissingUsings / RemoveUnusedUsings / simplify_name / add_braces / remove_braces / convert_expression_body / invert_if / convert_foreach_linq / convert_property / convert_to_async / convert_to_pattern_matching / convert_to_interpolated_string / encapsulate_field / add_null_checks / use_base_type / rename_file_to_match_type / move_type_to_file). `Validate` validates a non-blank optional `sourceFile` with `SourceFilePathHelpers.ValidateSourceFilePath` (still skips `File.Exists` under allFiles; filter throws `SourceFileNotFound` / `SourceNotInWorkspace`). Shared filter default path also rejects a case-distinct on-disk path that is not the matched workspace document (`SourceNotInWorkspace`; ignore-case fallback kept when `File.Exists` is false). Omit `sourceFile` to walk the whole solution. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not invent further allFiles sourceFile honors. (#1966)
 
 - Folded PushMembersDown near-duplicate `ConvertToAbstract` onto existing `HierarchyAbstractMemberRewriter.ConvertToAbstract`. Optional `keepOverrideWhenPresent` (default `false` for Pull/Extract; Push `leaveAbstract` passes `true`). Thin private forwarder kept on Push; dead Push `ToAbstractModifiers` removed. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. Does not fold Push `AddOverrideModifier` / other Push helpers. (#1954)
 
@@ -598,7 +604,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
-[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.8...HEAD
+[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.8...v0.7.0
 [0.6.8]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.7...v0.6.8
 [0.6.7]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.6...v0.6.7
 [0.6.6]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.5...v0.6.6
