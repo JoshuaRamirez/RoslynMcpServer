@@ -40,6 +40,9 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
 
         if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
+
+        if (@params.DiagnosticIds != null && @params.DiagnosticIds.Any(string.IsNullOrWhiteSpace))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "diagnosticIds entries must be non-empty.");
     }
 
     /// <inheritdoc />
@@ -49,6 +52,7 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
         CancellationToken cancellationToken)
     {
         var severityFilter = ParseSeverityFilter(@params.SeverityFilter);
+        var idFilter = BuildIdFilter(@params.DiagnosticIds);
         var diagnostics = new List<DiagnosticInfo>();
 
         foreach (var project in Context.Solution.Projects)
@@ -59,6 +63,9 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
             foreach (var diag in compilation.GetDiagnostics(cancellationToken))
             {
                 if (!PassesSeverityFilter(diag.Severity, severityFilter))
+                    continue;
+
+                if (idFilter != null && !idFilter.Contains(diag.Id))
                     continue;
 
                 // Filter by file if specified
@@ -115,6 +122,14 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
         };
 
         return QueryResult<GetDiagnosticsResult>.Succeeded(operationId, result);
+    }
+
+    private static HashSet<string>? BuildIdFilter(IReadOnlyList<string>? diagnosticIds)
+    {
+        if (diagnosticIds == null || diagnosticIds.Count == 0)
+            return null;
+
+        return new HashSet<string>(diagnosticIds.Select(id => id.Trim()), StringComparer.OrdinalIgnoreCase);
     }
 
     private static DiagnosticSeverityFilter ParseSeverityFilter(string? filter)

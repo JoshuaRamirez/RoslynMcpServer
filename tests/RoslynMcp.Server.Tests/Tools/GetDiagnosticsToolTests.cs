@@ -71,6 +71,22 @@ public class GetDiagnosticsToolTests
         Assert.True(properties.TryGetProperty("sourceFile", out _));
         Assert.True(properties.TryGetProperty("severityFilter", out _));
         Assert.True(properties.TryGetProperty("maxResults", out _));
+        Assert.True(properties.TryGetProperty("diagnosticIds", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_DiagnosticIds_IsOptionalStringArray()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var diagnosticIds = doc.RootElement.GetProperty("properties").GetProperty("diagnosticIds");
+
+        Assert.Equal("array", diagnosticIds.GetProperty("type").GetString());
+        Assert.Equal("string", diagnosticIds.GetProperty("items").GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("diagnosticIds", required);
+        Assert.Contains("diagnosticIds", _tool.Description);
     }
 
     [Fact]
