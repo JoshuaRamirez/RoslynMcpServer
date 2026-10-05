@@ -15,10 +15,9 @@ internal static class SyntaxLineHelpers
 {
     /// <summary>
     /// 1-based start line of <paramref name="node"/> via
-    /// <see cref="SyntaxNode.GetLocation"/>. Same body as the identical
-    /// private copies on convert_to_async / convert_expression_body /
-    /// convert_property / change_signature / inline_variable /
-    /// add_null_checks (and the typed forwarder on
+    /// <see cref="SyntaxNode.GetLocation"/>. Called directly by
+    /// convert_expression_body / convert_property / inline_variable /
+    /// add_null_checks (and via the typed forwarder on
     /// <see cref="FindMethodHelpers.StartLine"/>).
     /// </summary>
     internal static int StartLine(SyntaxNode node) =>

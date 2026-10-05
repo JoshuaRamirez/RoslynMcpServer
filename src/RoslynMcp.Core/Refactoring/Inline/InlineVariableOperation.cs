@@ -115,7 +115,7 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         if (variableDeclarators.Count > 1 && !@params.Line.HasValue)
         {
             var lines = variableDeclarators
-                .Select(v => StartLine(v))
+                .Select(v => SyntaxLineHelpers.StartLine(v))
                 .ToList();
             throw new RefactoringException(
                 ErrorCodes.SymbolAmbiguous,
@@ -735,8 +735,8 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
             // continuation line whose declaration span still covers that
             // column.
             return declarators
-                .Where(d => DeclaratorCoversColumn(d, line ?? StartLine(d), column.Value))
-                .OrderBy(d => LocalCoverage.IdentifierCoversColumn(d, line ?? StartLine(d), column.Value) ? 0 : 1)
+                .Where(d => DeclaratorCoversColumn(d, line ?? SyntaxLineHelpers.StartLine(d), column.Value))
+                .OrderBy(d => LocalCoverage.IdentifierCoversColumn(d, line ?? SyntaxLineHelpers.StartLine(d), column.Value) ? 0 : 1)
                 .ThenBy(d => d.Span.Length)
                 .FirstOrDefault();
         }
@@ -751,11 +751,8 @@ public sealed class InlineVariableOperation : RefactoringOperationBase<InlineVar
         if (!line.HasValue)
             return null;
 
-        return declarators.FirstOrDefault(d => StartLine(d) == line.Value);
+        return declarators.FirstOrDefault(d => SyntaxLineHelpers.StartLine(d) == line.Value);
     }
-
-    private static int StartLine(VariableDeclaratorSyntax declarator) =>
-        SyntaxLineHelpers.StartLine(declarator);
 
     private static bool DeclaratorCoversColumn(VariableDeclaratorSyntax declarator, int line, int column) =>
         LocalCoverage.IdentifierCoversColumn(declarator, line, column) ||

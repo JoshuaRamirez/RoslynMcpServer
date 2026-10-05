@@ -285,15 +285,12 @@ public sealed class ConvertExpressionBodyOperation : RefactoringOperationBase<Co
             return members.FirstOrDefault();
 
         var atColumn = members
-            .Where(m => MemberCoverage.MemberCoversColumn(m, line ?? StartLine(m), column.Value))
-            .OrderBy(m => MemberCoverage.IdentifierCoversColumn(m, line ?? StartLine(m), column.Value) ? 0 : 1)
+            .Where(m => MemberCoverage.MemberCoversColumn(m, line ?? SyntaxLineHelpers.StartLine(m), column.Value))
+            .OrderBy(m => MemberCoverage.IdentifierCoversColumn(m, line ?? SyntaxLineHelpers.StartLine(m), column.Value) ? 0 : 1)
             .ThenBy(m => m.Span.Length)
             .ToList();
         return atColumn.FirstOrDefault();
     }
-
-    private static int StartLine(MemberDeclarationSyntax member) =>
-        SyntaxLineHelpers.StartLine(member);
 
     private static string? GetMemberName(MemberDeclarationSyntax member) => member switch
     {

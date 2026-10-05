@@ -511,14 +511,10 @@ public sealed class ConvertPropertyOperation : RefactoringOperationBase<ConvertP
         }
 
         if (line.HasValue)
-            properties = properties.Where(p => StartLine(p) == line.Value);
+            properties = properties.Where(p => SyntaxLineHelpers.StartLine(p) == line.Value);
 
         return properties.FirstOrDefault();
     }
-
-    private static int StartLine(PropertyDeclarationSyntax property) =>
-        SyntaxLineHelpers.StartLine(property);
-
 
     /// <summary>
     /// Visits nested types first, then converts each eligible property in
