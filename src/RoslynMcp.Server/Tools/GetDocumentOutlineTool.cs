@@ -32,7 +32,7 @@ public sealed class GetDocumentOutlineTool : IToolHandler
     public string Name => "get_document_outline";
 
     /// <inheritdoc />
-    public string Description => "Get a structured outline of all declarations in a C# file: namespaces, types, methods, properties, fields, and events with their line numbers and accessibility. Optional maxResults caps the returned outline tree via DFS pre-order (omit = no cap).";
+    public string Description => "Get a structured outline of all declarations in a C# file: namespaces, types, methods, properties, fields, and events with their line numbers and accessibility. Optional maxDepth caps the returned outline tree depth (1 = top-level entries only; omit = no depth cap). Optional maxResults caps the returned outline tree via DFS pre-order (omit = no cap), applied after maxDepth.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -55,6 +55,12 @@ public sealed class GetDocumentOutlineTool : IToolHandler
             {
                 type = "integer",
                 description = "Maximum number of outline nodes to return via DFS pre-order (optional; omit = no cap)",
+                minimum = 1
+            },
+            maxDepth = new
+            {
+                type = "integer",
+                description = "Maximum outline tree depth to return; 1 = top-level entries only (optional; omit = no depth cap). Applied before maxResults.",
                 minimum = 1
             }
         },
@@ -79,7 +85,8 @@ public sealed class GetDocumentOutlineTool : IToolHandler
             var @params = new GetDocumentOutlineParams
             {
                 SourceFile = args.SourceFile,
-                MaxResults = args.MaxResults
+                MaxResults = args.MaxResults,
+                MaxDepth = args.MaxDepth
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -108,5 +115,6 @@ public sealed class GetDocumentOutlineTool : IToolHandler
         public string SolutionPath { get; init; } = "";
         public string SourceFile { get; init; } = "";
         public int? MaxResults { get; init; }
+        public int? MaxDepth { get; init; }
     }
 }

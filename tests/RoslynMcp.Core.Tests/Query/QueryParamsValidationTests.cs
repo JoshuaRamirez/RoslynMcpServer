@@ -779,6 +779,36 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void GetDocumentOutline_InvalidMaxDepth_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetDocumentOutlineParams(new GetDocumentOutlineParams { SourceFile = AbsoluteTestPath(), MaxDepth = 0 }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal("maxDepth must be >= 1.", ex.Message);
+    }
+
+    [Fact]
+    public void GetDocumentOutline_NegativeMaxDepth_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetDocumentOutlineParams(new GetDocumentOutlineParams { SourceFile = AbsoluteTestPath(), MaxDepth = -1 }));
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal("maxDepth must be >= 1.", ex.Message);
+    }
+
+    [Fact]
+    public void GetDocumentOutline_ValidMaxDepth_PassesValidation()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetDocumentOutlineParams(new GetDocumentOutlineParams { SourceFile = AbsoluteTestPath(), MaxDepth = 1 }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+
+        ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetDocumentOutlineParams(new GetDocumentOutlineParams { SourceFile = AbsoluteTestPath(), MaxDepth = 5, MaxResults = 10 }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
     #endregion
 
     #region New Validation Helpers
@@ -905,6 +935,8 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.InvalidSourcePath, "sourceFile must be a .cs file.");
         if (p.MaxResults.HasValue && p.MaxResults.Value < 1)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
+        if (p.MaxDepth.HasValue && p.MaxDepth.Value < 1)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxDepth must be >= 1.");
         if (!File.Exists(p.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
     }

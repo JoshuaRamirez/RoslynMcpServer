@@ -70,12 +70,21 @@ public class GetDocumentOutlineToolTests
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
         Assert.True(properties.TryGetProperty("maxResults", out _));
+        Assert.True(properties.TryGetProperty("maxDepth", out var maxDepth));
+        Assert.Equal("integer", maxDepth.GetProperty("type").GetString());
+        Assert.Equal(1, maxDepth.GetProperty("minimum").GetInt32());
     }
 
     [Fact]
     public void GetDefinition_DescriptionMentionsMaxResults()
     {
         Assert.Contains("maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsMaxDepth()
+    {
+        Assert.Contains("maxDepth", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

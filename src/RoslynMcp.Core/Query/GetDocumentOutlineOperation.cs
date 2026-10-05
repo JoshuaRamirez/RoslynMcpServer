@@ -34,6 +34,9 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
 
         if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
+
+        if (@params.MaxDepth.HasValue && @params.MaxDepth.Value < 1)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxDepth must be >= 1.");
     }
 
     /// <inheritdoc />
@@ -81,9 +84,16 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         }
 
         IReadOnlyList<OutlineEntry> returned = entries;
-        if (@params.MaxResults.HasValue && totalCount > @params.MaxResults.Value)
+        var returnedCount = totalCount;
+        if (@params.MaxDepth.HasValue)
         {
-            returned = PruneOutlineForest(entries, @params.MaxResults.Value);
+            returned = PruneOutlineForestByDepth(entries, @params.MaxDepth.Value);
+            returnedCount = CountNodes(returned);
+        }
+
+        if (@params.MaxResults.HasValue && returnedCount > @params.MaxResults.Value)
+        {
+            returned = PruneOutlineForest(returned, @params.MaxResults.Value);
         }
 
         var result = new GetDocumentOutlineResult
@@ -95,6 +105,48 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         };
 
         return QueryResult<GetDocumentOutlineResult>.Succeeded(operationId, result);
+    }
+
+    /// <summary>
+    /// Drops every outline entry deeper than <paramref name="maxDepth"/> (roots are depth 1).
+    /// Entries at the last kept depth are returned with no children (<c>Children = null</c>),
+    /// matching how leaf entries serialize today.
+    /// </summary>
+    private static IReadOnlyList<OutlineEntry> PruneOutlineForestByDepth(IReadOnlyList<OutlineEntry> entries, int maxDepth)
+    {
+        var pruned = new List<OutlineEntry>(entries.Count);
+        foreach (var entry in entries)
+        {
+            pruned.Add(PruneOutlineEntryByDepth(entry, depth: 1, maxDepth));
+        }
+
+        return pruned;
+    }
+
+    private static OutlineEntry PruneOutlineEntryByDepth(OutlineEntry entry, int depth, int maxDepth)
+    {
+        IReadOnlyList<OutlineEntry>? children = null;
+        if (entry.Children is { Count: > 0 } && depth < maxDepth)
+        {
+            var prunedChildren = new List<OutlineEntry>(entry.Children.Count);
+            foreach (var child in entry.Children)
+            {
+                prunedChildren.Add(PruneOutlineEntryByDepth(child, depth + 1, maxDepth));
+            }
+
+            children = prunedChildren;
+        }
+
+        return new OutlineEntry
+        {
+            Name = entry.Name,
+            Kind = entry.Kind,
+            Line = entry.Line,
+            Column = entry.Column,
+            Accessibility = entry.Accessibility,
+            ReturnType = entry.ReturnType,
+            Children = children
+        };
     }
 
     /// <summary>

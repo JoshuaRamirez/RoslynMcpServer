@@ -22,6 +22,30 @@ public class GetDocumentOutlineOperationTests
         Assert.Null(@params.MaxResults);
     }
 
+    [Fact]
+    public void MaxDepth_DefaultsToNull()
+    {
+        var @params = new GetDocumentOutlineParams { SourceFile = "/tmp/x.cs" };
+        Assert.Null(@params.MaxDepth);
+    }
+
+    [SkippableFact]
+    public async Task Validate_MaxDepthZero_ThrowsMissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("namespace N { class C { } }\n");
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GetDocumentOutlineParams
+            {
+                SourceFile = workspace.SourcePath,
+                MaxDepth = 0
+            }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal("maxDepth must be >= 1.", ex.Message);
+    }
+
     [SkippableFact]
     public async Task Validate_MaxResultsZero_ThrowsMissingRequiredParam()
     {
@@ -157,6 +181,202 @@ public class GetDocumentOutlineOperationTests
     }
 
     #endregion
+
+    #region Execute maxDepth
+
+    private const string DepthSource = """
+        namespace N
+        {
+            public class A
+            {
+                public int P { get; set; }
+                public void M() { }
+
+                public class Inner
+                {
+                    public void InnerM() { }
+                }
+            }
+
+            public class B
+            {
+                public void BM() { }
+            }
+
+            public enum E
+            {
+                One,
+                Two
+            }
+        }
+        """;
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_OmittedMaxDepth_MatchesTodayFullTree()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DepthSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var full = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+
+        Assert.True(full.Success);
+        Assert.NotNull(full.Data);
+        // N, A, Inner, InnerM, M, P, B, BM, E, One, Two => 11 nodes; deepest path N > A > Inner > InnerM
+        Assert.Equal(11, full.Data.TotalCount);
+        Assert.Equal(full.Data.TotalCount, CountNodes(full.Data.Entries));
+        Assert.Equal(4, MaxTreeDepth(full.Data.Entries));
+        Assert.False(full.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_MaxDepthOne_ReturnsRootsOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DepthSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            MaxDepth = 1
+        });
+
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        Assert.Equal(11, capped.Data.TotalCount);
+        var root = Assert.Single(capped.Data.Entries);
+        Assert.Equal("N", root.Name);
+        Assert.Equal("Namespace", root.Kind);
+        Assert.Null(root.Children);
+        Assert.True(capped.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_MaxDepthTwo_ReturnsAllTopLevelTypesWithoutMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DepthSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var full = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+        var capped = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            MaxDepth = 2
+        });
+
+        Assert.True(full.Success);
+        Assert.NotNull(full.Data);
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        Assert.Equal(full.Data.TotalCount, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        var root = Assert.Single(capped.Data.Entries);
+        Assert.NotNull(root.Children);
+        Assert.Equal(
+            full.Data.Entries[0].Children!.Select(c => (c.Name, c.Kind, c.Line, c.Column, c.Accessibility, c.ReturnType)),
+            root.Children!.Select(c => (c.Name, c.Kind, c.Line, c.Column, c.Accessibility, c.ReturnType)));
+        Assert.Equal(new[] { "A", "B", "E" }, root.Children!.Select(c => c.Name));
+        Assert.All(root.Children!, c => Assert.Null(c.Children));
+        Assert.Equal(4, CountNodes(capped.Data.Entries));
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_MaxDepthAtOrAboveTreeDepth_ReturnsFullTreeNotTruncated()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DepthSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var full = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+        Assert.True(full.Success);
+        Assert.NotNull(full.Data);
+
+        foreach (var maxDepth in new[] { 4, 10 })
+        {
+            var capped = await operation.ExecuteAsync(new GetDocumentOutlineParams
+            {
+                SourceFile = workspace.SourcePath,
+                MaxDepth = maxDepth
+            });
+
+            Assert.True(capped.Success);
+            Assert.NotNull(capped.Data);
+            Assert.Equal(full.Data.TotalCount, capped.Data.TotalCount);
+            Assert.Equal(full.Data.TotalCount, CountNodes(capped.Data.Entries));
+            Assert.Equal(Flatten(full.Data.Entries), Flatten(capped.Data.Entries));
+            Assert.False(capped.Data.Truncated);
+        }
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_MaxDepthWithMaxResults_AppliesDepthCapFirst()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(DepthSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        // Depth cap 2 keeps N, A, B, E (4 nodes); maxResults 3 then keeps the DFS pre-order prefix N, A, B.
+        // Without the depth cap, maxResults 3 would be N, A, Inner (budget spent inside A).
+        var capped = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            MaxDepth = 2,
+            MaxResults = 3
+        });
+
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        Assert.Equal(11, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+        Assert.Equal(new[] { "N", "A", "B" }, Flatten(capped.Data.Entries).Select(e => e.Name));
+        var root = Assert.Single(capped.Data.Entries);
+        Assert.All(root.Children!, c => Assert.Null(c.Children));
+
+        // maxResults at or above the depth-capped node count: only the depth cap applies.
+        var depthOnly = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            MaxDepth = 2,
+            MaxResults = 4
+        });
+
+        Assert.True(depthOnly.Success);
+        Assert.NotNull(depthOnly.Data);
+        Assert.Equal(11, depthOnly.Data.TotalCount);
+        Assert.True(depthOnly.Data.Truncated);
+        Assert.Equal(new[] { "N", "A", "B", "E" }, Flatten(depthOnly.Data.Entries).Select(e => e.Name));
+    }
+
+    #endregion
+
+    private static int MaxTreeDepth(IReadOnlyList<OutlineEntry>? entries)
+    {
+        if (entries is not { Count: > 0 })
+            return 0;
+
+        return 1 + entries.Max(e => MaxTreeDepth(e.Children));
+    }
+
+    private static List<(string Name, string Kind, int Line, int Column, string? Accessibility, string? ReturnType, int Depth)> Flatten(
+        IReadOnlyList<OutlineEntry> entries, int depth = 1)
+    {
+        var list = new List<(string, string, int, int, string?, string?, int)>();
+        foreach (var e in entries)
+        {
+            list.Add((e.Name, e.Kind, e.Line, e.Column, e.Accessibility, e.ReturnType, depth));
+            if (e.Children is { Count: > 0 })
+                list.AddRange(Flatten(e.Children, depth + 1));
+        }
+
+        return list;
+    }
 
     private static int CountNodes(IReadOnlyList<OutlineEntry> entries)
     {

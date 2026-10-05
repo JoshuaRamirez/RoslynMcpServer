@@ -308,7 +308,7 @@ public sealed class ToolRegistry
         r.RegisterQuery<AnalyzeDataFlowOperation, AnalyzeDataFlowParams, AnalyzeDataFlowResult>(
             "analyze-data-flow", "Analyze data flow (reads, writes, captures) in a region; startColumn / endColumn (optional) trim the region (1-based; Roslyn Character = column - 1); omitted keeps today's whole-line span (start of startLine through end of endLine)");
         r.RegisterQuery<GetDocumentOutlineOperation, GetDocumentOutlineParams, GetDocumentOutlineResult>(
-            "get-document-outline", "Get a structural outline of a C# document; maxResults (optional) caps the returned outline tree via DFS pre-order (omit = no cap); result includes Truncated when capped");
+            "get-document-outline", "Get a structural outline of a C# document; maxDepth (optional, >= 1) drops entries deeper than N (1 = top-level entries only; omit = no depth cap); maxResults (optional) caps the returned outline tree via DFS pre-order after maxDepth (omit = no cap); result includes Truncated when capped");
         r.RegisterQuery<GetSymbolInfoOperation, GetSymbolInfoParams, DetailedSymbolInfo>(
             "get-symbol-info", "Get detailed information about a symbol at a position");
 
