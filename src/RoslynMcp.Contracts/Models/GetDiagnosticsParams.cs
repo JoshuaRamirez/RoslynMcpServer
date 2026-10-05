@@ -20,4 +20,10 @@ public sealed class GetDiagnosticsParams
     /// Maximum number of diagnostics to return. Omit for no cap (return all matching diagnostics).
     /// </summary>
     public int? MaxResults { get; init; }
+
+    /// <summary>
+    /// Optional diagnostic IDs to restrict results to (e.g. CS0168, CS8019), matched case-insensitively.
+    /// Omit or pass an empty list for no ID filter. Applied before <see cref="MaxResults"/>.
+    /// </summary>
+    public IReadOnlyList<string>? DiagnosticIds { get; init; }
 }

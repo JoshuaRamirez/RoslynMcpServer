@@ -8,7 +8,7 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
-/// Operation-level tests for <see cref="GetDiagnosticsOperation"/> optional <c>maxResults</c>
+/// Operation-level tests for <see cref="GetDiagnosticsOperation"/> optional <c>maxResults</c> and <c>diagnosticIds</c>
 /// (peer of <see cref="FindReferencesOperation"/> / <see cref="SearchSymbolsOperation"/>).
 /// </summary>
 public class GetDiagnosticsOperationTests
@@ -129,6 +129,157 @@ public class GetDiagnosticsOperationTests
         Assert.Equal(full.Data.TotalCount, capped.Data.Diagnostics.Count);
         Assert.False(capped.Data.Truncated);
     }
+
+    #endregion
+
+    #region diagnosticIds filter
+
+    [Fact]
+    public void DiagnosticIds_DefaultsToNull()
+    {
+        var @params = new GetDiagnosticsParams();
+        Assert.Null(@params.DiagnosticIds);
+    }
+
+    [SkippableFact]
+    public async Task Validate_DiagnosticIdsWhitespaceEntry_ThrowsMissingRequiredParam()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("#warning One\nclass C {}\n");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GetDiagnosticsParams { DiagnosticIds = new[] { "CS1030", " " } }));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal("diagnosticIds entries must be non-empty.", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_EmptyDiagnosticIds_ReturnsSameAsOmitted()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetDiagnosticsParams { SeverityFilter = "Warning" });
+        var empty = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            DiagnosticIds = Array.Empty<string>()
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(empty.Success);
+        Assert.Equal(omitted.Data!.TotalCount, empty.Data!.TotalCount);
+        Assert.Equal(
+            omitted.Data.Diagnostics.Select(d => d.Id + d.Message),
+            empty.Data.Diagnostics.Select(d => d.Id + d.Message));
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_DiagnosticIds_KeepsOnlyMatchingIds()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var full = await operation.ExecuteAsync(new GetDiagnosticsParams { SeverityFilter = "Warning" });
+        Assert.True(full.Success);
+        Assert.Contains(full.Data!.Diagnostics, d => d.Id == "CS1030");
+        Assert.Contains(full.Data.Diagnostics, d => d.Id == "CS0168");
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            DiagnosticIds = new[] { "CS0168" }
+        });
+
+        Assert.True(filtered.Success);
+        Assert.NotNull(filtered.Data);
+        Assert.NotEmpty(filtered.Data.Diagnostics);
+        Assert.All(filtered.Data.Diagnostics, d => Assert.Equal("CS0168", d.Id));
+        Assert.Equal(full.Data.Diagnostics.Count(d => d.Id == "CS0168"), filtered.Data.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_DiagnosticIds_MultipleIdsCaseInsensitive()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var full = await operation.ExecuteAsync(new GetDiagnosticsParams { SeverityFilter = "Warning" });
+        Assert.True(full.Success);
+        var expected = full.Data!.Diagnostics.Count(d => d.Id is "CS1030" or "CS0168");
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            DiagnosticIds = new[] { "cs1030", " Cs0168 " }
+        });
+
+        Assert.True(filtered.Success);
+        Assert.Equal(expected, filtered.Data!.TotalCount);
+        Assert.Equal(expected, filtered.Data.Diagnostics.Count);
+        Assert.All(filtered.Data.Diagnostics, d => Assert.True(d.Id is "CS1030" or "CS0168", d.Id));
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_DiagnosticIds_NoMatch_ReturnsEmpty()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            DiagnosticIds = new[] { "CS9999" }
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Diagnostics);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDiagnostics_DiagnosticIdsWithMaxResults_CapsAfterFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MixedSource);
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var filtered = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            DiagnosticIds = new[] { "CS1030" }
+        });
+        Assert.True(filtered.Success);
+        Assert.True(filtered.Data!.TotalCount >= 3, $"Expected >= 3 CS1030, got {filtered.Data.TotalCount}");
+
+        var capped = await operation.ExecuteAsync(new GetDiagnosticsParams
+        {
+            SeverityFilter = "Warning",
+            DiagnosticIds = new[] { "CS1030" },
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(filtered.Data.TotalCount, capped.Data!.TotalCount);
+        Assert.Equal(2, capped.Data.Diagnostics.Count);
+        Assert.True(capped.Data.Truncated);
+        Assert.All(capped.Data.Diagnostics, d => Assert.Equal("CS1030", d.Id));
+    }
+
+    private const string MixedSource = """
+        #warning One
+        #warning Two
+        #warning Three
+        class C
+        {
+            void M()
+            {
+                int unused;
+            }
+        }
+        """;
 
     #endregion
 

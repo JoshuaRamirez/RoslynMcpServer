@@ -32,7 +32,7 @@ public sealed class GetDiagnosticsTool : IToolHandler
     public string Name => "get_diagnostics";
 
     /// <inheritdoc />
-    public string Description => "Get compiler diagnostics (errors, warnings) for the solution or a specific file. Useful for checking compilation status before or after refactoring. Optional maxResults caps the returned list (omit = no cap).";
+    public string Description => "Get compiler diagnostics (errors, warnings) for the solution or a specific file. Useful for checking compilation status before or after refactoring. Optional diagnosticIds restricts results to the given IDs (e.g. CS0168; case-insensitive; omit = all IDs). Optional maxResults caps the returned list (omit = no cap).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -62,6 +62,12 @@ public sealed class GetDiagnosticsTool : IToolHandler
                 type = "integer",
                 description = "Maximum number of diagnostics to return (optional; omit = no cap)",
                 minimum = 1
+            },
+            diagnosticIds = new
+            {
+                type = "array",
+                items = new { type = "string" },
+                description = "Diagnostic IDs to restrict results to, e.g. [\"CS0168\", \"CS8019\"] (optional; case-insensitive; omit or empty = all IDs). Applied before maxResults."
             }
         },
         additionalProperties = false
@@ -86,7 +92,8 @@ public sealed class GetDiagnosticsTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 SeverityFilter = args.SeverityFilter,
-                MaxResults = args.MaxResults
+                MaxResults = args.MaxResults,
+                DiagnosticIds = args.DiagnosticIds
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -116,5 +123,6 @@ public sealed class GetDiagnosticsTool : IToolHandler
         public string? SourceFile { get; init; }
         public string? SeverityFilter { get; init; }
         public int? MaxResults { get; init; }
+        public List<string>? DiagnosticIds { get; init; }
     }
 }
