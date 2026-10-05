@@ -256,6 +256,37 @@ public class FindCallersOperationTests
         Assert.False(result.Data.Truncated);
     }
 
+    [SkippableFact]
+    public async Task FindCallers_CaseOnlyDifferentCallerFile_StillMatchesCallSites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync();
+        var operation = new FindCallersOperation(workspace.Context);
+        var caseVariant = workspace.PathOf("CALLERA.cs");
+
+        // On case-insensitive volumes (Windows / default macOS) the upper-cased path already
+        // resolves to CallerA.cs. On case-sensitive volumes (Linux) callerFile must exist to pass
+        // validation (same as search_symbols sourceFile), so create a call-free stub at the
+        // case-variant path; the documented OrdinalIgnoreCase comparison must still match
+        // CallerA.cs's call sites, which a case-sensitive key comparison would drop.
+        if (!File.Exists(caseVariant))
+            await File.WriteAllTextAsync(caseVariant, "// case-variant stub with no callers");
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            CallerFile = caseVariant
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(2, result.Data.Callers.Count);
+        Assert.All(result.Data.Callers, c => Assert.True(SamePath(c.File, workspace.PathOf("CallerA.cs"))));
+        Assert.Equal(new[] { "First", "Second" }, result.Data.Callers.Select(c => c.CallerName).OrderBy(n => n));
+        Assert.Equal(2, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
     private static bool SamePath(string a, string b) =>
         string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
 

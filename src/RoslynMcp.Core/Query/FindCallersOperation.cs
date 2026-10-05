@@ -71,8 +71,10 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         var callers = new List<CallerInfo>();
         var totalCount = 0;
         var maxResults = @params.MaxResults ?? int.MaxValue;
-        // Compare canonical path keys so aliases such as "src/../Caller.cs" or wrong-cased
-        // paths on case-insensitive volumes still match Roslyn's canonical location paths.
+        // Compare canonical path keys so aliases such as "src/../Caller.cs" still match Roslyn's
+        // canonical location paths, and compare those keys with OrdinalIgnoreCase (the documented
+        // contract, same as search_symbols / get_diagnostics sourceFile) so paths that differ only
+        // by letter case also match, even on case-sensitive volumes.
         var callerFileKey = string.IsNullOrWhiteSpace(@params.CallerFile)
             ? null
             : PathResolver.GetPathComparisonKey(@params.CallerFile);
@@ -101,7 +103,7 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
                         locationKeyCache[locationPath] = locationKey;
                     }
 
-                    if (!string.Equals(locationKey, callerFileKey, StringComparison.Ordinal))
+                    if (!string.Equals(locationKey, callerFileKey, StringComparison.OrdinalIgnoreCase))
                         continue;
                 }
 
