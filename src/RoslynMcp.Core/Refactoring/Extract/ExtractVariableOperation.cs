@@ -1,4 +1,3 @@
-using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -766,26 +765,26 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
         string? seed = expression switch
         {
             InvocationExpressionSyntax invocation => PreferInvokedName(invocation),
-            ObjectCreationExpressionSyntax creation => PreferTypeName(creation.Type),
+            ObjectCreationExpressionSyntax creation => IdentifierSeedHelpers.PreferTypeName(creation.Type, capitalizeFirstWord: false),
             ImplicitObjectCreationExpressionSyntax => PreferTypeNameFromSemanticFallback(expression),
             ElementAccessExpressionSyntax access => PreferInvokedNameFromExpression(access.Expression),
             AwaitExpressionSyntax awaitExpr => PreferInvokedNameFromExpression(awaitExpr.Expression)
                 ?? PreferTypeNameFromSemanticFallback(awaitExpr.Expression),
-            CastExpressionSyntax cast => PreferTypeName(cast.Type),
+            CastExpressionSyntax cast => IdentifierSeedHelpers.PreferTypeName(cast.Type, capitalizeFirstWord: false),
             BinaryExpressionSyntax binary when binary.IsKind(SyntaxKind.AsExpression) =>
-                PreferTypeName(binary.Right as TypeSyntax),
+                IdentifierSeedHelpers.PreferTypeName(binary.Right as TypeSyntax, capitalizeFirstWord: false),
             _ => null
         };
 
         // Fall back to sanitized expression text (documented allFiles contract)
         // rather than fixed labels that collide across unrelated sites (Copilot).
-        seed ??= SanitizeIdentifierSeed(expression.ToString());
+        seed ??= IdentifierSeedHelpers.SanitizeIdentifierSeed(expression.ToString(), capitalizeFirstWord: false);
 
         return FinalizeVariableName(seed);
     }
 
     private static string? PreferTypeNameFromSemanticFallback(ExpressionSyntax expression) =>
-        SanitizeIdentifierSeed(expression.ToString());
+        IdentifierSeedHelpers.SanitizeIdentifierSeed(expression.ToString(), capitalizeFirstWord: false);
 
     /// <summary>
     /// True when <paramref name="variableName"/> already binds in scope at the
@@ -825,51 +824,6 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
             GenericNameSyntax generic => generic.Identifier.ValueText,
             _ => null
         };
-
-    private static string? PreferTypeName(TypeSyntax? type) =>
-        type switch
-        {
-            IdentifierNameSyntax id => id.Identifier.ValueText,
-            QualifiedNameSyntax q => q.Right.Identifier.ValueText,
-            GenericNameSyntax g => g.Identifier.ValueText,
-            NullableTypeSyntax n => PreferTypeName(n.ElementType),
-            AliasQualifiedNameSyntax a => a.Name.Identifier.ValueText,
-            _ => type == null ? null : SanitizeIdentifierSeed(type.ToString())
-        };
-
-    private static string? SanitizeIdentifierSeed(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return null;
-
-        var builder = new StringBuilder(text.Length);
-        var startNewWord = true;
-        foreach (var c in text)
-        {
-            if (char.IsLetterOrDigit(c))
-            {
-                if (startNewWord && char.IsLetter(c))
-                {
-                    builder.Append(builder.Length == 0
-                        ? char.ToLowerInvariant(c)
-                        : char.ToUpperInvariant(c));
-                    startNewWord = false;
-                }
-                else
-                {
-                    builder.Append(c);
-                    startNewWord = false;
-                }
-            }
-            else
-            {
-                startNewWord = true;
-            }
-        }
-
-        var name = builder.ToString();
-        return string.IsNullOrEmpty(name) ? null : name;
-    }
 
     private static string? FinalizeVariableName(string? seed)
     {

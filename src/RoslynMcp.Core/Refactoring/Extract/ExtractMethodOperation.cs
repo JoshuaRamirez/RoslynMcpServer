@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -560,7 +559,7 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
                 seed = node switch
                 {
                     InvocationExpressionSyntax invocation => PreferInvokedName(invocation),
-                    ObjectCreationExpressionSyntax creation => PreferTypeName(creation.Type),
+                    ObjectCreationExpressionSyntax creation => IdentifierSeedHelpers.PreferTypeName(creation.Type, capitalizeFirstWord: true),
                     IdentifierNameSyntax id when seed == null => id.Identifier.ValueText,
                     _ => seed
                 };
@@ -571,7 +570,7 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
                 break;
         }
 
-        seed ??= SanitizeIdentifierSeed(statements[0].ToString());
+        seed ??= IdentifierSeedHelpers.SanitizeIdentifierSeed(statements[0].ToString(), capitalizeFirstWord: true);
         return FinalizeMethodName(seed);
     }
 
@@ -693,51 +692,6 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
             ParenthesizedExpressionSyntax paren => PreferInvokedNameFromExpression(paren.Expression),
             _ => null
         };
-
-    private static string? PreferTypeName(TypeSyntax? type) =>
-        type switch
-        {
-            IdentifierNameSyntax id => id.Identifier.ValueText,
-            QualifiedNameSyntax q => q.Right.Identifier.ValueText,
-            GenericNameSyntax g => g.Identifier.ValueText,
-            NullableTypeSyntax n => PreferTypeName(n.ElementType),
-            AliasQualifiedNameSyntax a => a.Name.Identifier.ValueText,
-            _ => type == null ? null : SanitizeIdentifierSeed(type.ToString())
-        };
-
-    private static string? SanitizeIdentifierSeed(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return null;
-
-        var builder = new StringBuilder(text.Length);
-        var startNewWord = true;
-        foreach (var c in text)
-        {
-            if (char.IsLetterOrDigit(c))
-            {
-                if (startNewWord && char.IsLetter(c))
-                {
-                    builder.Append(builder.Length == 0
-                        ? char.ToUpperInvariant(c)
-                        : char.ToUpperInvariant(c));
-                    startNewWord = false;
-                }
-                else
-                {
-                    builder.Append(c);
-                    startNewWord = false;
-                }
-            }
-            else
-            {
-                startNewWord = true;
-            }
-        }
-
-        var name = builder.ToString();
-        return string.IsNullOrEmpty(name) ? null : name;
-    }
 
     private static string? FinalizeMethodName(string? seed)
     {
