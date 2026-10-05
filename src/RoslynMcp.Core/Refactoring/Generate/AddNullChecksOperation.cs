@@ -391,15 +391,12 @@ public sealed class AddNullChecksOperation : RefactoringOperationBase<AddNullChe
 
         if (line.HasValue)
         {
-            return candidates.FirstOrDefault(c => StartLine(c) == line.Value)
+            return candidates.FirstOrDefault(c => SyntaxLineHelpers.StartLine(c) == line.Value)
                 ?? candidates.First();
         }
 
         return candidates.First();
     }
-
-    private static int StartLine(SyntaxNode node) =>
-        SyntaxLineHelpers.StartLine(node);
 
     private static BlockSyntax? GetBody(SyntaxNode node) => node switch
     {
