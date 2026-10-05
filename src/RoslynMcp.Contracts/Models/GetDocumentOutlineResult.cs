@@ -11,7 +11,8 @@ public sealed class GetDocumentOutlineResult
     public required string File { get; init; }
 
     /// <summary>
-    /// Top-level outline entries (may be truncated when maxResults is set).
+    /// Top-level outline entries (may be truncated when maxDepth and/or maxResults is set;
+    /// maxDepth drops entries deeper than N first, then maxResults applies its DFS pre-order node budget).
     /// </summary>
     public required IReadOnlyList<OutlineEntry> Entries { get; init; }
 
@@ -21,7 +22,8 @@ public sealed class GetDocumentOutlineResult
     public required int TotalCount { get; init; }
 
     /// <summary>
-    /// Whether the result was truncated due to maxResults.
+    /// Whether the result was truncated due to maxDepth and/or maxResults
+    /// (true when <see cref="TotalCount"/> exceeds the node count in <see cref="Entries"/>).
     /// </summary>
     public bool Truncated { get; init; }
 }
