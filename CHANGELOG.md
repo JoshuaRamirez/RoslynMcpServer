@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- `get_document_outline` now honors optional **`maxDepth`**: when set (>= 1), drops every outline entry deeper than N (depth 1 = the root `Entries`; entries at the last kept depth return with no `Children`, matching today's leaf entries). The depth cap is applied first, then the existing `maxResults` DFS pre-order node budget on the depth-capped tree; `TotalCount` remains the full symbol count and `Truncated` is true when either cap omitted entries. Omit `maxDepth` for no depth cap (today's full-tree behavior). `maxDepth < 1` → `MissingRequiredParam` "maxDepth must be >= 1.". Does not change enumeration order or `OutlineEntry` shape. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. (#2286)
+
 ## [0.7.0] - 2026-10-05
 
 ### Added
