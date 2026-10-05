@@ -929,25 +929,14 @@ public sealed class ExtractInterfaceOperation : RefactoringOperationBase<Extract
     /// Resolves the destination for the extracted interface.
     /// Explicit <see cref="ExtractInterfaceParams.TargetFile"/> always wins.
     /// </summary>
-    private static string ResolveTargetFile(ExtractInterfaceParams @params)
-    {
-        if (!string.IsNullOrWhiteSpace(@params.TargetFile))
-            return @params.TargetFile!;
-
+    private static string ResolveTargetFile(ExtractInterfaceParams @params) =>
         // allFiles always uses a sibling I{TypeName}.cs (SeparateFile forced).
-        if (!@params.SeparateFile && !@params.AllFiles)
-            return @params.SourceFile!;
-
-        var directory = Path.GetDirectoryName(@params.SourceFile!);
-        if (string.IsNullOrEmpty(directory))
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidSourcePath,
-                "sourceFile must have a parent directory.");
-        }
-
-        return PathResolver.Combine(directory, @params.InterfaceName! + ".cs");
-    }
+        TargetFilePathHelpers.ResolveTargetFile(
+            @params.TargetFile,
+            @params.SourceFile,
+            @params.SeparateFile,
+            @params.AllFiles,
+            @params.InterfaceName);
 
     /// <summary>
     /// Derives the bulk interface name <c>I{TypeName}</c>.

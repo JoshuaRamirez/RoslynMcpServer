@@ -1509,25 +1509,14 @@ public sealed class ExtractBaseClassOperation : RefactoringOperationBase<Extract
     /// Resolves the destination for the extracted base class.
     /// Explicit <see cref="ExtractBaseClassParams.TargetFile"/> always wins.
     /// </summary>
-    private static string ResolveTargetFile(ExtractBaseClassParams @params)
-    {
-        if (!string.IsNullOrWhiteSpace(@params.TargetFile))
-            return @params.TargetFile!;
-
+    private static string ResolveTargetFile(ExtractBaseClassParams @params) =>
         // allFiles always uses a sibling {TypeName}Base.cs (SeparateFile forced).
-        if (!@params.SeparateFile && !@params.AllFiles)
-            return @params.SourceFile!;
-
-        var directory = Path.GetDirectoryName(@params.SourceFile!);
-        if (string.IsNullOrEmpty(directory))
-        {
-            throw new RefactoringException(
-                ErrorCodes.InvalidSourcePath,
-                "sourceFile must have a parent directory.");
-        }
-
-        return PathResolver.Combine(directory, @params.BaseClassName! + ".cs");
-    }
+        TargetFilePathHelpers.ResolveTargetFile(
+            @params.TargetFile,
+            @params.SourceFile,
+            @params.SeparateFile,
+            @params.AllFiles,
+            @params.BaseClassName);
 
     private static void ThrowIfSiblingTargetExists(ExtractBaseClassParams @params, string targetFile) =>
         TargetFilePathHelpers.ThrowIfSiblingTargetExists(@params.TargetFile, @params.SeparateFile, targetFile);
