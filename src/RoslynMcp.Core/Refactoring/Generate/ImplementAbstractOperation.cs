@@ -1002,11 +1002,20 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
             _ => SyntaxKind.None
         };
 
-        if (refKeyword == SyntaxKind.None)
-            return syntax;
+        var tokens = new List<SyntaxToken>();
+        // scoped must survive or the override is CS8987 (#2404). Skip it when
+        // no ref keyword is emitted for a ref parameter (scoped on a plain
+        // value would be CS9048).
+        if (SyntaxGenerationHelper.EmitsScopedModifier(parameter) &&
+            (refKeyword != SyntaxKind.None || parameter.RefKind == RefKind.None))
+        {
+            tokens.Add(SyntaxFactory.Token(SyntaxKind.ScopedKeyword).WithTrailingTrivia(SyntaxFactory.Space));
+        }
 
-        return syntax.WithModifiers(SyntaxFactory.TokenList(
-            SyntaxFactory.Token(refKeyword).WithTrailingTrivia(SyntaxFactory.Space)));
+        if (refKeyword != SyntaxKind.None)
+            tokens.Add(SyntaxFactory.Token(refKeyword).WithTrailingTrivia(SyntaxFactory.Space));
+
+        return tokens.Count == 0 ? syntax : syntax.WithModifiers(SyntaxFactory.TokenList(tokens));
     }
 
     /// <summary>

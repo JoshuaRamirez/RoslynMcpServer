@@ -667,8 +667,28 @@ public static class SyntaxGenerationHelper
                 .WithTrailingTrivia(SyntaxFactory.Space));
 
         var modifiers = RefKindParameterModifiers(parameter.RefKind);
+        if (EmitsScopedModifier(parameter))
+            modifiers = modifiers.Insert(0, SyntaxFactory.Token(SyntaxKind.ScopedKeyword));
         return modifiers.Count == 0 ? syntax : syntax.WithModifiers(modifiers);
     }
+
+    /// <summary>
+    /// Whether a regenerated <paramref name="parameter"/> needs an explicit
+    /// <c>scoped</c> keyword to keep the declared escape scope; dropping it
+    /// on an override or implementation is CS8987 (#2404).
+    /// <c>ScopedValue</c> covers <c>scoped</c> ref-struct values and the
+    /// implicit scope of <c>params</c> spans (the stub never emits
+    /// <c>params</c>, so the scope must be spelled out). <c>ScopedRef</c>
+    /// covers <c>scoped ref</c> / <c>scoped in</c> / <c>scoped ref readonly</c>;
+    /// <c>out</c> is always implicitly scoped, so no keyword is emitted.
+    /// </summary>
+    internal static bool EmitsScopedModifier(IParameterSymbol parameter) =>
+        parameter.ScopedKind switch
+        {
+            ScopedKind.ScopedValue => parameter.RefKind == RefKind.None,
+            ScopedKind.ScopedRef => parameter.RefKind is RefKind.Ref or RefKind.In or RefKind.RefReadOnlyParameter,
+            _ => false
+        };
 
     private static SyntaxTokenList RefKindParameterModifiers(RefKind refKind) =>
         refKind switch
