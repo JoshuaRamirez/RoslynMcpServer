@@ -32,7 +32,7 @@ public sealed class GoToDefinitionTool : IToolHandler
     public string Name => "go_to_definition";
 
     /// <inheritdoc />
-    public string Description => "Navigate to a C# symbol's definition. Returns the file, line, and column where the symbol is declared, including support for partial classes with multiple locations. Optional maxResults caps the returned Definitions list (omit = no cap).";
+    public string Description => "Navigate to a C# symbol's definition. Returns the file, line, and column where the symbol is declared, including support for partial classes with multiple locations. Optional maxResults caps the returned Definitions list (omit = no cap). sourceFile locates the symbol; optional definitionFile restricts reported Definitions to locations in that file (applied before maxResults, so totalCount/truncated reflect the filtered set; metadata definitions are excluded when set).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -73,6 +73,11 @@ public sealed class GoToDefinitionTool : IToolHandler
                 type = "integer",
                 description = "Maximum number of definition locations to return (optional; omit = no cap).",
                 minimum = 1
+            },
+            definitionFile = new
+            {
+                type = "string",
+                description = "Absolute path to a .cs file to restrict reported Definitions to locations in that file (optional; omit to keep the existing unfiltered behavior). Metadata definitions are excluded when set."
             }
         },
         additionalProperties = false
@@ -99,7 +104,8 @@ public sealed class GoToDefinitionTool : IToolHandler
                 SymbolName = args.SymbolName,
                 Line = args.Line,
                 Column = args.Column,
-                MaxResults = args.MaxResults
+                MaxResults = args.MaxResults,
+                DefinitionFile = args.DefinitionFile
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -131,5 +137,6 @@ public sealed class GoToDefinitionTool : IToolHandler
         public int? Line { get; init; }
         public int? Column { get; init; }
         public int? MaxResults { get; init; }
+        public string? DefinitionFile { get; init; }
     }
 }

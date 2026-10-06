@@ -90,6 +90,7 @@ public class GoToDefinitionToolTests
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("maxResults", out _));
+        Assert.True(properties.TryGetProperty("definitionFile", out _));
     }
 
     [Fact]
@@ -119,6 +120,20 @@ public class GoToDefinitionToolTests
     public void GetDefinition_DescriptionMentionsMaxResults()
     {
         Assert.Contains("maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_DefinitionFile_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var definitionFile = doc.RootElement.GetProperty("properties").GetProperty("definitionFile");
+
+        Assert.Equal("string", definitionFile.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("definitionFile", required);
+        Assert.Contains("definitionFile", _tool.Description);
     }
 
     #endregion

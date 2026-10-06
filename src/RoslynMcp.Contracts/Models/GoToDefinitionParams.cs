@@ -29,4 +29,16 @@ public sealed class GoToDefinitionParams
     /// Maximum number of definition locations to return. Omit for no cap (return all definitions).
     /// </summary>
     public int? MaxResults { get; init; }
+
+    /// <summary>
+    /// Absolute path to a source file to restrict reported definition locations to. When set,
+    /// only definition locations whose path equals that file are returned in
+    /// <c>Definitions</c>, before <see cref="MaxResults"/>, so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the filtered set. Metadata (non-source) definitions have no
+    /// file and are excluded when this is set. For a partial method / property / event, the
+    /// locations of both the defining declaration and the implementation are considered, so
+    /// the other half's file can be selected regardless of which half the symbol resolved to.
+    /// When omitted, the existing unfiltered behavior is preserved. Distinct from <see cref="SourceFile"/>, which locates the symbol.
+    /// </summary>
+    public string? DefinitionFile { get; init; }
 }
