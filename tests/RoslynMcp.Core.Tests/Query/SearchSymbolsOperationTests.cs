@@ -10,7 +10,8 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <summary>
 /// Operation-level tests for <see cref="SearchSymbolsOperation"/> optional <c>sourceFile</c>
 /// filtering (peer of <see cref="GetDiagnosticsOperation"/>), optional <c>caseSensitive</c>
-/// name matching, and optional <c>exactMatch</c> whole-name matching.
+/// name matching, optional <c>exactMatch</c> whole-name matching, and optional
+/// <c>namespaceFilter</c> namespace scoping.
 /// </summary>
 public class SearchSymbolsOperationTests
 {
@@ -600,6 +601,286 @@ public class SearchSymbolsOperationTests
         Assert.Empty(result.Data.Symbols);
         Assert.Equal(0, result.Data.TotalCount);
         Assert.False(result.Data.Truncated);
+    }
+
+    #endregion
+
+    #region namespaceFilter
+
+    // "Widget" is declared in App.Services, App.Services.Orders (also as a nested-type member),
+    // App.ServicesExtra, App, app.services (different case) and the global namespace.
+    private const string NamespaceFilterSource = """
+        namespace App.Services
+        {
+            class Widget { }
+            class Factory { public void Widget() { } }
+        }
+        namespace App.Services.Orders
+        {
+            class Widget { }
+            class Outer { class Inner { public int Widget; } }
+        }
+        namespace App.ServicesExtra
+        {
+            class Widget { }
+        }
+        namespace App
+        {
+            class Widget { }
+        }
+        namespace app.services
+        {
+            class Widget { }
+        }
+        class Widget { }
+        """;
+
+    private static readonly string[] AllWidgetNames =
+    [
+        "App.Services.Widget",
+        "App.Services.Factory.Widget()",
+        "App.Services.Orders.Widget",
+        "App.Services.Orders.Outer.Inner.Widget",
+        "App.ServicesExtra.Widget",
+        "App.Widget",
+        "app.services.Widget",
+        "Widget"
+    ];
+
+    private static readonly string[] AppServicesWidgetNames =
+    [
+        "App.Services.Factory.Widget()",
+        "App.Services.Orders.Outer.Inner.Widget",
+        "App.Services.Orders.Widget",
+        "App.Services.Widget"
+    ];
+
+    private static List<string> SortedFqns(SearchSymbolsResult data) =>
+        data.Symbols.Select(s => s.FullyQualifiedName).OrderBy(n => n, StringComparer.Ordinal).ToList();
+
+    [Fact]
+    public void NamespaceFilter_DefaultsToNull()
+    {
+        var @params = new SearchSymbolsParams { Query = "Foo" };
+        Assert.Null(@params.NamespaceFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task SearchSymbols_OmittedOrBlankNamespaceFilter_SearchesAllNamespaces(string? namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceFilterSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            ExactMatch = true,
+            CaseSensitive = true,
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(AllWidgetNames.OrderBy(n => n, StringComparer.Ordinal), SortedFqns(result.Data));
+        Assert.Equal(AllWidgetNames.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_NamespaceFilter_IncludesExactAndNestedNamespacesOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceFilterSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            ExactMatch = true,
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        // Excludes App.ServicesExtra (sibling prefix), App (parent), app.services (case) and global.
+        Assert.Equal(AppServicesWidgetNames, SortedFqns(result.Data));
+        Assert.Equal(AppServicesWidgetNames.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_NamespaceFilter_NestedTypeMemberUsesEnclosingNamespace()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceFilterSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            KindFilter = "Field",
+            NamespaceFilter = "App.Services.Orders"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var field = Assert.Single(result.Data.Symbols);
+        Assert.Equal("App.Services.Orders.Outer.Inner.Widget", field.FullyQualifiedName);
+        Assert.Equal(1, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_NamespaceFilter_IsCaseSensitive()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceFilterSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            ExactMatch = true,
+            NamespaceFilter = "app.services"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var only = Assert.Single(result.Data.Symbols);
+        Assert.Equal("app.services.Widget", only.FullyQualifiedName);
+        Assert.Equal(1, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("global::App.Services")]
+    [InlineData("  App.Services  ")]
+    [InlineData(" global::App.Services ")]
+    public async Task SearchSymbols_NamespaceFilter_TrimsAndAcceptsGlobalPrefix(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceFilterSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            ExactMatch = true,
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(AppServicesWidgetNames, SortedFqns(result.Data));
+        Assert.Equal(AppServicesWidgetNames.Length, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_NamespaceFilter_ParentNamespaceIncludesAllDescendants()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceFilterSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            ExactMatch = true,
+            NamespaceFilter = "App"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var expected = AllWidgetNames
+            .Where(n => n.StartsWith("App.", StringComparison.Ordinal))
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+        Assert.Equal(expected, SortedFqns(result.Data));
+        Assert.DoesNotContain("Widget", SortedFqns(result.Data));
+        Assert.Equal(expected.Count, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_NamespaceFilter_WithKindFilter_AppliesBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceFilterSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            KindFilter = "Method",
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var method = Assert.Single(result.Data.Symbols);
+        Assert.Equal("App.Services.Factory.Widget()", method.FullyQualifiedName);
+        Assert.Equal(1, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_NamespaceFilter_WithMaxResults_TotalCountReflectsFilteredSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceFilterSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            ExactMatch = true,
+            NamespaceFilter = "App.Services",
+            MaxResults = 1
+        });
+
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        var only = Assert.Single(capped.Data.Symbols);
+        Assert.Contains(only.FullyQualifiedName, AppServicesWidgetNames);
+        Assert.Equal(AppServicesWidgetNames.Length, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("App.Missing")]
+    [InlineData("App.Serv")]
+    [InlineData("Services")]
+    public async Task SearchSymbols_NamespaceFilter_NoMatch_ReturnsEmptySuccess(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceFilterSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        // Partial segments ("App.Serv") and inner segments ("Services") are not namespace prefixes.
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            ExactMatch = true,
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_NamespaceFilterBareGlobalPrefix_SearchesAllNamespaces()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceFilterSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        // "global::" names the root namespace, which every namespace is nested in.
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            ExactMatch = true,
+            CaseSensitive = true,
+            NamespaceFilter = "global::"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(AllWidgetNames.OrderBy(n => n, StringComparer.Ordinal), SortedFqns(result.Data));
+        Assert.Equal(AllWidgetNames.Length, result.Data.TotalCount);
     }
 
     #endregion

@@ -91,6 +91,23 @@ public class SearchSymbolsToolTests
         Assert.True(properties.TryGetProperty("sourceFile", out _));
         Assert.True(properties.TryGetProperty("caseSensitive", out _));
         Assert.True(properties.TryGetProperty("exactMatch", out _));
+        Assert.True(properties.TryGetProperty("namespaceFilter", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_NamespaceFilter_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var namespaceFilter = doc.RootElement.GetProperty("properties").GetProperty("namespaceFilter");
+
+        Assert.Equal("string", namespaceFilter.GetProperty("type").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(namespaceFilter.GetProperty("description").GetString()));
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("namespaceFilter", required);
+        Assert.Contains("namespaceFilter", _tool.Description);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
     }
 
     [Fact]
@@ -251,6 +268,42 @@ public class SearchSymbolsToolTests
             ""solutionPath"": ""C:/test/test.sln"",
             ""query"": ""Add"",
             ""exactMatch"": ""yes""
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NamespaceFilterString_ParsesAndReachesWorkspace()
+    {
+        // Arrange - well-formed namespaceFilter parses; the throwing provider proves parsing succeeded
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""query"": ""Widget"",
+            ""namespaceFilter"": ""App.Services""
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_NamespaceFilterNonString_ReturnsParseError()
+    {
+        // Arrange - a number is not a string; deserialization fails before workspace creation
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""query"": ""Widget"",
+            ""namespaceFilter"": 42
         }").RootElement;
 
         // Act

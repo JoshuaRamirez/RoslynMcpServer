@@ -2066,4 +2066,28 @@ public class HelpGeneratorTests
         Assert.Contains("--exact-match", optionalSection);
         Assert.Contains("--case-sensitive", optionalSection);
     }
+
+    [Fact]
+    public void GenerateToolHelp_SearchSymbols_ShowsNamespaceFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("search-symbols")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("search-symbols", help);
+        Assert.Contains("namespaceFilter", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("nested", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--query", requiredSection);
+        Assert.DoesNotContain("--namespace-filter", requiredSection);
+        Assert.Contains("--namespace-filter", optionalSection);
+        Assert.Contains("--exact-match", optionalSection);
+    }
 }
