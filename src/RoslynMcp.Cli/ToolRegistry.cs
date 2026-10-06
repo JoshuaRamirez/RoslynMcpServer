@@ -294,7 +294,7 @@ public sealed class ToolRegistry
         r.RegisterQuery<FindImplementationsOperation, FindImplementationsParams, FindImplementationsResult>(
             "find-implementations", "Find all implementations of an interface or abstract member; implementationFile (optional) restricts reported implementations to those declared in that absolute .cs file (applied before maxResults, so totalCount / truncated reflect the filtered set); sourceFile still locates the target symbol");
         r.RegisterQuery<GoToDefinitionOperation, GoToDefinitionParams, GoToDefinitionResult>(
-            "go-to-definition", "Navigate to the definition of a symbol; maxResults (optional) caps the returned Definitions list (omit = no cap); result includes Truncated when capped");
+            "go-to-definition", "Navigate to the definition of a symbol; maxResults (optional) caps the returned Definitions list (omit = no cap); result includes Truncated when capped; definitionFile (optional) restricts reported Definitions to locations in that absolute .cs file (applied before maxResults, so totalCount / truncated reflect the filtered set; metadata definitions are excluded); sourceFile still locates the symbol");
         r.RegisterQuery<SearchSymbolsOperation, SearchSymbolsParams, SearchSymbolsResult>(
             "search-symbols", "Search for symbols by name pattern; sourceFile (optional) restricts results to symbols declared in that absolute .cs file; caseSensitive (optional, default false) set to true matches query case-sensitively (ordinal), applied before maxResults");
 

@@ -214,4 +214,23 @@ public class ArgsToJsonConverterTests
         Assert.Equal("Shape", p.SymbolName);
         Assert.Equal("/src/Circles.cs", p.DerivedFile);
     }
+
+    [Fact]
+    public void GoToDefinition_DefinitionFileOption_BindsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Customer.cs",
+            ["symbol-name"] = "Customer",
+            ["definition-file"] = "/src/Customer.Generated.cs"
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.GoToDefinitionParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+
+        Assert.Equal("/src/Customer.cs", p.SourceFile);
+        Assert.Equal("Customer", p.SymbolName);
+        Assert.Equal("/src/Customer.Generated.cs", p.DefinitionFile);
+    }
 }

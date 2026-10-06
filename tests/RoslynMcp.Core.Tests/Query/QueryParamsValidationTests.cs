@@ -174,6 +174,37 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void GoToDefinition_DefinitionFileRelativePath_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGoToDefinitionDefinitionFile(new GoToDefinitionParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", DefinitionFile = "file.cs" }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GoToDefinition_DefinitionFileNonCsFile_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGoToDefinitionDefinitionFile(new GoToDefinitionParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", DefinitionFile = AbsoluteTestPath(".txt") }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GoToDefinition_DefinitionFileMissingPath_ThrowsSourceFileNotFound()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGoToDefinitionDefinitionFile(new GoToDefinitionParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", DefinitionFile = AbsoluteTestPath() }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GoToDefinition_NoDefinitionFile_PassesDefinitionFileValidation()
+    {
+        // No definitionFile is valid — reports every definition location
+        ValidateGoToDefinitionDefinitionFile(new GoToDefinitionParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo" });
+    }
+
     #endregion
 
     #region GetSymbolInfoParams Validation
@@ -358,6 +389,19 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
         if (!File.Exists(p.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
+    }
+
+    private static void ValidateGoToDefinitionDefinitionFile(GoToDefinitionParams p)
+    {
+        if (!string.IsNullOrWhiteSpace(p.DefinitionFile))
+        {
+            if (!PathResolver.IsAbsolutePath(p.DefinitionFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "definitionFile must be an absolute path.");
+            if (!PathResolver.IsValidCSharpFilePath(p.DefinitionFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "definitionFile must be a .cs file.");
+            if (!File.Exists(p.DefinitionFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.DefinitionFile}");
+        }
     }
 
     private static void ValidateGoToDefinitionParams(GoToDefinitionParams p)

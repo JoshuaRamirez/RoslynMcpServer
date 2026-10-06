@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
@@ -42,6 +43,18 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
+
+        if (!string.IsNullOrWhiteSpace(@params.DefinitionFile))
+        {
+            if (!PathResolver.IsAbsolutePath(@params.DefinitionFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "definitionFile must be an absolute path.");
+
+            if (!PathResolver.IsValidCSharpFilePath(@params.DefinitionFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "definitionFile must be a .cs file.");
+
+            if (!File.Exists(@params.DefinitionFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.DefinitionFile}");
+        }
     }
 
     /// <inheritdoc />
@@ -56,9 +69,28 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
         var symbol = resolved.Symbol;
         var definitions = new List<DefinitionLocation>();
 
+        // Optional definitionFile filter: compare canonical path keys so aliases such as
+        // "src/../Customer.cs" still match Roslyn's canonical location paths, and compare those
+        // keys with OrdinalIgnoreCase (the documented contract, same as get_type_hierarchy
+        // derivedFile / find_implementations implementationFile / find_references referenceFile /
+        // find_callers callerFile) so paths that differ only by letter case also match, even on
+        // case-sensitive volumes.
+        var definitionFileKey = string.IsNullOrWhiteSpace(@params.DefinitionFile)
+            ? null
+            : PathResolver.GetPathComparisonKey(@params.DefinitionFile);
+
         foreach (var location in symbol.Locations.Where(l => l.IsInSource))
         {
             var lineSpan = location.GetLineSpan();
+
+            // Filter runs before maxResults so TotalCount / Truncated reflect the filtered set.
+            if (definitionFileKey != null &&
+                (string.IsNullOrWhiteSpace(lineSpan.Path) ||
+                 !string.Equals(PathResolver.GetPathComparisonKey(lineSpan.Path), definitionFileKey, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
             definitions.Add(new DefinitionLocation
             {
                 File = lineSpan.Path,
@@ -71,9 +103,10 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
             });
         }
 
-        if (definitions.Count == 0)
+        if (definitions.Count == 0 && definitionFileKey == null)
         {
-            // Symbol exists but is from metadata (external assembly)
+            // Symbol exists but is from metadata (external assembly). Metadata definitions have
+            // no file, so they are excluded when definitionFile is set.
             definitions.Add(new DefinitionLocation
             {
                 File = "(metadata)",
