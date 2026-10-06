@@ -116,7 +116,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         var method = MethodSymbolHelpers.NormalizeMethodSymbol(symbol);
         ValidateMethodCanBeMadeNonStatic(method);
 
-        var declarationDocuments = await GetDeclarationDocumentsAsync(method, cancellationToken);
+        var declarationDocuments = await StaticMethodHelpers.GetDeclarationDocumentsAsync(method, Context.Solution, cancellationToken);
         foreach (var declarationDocument in declarationDocuments)
             DocumentEditableHelpers.ValidateDocumentIsEditable(declarationDocument, Context.Workspace);
 
@@ -209,7 +209,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
                     if (!processedMethods.Add(canonical))
                         continue;
 
-                    var declarationDocuments = await GetDeclarationDocumentsAsync(canonical, cancellationToken);
+                    var declarationDocuments = await StaticMethodHelpers.GetDeclarationDocumentsAsync(canonical, Context.Solution, cancellationToken);
                     if (declarationDocuments.Any(declarationDocument =>
                             !DocumentEditableHelpers.IsDocumentEditable(declarationDocument, Context.Workspace)))
                     {
@@ -485,36 +485,6 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
         }
     }
 
-
-    private async Task<IReadOnlyList<Document>> GetDeclarationDocumentsAsync(
-        IMethodSymbol method,
-        CancellationToken cancellationToken)
-    {
-        var documents = new List<Document>();
-        foreach (var reference in PartialMethodHelpers.EnumerateDeclaringSyntaxReferences(method))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var syntax = await reference.GetSyntaxAsync(cancellationToken);
-            var document = Context.Solution.GetDocument(syntax.SyntaxTree);
-            if (document == null)
-            {
-                throw new RefactoringException(
-                    ErrorCodes.DocumentNotEditable,
-                    $"Declaration of '{method.Name}' is not in an editable document.");
-            }
-
-            documents.Add(document);
-        }
-
-        if (documents.Count == 0)
-        {
-            throw new RefactoringException(
-                ErrorCodes.DocumentNotEditable,
-                $"Method '{method.Name}' is not in an editable document.");
-        }
-
-        return documents;
-    }
 
     private async Task<StaticPlan> BuildPlanAsync(IMethodSymbol method, CancellationToken cancellationToken)
     {
