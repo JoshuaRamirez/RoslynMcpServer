@@ -36,73 +36,14 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
     /// Validates add-braces parameters. Internal so tests can exercise
     /// input rules without loading a workspace.
     /// </summary>
-    internal static void Validate(AddBracesParams @params)
-    {
-        var scope = BraceTypeNameHelpers.NormalizeScope(@params.Scope);
-
-        // Mirror SimplifyNameOperation: AllFiles cannot be combined with a
-        // location/name scope. statement and type stay single-file only.
-        // Omitted scope (null/whitespace) is not an explicit statement pick —
-        // AllFiles treats that as a file-scope walk so CLI --all-files and
-        // sibling-style AllFiles=true succeed. Default single-file scope
-        // remains statement via NormalizeScope.
-        if (@params.AllFiles && !string.IsNullOrWhiteSpace(@params.Scope) && scope == ScopeStatement)
-        {
-            throw new RefactoringException(
-                ErrorCodes.MissingRequiredParam,
-                "allFiles cannot be combined with scope=statement.");
-        }
-
-        if (@params.AllFiles && scope == ScopeType)
-        {
-            throw new RefactoringException(
-                ErrorCodes.MissingRequiredParam,
-                "allFiles cannot be combined with scope=type.");
-        }
-
-        if (@params.AllFiles)
-        {
-            if (@params.Line.HasValue && @params.Line.Value < 1)
-                throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
-
-            if (@params.Column.HasValue && @params.Column.Value < 1)
-                throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
-
-            // When processing all files, sourceFile is optional; validate path
-            // shape only (filter throws SourceFileNotFound / SourceNotInWorkspace).
-            if (!string.IsNullOrWhiteSpace(@params.SourceFile))
-                SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile!);
-
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "sourceFile is required when allFiles is false.");
-
-        SourceFilePathHelpers.ValidateSourceFilePath(@params.SourceFile);
-
-        if (scope == ScopeStatement)
-        {
-            if (!@params.Line.HasValue)
-                throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line is required when scope is statement.");
-
-            if (@params.Line.Value < 1)
-                throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
-        }
-        else if (@params.Line.HasValue && @params.Line.Value < 1)
-        {
-            throw new RefactoringException(ErrorCodes.InvalidLineNumber, "line must be >= 1.");
-        }
-
-        if (@params.Column.HasValue && @params.Column.Value < 1)
-            throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "column must be >= 1.");
-
-        if (scope == ScopeType && string.IsNullOrWhiteSpace(@params.TypeName))
-            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "typeName is required when scope is type.");
-
-        if (!File.Exists(@params.SourceFile))
-            throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
-    }
+    internal static void Validate(AddBracesParams @params) =>
+        BraceTypeNameHelpers.ValidateBraceParams(
+            @params.SourceFile,
+            @params.AllFiles,
+            @params.Line,
+            @params.Column,
+            @params.Scope,
+            @params.TypeName);
 
     /// <inheritdoc />
     protected override async Task<RefactoringResult> ExecuteCoreAsync(

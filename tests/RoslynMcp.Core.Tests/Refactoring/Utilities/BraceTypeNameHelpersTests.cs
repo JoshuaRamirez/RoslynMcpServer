@@ -11,7 +11,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 /// <summary>
 /// Unit tests for <see cref="BraceTypeNameHelpers"/> —
 /// FindTypeDeclaration hit/miss, GetQualifiedTypeName nested,
-/// NormalizeScope null/whitespace/value, TypeNameMatches true/false.
+/// NormalizeScope null/whitespace/value, TypeNameMatches true/false,
+/// ValidateBraceParams allFiles / single-file rule set.
 /// </summary>
 public class BraceTypeNameHelpersTests
 {
@@ -109,5 +110,107 @@ public class BraceTypeNameHelpersTests
 
         Assert.False(BraceTypeNameHelpers.TypeNameMatches(type, "Other"));
         Assert.False(BraceTypeNameHelpers.TypeNameMatches(type, "Sample.Other"));
+    }
+
+    private static string MissingAbsoluteSourceFile() =>
+        Path.Combine(Path.GetTempPath(), "RoslynMcpBraceHelpers_" + Guid.NewGuid().ToString("N"), "Missing.cs");
+
+    [Theory]
+    [InlineData("statement")]
+    [InlineData("type")]
+    public void ValidateBraceParams_AllFiles_WithStatementOrTypeScope_ThrowsMissingRequiredParam(string scope)
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            BraceTypeNameHelpers.ValidateBraceParams(
+                sourceFile: null, allFiles: true, line: null, column: null, scope: scope, typeName: "Worker"));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal($"allFiles cannot be combined with scope={scope}.", ex.Message);
+    }
+
+    [Fact]
+    public void ValidateBraceParams_AllFiles_OmittedScopeAndMissingFile_DoesNotThrow()
+    {
+        BraceTypeNameHelpers.ValidateBraceParams(
+            sourceFile: null, allFiles: true, line: null, column: null, scope: null, typeName: null);
+        BraceTypeNameHelpers.ValidateBraceParams(
+            MissingAbsoluteSourceFile(), allFiles: true, line: null, column: null, scope: "file", typeName: null);
+    }
+
+    [Fact]
+    public void ValidateBraceParams_AllFiles_RelativeSourceFile_ThrowsInvalidSourcePath()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            BraceTypeNameHelpers.ValidateBraceParams(
+                "Relative.cs", allFiles: true, line: null, column: null, scope: null, typeName: null));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void ValidateBraceParams_AllFiles_LineOrColumnBelowOne_Throws()
+    {
+        var lineEx = Assert.Throws<RefactoringException>(() =>
+            BraceTypeNameHelpers.ValidateBraceParams(
+                sourceFile: null, allFiles: true, line: 0, column: null, scope: null, typeName: null));
+        Assert.Equal(ErrorCodes.InvalidLineNumber, lineEx.ErrorCode);
+
+        var columnEx = Assert.Throws<RefactoringException>(() =>
+            BraceTypeNameHelpers.ValidateBraceParams(
+                sourceFile: null, allFiles: true, line: null, column: 0, scope: null, typeName: null));
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, columnEx.ErrorCode);
+    }
+
+    [Fact]
+    public void ValidateBraceParams_SingleFile_MissingSourceFile_ThrowsMissingRequiredParam()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            BraceTypeNameHelpers.ValidateBraceParams(
+                sourceFile: " ", allFiles: false, line: 1, column: null, scope: null, typeName: null));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal("sourceFile is required when allFiles is false.", ex.Message);
+    }
+
+    [Fact]
+    public void ValidateBraceParams_SingleFile_StatementScopeWithoutLine_ThrowsInvalidLineNumber()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            BraceTypeNameHelpers.ValidateBraceParams(
+                MissingAbsoluteSourceFile(), allFiles: false, line: null, column: null, scope: null, typeName: null));
+
+        Assert.Equal(ErrorCodes.InvalidLineNumber, ex.ErrorCode);
+        Assert.Equal("line is required when scope is statement.", ex.Message);
+    }
+
+    [Fact]
+    public void ValidateBraceParams_SingleFile_TypeScopeWithoutTypeName_ThrowsMissingRequiredParam()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            BraceTypeNameHelpers.ValidateBraceParams(
+                MissingAbsoluteSourceFile(), allFiles: false, line: null, column: null, scope: "type", typeName: null));
+
+        Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
+        Assert.Equal("typeName is required when scope is type.", ex.Message);
+    }
+
+    [Fact]
+    public void ValidateBraceParams_SingleFile_ColumnBelowOne_ThrowsInvalidColumnNumber()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            BraceTypeNameHelpers.ValidateBraceParams(
+                MissingAbsoluteSourceFile(), allFiles: false, line: 1, column: 0, scope: null, typeName: null));
+
+        Assert.Equal(ErrorCodes.InvalidColumnNumber, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void ValidateBraceParams_SingleFile_MissingFile_ThrowsSourceFileNotFound()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            BraceTypeNameHelpers.ValidateBraceParams(
+                MissingAbsoluteSourceFile(), allFiles: false, line: null, column: null, scope: "file", typeName: null));
+
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 }
