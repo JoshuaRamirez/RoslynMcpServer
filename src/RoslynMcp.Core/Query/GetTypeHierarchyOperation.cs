@@ -3,6 +3,7 @@ using Microsoft.CodeAnalysis.FindSymbols;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
@@ -49,6 +50,18 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
 
         if (!File.Exists(@params.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
+
+        if (!string.IsNullOrWhiteSpace(@params.DerivedFile))
+        {
+            if (!PathResolver.IsAbsolutePath(@params.DerivedFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "derivedFile must be an absolute path.");
+
+            if (!PathResolver.IsValidCSharpFilePath(@params.DerivedFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "derivedFile must be a .cs file.");
+
+            if (!File.Exists(@params.DerivedFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.DerivedFile}");
+        }
     }
 
     /// <inheritdoc />
@@ -94,9 +107,48 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
             var derived = await SymbolFinder.FindDerivedClassesAsync(
                 typeSymbol, Context.Solution, cancellationToken: cancellationToken);
 
+            // Optional derivedFile filter: compare canonical path keys so aliases such as
+            // "src/../Derived.cs" still match Roslyn's canonical location paths, and compare those
+            // keys with OrdinalIgnoreCase (the documented contract, same as find_implementations
+            // implementationFile / find_references referenceFile / find_callers callerFile) so
+            // paths that differ only by letter case also match, even on case-sensitive volumes.
+            var derivedFileKey = string.IsNullOrWhiteSpace(@params.DerivedFile)
+                ? null
+                : PathResolver.GetPathComparisonKey(@params.DerivedFile);
+            var locationKeyCache = derivedFileKey == null
+                ? null
+                : new Dictionary<string, string>(StringComparer.Ordinal);
+
+            bool IsInDerivedFile(Location location)
+            {
+                var locationPath = location.GetLineSpan().Path;
+                if (string.IsNullOrWhiteSpace(locationPath)) return false;
+
+                if (!locationKeyCache!.TryGetValue(locationPath, out var locationKey))
+                {
+                    locationKey = PathResolver.GetPathComparisonKey(locationPath);
+                    locationKeyCache[locationPath] = locationKey;
+                }
+
+                return string.Equals(locationKey, derivedFileKey, StringComparison.OrdinalIgnoreCase);
+            }
+
             foreach (var d in derived)
             {
-                derivedTypes.Add(CreateEntry(d));
+                if (derivedFileKey == null)
+                {
+                    derivedTypes.Add(CreateEntry(d));
+                    continue;
+                }
+
+                // Filter runs before maxResults so TotalCount / Truncated reflect the filtered
+                // set. A derived type declared across several files (partial type) matches when
+                // any of its in-source locations is in derivedFile, and is reported at that
+                // location. BaseTypes and Interfaces are never filtered.
+                var location = d.Locations.FirstOrDefault(l => l.IsInSource && IsInDerivedFile(l));
+                if (location == null) continue;
+
+                derivedTypes.Add(CreateEntry(d, location));
             }
         }
 
@@ -136,9 +188,9 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
         return Enum.Parse<HierarchyDirection>(direction, ignoreCase: true);
     }
 
-    private static TypeHierarchyEntry CreateEntry(INamedTypeSymbol typeSymbol)
+    private static TypeHierarchyEntry CreateEntry(INamedTypeSymbol typeSymbol, Location? preferredLocation = null)
     {
-        var location = typeSymbol.Locations.FirstOrDefault(l => l.IsInSource);
+        var location = preferredLocation ?? typeSymbol.Locations.FirstOrDefault(l => l.IsInSource);
         string? file = null;
         int? line = null;
 

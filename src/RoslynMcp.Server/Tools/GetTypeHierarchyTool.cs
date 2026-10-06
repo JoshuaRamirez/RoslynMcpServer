@@ -32,7 +32,7 @@ public sealed class GetTypeHierarchyTool : IToolHandler
     public string Name => "get_type_hierarchy";
 
     /// <inheritdoc />
-    public string Description => "Get the type hierarchy for a C# type: base types (ancestors), derived types (descendants), and implemented interfaces. Optional maxResults caps the returned DerivedTypes list (omit = no cap). BaseTypes and Interfaces are not capped.";
+    public string Description => "Get the type hierarchy for a C# type: base types (ancestors), derived types (descendants), and implemented interfaces. Optional maxResults caps the returned DerivedTypes list (omit = no cap). BaseTypes and Interfaces are not capped. sourceFile locates the target type; optional derivedFile restricts reported DerivedTypes to those declared in that file (applied before maxResults, so totalCount/truncated reflect the filtered set; BaseTypes and Interfaces are not filtered).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -78,6 +78,11 @@ public sealed class GetTypeHierarchyTool : IToolHandler
                 type = "integer",
                 description = "Maximum number of derived types to return (optional; omit = no cap). Does not cap BaseTypes or Interfaces.",
                 minimum = 1
+            },
+            derivedFile = new
+            {
+                type = "string",
+                description = "Absolute path to a .cs file to restrict reported DerivedTypes to those declared in that file (optional; omit for the whole solution). Does not filter BaseTypes or Interfaces."
             }
         },
         additionalProperties = false
@@ -105,7 +110,8 @@ public sealed class GetTypeHierarchyTool : IToolHandler
                 Line = args.Line,
                 Column = args.Column,
                 Direction = args.Direction,
-                MaxResults = args.MaxResults
+                MaxResults = args.MaxResults,
+                DerivedFile = args.DerivedFile
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -138,5 +144,6 @@ public sealed class GetTypeHierarchyTool : IToolHandler
         public int? Column { get; init; }
         public string? Direction { get; init; }
         public int? MaxResults { get; init; }
+        public string? DerivedFile { get; init; }
     }
 }

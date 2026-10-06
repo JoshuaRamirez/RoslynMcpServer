@@ -35,4 +35,14 @@ public sealed class GetTypeHierarchyParams
     /// Does not cap BaseTypes or Interfaces.
     /// </summary>
     public int? MaxResults { get; init; }
+
+    /// <summary>
+    /// Absolute path to a source file to restrict reported derived types to. When set, only
+    /// derived types declared (with an in-source location) in that file are returned in
+    /// <c>DerivedTypes</c>, before <see cref="MaxResults"/>, so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the filtered set. Does not filter BaseTypes or Interfaces.
+    /// When omitted, derived types across the whole solution are returned. Distinct from
+    /// <see cref="SourceFile"/>, which locates the target type.
+    /// </summary>
+    public string? DerivedFile { get; init; }
 }
