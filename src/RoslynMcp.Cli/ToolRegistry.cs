@@ -310,7 +310,7 @@ public sealed class ToolRegistry
         r.RegisterQuery<GetDocumentOutlineOperation, GetDocumentOutlineParams, GetDocumentOutlineResult>(
             "get-document-outline", "Get a structural outline of a C# document; maxDepth (optional, >= 1) drops entries deeper than N (1 = top-level entries only; omit = no depth cap); maxResults (optional) caps the returned outline tree via DFS pre-order after maxDepth (omit = no cap); kindFilter (optional, same values as search-symbols kind-filter, case-insensitive) keeps only entries of that kind plus their containing types/namespaces, applied before maxDepth and maxResults; result includes Truncated when capped");
         r.RegisterQuery<GetSymbolInfoOperation, GetSymbolInfoParams, DetailedSymbolInfo>(
-            "get-symbol-info", "Get detailed information about a symbol at a position");
+            "get-symbol-info", "Get detailed information about a symbol at a position; maxResults (optional) caps the returned Members list of a type (omit = no cap); result includes TotalCount and Truncated; Interfaces, Parameters and other fields are not capped, and maxResults has no effect on non-type symbols");
 
         // ── Query: Type Hierarchy (1) ────────────────────────────────
         r.RegisterQuery<GetTypeHierarchyOperation, GetTypeHierarchyParams, GetTypeHierarchyResult>(

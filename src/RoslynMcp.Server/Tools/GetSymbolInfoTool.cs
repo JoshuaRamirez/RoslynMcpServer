@@ -32,7 +32,7 @@ public sealed class GetSymbolInfoTool : IToolHandler
     public string Name => "get_symbol_info";
 
     /// <inheritdoc />
-    public string Description => "Get detailed information about a C# symbol including its type hierarchy, members, modifiers, parameters, return type, and XML documentation.";
+    public string Description => "Get detailed information about a C# symbol including its type hierarchy, members, modifiers, parameters, return type, and XML documentation. Optional maxResults caps the returned Members list of a type (omit = no cap); result includes TotalCount and Truncated. Interfaces, Parameters and other fields are not capped, and maxResults has no effect on non-type symbols.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -67,6 +67,12 @@ public sealed class GetSymbolInfoTool : IToolHandler
                 type = "integer",
                 description = "1-based column number for position-based symbol resolution",
                 minimum = 1
+            },
+            maxResults = new
+            {
+                type = "integer",
+                description = "Maximum number of members to return for a type symbol (optional; omit = no cap). Does not cap Interfaces or Parameters; no effect on non-type symbols.",
+                minimum = 1
             }
         },
         additionalProperties = false
@@ -92,7 +98,8 @@ public sealed class GetSymbolInfoTool : IToolHandler
                 SourceFile = args.SourceFile,
                 SymbolName = args.SymbolName,
                 Line = args.Line,
-                Column = args.Column
+                Column = args.Column,
+                MaxResults = args.MaxResults
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -123,5 +130,6 @@ public sealed class GetSymbolInfoTool : IToolHandler
         public string? SymbolName { get; init; }
         public int? Line { get; init; }
         public int? Column { get; init; }
+        public int? MaxResults { get; init; }
     }
 }

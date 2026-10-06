@@ -89,6 +89,30 @@ public class GetSymbolInfoToolTests
         Assert.True(properties.TryGetProperty("symbolName", out _));
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("column", out _));
+        Assert.True(properties.TryGetProperty("maxResults", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_MaxResults_IsOptionalIntegerWithMinimumOne()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var maxResults = doc.RootElement.GetProperty("properties").GetProperty("maxResults");
+
+        Assert.Equal("integer", maxResults.GetProperty("type").GetString());
+        Assert.Equal(1, maxResults.GetProperty("minimum").GetInt32());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("maxResults", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsMaxResults()
+    {
+        Assert.Contains("maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Members", _tool.Description, StringComparison.Ordinal);
     }
 
     #endregion

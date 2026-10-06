@@ -2021,6 +2021,28 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_GetSymbolInfo_ShowsMaxResults()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-symbol-info")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("get-symbol-info", help);
+        Assert.Contains("maxResults (optional)", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.DoesNotContain("--max-results", requiredSection);
+        Assert.Contains("--max-results", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_GoToDefinition_ShowsDefinitionFile()
     {
         var registry = ToolRegistry.BuildDefault();

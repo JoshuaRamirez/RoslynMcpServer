@@ -53,9 +53,20 @@ public sealed class DetailedSymbolInfo
     public IReadOnlyList<string>? Interfaces { get; init; }
 
     /// <summary>
-    /// Member signatures (for types).
+    /// Member signatures (for types; may be truncated when maxResults is set).
     /// </summary>
     public IReadOnlyList<string>? Members { get; init; }
+
+    /// <summary>
+    /// Total count of members found for a type (may exceed Members.Count if truncated).
+    /// Null when <see cref="Members"/> is not populated (non-type symbols).
+    /// </summary>
+    public int? TotalCount { get; init; }
+
+    /// <summary>
+    /// Whether Members was truncated due to maxResults.
+    /// </summary>
+    public bool Truncated { get; init; }
 
     /// <summary>
     /// Display signature (e.g., method signature with parameters).
