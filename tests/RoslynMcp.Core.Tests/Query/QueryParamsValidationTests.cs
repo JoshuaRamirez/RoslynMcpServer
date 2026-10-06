@@ -841,6 +841,37 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void GetTypeHierarchy_DerivedFileRelativePath_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetTypeHierarchyDerivedFile(new GetTypeHierarchyParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", DerivedFile = "file.cs" }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GetTypeHierarchy_DerivedFileNonCsFile_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetTypeHierarchyDerivedFile(new GetTypeHierarchyParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", DerivedFile = AbsoluteTestPath(".txt") }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GetTypeHierarchy_DerivedFileMissingPath_ThrowsSourceFileNotFound()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateGetTypeHierarchyDerivedFile(new GetTypeHierarchyParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", DerivedFile = AbsoluteTestPath() }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void GetTypeHierarchy_NoDerivedFile_PassesDerivedFileValidation()
+    {
+        // No derivedFile is valid — reports derived types across the whole solution
+        ValidateGetTypeHierarchyDerivedFile(new GetTypeHierarchyParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo" });
+    }
+
     #endregion
 
     #region GetDocumentOutlineParams Validation
@@ -1029,6 +1060,19 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
         if (!File.Exists(p.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
+    }
+
+    private static void ValidateGetTypeHierarchyDerivedFile(GetTypeHierarchyParams p)
+    {
+        if (!string.IsNullOrWhiteSpace(p.DerivedFile))
+        {
+            if (!PathResolver.IsAbsolutePath(p.DerivedFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "derivedFile must be an absolute path.");
+            if (!PathResolver.IsValidCSharpFilePath(p.DerivedFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "derivedFile must be a .cs file.");
+            if (!File.Exists(p.DerivedFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.DerivedFile}");
+        }
     }
 
     private static void ValidateGetTypeHierarchyParams(GetTypeHierarchyParams p)

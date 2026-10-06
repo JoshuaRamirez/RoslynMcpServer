@@ -195,4 +195,23 @@ public class ArgsToJsonConverterTests
         Assert.Equal("IRunner", p.SymbolName);
         Assert.Equal("/src/ImplA.cs", p.ImplementationFile);
     }
+
+    [Fact]
+    public void GetTypeHierarchy_DerivedFileOption_BindsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Shape.cs",
+            ["symbol-name"] = "Shape",
+            ["derived-file"] = "/src/Circles.cs"
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.GetTypeHierarchyParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+
+        Assert.Equal("/src/Shape.cs", p.SourceFile);
+        Assert.Equal("Shape", p.SymbolName);
+        Assert.Equal("/src/Circles.cs", p.DerivedFile);
+    }
 }

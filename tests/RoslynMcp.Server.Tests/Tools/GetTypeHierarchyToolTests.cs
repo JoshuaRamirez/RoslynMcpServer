@@ -71,6 +71,21 @@ public class GetTypeHierarchyToolTests
         Assert.True(properties.TryGetProperty("solutionPath", out _));
         Assert.True(properties.TryGetProperty("sourceFile", out _));
         Assert.True(properties.TryGetProperty("maxResults", out _));
+        Assert.True(properties.TryGetProperty("derivedFile", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_DerivedFile_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var derivedFile = doc.RootElement.GetProperty("properties").GetProperty("derivedFile");
+
+        Assert.Equal("string", derivedFile.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("derivedFile", required);
+        Assert.Contains("derivedFile", _tool.Description);
     }
 
     [Fact]
