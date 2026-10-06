@@ -80,7 +80,7 @@ public sealed class SearchSymbolsTool : IToolHandler
             namespaceFilter = new
             {
                 type = "string",
-                description = "Namespace to restrict results to (optional; omit for all namespaces). Keeps symbols whose containing namespace equals it or is nested inside it (e.g. App.Services matches App.Services and App.Services.Orders, not App.ServicesExtra); ordinal (case-sensitive) comparison, leading global:: accepted; global-namespace symbols never match; applied before maxResults so totalCount/truncated reflect the filtered set"
+                description = "Namespace to restrict results to (optional; omit for all namespaces). Keeps symbols whose containing namespace equals it or is nested inside it (e.g. App.Services matches App.Services and App.Services.Orders, not App.ServicesExtra); ordinal (case-sensitive) comparison, leading global:: accepted; global-namespace symbols never match a named filter, while a bare global:: is the root namespace and filters nothing; applied before maxResults so totalCount/truncated reflect the filtered set"
             }
         },
         additionalProperties = false
