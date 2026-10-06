@@ -691,6 +691,10 @@ public class GetDocumentOutlineOperationTests
     [InlineData("Bogus")]
     [InlineData("Methods")]
     [InlineData("Constructor")]
+    [InlineData("6")]
+    [InlineData("999")]
+    [InlineData("-1")]
+    [InlineData("Class, Method")]
     public async Task Validate_InvalidKindFilter_ThrowsInvalidSymbolKind(string kindFilter)
     {
         await using var workspace = await TempWorkspace.CreateAsync(KindSource);

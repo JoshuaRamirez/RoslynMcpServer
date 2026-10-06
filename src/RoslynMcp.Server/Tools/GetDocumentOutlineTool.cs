@@ -66,7 +66,7 @@ public sealed class GetDocumentOutlineTool : IToolHandler
             kindFilter = new
             {
                 type = "string",
-                description = "Keep only outline entries of this kind plus their containing types/namespaces (optional; case-insensitive): Class, Struct, Interface, Enum, Record, Delegate, Method, Property, Field, Event, Constant, Namespace. Constructors match Method and enum members match Constant. Applied before maxDepth and maxResults; omit = all declarations."
+                description = "Keep only outline entries of this kind plus their containing types/namespaces (optional; case-insensitive): Class, Struct, Interface, Enum, Record, Delegate, Method, Property, Field, Event, Constant, Local, Parameter, Namespace (a single kind name; numeric or comma-combined values are rejected with InvalidSymbolKind). Constructors match Method and enum members match Constant; Local and Parameter are accepted but never match an outline entry (empty outline). Applied before maxDepth and maxResults; omit = all declarations."
             }
         },
         additionalProperties = false
