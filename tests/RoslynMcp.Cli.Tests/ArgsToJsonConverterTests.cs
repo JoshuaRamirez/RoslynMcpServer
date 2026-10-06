@@ -138,4 +138,23 @@ public class ArgsToJsonConverterTests
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
         Assert.Null(p.CaseSensitive);
     }
+
+    [Fact]
+    public void FindCallers_CallerFileOption_BindsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Target.cs",
+            ["symbol-name"] = "Run",
+            ["caller-file"] = "/src/CallerA.cs"
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.FindCallersParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+
+        Assert.Equal("/src/Target.cs", p.SourceFile);
+        Assert.Equal("Run", p.SymbolName);
+        Assert.Equal("/src/CallerA.cs", p.CallerFile);
+    }
 }

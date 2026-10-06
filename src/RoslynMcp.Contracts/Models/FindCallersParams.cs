@@ -29,4 +29,13 @@ public sealed class FindCallersParams
     /// Maximum number of callers to return.
     /// </summary>
     public int? MaxResults { get; init; }
+
+    /// <summary>
+    /// Absolute path to a source file to restrict reported call sites to. When set, only
+    /// call sites located in that file are returned (before <see cref="MaxResults"/>, so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the filtered set). When omitted, call
+    /// sites across the whole solution are returned. Distinct from <see cref="SourceFile"/>,
+    /// which locates the target symbol.
+    /// </summary>
+    public string? CallerFile { get; init; }
 }
