@@ -109,6 +109,8 @@ public static class HelpGenerator
         var desc = GetPropertyDescription(prop);
 
         sb.Append($"  --{kebabName,-30} {typeName}");
+        if (typeName.EndsWith("[]", StringComparison.Ordinal))
+            sb.Append("  (comma-separated or JSON array)");
         if (!string.IsNullOrEmpty(desc))
             sb.Append($"  {desc}");
         sb.AppendLine();

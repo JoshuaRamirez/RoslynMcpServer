@@ -1,5 +1,7 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using RoslynMcp.Cli;
+using RoslynMcp.Contracts.Models;
 using Xunit;
 
 namespace RoslynMcp.Cli.Tests;
@@ -325,5 +327,103 @@ public class ArgsToJsonConverterTests
             json,
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
         Assert.Null(p.KindFilter);
+    }
+
+    [Fact]
+    public void StringListOption_CommaSeparated_SerializedAsJsonArray()
+    {
+        var dict = new Dictionary<string, string> { ["exclude-diagnostic-ids"] = "CS1591, CS8019 ,CS0168" };
+        var json = ArgsToJsonConverter.Convert(dict, typeof(GetDiagnosticsParams));
+        var doc = JsonDocument.Parse(json);
+        var ids = doc.RootElement.GetProperty("excludeDiagnosticIds");
+        Assert.Equal(JsonValueKind.Array, ids.ValueKind);
+        Assert.Equal(new[] { "CS1591", "CS8019", "CS0168" }, ids.EnumerateArray().Select(e => e.GetString()));
+    }
+
+    [Fact]
+    public void StringListOption_SingleValue_SerializedAsSingleElementArray()
+    {
+        var dict = new Dictionary<string, string> { ["diagnostic-ids"] = "CS0168" };
+        var json = ArgsToJsonConverter.Convert(dict, typeof(GetDiagnosticsParams));
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal(new[] { "CS0168" }, doc.RootElement.GetProperty("diagnosticIds").EnumerateArray().Select(e => e.GetString()));
+    }
+
+    [Fact]
+    public void StringListOption_JsonArrayLiteral_UsedAsIs()
+    {
+        var dict = new Dictionary<string, string> { ["exclude-diagnostic-ids"] = "[\"CS1591\", \"CS8019\"]" };
+        var json = ArgsToJsonConverter.Convert(dict, typeof(GetDiagnosticsParams));
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal(new[] { "CS1591", "CS8019" }, doc.RootElement.GetProperty("excludeDiagnosticIds").EnumerateArray().Select(e => e.GetString()));
+    }
+
+    [Fact]
+    public void StringListOption_BlankValue_SerializedAsEmptyArray()
+    {
+        var dict = new Dictionary<string, string> { ["exclude-diagnostic-ids"] = "  " };
+        var json = ArgsToJsonConverter.Convert(dict, typeof(GetDiagnosticsParams));
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal(0, doc.RootElement.GetProperty("excludeDiagnosticIds").GetArrayLength());
+    }
+
+    [Fact]
+    public void StringListOption_WithoutParamsType_KeepsStringBehavior()
+    {
+        var dict = new Dictionary<string, string> { ["exclude-diagnostic-ids"] = "CS1591,CS8019" };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("CS1591,CS8019", doc.RootElement.GetProperty("excludeDiagnosticIds").GetString());
+    }
+
+    [Fact]
+    public void ParamsType_NonListOptions_KeepScalarRules()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "C:/Code/Foo.cs",
+            ["max-results"] = "5",
+            ["severity-filter"] = "Error"
+        };
+        var json = ArgsToJsonConverter.Convert(dict, typeof(GetDiagnosticsParams));
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("C:/Code/Foo.cs", doc.RootElement.GetProperty("sourceFile").GetString());
+        Assert.Equal(5, doc.RootElement.GetProperty("maxResults").GetInt32());
+        Assert.Equal("Error", doc.RootElement.GetProperty("severityFilter").GetString());
+    }
+
+    [Fact]
+    public void GetDiagnosticsParams_ListOptions_RoundTripThroughDeserialize()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var dict = new Dictionary<string, string>
+        {
+            ["diagnostic-ids"] = "CS1030,CS0168",
+            ["exclude-diagnostic-ids"] = "cs0168",
+            ["max-results"] = "10"
+        };
+
+        var json = ArgsToJsonConverter.Convert(dict, tool.ParamsType);
+        var opts = new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true,
+            Converters = { new JsonStringEnumConverter() }
+        };
+        var p = JsonSerializer.Deserialize<GetDiagnosticsParams>(json, opts)!;
+
+        Assert.Equal(new[] { "CS1030", "CS0168" }, p.DiagnosticIds);
+        Assert.Equal(new[] { "cs0168" }, p.ExcludeDiagnosticIds);
+        Assert.Equal(10, p.MaxResults);
+    }
+
+    [Fact]
+    public void PullMembersUpParams_MembersOption_RoundTripThroughDeserialize()
+    {
+        var dict = new Dictionary<string, string> { ["members"] = "Foo, Bar" };
+        var json = ArgsToJsonConverter.Convert(dict, typeof(PullMembersUpParams));
+        var p = JsonSerializer.Deserialize<PullMembersUpParams>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
+        Assert.Equal(new[] { "Foo", "Bar" }, p.Members);
     }
 }

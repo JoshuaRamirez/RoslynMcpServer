@@ -2040,6 +2040,7 @@ public class HelpGeneratorTests
         Assert.Contains("--exclude-diagnostic-ids", optionalSection);
         Assert.Contains("--diagnostic-ids", optionalSection);
         Assert.Contains("string[]", optionalSection);
+        Assert.Contains("comma-separated or JSON array", optionalSection);
     }
 
     [Fact]
