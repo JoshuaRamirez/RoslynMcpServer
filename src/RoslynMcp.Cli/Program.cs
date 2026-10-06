@@ -86,7 +86,7 @@ try
     }
 
     // Convert args to JSON
-    var json = ArgsToJsonConverter.Convert(parsed.Options);
+    var json = ArgsToJsonConverter.Convert(parsed.Options, tool.ParamsType);
 
     if (parsed.Verbose)
         Console.Error.WriteLine($"[verbose] Params JSON: {json}");

@@ -72,6 +72,7 @@ public class GetDiagnosticsToolTests
         Assert.True(properties.TryGetProperty("severityFilter", out _));
         Assert.True(properties.TryGetProperty("maxResults", out _));
         Assert.True(properties.TryGetProperty("diagnosticIds", out _));
+        Assert.True(properties.TryGetProperty("excludeDiagnosticIds", out _));
     }
 
     [Fact]
@@ -87,6 +88,22 @@ public class GetDiagnosticsToolTests
         var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
         Assert.DoesNotContain("diagnosticIds", required);
         Assert.Contains("diagnosticIds", _tool.Description);
+    }
+
+    [Fact]
+    public void GetDefinition_ExcludeDiagnosticIds_IsOptionalStringArray()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var excludeDiagnosticIds = doc.RootElement.GetProperty("properties").GetProperty("excludeDiagnosticIds");
+
+        Assert.Equal("array", excludeDiagnosticIds.GetProperty("type").GetString());
+        Assert.Equal("string", excludeDiagnosticIds.GetProperty("items").GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("excludeDiagnosticIds", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+        Assert.Contains("excludeDiagnosticIds", _tool.Description);
     }
 
     [Fact]
