@@ -5,7 +5,9 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// <summary>
 /// Shared explicit-interface-implementation detection used by
 /// implement_interface / implement_abstract when classifying existing
-/// members. Same body as the two private Generate copies.
+/// members, and by generate_overrides when skipping explicit
+/// implementations in its hidden-by-non-override check. Same body as the
+/// prior private Generate copies.
 /// </summary>
 internal static class ExplicitImplementationHelpers
 {
@@ -14,7 +16,7 @@ internal static class ExplicitImplementationHelpers
     /// implementation (method/property/event). Methods also match when
     /// <see cref="MethodKind.ExplicitInterfaceImplementation"/>. Same body
     /// as the prior private copies on ImplementInterfaceOperation /
-    /// ImplementAbstractOperation.
+    /// ImplementAbstractOperation / GenerateOverridesOperation.
     /// </summary>
     internal static bool IsExplicitImplementation(ISymbol member) =>
         member switch

@@ -163,7 +163,14 @@ internal static class RemoveExistingImplementationsHelpers
         return solution;
     }
 
-    private static void AddKeyed<T>(
+    /// <summary>
+    /// Adds <paramref name="key"/> to the set bucketed under
+    /// <paramref name="tree"/> then <paramref name="partSpanStart"/> in
+    /// <paramref name="map"/>, creating the per-tree map and per-part set on
+    /// first use. Also used by <c>generate_overrides</c> replace-existing
+    /// removal; same body as its prior private copy.
+    /// </summary>
+    internal static void AddKeyed<T>(
         Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,
         SyntaxTree tree,
         int partSpanStart,
