@@ -79,7 +79,15 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
             ? null
             : PathResolver.GetPathComparisonKey(@params.DefinitionFile);
 
-        foreach (var location in symbol.Locations.Where(l => l.IsInSource))
+        // With a filter, the candidate set also covers the other half of a partial method /
+        // property / event: Roslyn models the defining declaration and the implementation as
+        // distinct linked symbols, so symbol.Locations alone never reaches the other part's
+        // file. Without a filter the reported set is unchanged.
+        var candidateLocations = definitionFileKey == null
+            ? symbol.Locations.Where(l => l.IsInSource)
+            : GetLocationsIncludingPartialParts(symbol);
+
+        foreach (var location in candidateLocations)
         {
             var lineSpan = location.GetLineSpan();
 
@@ -133,5 +141,37 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
             Truncated = totalCount > returnedDefinitions.Count
         };
         return QueryResult<GoToDefinitionResult>.Succeeded(operationId, result);
+    }
+
+    /// <summary>
+    /// In-source locations of <paramref name="symbol"/> plus those of its linked partial parts
+    /// (partial method definition / implementation, including partial constructors, and partial
+    /// property / event definition / implementation), deduplicated, with the resolved symbol's
+    /// own locations first.
+    /// </summary>
+    private static IEnumerable<Location> GetLocationsIncludingPartialParts(ISymbol symbol)
+    {
+        IEnumerable<ISymbol> parts = symbol switch
+        {
+            IMethodSymbol method => PartialMethodHelpers.GetPartialMethodParts(method),
+            IPropertySymbol property => new ISymbol?[]
+            {
+                property,
+                property.PartialDefinitionPart,
+                property.PartialImplementationPart
+            }.OfType<ISymbol>(),
+            IEventSymbol @event => new ISymbol?[]
+            {
+                @event,
+                @event.PartialDefinitionPart,
+                @event.PartialImplementationPart
+            }.OfType<ISymbol>(),
+            _ => [symbol]
+        };
+
+        return parts
+            .SelectMany(part => part.Locations)
+            .Where(l => l.IsInSource)
+            .Distinct();
     }
 }

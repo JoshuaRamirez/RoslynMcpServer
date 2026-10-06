@@ -335,6 +335,187 @@ public class GoToDefinitionOperationTests
         Assert.Empty(elsewhere.Data.Definitions);
         Assert.Equal(0, elsewhere.Data.TotalCount);
         Assert.False(elsewhere.Data.Truncated);
+
+        // The implementation half lives in a distinct linked IMethodSymbol; filtering to its file
+        // must still reach it (previously masked: only the defining file and an unrelated file
+        // were checked).
+        var implementationFile = await operation.ExecuteAsync(new GoToDefinitionParams
+        {
+            SourceFile = workspace.PathOf("Customer.cs"),
+            Line = 3,
+            Column = 18,
+            DefinitionFile = workspace.PathOf("Customer.Validation.cs")
+        });
+
+        Assert.True(implementationFile.Success);
+        Assert.NotNull(implementationFile.Data);
+        var implementation = Assert.Single(implementationFile.Data.Definitions);
+        Assert.Equal("OnSaved", implementation.SymbolName);
+        Assert.True(SamePath(implementation.File, workspace.PathOf("Customer.Validation.cs")));
+        Assert.Equal(3, implementation.Line);
+        Assert.Equal(1, implementationFile.Data.TotalCount);
+        Assert.False(implementationFile.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GoToDefinition_DefinitionFile_PartialMethodFromDefinition_FiltersToImplementationFile()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MultiFileSources);
+        var operation = new GoToDefinitionOperation(workspace.Context);
+
+        // Resolve OnSaved at its defining declaration (Customer.cs) and ask for the implementation file.
+        var result = await operation.ExecuteAsync(new GoToDefinitionParams
+        {
+            SourceFile = workspace.PathOf("Customer.cs"),
+            Line = 3,
+            Column = 18,
+            DefinitionFile = workspace.PathOf("Customer.Validation.cs")
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var only = Assert.Single(result.Data.Definitions);
+        Assert.Equal("OnSaved", only.SymbolName);
+        Assert.True(SamePath(only.File, workspace.PathOf("Customer.Validation.cs")));
+        Assert.Equal(3, only.Line);
+        Assert.Equal(18, only.Column);
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GoToDefinition_DefinitionFile_PartialMethodFromImplementation_FiltersToDefiningFile()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MultiFileSources);
+        var operation = new GoToDefinitionOperation(workspace.Context);
+
+        // Resolve OnSaved at its implementation (Customer.Validation.cs) and ask for the defining file.
+        var result = await operation.ExecuteAsync(new GoToDefinitionParams
+        {
+            SourceFile = workspace.PathOf("Customer.Validation.cs"),
+            Line = 3,
+            Column = 18,
+            DefinitionFile = workspace.PathOf("Customer.cs")
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var only = Assert.Single(result.Data.Definitions);
+        Assert.Equal("OnSaved", only.SymbolName);
+        Assert.True(SamePath(only.File, workspace.PathOf("Customer.cs")));
+        Assert.Equal(3, only.Line);
+        Assert.Equal(18, only.Column);
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GoToDefinition_DefinitionFile_PartialMethodUnrelatedFile_ReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MultiFileSources);
+        var operation = new GoToDefinitionOperation(workspace.Context);
+
+        foreach (var (sourceFile, line) in new[] { ("Customer.cs", 3), ("Customer.Validation.cs", 3) })
+        {
+            var result = await operation.ExecuteAsync(new GoToDefinitionParams
+            {
+                SourceFile = workspace.PathOf(sourceFile),
+                Line = line,
+                Column = 18,
+                DefinitionFile = workspace.PathOf("Empty.cs")
+            });
+
+            Assert.True(result.Success);
+            Assert.NotNull(result.Data);
+            Assert.Empty(result.Data.Definitions);
+            Assert.Equal(0, result.Data.TotalCount);
+            Assert.False(result.Data.Truncated);
+        }
+    }
+
+    [SkippableFact]
+    public async Task GoToDefinition_OmittedDefinitionFile_PartialMethodUnchanged()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MultiFileSources);
+        var operation = new GoToDefinitionOperation(workspace.Context);
+
+        // Without definitionFile the reported set is the resolved half's own locations (unchanged).
+        var fromDefinition = await operation.ExecuteAsync(new GoToDefinitionParams
+        {
+            SourceFile = workspace.PathOf("Customer.cs"),
+            Line = 3,
+            Column = 18
+        });
+
+        Assert.True(fromDefinition.Success);
+        Assert.NotNull(fromDefinition.Data);
+        Assert.True(SamePath(Assert.Single(fromDefinition.Data.Definitions).File, workspace.PathOf("Customer.cs")));
+
+        var fromImplementation = await operation.ExecuteAsync(new GoToDefinitionParams
+        {
+            SourceFile = workspace.PathOf("Customer.Validation.cs"),
+            Line = 3,
+            Column = 18
+        });
+
+        Assert.True(fromImplementation.Success);
+        Assert.NotNull(fromImplementation.Data);
+        Assert.True(SamePath(Assert.Single(fromImplementation.Data.Definitions).File, workspace.PathOf("Customer.Validation.cs")));
+    }
+
+    [SkippableFact]
+    public async Task GoToDefinition_DefinitionFile_PartialProperty_ReachesOtherPart()
+    {
+        // Partial properties (C# 13): defining declaration in Order.cs, implementation in
+        // Order.Impl.cs (both line 3, column 24 = "Total").
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Order.cs"] = """
+                public partial class Order
+                {
+                    public partial int Total { get; }
+                }
+                """,
+            ["Order.Impl.cs"] = """
+                public partial class Order
+                {
+                    public partial int Total => 42;
+                }
+                """
+        });
+        var operation = new GoToDefinitionOperation(workspace.Context);
+
+        var toImplementation = await operation.ExecuteAsync(new GoToDefinitionParams
+        {
+            SourceFile = workspace.PathOf("Order.cs"),
+            Line = 3,
+            Column = 24,
+            DefinitionFile = workspace.PathOf("Order.Impl.cs")
+        });
+
+        Assert.True(toImplementation.Success);
+        Assert.NotNull(toImplementation.Data);
+        var implementation = Assert.Single(toImplementation.Data.Definitions);
+        Assert.Equal("Total", implementation.SymbolName);
+        Assert.True(SamePath(implementation.File, workspace.PathOf("Order.Impl.cs")));
+        Assert.Equal(3, implementation.Line);
+        Assert.Equal(1, toImplementation.Data.TotalCount);
+
+        var toDefinition = await operation.ExecuteAsync(new GoToDefinitionParams
+        {
+            SourceFile = workspace.PathOf("Order.Impl.cs"),
+            Line = 3,
+            Column = 24,
+            DefinitionFile = workspace.PathOf("Order.cs")
+        });
+
+        Assert.True(toDefinition.Success);
+        Assert.NotNull(toDefinition.Data);
+        var definition = Assert.Single(toDefinition.Data.Definitions);
+        Assert.Equal("Total", definition.SymbolName);
+        Assert.True(SamePath(definition.File, workspace.PathOf("Order.cs")));
+        Assert.Equal(3, definition.Line);
+        Assert.Equal(1, toDefinition.Data.TotalCount);
     }
 
     [SkippableFact]
