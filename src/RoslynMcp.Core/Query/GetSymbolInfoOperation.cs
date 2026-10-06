@@ -38,6 +38,9 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
 
         if (@params.Column.HasValue && @params.Column.Value < 1)
             throw new RefactoringException(ErrorCodes.InvalidColumnNumber, "Column number must be >= 1.");
+
+        if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
     }
 
     /// <inheritdoc />
@@ -50,12 +53,12 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
             @params.SourceFile, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
 
         var symbol = resolved.Symbol;
-        var info = BuildDetailedInfo(symbol);
+        var info = BuildDetailedInfo(symbol, @params.MaxResults);
 
         return QueryResult<DetailedSymbolInfo>.Succeeded(operationId, info);
     }
 
-    private static DetailedSymbolInfo BuildDetailedInfo(ISymbol symbol)
+    private static DetailedSymbolInfo BuildDetailedInfo(ISymbol symbol, int? maxResults)
     {
         var modifiers = GetModifiers(symbol);
         var location = GetLocation(symbol);
@@ -64,6 +67,8 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
         string? baseType = null;
         IReadOnlyList<string>? interfaces = null;
         IReadOnlyList<string>? members = null;
+        int? totalCount = null;
+        var truncated = false;
         string? returnType = null;
         IReadOnlyList<Contracts.Models.ParameterInfo>? parameters = null;
 
@@ -73,10 +78,23 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                 ? null
                 : namedType.BaseType?.ToDisplayString();
             interfaces = namedType.Interfaces.Select(i => i.ToDisplayString()).ToList();
-            members = namedType.GetMembers()
+            var allMembers = namedType.GetMembers()
                 .Where(m => !m.IsImplicitlyDeclared && m.CanBeReferencedByName)
                 .Select(m => m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat))
                 .ToList();
+
+            // maxResults caps only Members (first N in today's enumeration order);
+            // TotalCount stays the full member count.
+            totalCount = allMembers.Count;
+            if (maxResults.HasValue && allMembers.Count > maxResults.Value)
+            {
+                members = allMembers.Take(maxResults.Value).ToList();
+                truncated = true;
+            }
+            else
+            {
+                members = allMembers;
+            }
         }
 
         if (symbol is IMethodSymbol method)
@@ -118,6 +136,8 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
             BaseType = baseType,
             Interfaces = interfaces,
             Members = members,
+            TotalCount = totalCount,
+            Truncated = truncated,
             ReturnType = returnType,
             Parameters = parameters
         };

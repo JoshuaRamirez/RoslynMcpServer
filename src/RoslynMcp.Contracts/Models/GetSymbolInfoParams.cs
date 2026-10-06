@@ -24,4 +24,11 @@ public sealed class GetSymbolInfoParams
     /// 1-based column number for position-based resolution.
     /// </summary>
     public int? Column { get; init; }
+
+    /// <summary>
+    /// Maximum number of members to return for a type symbol. Omit for no cap (return all members).
+    /// Only caps <c>Members</c>; Interfaces, Parameters, Modifiers and other fields are not capped,
+    /// and it has no effect on non-type symbols.
+    /// </summary>
+    public int? MaxResults { get; init; }
 }
