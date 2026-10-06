@@ -77,7 +77,7 @@ public sealed class GoToDefinitionTool : IToolHandler
             definitionFile = new
             {
                 type = "string",
-                description = "Absolute path to a .cs file to restrict reported Definitions to locations in that file (optional; omit for every definition location). Metadata definitions are excluded when set."
+                description = "Absolute path to a .cs file to restrict reported Definitions to locations in that file (optional; omit to keep the existing unfiltered behavior). Metadata definitions are excluded when set."
             }
         },
         additionalProperties = false

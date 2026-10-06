@@ -38,7 +38,7 @@ public sealed class GoToDefinitionParams
     /// file and are excluded when this is set. For a partial method / property / event, the
     /// locations of both the defining declaration and the implementation are considered, so
     /// the other half's file can be selected regardless of which half the symbol resolved to.
-    /// When omitted, every definition location is returned. Distinct from <see cref="SourceFile"/>, which locates the symbol.
+    /// When omitted, the existing unfiltered behavior is preserved. Distinct from <see cref="SourceFile"/>, which locates the symbol.
     /// </summary>
     public string? DefinitionFile { get; init; }
 }

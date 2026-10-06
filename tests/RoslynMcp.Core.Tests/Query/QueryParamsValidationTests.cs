@@ -201,7 +201,7 @@ public class QueryParamsValidationTests
     [Fact]
     public void GoToDefinition_NoDefinitionFile_PassesDefinitionFileValidation()
     {
-        // No definitionFile is valid — reports every definition location
+        // No definitionFile is valid — keeps the existing unfiltered behavior
         ValidateGoToDefinitionDefinitionFile(new GoToDefinitionParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo" });
     }
 
