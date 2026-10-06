@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
+using RoslynMcp.Contracts.Errors;
 
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
@@ -99,5 +100,48 @@ internal static class StaticMethodHelpers
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Documents in <paramref name="solution"/> that hold each declaration of
+    /// <paramref name="method"/>, including both parts of a partial method
+    /// (via <see cref="PartialMethodHelpers.EnumerateDeclaringSyntaxReferences"/>),
+    /// in declaring-reference order. Throws <see cref="RefactoringException"/>
+    /// with <see cref="ErrorCodes.DocumentNotEditable"/> when a declaration's
+    /// tree is not in <paramref name="solution"/>, or when there are no
+    /// declarations at all. Same body as the prior private
+    /// <c>GetDeclarationDocumentsAsync</c> copies on MakeStatic /
+    /// MakeNonStatic, which read <c>Context.Solution</c> where this reads
+    /// <paramref name="solution"/>.
+    /// </summary>
+    internal static async Task<IReadOnlyList<Document>> GetDeclarationDocumentsAsync(
+        IMethodSymbol method,
+        Solution solution,
+        CancellationToken cancellationToken)
+    {
+        var documents = new List<Document>();
+        foreach (var reference in PartialMethodHelpers.EnumerateDeclaringSyntaxReferences(method))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var syntax = await reference.GetSyntaxAsync(cancellationToken);
+            var document = solution.GetDocument(syntax.SyntaxTree);
+            if (document == null)
+            {
+                throw new RefactoringException(
+                    ErrorCodes.DocumentNotEditable,
+                    $"Declaration of '{method.Name}' is not in an editable document.");
+            }
+
+            documents.Add(document);
+        }
+
+        if (documents.Count == 0)
+        {
+            throw new RefactoringException(
+                ErrorCodes.DocumentNotEditable,
+                $"Method '{method.Name}' is not in an editable document.");
+        }
+
+        return documents;
     }
 }
