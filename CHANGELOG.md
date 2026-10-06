@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-06
+
 ### Added
 
 - `go_to_definition` now honors optional **`definitionFile`**: when set, keeps only definition locations whose path equals that absolute `.cs` file (`OrdinalIgnoreCase`, peer of `get_type_hierarchy` `derivedFile` / `find_implementations` `implementationFile` / `find_references` `referenceFile` / `find_callers` `callerFile`), before `maxResults`, so `TotalCount` / `Truncated` reflect the filtered set; a file with no definition part returns an empty success. Useful for partial types and partial methods whose declaration parts span several files; for a partial method / property / event both the defining declaration and the implementation are considered, so `definitionFile` can select either half whichever one the symbol resolved to. Metadata (non-source) definitions have no file and are excluded when `definitionFile` is set. Relative / non-`.cs` paths → `InvalidSourcePath`; a nonexistent file → `SourceFileNotFound`. Named `definitionFile` because `go_to_definition` already uses required `sourceFile` to locate the symbol; symbol resolution (`symbolName` / `line` + `column`) is unchanged. Omit `definitionFile` for today's behavior. (#2345)
@@ -16,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - `find_references` now honors optional **`referenceFile`**: when set, keeps only reference locations whose source path equals that absolute `.cs` file (`OrdinalIgnoreCase`, peer of `find_callers` `callerFile`), before `maxResults`, so `TotalCount` / `Truncated` reflect the filtered set; a file with no references returns an empty success. With `includeDeclaration` on (default), the symbol's definition locations are subject to the same filter, so a declaration is reported only when it is located in `referenceFile`. Relative / non-`.cs` paths → `InvalidSourcePath`; a nonexistent file → `SourceFileNotFound`. Named `referenceFile` because `find_references` already uses required `sourceFile` to locate the target symbol; symbol resolution (`symbolName` / `line` + `column`) is unchanged. Omit `referenceFile` for today's whole-solution behavior. (#2324)
 
-- `find_callers` now honors optional **`callerFile`**: when set, keeps only call sites whose in-source location path equals that absolute `.cs` file (`OrdinalIgnoreCase`, peer of `search_symbols` / `get_diagnostics` `sourceFile`), before `maxResults`, so `TotalCount` / `Truncated` reflect the filtered set; a file with no callers returns an empty success. Relative / non-`.cs` paths → `InvalidSourcePath`; a nonexistent file → `SourceFileNotFound`. Named `callerFile` because `find_callers` already uses required `sourceFile` to locate the target symbol; symbol resolution (`symbolName` / `line` + `column`) is unchanged. Omit `callerFile` for today's whole-solution behavior.
+- `find_callers` now honors optional **`callerFile`**: when set, keeps only call sites whose in-source location path equals that absolute `.cs` file (`OrdinalIgnoreCase`, peer of `search_symbols` / `get_diagnostics` `sourceFile`), before `maxResults`, so `TotalCount` / `Truncated` reflect the filtered set; a file with no callers returns an empty success. Relative / non-`.cs` paths → `InvalidSourcePath`; a nonexistent file → `SourceFileNotFound`. Named `callerFile` because `find_callers` already uses required `sourceFile` to locate the target symbol; symbol resolution (`symbolName` / `line` + `column`) is unchanged. Omit `callerFile` for today's whole-solution behavior. (#2314)
 
 - `search_symbols` now honors optional **`caseSensitive`**: omit or `false` keeps today's case-insensitive substring match (`StringComparison.OrdinalIgnoreCase`); `true` matches `query` with `StringComparison.Ordinal` in the `GetSymbolsWithName` name predicate (the only name filter), alongside `kindFilter` / `sourceFile` and before `maxResults`, so `TotalCount` / `Truncated` reflect the case-sensitive match set (e.g. `ID` no longer returns `Id` / `Identity` / `Width`). `SymbolSearchEntry` shape unchanged. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. (#2307)
 
@@ -620,7 +622,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
-[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.8...v0.7.0
 [0.6.8]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.7...v0.6.8
 [0.6.7]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.6...v0.6.7
