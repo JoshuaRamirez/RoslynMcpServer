@@ -4511,6 +4511,123 @@ public class ImplementAbstractOperationTests
 
     #endregion
 
+    #region Scoped parameters (#2404)
+
+    private const string ScopedBaseTrimmer = """
+        using System;
+
+        namespace TestApp;
+
+        public abstract class BaseTrimmer
+        {
+            public abstract ReadOnlySpan<char> Trim(ReadOnlySpan<char> text, scoped ReadOnlySpan<char> chars);
+
+            public abstract ref int Slot(scoped ref int index);
+
+            public abstract ReadOnlySpan<char> Head(ReadOnlySpan<char> text, scoped in ReadOnlySpan<char> marker);
+
+            public abstract ReadOnlySpan<char> Split(ReadOnlySpan<char> text, out ReadOnlySpan<char> rest);
+
+            public abstract Span<int> Fill(params Span<int> values);
+        }
+        """;
+
+    private const string ScopedTrimmerSource = ScopedBaseTrimmer + """
+
+        public class Trimmer : BaseTrimmer
+        {
+        }
+        """;
+
+    private const string ScopedOtherTrimmerSource = """
+        using System;
+
+        namespace TestApp;
+
+        public class OtherTrimmer : BaseTrimmer
+        {
+        }
+        """;
+
+    private static void AssertScopedTrimmerOverrides(string text)
+    {
+        Assert.Contains(
+            "public override System.ReadOnlySpan<char> Trim(System.ReadOnlySpan<char> text, scoped System.ReadOnlySpan<char> chars)",
+            text,
+            StringComparison.Ordinal);
+        Assert.Contains("Slot(scoped ref int index)", text, StringComparison.Ordinal);
+        Assert.Contains("Head(System.ReadOnlySpan<char> text, scoped in System.ReadOnlySpan<char> marker)", text, StringComparison.Ordinal);
+        // out is implicitly scoped: no redundant keyword.
+        Assert.Contains("Split(System.ReadOnlySpan<char> text, out System.ReadOnlySpan<char> rest)", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("scoped out", text, StringComparison.Ordinal);
+        // params spans are implicitly scoped; the stub drops params, so scoped is spelled out.
+        Assert.Contains("Fill(scoped System.Span<int> values)", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ScopedParameters_PreservesScopedAndCompiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ScopedTrimmerSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Trimmer"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        AssertScopedTrimmerOverrides(updated[updated.IndexOf("public class Trimmer", StringComparison.Ordinal)..]);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ScopedParameters_Preview_AfterSnippetKeepsScopedAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ScopedTrimmerSource);
+        var operation = new ImplementAbstractOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Trimmer",
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c =>
+            c.AfterSnippet != null &&
+            c.AfterSnippet.Contains("scoped System.ReadOnlySpan<char> chars", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementAbstract_ScopedParameters_AllFiles_PreservesScopedAndCompiles()
+    {
+        await using var workspace = await TempWorkspace.CreateWithFilesAsync(
+            ("Types.cs", ScopedTrimmerSource),
+            ("OtherTrimmer.cs", ScopedOtherTrimmerSource));
+        var operation = new ImplementAbstractOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementAbstractParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["Types.cs"]));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePaths["OtherTrimmer.cs"]));
+        AssertScopedTrimmerOverrides(updatedA[updatedA.IndexOf("public class Trimmer", StringComparison.Ordinal)..]);
+        AssertScopedTrimmerOverrides(updatedB);
+        AssertCompiles(updatedA, updatedB);
+    }
+
+    #endregion
+
     #region Helpers
 
     private const string AlreadyImplementedMethodSource = """
@@ -4644,11 +4761,11 @@ public class ImplementAbstractOperationTests
         return count;
     }
 
-    private static void AssertCompiles(string source)
+    private static void AssertCompiles(params string[] sources)
     {
         var compilation = CSharpCompilation.Create(
                 "ImplementAbstractCompileTest",
-                new[] { CSharpSyntaxTree.ParseText(source) },
+                sources.Select(source => CSharpSyntaxTree.ParseText(source)),
                 new[]
                 {
                     MetadataReference.CreateFromFile(typeof(object).Assembly.Location)
@@ -4658,7 +4775,7 @@ public class ImplementAbstractOperationTests
             .Where(d => d.Severity == DiagnosticSeverity.Error)
             .Select(d => d.ToString())
             .ToList();
-        Assert.True(errors.Count == 0, "Generated implement_abstract stubs did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
+        Assert.True(errors.Count == 0, "Generated implement_abstract stubs did not compile:\n" + string.Join("\n", errors) + "\n\n" + string.Join("\n\n", sources));
     }
 
     private static string ExtractMember(string text, string signature)

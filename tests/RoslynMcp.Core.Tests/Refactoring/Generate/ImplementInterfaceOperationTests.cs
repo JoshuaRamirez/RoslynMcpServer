@@ -3230,6 +3230,174 @@ public class ImplementInterfaceOperationTests
 
     #endregion
 
+    #region Scoped parameters (#2404)
+
+    private const string ScopedTrimmerInterface = """
+        using System;
+
+        namespace TestApp;
+
+        public interface ITrimmer
+        {
+            ReadOnlySpan<char> Trim(ReadOnlySpan<char> text, scoped ReadOnlySpan<char> chars);
+
+            void Reset(scoped ref Span<int> buffer);
+
+            ReadOnlySpan<char> Head(ReadOnlySpan<char> text, scoped in ReadOnlySpan<char> marker);
+
+            int Read(scoped ref readonly int value);
+
+            ReadOnlySpan<char> Split(ReadOnlySpan<char> text, out ReadOnlySpan<char> rest);
+
+            Span<int> Fill(params Span<int> values);
+        }
+        """;
+
+    private const string ScopedTrimmerSource = ScopedTrimmerInterface + """
+
+        public class Trimmer : ITrimmer
+        {
+        }
+        """;
+
+    private const string ScopedOtherTrimmerSource = """
+        using System;
+
+        namespace TestApp;
+
+        public class OtherTrimmer : ITrimmer
+        {
+        }
+        """;
+
+    private static void AssertScopedTrimmerMembers(string text, string prefix)
+    {
+        Assert.Contains(prefix + "Trim(System.ReadOnlySpan<char> text, scoped System.ReadOnlySpan<char> chars)", text, StringComparison.Ordinal);
+        Assert.Contains(prefix + "Reset(scoped ref System.Span<int> buffer)", text, StringComparison.Ordinal);
+        Assert.Contains(prefix + "Head(System.ReadOnlySpan<char> text, scoped in System.ReadOnlySpan<char> marker)", text, StringComparison.Ordinal);
+        Assert.Contains(prefix + "Read(scoped ref readonly int value)", text, StringComparison.Ordinal);
+        // out is implicitly scoped: no redundant keyword.
+        Assert.Contains(prefix + "Split(System.ReadOnlySpan<char> text, out System.ReadOnlySpan<char> rest)", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("scoped out", text, StringComparison.Ordinal);
+        // params spans are implicitly scoped; the stub drops params, so scoped is spelled out.
+        Assert.Contains(prefix + "Fill(scoped System.Span<int> values)", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_ScopedParameters_PreservesScopedAndCompiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ScopedTrimmerSource);
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Trimmer",
+            InterfaceName = "ITrimmer"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var implementing = updated[updated.IndexOf("public class Trimmer", StringComparison.Ordinal)..];
+        AssertScopedTrimmerMembers(implementing, "");
+        Assert.Contains(
+            "public System.ReadOnlySpan<char> Trim(System.ReadOnlySpan<char> text, scoped System.ReadOnlySpan<char> chars)",
+            implementing,
+            StringComparison.Ordinal);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_ScopedParameters_Explicit_PreservesScopedAndCompiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ScopedTrimmerSource);
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Trimmer",
+            InterfaceName = "ITrimmer",
+            ExplicitImplementation = true
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var implementing = updated[updated.IndexOf("public class Trimmer", StringComparison.Ordinal)..];
+        AssertScopedTrimmerMembers(implementing, "ITrimmer.");
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_ScopedParameters_Preview_AfterSnippetKeepsScopedAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ScopedTrimmerSource);
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Trimmer",
+            InterfaceName = "ITrimmer",
+            Members = new[] { "Trim" },
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c =>
+            c.AfterSnippet != null &&
+            c.AfterSnippet.Contains("scoped System.ReadOnlySpan<char> chars", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_ScopedParameters_AllFiles_PreservesScopedAndCompiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", ScopedTrimmerSource),
+            ("OtherTrimmer.cs", ScopedOtherTrimmerSource));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Types.cs")));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("OtherTrimmer.cs")));
+        AssertScopedTrimmerMembers(updatedA[updatedA.IndexOf("public class Trimmer", StringComparison.Ordinal)..], "");
+        AssertScopedTrimmerMembers(updatedB, "");
+        AssertCompiles(updatedA, updatedB);
+    }
+
+    [SkippableFact]
+    public async Task ImplementInterface_ScopedParameters_AllFilesExplicit_PreservesScopedAndCompiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Types.cs", ScopedTrimmerSource),
+            ("OtherTrimmer.cs", ScopedOtherTrimmerSource));
+        var operation = new ImplementInterfaceOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new ImplementInterfaceParams
+        {
+            AllFiles = true,
+            ExplicitImplementation = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Types.cs")));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("OtherTrimmer.cs")));
+        AssertScopedTrimmerMembers(updatedA[updatedA.IndexOf("public class Trimmer", StringComparison.Ordinal)..], "ITrimmer.");
+        AssertScopedTrimmerMembers(updatedB, "ITrimmer.");
+        AssertCompiles(updatedA, updatedB);
+    }
+
+    #endregion
+
     #region Helpers
 
     private const string AlreadyImplementedMethodSource = """
@@ -3363,15 +3531,12 @@ public class ImplementInterfaceOperationTests
         return count;
     }
 
-    private static void AssertCompiles(string source)
+    private static void AssertCompiles(params string[] sources)
     {
         var compilation = CSharpCompilation.Create(
                 "ImplementInterfaceCompileTest",
-                new[]
-                {
-                    CSharpSyntaxTree.ParseText("global using System;"),
-                    CSharpSyntaxTree.ParseText(source)
-                },
+                sources.Select(source => CSharpSyntaxTree.ParseText(source))
+                    .Prepend(CSharpSyntaxTree.ParseText("global using System;")),
                 new[]
                 {
                     MetadataReference.CreateFromFile(typeof(object).Assembly.Location)
@@ -3381,7 +3546,7 @@ public class ImplementInterfaceOperationTests
             .Where(d => d.Severity == DiagnosticSeverity.Error)
             .Select(d => d.ToString())
             .ToList();
-        Assert.True(errors.Count == 0, "Generated implement_interface stubs did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
+        Assert.True(errors.Count == 0, "Generated implement_interface stubs did not compile:\n" + string.Join("\n", errors) + "\n\n" + string.Join("\n\n", sources));
     }
 
     private sealed class TempWorkspace : IAsyncDisposable

@@ -4041,6 +4041,148 @@ public class GenerateOverridesOperationTests
 
     #endregion
 
+    #region Scoped parameters (#2404)
+
+    private const string ScopedFormatterBase = """
+        using System;
+
+        namespace TestApp;
+
+        public class Formatter
+        {
+            public virtual ReadOnlySpan<char> Pick(ReadOnlySpan<char> text, scoped ReadOnlySpan<char> separator) => text;
+
+            public virtual void Reset(scoped ref Span<int> buffer) => buffer.Clear();
+
+            public virtual ReadOnlySpan<char> Head(ReadOnlySpan<char> text, scoped in ReadOnlySpan<char> marker) => text;
+
+            public virtual ReadOnlySpan<char> Split(ReadOnlySpan<char> text, out ReadOnlySpan<char> rest)
+            {
+                rest = default;
+                return text;
+            }
+
+            public virtual Span<int> Fill(params Span<int> values) => default;
+        }
+        """;
+
+    private const string ScopedFormatterSource = ScopedFormatterBase + """
+
+        public class CsvFormatter : Formatter
+        {
+        }
+        """;
+
+    private const string ScopedTsvFormatterSource = """
+        using System;
+
+        namespace TestApp;
+
+        public class TsvFormatter : Formatter
+        {
+        }
+        """;
+
+    private static void AssertScopedFormatterOverrides(string text)
+    {
+        Assert.Contains("Pick(System.ReadOnlySpan<char> text, scoped System.ReadOnlySpan<char> separator)", text, StringComparison.Ordinal);
+        Assert.Contains("Reset(scoped ref System.Span<int> buffer)", text, StringComparison.Ordinal);
+        Assert.Contains("Head(System.ReadOnlySpan<char> text, scoped in System.ReadOnlySpan<char> marker)", text, StringComparison.Ordinal);
+        // out is implicitly scoped: no redundant keyword.
+        Assert.Contains("Split(System.ReadOnlySpan<char> text, out System.ReadOnlySpan<char> rest)", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("scoped out", text, StringComparison.Ordinal);
+        // params spans are implicitly scoped; the stub drops params, so scoped is spelled out.
+        Assert.Contains("Fill(scoped System.Span<int> values)", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ScopedParameters_PreservesScopedAndCompiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ScopedFormatterSource, "Formatter.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "CsvFormatter"
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var derived = updated[updated.IndexOf("public class CsvFormatter", StringComparison.Ordinal)..];
+        AssertScopedFormatterOverrides(derived);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ScopedParameter_MembersFilter_RefStructReturn_NoCS8987()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ScopedFormatterSource, "Formatter.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "CsvFormatter",
+            Members = new[] { "Pick" }
+        });
+
+        Assert.True(result.Success);
+        var updated = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        Assert.Contains(
+            "public override System.ReadOnlySpan<char> Pick(System.ReadOnlySpan<char> text, scoped System.ReadOnlySpan<char> separator)",
+            updated,
+            StringComparison.Ordinal);
+        AssertCompiles(updated);
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ScopedParameters_Preview_AfterSnippetKeepsScopedAndWritesNothing()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ScopedFormatterSource, "Formatter.cs");
+        var operation = new GenerateOverridesOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "CsvFormatter",
+            Members = new[] { "Pick" },
+            Preview = true
+        });
+
+        Assert.True(result.Success);
+        Assert.True(result.Preview);
+        Assert.NotNull(result.PendingChanges);
+        Assert.Contains(result.PendingChanges, c =>
+            c.AfterSnippet != null &&
+            c.AfterSnippet.Contains("scoped System.ReadOnlySpan<char> separator", StringComparison.Ordinal));
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    [SkippableFact]
+    public async Task GenerateOverrides_ScopedParameters_AllFiles_PreservesScopedAndCompiles()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(
+            ("Formatter.cs", ScopedFormatterSource),
+            ("TsvFormatter.cs", ScopedTsvFormatterSource));
+        var operation = new GenerateOverridesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GenerateOverridesParams
+        {
+            AllFiles = true
+        });
+
+        Assert.True(result.Success);
+        var updatedA = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("Formatter.cs")));
+        var updatedB = NormalizeNewlines(await File.ReadAllTextAsync(workspace.PathFor("TsvFormatter.cs")));
+        AssertScopedFormatterOverrides(updatedA[updatedA.IndexOf("public class CsvFormatter", StringComparison.Ordinal)..]);
+        AssertScopedFormatterOverrides(updatedB);
+        AssertCompiles(updatedA, updatedB);
+    }
+
+    #endregion
+
     #region Helpers
 
     private const string MissingVirtualEventSource = """
@@ -4223,11 +4365,11 @@ public class GenerateOverridesOperationTests
         return source[start..];
     }
 
-    private static void AssertCompiles(string source)
+    private static void AssertCompiles(params string[] sources)
     {
         var compilation = CSharpCompilation.Create(
                 "GenerateOverridesCompileTest",
-                new[] { CSharpSyntaxTree.ParseText(source) },
+                sources.Select(source => CSharpSyntaxTree.ParseText(source)),
                 new[]
                 {
                     MetadataReference.CreateFromFile(typeof(object).Assembly.Location)
@@ -4237,7 +4379,7 @@ public class GenerateOverridesOperationTests
             .Where(d => d.Severity == DiagnosticSeverity.Error)
             .Select(d => d.ToString())
             .ToList();
-        Assert.True(errors.Count == 0, "Generated generate_overrides stubs did not compile:\n" + string.Join("\n", errors) + "\n\n" + source);
+        Assert.True(errors.Count == 0, "Generated generate_overrides stubs did not compile:\n" + string.Join("\n", errors) + "\n\n" + string.Join("\n\n", sources));
     }
 
     private sealed class TempWorkspace : IAsyncDisposable
