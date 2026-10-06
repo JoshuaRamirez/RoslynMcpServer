@@ -50,7 +50,10 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
 
         if (!string.IsNullOrWhiteSpace(@params.ProjectPath))
         {
-            if (!PathResolver.IsAbsolutePath(@params.ProjectPath))
+            // Path.IsPathFullyQualified also rejects Windows drive-relative ("C:Lib.csproj") and
+            // root-relative ("\\Lib.csproj") forms, which IsAbsolutePath (Path.IsPathRooted) accepts but
+            // GetPathComparisonKey would then resolve against the process's current drive/directory.
+            if (!PathResolver.IsAbsolutePath(@params.ProjectPath) || !Path.IsPathFullyQualified(@params.ProjectPath))
                 throw new RefactoringException(ErrorCodes.InvalidSourcePath, "projectPath must be an absolute path.");
 
             if (!@params.ProjectPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))

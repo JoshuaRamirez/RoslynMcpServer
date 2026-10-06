@@ -525,6 +525,26 @@ public class GetDiagnosticsOperationTests
         Assert.Equal("projectPath must be an absolute path.", ex.Message);
     }
 
+    [SkippableTheory]
+    [InlineData("C:Lib.csproj")]
+    [InlineData("C:Lib\\Lib.csproj")]
+    [InlineData("\\Lib.csproj")]
+    [InlineData("\\Lib\\Lib.csproj")]
+    public async Task Validate_ProjectPathDriveOrRootRelative_ThrowsInvalidSourcePath(string projectPath)
+    {
+        // Windows drive-relative / root-relative forms pass Path.IsPathRooted but are not fully
+        // qualified; on non-Windows they are plain relative paths. Both must be InvalidSourcePath,
+        // never resolved against process state into a project match or SourceNotInWorkspace.
+        await using var workspace = await TempWorkspace.CreateAsync("#warning One\nclass C {}\n");
+        var operation = new GetDiagnosticsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GetDiagnosticsParams { ProjectPath = projectPath }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+        Assert.Equal("projectPath must be an absolute path.", ex.Message);
+    }
+
     [SkippableFact]
     public async Task Validate_ProjectPathNotCsproj_ThrowsInvalidSourcePath()
     {
