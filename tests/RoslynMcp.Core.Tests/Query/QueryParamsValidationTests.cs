@@ -86,6 +86,37 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [Fact]
+    public void FindReferences_ReferenceFileRelativePath_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateFindReferencesReferenceFile(new FindReferencesParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", ReferenceFile = "file.cs" }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindReferences_ReferenceFileNonCsFile_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateFindReferencesReferenceFile(new FindReferencesParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", ReferenceFile = AbsoluteTestPath(".txt") }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindReferences_ReferenceFileMissingPath_ThrowsSourceFileNotFound()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateFindReferencesReferenceFile(new FindReferencesParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo", ReferenceFile = AbsoluteTestPath() }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindReferences_NoReferenceFile_PassesReferenceFileValidation()
+    {
+        // No referenceFile is valid — reports reference locations across the whole solution
+        ValidateFindReferencesReferenceFile(new FindReferencesParams { SourceFile = AbsoluteTestPath(), SymbolName = "Foo" });
+    }
+
     #endregion
 
     #region GoToDefinitionParams Validation
@@ -264,6 +295,19 @@ public class QueryParamsValidationTests
     #endregion
 
     #region Validation Helpers
+
+    private static void ValidateFindReferencesReferenceFile(FindReferencesParams p)
+    {
+        if (!string.IsNullOrWhiteSpace(p.ReferenceFile))
+        {
+            if (!PathResolver.IsAbsolutePath(p.ReferenceFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "referenceFile must be an absolute path.");
+            if (!PathResolver.IsValidCSharpFilePath(p.ReferenceFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "referenceFile must be a .cs file.");
+            if (!File.Exists(p.ReferenceFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.ReferenceFile}");
+        }
+    }
 
     private static void ValidateFindReferencesParams(FindReferencesParams p)
     {

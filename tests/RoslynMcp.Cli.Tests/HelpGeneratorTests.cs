@@ -1949,4 +1949,28 @@ public class HelpGeneratorTests
         Assert.Contains("--caller-file", optionalSection);
         Assert.Contains("--max-results", optionalSection);
     }
+
+    [Fact]
+    public void GenerateToolHelp_FindReferences_ShowsReferenceFile()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("find-references")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("find-references", help);
+        Assert.Contains("referenceFile (optional)", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.DoesNotContain("--reference-file", requiredSection);
+        Assert.Contains("--reference-file", optionalSection);
+        Assert.Contains("--include-declaration", optionalSection);
+        Assert.Contains("--max-results", optionalSection);
+    }
 }

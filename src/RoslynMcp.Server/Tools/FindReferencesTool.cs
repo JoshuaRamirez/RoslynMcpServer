@@ -32,7 +32,7 @@ public sealed class FindReferencesTool : IToolHandler
     public string Name => "find_references";
 
     /// <inheritdoc />
-    public string Description => "Find all references to a C# symbol across the solution. Returns file locations, context snippets, and whether each reference is a definition or usage. Optional includeDeclaration (default true) set to false returns usages only, excluding the symbol's own definition locations before maxResults is applied.";
+    public string Description => "Find all references to a C# symbol across the solution. Returns file locations, context snippets, and whether each reference is a definition or usage. Optional includeDeclaration (default true) set to false returns usages only, excluding the symbol's own definition locations before maxResults is applied. sourceFile locates the target symbol; optional referenceFile restricts reported locations to those in that file (definition locations included only when they are in that file; applied before maxResults, so totalCount/truncated reflect the filtered set).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -78,6 +78,11 @@ public sealed class FindReferencesTool : IToolHandler
             {
                 type = "boolean",
                 description = "Include the symbol's own definition locations (default true). false returns usages only; applied before maxResults so totalCount/truncated reflect usages only"
+            },
+            referenceFile = new
+            {
+                type = "string",
+                description = "Absolute path to a .cs file to restrict reported reference locations to those located in that file, including definition locations when includeDeclaration is on (optional; omit for the whole solution)"
             }
         },
         additionalProperties = false
@@ -105,7 +110,8 @@ public sealed class FindReferencesTool : IToolHandler
                 Line = args.Line,
                 Column = args.Column,
                 MaxResults = args.MaxResults,
-                IncludeDeclaration = args.IncludeDeclaration
+                IncludeDeclaration = args.IncludeDeclaration,
+                ReferenceFile = args.ReferenceFile
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -138,5 +144,6 @@ public sealed class FindReferencesTool : IToolHandler
         public int? Column { get; init; }
         public int? MaxResults { get; init; }
         public bool? IncludeDeclaration { get; init; }
+        public string? ReferenceFile { get; init; }
     }
 }

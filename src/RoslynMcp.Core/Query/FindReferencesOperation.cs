@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.FindSymbols;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
@@ -42,6 +43,18 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
 
         if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
+
+        if (!string.IsNullOrWhiteSpace(@params.ReferenceFile))
+        {
+            if (!PathResolver.IsAbsolutePath(@params.ReferenceFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "referenceFile must be an absolute path.");
+
+            if (!PathResolver.IsValidCSharpFilePath(@params.ReferenceFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "referenceFile must be a .cs file.");
+
+            if (!File.Exists(@params.ReferenceFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.ReferenceFile}");
+        }
     }
 
     /// <inheritdoc />
@@ -64,6 +77,32 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         var totalCount = 0;
         var maxResults = @params.MaxResults ?? int.MaxValue;
         var includeDeclaration = @params.IncludeDeclaration ?? true;
+        // Optional referenceFile filter: compare canonical path keys so aliases such as
+        // "src/../Consumer.cs" still match Roslyn's canonical location paths, and compare those
+        // keys with OrdinalIgnoreCase (the documented contract, same as find_callers callerFile /
+        // search_symbols sourceFile) so paths that differ only by letter case also match, even on
+        // case-sensitive volumes. Definition locations (includeDeclaration) are filtered the same
+        // way: the declaration is only reported when it is located in referenceFile.
+        var referenceFileKey = string.IsNullOrWhiteSpace(@params.ReferenceFile)
+            ? null
+            : PathResolver.GetPathComparisonKey(@params.ReferenceFile);
+        var locationKeyCache = referenceFileKey == null
+            ? null
+            : new Dictionary<string, string>(StringComparer.Ordinal);
+
+        bool IsInReferenceFile(string? locationPath)
+        {
+            if (referenceFileKey == null) return true;
+            if (string.IsNullOrWhiteSpace(locationPath)) return false;
+
+            if (!locationKeyCache!.TryGetValue(locationPath, out var locationKey))
+            {
+                locationKey = PathResolver.GetPathComparisonKey(locationPath);
+                locationKeyCache[locationPath] = locationKey;
+            }
+
+            return string.Equals(locationKey, referenceFileKey, StringComparison.OrdinalIgnoreCase);
+        }
 
         foreach (var referencedSymbol in referencedSymbols)
         {
@@ -73,10 +112,15 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                 : Enumerable.Empty<Location>();
             foreach (var defLocation in definitionLocations)
             {
+                var lineSpan = defLocation.GetLineSpan();
+
+                // Optional referenceFile filter runs before maxResults so TotalCount / Truncated
+                // reflect the filtered set.
+                if (!IsInReferenceFile(lineSpan.Path)) continue;
+
                 totalCount++;
                 if (locations.Count < maxResults)
                 {
-                    var lineSpan = defLocation.GetLineSpan();
                     var snippet = await GetContextSnippetAsync(defLocation, cancellationToken);
 
                     locations.Add(new ReferenceLocationInfo
@@ -95,16 +139,22 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
             foreach (var refLocation in referencedSymbol.Locations)
             {
                 if (refLocation.Document == null) continue;
+
+                var span = refLocation.Location.GetLineSpan();
+                var file = refLocation.Document.FilePath ?? span.Path;
+
+                // Same filter as definition locations, applied to the reported File path.
+                if (!IsInReferenceFile(file)) continue;
+
                 totalCount++;
 
                 if (locations.Count < maxResults)
                 {
-                    var span = refLocation.Location.GetLineSpan();
                     var snippet = await GetContextSnippetAsync(refLocation.Location, cancellationToken);
 
                     locations.Add(new ReferenceLocationInfo
                     {
-                        File = refLocation.Document.FilePath ?? span.Path,
+                        File = file,
                         Line = span.StartLinePosition.Line + 1,
                         Column = span.StartLinePosition.Character + 1,
                         ContextSnippet = snippet,

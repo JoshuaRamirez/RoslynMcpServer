@@ -288,7 +288,7 @@ public sealed class ToolRegistry
 
         // ── Query: Navigation (5) ────────────────────────────────────
         r.RegisterQuery<FindReferencesOperation, FindReferencesParams, FindReferencesResult>(
-            "find-references", "Find all references to a symbol across the solution; includeDeclaration (optional, default true) set to false returns usages only, excluded before maxResults");
+            "find-references", "Find all references to a symbol across the solution; includeDeclaration (optional, default true) set to false returns usages only, excluded before maxResults; referenceFile (optional) restricts reported locations to those in that absolute .cs file (definition locations only when in that file; applied before maxResults, so totalCount / truncated reflect the filtered set); sourceFile still locates the target symbol");
         r.RegisterQuery<FindCallersOperation, FindCallersParams, FindCallersResult>(
             "find-callers", "Find all callers of a method; callerFile (optional) restricts reported call sites to callers located in that absolute .cs file (applied before maxResults, so totalCount / truncated reflect the filtered set); sourceFile still locates the target symbol");
         r.RegisterQuery<FindImplementationsOperation, FindImplementationsParams, FindImplementationsResult>(
