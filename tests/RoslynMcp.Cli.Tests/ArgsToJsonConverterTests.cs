@@ -233,4 +233,37 @@ public class ArgsToJsonConverterTests
         Assert.Equal("Customer", p.SymbolName);
         Assert.Equal("/src/Customer.Generated.cs", p.DefinitionFile);
     }
+
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData("TRUE", true)]
+    public void SearchSymbols_ExactMatch_RoundTripsToParams(string value, bool expected)
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["query"] = "Add",
+            ["exact-match"] = value
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal(expected, doc.RootElement.GetProperty("exactMatch").GetBoolean());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.SearchSymbolsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("Add", p.Query);
+        Assert.Equal(expected, p.ExactMatch);
+    }
+
+    [Fact]
+    public void SearchSymbols_ExactMatchOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string> { ["query"] = "Add" });
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.SearchSymbolsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.ExactMatch);
+    }
 }

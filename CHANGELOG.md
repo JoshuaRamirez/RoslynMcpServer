@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- `search_symbols` now honors optional **`exactMatch`**: omit or `false` keeps today's substring match; `true` keeps only symbols whose whole name equals `query` (e.g. `Add` no longer returns `AddRange` / `TryAdd` / `Padding`). Compared with the same case rule as `caseSensitive` (`StringComparison.Ordinal` when `caseSensitive: true`, otherwise `OrdinalIgnoreCase`) in the `GetSymbolsWithName` name predicate, alongside `kindFilter` / `sourceFile` and before `maxResults`, so `TotalCount` / `Truncated` reflect the exact-match set; no exact match returns an empty success. `SymbolSearchEntry` shape unchanged. (#2383)
+
 ## [0.8.0] - 2026-10-06
 
 ### Added

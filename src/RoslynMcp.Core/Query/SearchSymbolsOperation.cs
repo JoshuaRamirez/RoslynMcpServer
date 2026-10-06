@@ -50,6 +50,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
         var nameComparison = @params.CaseSensitive == true
             ? StringComparison.Ordinal
             : StringComparison.OrdinalIgnoreCase;
+        var exactMatch = @params.ExactMatch == true;
 
         var entries = new List<SymbolSearchEntry>();
         var totalCount = 0;
@@ -64,11 +65,13 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
             var compilation = await project.GetCompilationAsync(cancellationToken);
             if (compilation == null) continue;
 
-            // Use GetSymbolsWithName with substring predicate (case-sensitive when requested).
-            // The predicate is the only name filter, so TotalCount / Truncated below reflect
-            // the comparison-specific match set.
+            // Use GetSymbolsWithName with a substring predicate, or whole-name equality when
+            // exactMatch is set (case-sensitive when requested). The predicate is the only name
+            // filter, so TotalCount / Truncated below reflect the comparison-specific match set.
             var symbols = compilation.GetSymbolsWithName(
-                name => name.Contains(query, nameComparison),
+                name => exactMatch
+                    ? string.Equals(name, query, nameComparison)
+                    : name.Contains(query, nameComparison),
                 symbolFilter,
                 cancellationToken);
 

@@ -9,8 +9,8 @@ namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
 /// Operation-level tests for <see cref="SearchSymbolsOperation"/> optional <c>sourceFile</c>
-/// filtering (peer of <see cref="GetDiagnosticsOperation"/>) and optional <c>caseSensitive</c>
-/// name matching.
+/// filtering (peer of <see cref="GetDiagnosticsOperation"/>), optional <c>caseSensitive</c>
+/// name matching, and optional <c>exactMatch</c> whole-name matching.
 /// </summary>
 public class SearchSymbolsOperationTests
 {
@@ -403,6 +403,202 @@ public class SearchSymbolsOperationTests
             string.Equals(only.File, alphaPath, StringComparison.OrdinalIgnoreCase),
             $"Expected file {alphaPath}, got {only.File}");
         Assert.Equal(1, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    #endregion
+
+    #region exactMatch
+
+    // Substring "Add" matches Add/AddRange/TryAdd/Padding/add/Adder; exact (case-insensitive)
+    // matches Add and add; exact + caseSensitive matches only Add.
+    private const string ExactMatchSource = """
+        class Adder
+        {
+            public void Add() { }
+            public void AddRange() { }
+            public bool TryAdd() => true;
+            public int Padding;
+            public int add;
+        }
+        class Add { }
+        """;
+
+    private static readonly string[] SubstringAddNames =
+        ["Adder", "Add", "AddRange", "TryAdd", "Padding", "add"];
+
+    [Fact]
+    public void ExactMatch_DefaultsToNull()
+    {
+        var @params = new SearchSymbolsParams { Query = "Foo" };
+        Assert.Null(@params.ExactMatch);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_OmittedExactMatch_MatchesSubstrings()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ExactMatchSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Add" });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var names = result.Data.Symbols.Select(s => s.Name).ToList();
+        Assert.All(SubstringAddNames, n => Assert.Contains(n, names));
+        // Method Add and class Add are distinct symbols.
+        Assert.Equal(SubstringAddNames.Length + 1, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ExactMatchFalse_MatchesOmitted()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ExactMatchSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Add" });
+        var explicitFalse = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Add", ExactMatch = false });
+
+        Assert.True(omitted.Success);
+        Assert.True(explicitFalse.Success);
+        Assert.NotNull(omitted.Data);
+        Assert.NotNull(explicitFalse.Data);
+        Assert.Equal(omitted.Data.TotalCount, explicitFalse.Data.TotalCount);
+        Assert.Equal(omitted.Data.Truncated, explicitFalse.Data.Truncated);
+        Assert.Equal(
+            omitted.Data.Symbols.Select(s => (s.FullyQualifiedName, s.Kind, s.Line, s.Column)),
+            explicitFalse.Data.Symbols.Select(s => (s.FullyQualifiedName, s.Kind, s.Line, s.Column)));
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ExactMatchTrue_MatchesWholeNameCaseInsensitively()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ExactMatchSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "add", ExactMatch = true });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(
+            new[] { "Add", "Add", "add" },
+            result.Data.Symbols.Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ExactMatchTrue_CaseSensitiveTrue_MatchesExactNameAndCaseOnly()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ExactMatchSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var upper = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Add", ExactMatch = true, CaseSensitive = true });
+        var lower = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "add", ExactMatch = true, CaseSensitive = true });
+
+        Assert.True(upper.Success);
+        Assert.NotNull(upper.Data);
+        Assert.All(upper.Data.Symbols, s => Assert.Equal("Add", s.Name));
+        Assert.Equal(
+            new[] { "Add", "Adder.Add()" },
+            upper.Data.Symbols.Select(s => s.FullyQualifiedName).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal(2, upper.Data.TotalCount);
+        Assert.False(upper.Data.Truncated);
+
+        Assert.True(lower.Success);
+        Assert.NotNull(lower.Data);
+        var field = Assert.Single(lower.Data.Symbols);
+        Assert.Equal("add", field.Name);
+        Assert.Equal(1, lower.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ExactMatchTrue_WithKindFilter_AppliesBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ExactMatchSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var methods = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Add", ExactMatch = true, KindFilter = "Method" });
+        var classes = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Add", ExactMatch = true, KindFilter = "Class" });
+
+        Assert.True(methods.Success);
+        Assert.NotNull(methods.Data);
+        var method = Assert.Single(methods.Data.Symbols);
+        Assert.Equal("Add", method.Name);
+        Assert.Equal(1, methods.Data.TotalCount);
+
+        Assert.True(classes.Success);
+        Assert.NotNull(classes.Data);
+        var type = Assert.Single(classes.Data.Symbols);
+        Assert.Equal("Add", type.Name);
+        Assert.Equal("Add", type.FullyQualifiedName);
+        Assert.Equal(1, classes.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ExactMatchTrue_WithMaxResults_TotalCountReflectsExactSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ExactMatchSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var exact = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Add", ExactMatch = true, MaxResults = 1 });
+        var exactAboveCount = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Add", ExactMatch = true, MaxResults = 3 });
+
+        Assert.True(exact.Success);
+        Assert.NotNull(exact.Data);
+        var only = Assert.Single(exact.Data.Symbols);
+        Assert.Equal("add", only.Name, ignoreCase: true);
+        Assert.Equal(3, exact.Data.TotalCount);
+        Assert.True(exact.Data.Truncated);
+
+        Assert.True(exactAboveCount.Success);
+        Assert.NotNull(exactAboveCount.Data);
+        Assert.Equal(3, exactAboveCount.Data.Symbols.Count);
+        Assert.Equal(3, exactAboveCount.Data.TotalCount);
+        Assert.False(exactAboveCount.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ExactMatchTrue_WithSourceFile_AppliesBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateMultiFileAsync(
+            ("Alpha.cs", "class Alpha { public void Run() { } public void RunAll() { } }\n"),
+            ("Beta.cs", "class Beta { public void Run() { } }\n"));
+
+        var alphaPath = workspace.SourcePaths["Alpha.cs"];
+        var operation = new SearchSymbolsOperation(workspace.Context);
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Run",
+            ExactMatch = true,
+            SourceFile = alphaPath
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var only = Assert.Single(result.Data.Symbols);
+        Assert.Equal("Alpha.Run()", only.FullyQualifiedName);
+        Assert.True(
+            string.Equals(only.File, alphaPath, StringComparison.OrdinalIgnoreCase),
+            $"Expected file {alphaPath}, got {only.File}");
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ExactMatchTrue_NoWholeNameMatch_ReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ExactMatchSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        // "Ad" is a substring of several names but the whole name of none.
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Ad", ExactMatch = true });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
         Assert.False(result.Data.Truncated);
     }
 

@@ -34,4 +34,12 @@ public sealed class SearchSymbolsParams
     /// <c>TotalCount</c> / <c>Truncated</c> reflect the case-sensitive match set.
     /// </summary>
     public bool? CaseSensitive { get; init; }
+
+    /// <summary>
+    /// Whether <see cref="Query"/> must equal the whole symbol name. Omit or <c>false</c> for today's
+    /// substring match; <c>true</c> keeps only symbols whose name equals <see cref="Query"/>
+    /// (compared with the same case rule as <see cref="CaseSensitive"/>), applied before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the exact-match set.
+    /// </summary>
+    public bool? ExactMatch { get; init; }
 }
