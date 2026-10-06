@@ -91,6 +91,7 @@ public class FindReferencesToolTests
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("maxResults", out _));
         Assert.True(properties.TryGetProperty("includeDeclaration", out _));
+        Assert.True(properties.TryGetProperty("referenceFile", out _));
     }
 
     [Fact]
@@ -105,6 +106,20 @@ public class FindReferencesToolTests
         var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
         Assert.DoesNotContain("includeDeclaration", required);
         Assert.Contains("includeDeclaration", _tool.Description);
+    }
+
+    [Fact]
+    public void GetDefinition_ReferenceFile_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var referenceFile = doc.RootElement.GetProperty("properties").GetProperty("referenceFile");
+
+        Assert.Equal("string", referenceFile.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("referenceFile", required);
+        Assert.Contains("referenceFile", _tool.Description);
     }
 
     #endregion

@@ -36,4 +36,13 @@ public sealed class FindReferencesParams
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the usage-only set.
     /// </summary>
     public bool? IncludeDeclaration { get; init; }
+
+    /// <summary>
+    /// Absolute path to a source file to restrict reported reference locations to. When set, only
+    /// locations (usages and, when <see cref="IncludeDeclaration"/> is on, definition locations)
+    /// located in that file are returned, before <see cref="MaxResults"/>, so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the filtered set. When omitted, locations across the whole solution
+    /// are returned. Distinct from <see cref="SourceFile"/>, which locates the target symbol.
+    /// </summary>
+    public string? ReferenceFile { get; init; }
 }
