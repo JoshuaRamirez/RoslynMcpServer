@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using RoslynMcp.Contracts.Enums;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
@@ -46,6 +47,15 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
 
         if (@params.ExcludeDiagnosticIds != null && @params.ExcludeDiagnosticIds.Any(string.IsNullOrWhiteSpace))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "excludeDiagnosticIds entries must be non-empty.");
+
+        if (!string.IsNullOrWhiteSpace(@params.ProjectPath))
+        {
+            if (!PathResolver.IsAbsolutePath(@params.ProjectPath))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "projectPath must be an absolute path.");
+
+            if (!@params.ProjectPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "projectPath must be a .csproj file.");
+        }
     }
 
     /// <inheritdoc />
@@ -59,7 +69,7 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
         var excludeIdFilter = BuildIdFilter(@params.ExcludeDiagnosticIds);
         var diagnostics = new List<DiagnosticInfo>();
 
-        foreach (var project in Context.Solution.Projects)
+        foreach (var project in SelectProjects(@params.ProjectPath))
         {
             var compilation = await project.GetCompilationAsync(cancellationToken);
             if (compilation == null) continue;
@@ -130,6 +140,31 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
         };
 
         return QueryResult<GetDiagnosticsResult>.Succeeded(operationId, result);
+    }
+
+    /// <summary>
+    /// Returns every project in the solution when <paramref name="projectPath"/> is omitted;
+    /// otherwise only the projects whose <see cref="Project.FilePath"/> equals it (normalized,
+    /// <c>OrdinalIgnoreCase</c>, the same comparison as <c>sourceFile</c>), which includes every
+    /// target-framework variant of a multi-targeted project. Throws
+    /// <see cref="ErrorCodes.SourceNotInWorkspace"/> when no project matches.
+    /// </summary>
+    private IReadOnlyList<Project> SelectProjects(string? projectPath)
+    {
+        var projects = Context.Solution.Projects.ToList();
+        if (string.IsNullOrWhiteSpace(projectPath))
+            return projects;
+
+        var target = PathResolver.NormalizePath(projectPath);
+        var matches = projects
+            .Where(project => !string.IsNullOrWhiteSpace(project.FilePath) &&
+                string.Equals(PathResolver.NormalizePath(project.FilePath), target, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (matches.Count == 0)
+            throw new RefactoringException(ErrorCodes.SourceNotInWorkspace, $"Project not found in workspace: {projectPath}");
+
+        return matches;
     }
 
     private static HashSet<string>? BuildIdFilter(IReadOnlyList<string>? diagnosticIds)

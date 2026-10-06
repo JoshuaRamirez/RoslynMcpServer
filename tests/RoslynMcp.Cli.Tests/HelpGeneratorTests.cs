@@ -2044,6 +2044,24 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_GetDiagnostics_ShowsProjectPath()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("projectPath (optional)", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        if (requiredIdx >= 0)
+            Assert.DoesNotContain("--project-path", help[requiredIdx..optionalIdx]);
+
+        Assert.Contains("--project-path", help[optionalIdx..]);
+    }
+
+    [Fact]
     public void GenerateToolHelp_GetSymbolInfo_ShowsMaxResults()
     {
         var registry = ToolRegistry.BuildDefault();

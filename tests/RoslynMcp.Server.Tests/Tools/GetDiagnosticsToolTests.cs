@@ -73,6 +73,7 @@ public class GetDiagnosticsToolTests
         Assert.True(properties.TryGetProperty("maxResults", out _));
         Assert.True(properties.TryGetProperty("diagnosticIds", out _));
         Assert.True(properties.TryGetProperty("excludeDiagnosticIds", out _));
+        Assert.True(properties.TryGetProperty("projectPath", out _));
     }
 
     [Fact]
@@ -104,6 +105,22 @@ public class GetDiagnosticsToolTests
         Assert.DoesNotContain("excludeDiagnosticIds", required);
         Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
         Assert.Contains("excludeDiagnosticIds", _tool.Description);
+    }
+
+    [Fact]
+    public void GetDefinition_ProjectPath_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var projectPath = doc.RootElement.GetProperty("properties").GetProperty("projectPath");
+
+        Assert.Equal("string", projectPath.GetProperty("type").GetString());
+        Assert.Contains(".csproj", projectPath.GetProperty("description").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("projectPath", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+        Assert.Contains("projectPath", _tool.Description);
     }
 
     [Fact]
