@@ -145,4 +145,20 @@ public class CliArgsTests
         var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "ID", "--case-sensitive", "false"]);
         Assert.Equal("false", result.Options["case-sensitive"]);
     }
+
+    [Fact]
+    public void SearchSymbols_ExactMatchFlag_ParsesAsTrue()
+    {
+        var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "Add", "--exact-match"]);
+        Assert.Equal("search-symbols", result.ToolName);
+        Assert.Equal("Add", result.Options["query"]);
+        Assert.Equal("true", result.Options["exact-match"]);
+    }
+
+    [Fact]
+    public void SearchSymbols_ExactMatchExplicitFalse_ParsesAsFalse()
+    {
+        var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "Add", "--exact-match", "false"]);
+        Assert.Equal("false", result.Options["exact-match"]);
+    }
 }
