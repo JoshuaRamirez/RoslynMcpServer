@@ -144,9 +144,11 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
 
     /// <summary>
     /// Returns every project in the solution when <paramref name="projectPath"/> is omitted;
-    /// otherwise only the projects whose <see cref="Project.FilePath"/> equals it (normalized,
-    /// <c>OrdinalIgnoreCase</c>, the same comparison as <c>sourceFile</c>), which includes every
-    /// target-framework variant of a multi-targeted project. Throws
+    /// otherwise only the projects whose <see cref="Project.FilePath"/> equals it by
+    /// <see cref="PathResolver.GetPathComparisonKey"/> (ordinal on the filesystem-canonical path, so
+    /// wrong-cased aliases match on case-insensitive volumes while case-distinct projects stay
+    /// distinct on case-sensitive ones), which includes every target-framework variant of a
+    /// multi-targeted project. Throws
     /// <see cref="ErrorCodes.SourceNotInWorkspace"/> when no project matches.
     /// </summary>
     private IReadOnlyList<Project> SelectProjects(string? projectPath)
@@ -155,10 +157,10 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
         if (string.IsNullOrWhiteSpace(projectPath))
             return projects;
 
-        var target = PathResolver.NormalizePath(projectPath);
+        var targetKey = PathResolver.GetPathComparisonKey(projectPath);
         var matches = projects
             .Where(project => !string.IsNullOrWhiteSpace(project.FilePath) &&
-                string.Equals(PathResolver.NormalizePath(project.FilePath), target, StringComparison.OrdinalIgnoreCase))
+                string.Equals(PathResolver.GetPathComparisonKey(project.FilePath), targetKey, StringComparison.Ordinal))
             .ToList();
 
         if (matches.Count == 0)

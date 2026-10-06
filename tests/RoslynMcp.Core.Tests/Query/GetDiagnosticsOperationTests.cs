@@ -612,20 +612,33 @@ public class GetDiagnosticsOperationTests
     }
 
     [SkippableFact]
-    public async Task GetDiagnostics_ProjectPathDifferentCasing_Matches()
+    public async Task GetDiagnostics_ProjectPathDifferentCasing_MatchesOnlyOnCaseInsensitiveVolume()
     {
         await using var workspace = await TwoProjectWorkspace.CreateAsync();
         var operation = new GetDiagnosticsOperation(workspace.Context);
+        var wrongCased = Path.Combine(Path.GetDirectoryName(workspace.LibProjectPath)!, "LIB.CSPROJ");
+        var caseInsensitiveVolume = File.Exists(wrongCased);
 
-        var result = await operation.ExecuteAsync(new GetDiagnosticsParams
+        var @params = new GetDiagnosticsParams
         {
             DiagnosticIds = new[] { "CS1030" },
-            ProjectPath = Path.Combine(Path.GetDirectoryName(workspace.LibProjectPath)!, "LIB.CSPROJ")
-        });
+            ProjectPath = wrongCased
+        };
 
-        Assert.True(result.Success);
-        Assert.NotEmpty(result.Data!.Diagnostics);
-        Assert.All(result.Data.Diagnostics, d => Assert.Equal(workspace.LibSourcePath, d.File));
+        if (caseInsensitiveVolume)
+        {
+            // Windows / default macOS: the wrong-cased alias is the same physical project.
+            var result = await operation.ExecuteAsync(@params);
+            Assert.True(result.Success);
+            Assert.NotEmpty(result.Data!.Diagnostics);
+            Assert.All(result.Data.Diagnostics, d => Assert.Equal(workspace.LibSourcePath, d.File));
+        }
+        else
+        {
+            // Case-sensitive volume (Linux): LIB.CSPROJ is a different, nonexistent project.
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() => operation.ExecuteAsync(@params));
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
     }
 
     [SkippableFact]
