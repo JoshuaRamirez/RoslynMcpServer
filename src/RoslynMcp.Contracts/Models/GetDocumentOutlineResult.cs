@@ -11,13 +11,15 @@ public sealed class GetDocumentOutlineResult
     public required string File { get; init; }
 
     /// <summary>
-    /// Top-level outline entries (may be truncated when maxDepth and/or maxResults is set;
-    /// maxDepth drops entries deeper than N first, then maxResults applies its DFS pre-order node budget).
+    /// Top-level outline entries (filtered when kindFilter is set; may be truncated when maxDepth and/or
+    /// maxResults is set; kindFilter applies first, then maxDepth drops entries deeper than N, then
+    /// maxResults applies its DFS pre-order node budget).
     /// </summary>
     public required IReadOnlyList<OutlineEntry> Entries { get; init; }
 
     /// <summary>
-    /// Total count of symbols in the outline (may exceed the node count in Entries if truncated).
+    /// Total count of symbols in the outline (the kind-filtered tree, including container entries, when
+    /// kindFilter is set; may exceed the node count in Entries if truncated).
     /// </summary>
     public required int TotalCount { get; init; }
 

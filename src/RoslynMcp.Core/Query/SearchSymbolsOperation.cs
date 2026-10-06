@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Query.Base;
+using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
@@ -46,7 +47,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
     {
         var query = @params.Query;
         var maxResults = @params.MaxResults ?? 50;
-        var kindFilter = ParseKindFilter(@params.KindFilter);
+        var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
         var nameComparison = @params.CaseSensitive == true
             ? StringComparison.Ordinal
             : StringComparison.OrdinalIgnoreCase;
@@ -179,21 +180,6 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
             : name.Length > namespaceFilter.Length
               && name[namespaceFilter.Length] == '.'
               && name.StartsWith(namespaceFilter, StringComparison.Ordinal);
-    }
-
-    private static Contracts.Enums.SymbolKind? ParseKindFilter(string? kindFilter)
-    {
-        if (string.IsNullOrWhiteSpace(kindFilter)) return null;
-
-        if (!System.Enum.TryParse<Contracts.Enums.SymbolKind>(kindFilter, ignoreCase: true, out var kind))
-        {
-            var validKinds = string.Join(", ", System.Enum.GetNames<Contracts.Enums.SymbolKind>());
-            throw new RefactoringException(
-                ErrorCodes.InvalidSymbolKind,
-                $"Invalid kindFilter '{kindFilter}'. Valid values: {validKinds}");
-        }
-
-        return kind;
     }
 
     private static SymbolFilter GetSymbolFilter(Contracts.Enums.SymbolKind kind)

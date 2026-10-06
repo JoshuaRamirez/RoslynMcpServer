@@ -73,6 +73,24 @@ public class GetDocumentOutlineToolTests
         Assert.True(properties.TryGetProperty("maxDepth", out var maxDepth));
         Assert.Equal("integer", maxDepth.GetProperty("type").GetString());
         Assert.Equal(1, maxDepth.GetProperty("minimum").GetInt32());
+        Assert.True(properties.TryGetProperty("kindFilter", out var kindFilter));
+        Assert.Equal("string", kindFilter.GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public void GetDefinition_KindFilterIsOptional()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+
+        Assert.DoesNotContain("kindFilter", required);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsKindFilter()
+    {
+        Assert.Contains("kindFilter", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Query.Base;
+using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Workspace;
@@ -37,6 +38,9 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
 
         if (@params.MaxDepth.HasValue && @params.MaxDepth.Value < 1)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxDepth must be >= 1.");
+
+        // Same parsing and InvalidSymbolKind error as search_symbols kindFilter.
+        SymbolKindFilterParser.Parse(@params.KindFilter);
     }
 
     /// <inheritdoc />
@@ -84,10 +88,17 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         }
 
         IReadOnlyList<OutlineEntry> returned = entries;
+        var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
+        if (kindFilter.HasValue)
+        {
+            returned = FilterOutlineForestByKind(entries, kindFilter.Value);
+            totalCount = CountNodes(returned);
+        }
+
         var returnedCount = totalCount;
         if (@params.MaxDepth.HasValue)
         {
-            returned = PruneOutlineForestByDepth(entries, @params.MaxDepth.Value);
+            returned = PruneOutlineForestByDepth(returned, @params.MaxDepth.Value);
             returnedCount = CountNodes(returned);
         }
 
@@ -105,6 +116,68 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         };
 
         return QueryResult<GetDocumentOutlineResult>.Succeeded(operationId, result);
+    }
+
+    /// <summary>
+    /// Keeps every outline entry whose kind matches <paramref name="kind"/> plus the ancestors that
+    /// contain a match (kept as containers so the tree shape and line numbers are unchanged).
+    /// Subtrees with no matching entry are dropped; a kept entry left with no kept children is
+    /// returned with <c>Children = null</c>, matching how leaf entries serialize today.
+    /// </summary>
+    private static IReadOnlyList<OutlineEntry> FilterOutlineForestByKind(
+        IReadOnlyList<OutlineEntry> entries,
+        Contracts.Enums.SymbolKind kind)
+    {
+        var filtered = new List<OutlineEntry>();
+        foreach (var entry in entries)
+        {
+            var kept = FilterOutlineEntryByKind(entry, kind);
+            if (kept != null)
+                filtered.Add(kept);
+        }
+
+        return filtered;
+    }
+
+    private static OutlineEntry? FilterOutlineEntryByKind(OutlineEntry entry, Contracts.Enums.SymbolKind kind)
+    {
+        IReadOnlyList<OutlineEntry>? children = null;
+        if (entry.Children is { Count: > 0 })
+        {
+            var keptChildren = FilterOutlineForestByKind(entry.Children, kind);
+            if (keptChildren.Count > 0)
+                children = keptChildren;
+        }
+
+        if (children == null && !OutlineKindMatches(entry.Kind, kind))
+            return null;
+
+        return new OutlineEntry
+        {
+            Name = entry.Name,
+            Kind = entry.Kind,
+            Line = entry.Line,
+            Column = entry.Column,
+            Accessibility = entry.Accessibility,
+            ReturnType = entry.ReturnType,
+            Children = children
+        };
+    }
+
+    /// <summary>
+    /// Whether an outline entry kind matches a parsed <c>kindFilter</c>. Outline kinds share the
+    /// <see cref="Contracts.Enums.SymbolKind"/> names, except that constructors are reported as
+    /// <c>Constructor</c> (matched by <c>Method</c>) and enum members as <c>EnumMember</c>
+    /// (matched by <c>Constant</c>), the same kinds <c>search_symbols</c> reports for those symbols.
+    /// </summary>
+    private static bool OutlineKindMatches(string outlineKind, Contracts.Enums.SymbolKind kind)
+    {
+        return outlineKind switch
+        {
+            "Constructor" => kind == Contracts.Enums.SymbolKind.Method,
+            "EnumMember" => kind == Contracts.Enums.SymbolKind.Constant,
+            _ => string.Equals(outlineKind, kind.ToString(), StringComparison.Ordinal)
+        };
     }
 
     /// <summary>
