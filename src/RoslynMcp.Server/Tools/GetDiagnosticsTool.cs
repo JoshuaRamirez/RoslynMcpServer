@@ -32,7 +32,7 @@ public sealed class GetDiagnosticsTool : IToolHandler
     public string Name => "get_diagnostics";
 
     /// <inheritdoc />
-    public string Description => "Get compiler diagnostics (errors, warnings) for the solution or a specific file. Useful for checking compilation status before or after refactoring. Optional diagnosticIds restricts results to the given IDs (e.g. CS0168; case-insensitive; omit = all IDs). Optional maxResults caps the returned list (omit = no cap).";
+    public string Description => "Get compiler diagnostics (errors, warnings) for the solution or a specific file. Useful for checking compilation status before or after refactoring. Optional diagnosticIds restricts results to the given IDs (e.g. CS0168; case-insensitive; omit = all IDs). Optional excludeDiagnosticIds drops the given IDs (e.g. CS1591; case-insensitive; wins over diagnosticIds on overlap; omit = exclude none). Optional maxResults caps the returned list (omit = no cap).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -68,6 +68,12 @@ public sealed class GetDiagnosticsTool : IToolHandler
                 type = "array",
                 items = new { type = "string" },
                 description = "Diagnostic IDs to restrict results to, e.g. [\"CS0168\", \"CS8019\"] (optional; case-insensitive; omit or empty = all IDs). Applied before maxResults."
+            },
+            excludeDiagnosticIds = new
+            {
+                type = "array",
+                items = new { type = "string" },
+                description = "Diagnostic IDs to drop from results, e.g. [\"CS1591\", \"CS8019\"] (optional; case-insensitive; omit or empty = exclude none). Exclusion wins when an ID is also in diagnosticIds. Applied before maxResults."
             }
         },
         additionalProperties = false
@@ -93,7 +99,8 @@ public sealed class GetDiagnosticsTool : IToolHandler
                 SourceFile = args.SourceFile,
                 SeverityFilter = args.SeverityFilter,
                 MaxResults = args.MaxResults,
-                DiagnosticIds = args.DiagnosticIds
+                DiagnosticIds = args.DiagnosticIds,
+                ExcludeDiagnosticIds = args.ExcludeDiagnosticIds
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -124,5 +131,6 @@ public sealed class GetDiagnosticsTool : IToolHandler
         public string? SeverityFilter { get; init; }
         public int? MaxResults { get; init; }
         public List<string>? DiagnosticIds { get; init; }
+        public List<string>? ExcludeDiagnosticIds { get; init; }
     }
 }

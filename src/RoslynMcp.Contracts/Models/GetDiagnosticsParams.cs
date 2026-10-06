@@ -26,4 +26,11 @@ public sealed class GetDiagnosticsParams
     /// Omit or pass an empty list for no ID filter. Applied before <see cref="MaxResults"/>.
     /// </summary>
     public IReadOnlyList<string>? DiagnosticIds { get; init; }
+
+    /// <summary>
+    /// Optional diagnostic IDs to drop from results (e.g. CS1591, CS8019), matched case-insensitively.
+    /// Omit or pass an empty list for no exclusion. Applied together with <see cref="DiagnosticIds"/>
+    /// (exclusion wins when an ID is in both) and before <see cref="MaxResults"/>.
+    /// </summary>
+    public IReadOnlyList<string>? ExcludeDiagnosticIds { get; init; }
 }

@@ -2021,6 +2021,28 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_GetDiagnostics_ShowsExcludeDiagnosticIds()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("get-diagnostics", help);
+        Assert.Contains("excludeDiagnosticIds (optional)", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(optionalIdx >= 0, "OPTIONAL section should exist");
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        if (requiredIdx >= 0)
+            Assert.DoesNotContain("--exclude-diagnostic-ids", help[requiredIdx..optionalIdx]);
+
+        var optionalSection = help[optionalIdx..];
+        Assert.Contains("--exclude-diagnostic-ids", optionalSection);
+        Assert.Contains("--diagnostic-ids", optionalSection);
+        Assert.Contains("string[]", optionalSection);
+    }
+
+    [Fact]
     public void GenerateToolHelp_GetSymbolInfo_ShowsMaxResults()
     {
         var registry = ToolRegistry.BuildDefault();

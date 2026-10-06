@@ -43,6 +43,9 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
 
         if (@params.DiagnosticIds != null && @params.DiagnosticIds.Any(string.IsNullOrWhiteSpace))
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "diagnosticIds entries must be non-empty.");
+
+        if (@params.ExcludeDiagnosticIds != null && @params.ExcludeDiagnosticIds.Any(string.IsNullOrWhiteSpace))
+            throw new RefactoringException(ErrorCodes.MissingRequiredParam, "excludeDiagnosticIds entries must be non-empty.");
     }
 
     /// <inheritdoc />
@@ -53,6 +56,7 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
     {
         var severityFilter = ParseSeverityFilter(@params.SeverityFilter);
         var idFilter = BuildIdFilter(@params.DiagnosticIds);
+        var excludeIdFilter = BuildIdFilter(@params.ExcludeDiagnosticIds);
         var diagnostics = new List<DiagnosticInfo>();
 
         foreach (var project in Context.Solution.Projects)
@@ -66,6 +70,10 @@ public sealed class GetDiagnosticsOperation : QueryOperationBase<GetDiagnosticsP
                     continue;
 
                 if (idFilter != null && !idFilter.Contains(diag.Id))
+                    continue;
+
+                // Exclusion wins when an ID is in both diagnosticIds and excludeDiagnosticIds.
+                if (excludeIdFilter != null && excludeIdFilter.Contains(diag.Id))
                     continue;
 
                 // Filter by file if specified
