@@ -32,7 +32,7 @@ public sealed class FindImplementationsTool : IToolHandler
     public string Name => "find_implementations";
 
     /// <inheritdoc />
-    public string Description => "Find all implementations of a C# interface, abstract class, or virtual/abstract member across the solution.";
+    public string Description => "Find all implementations of a C# interface, abstract class, or virtual/abstract member across the solution. sourceFile locates the target symbol; optional implementationFile restricts reported implementations to those declared in that file (applied before maxResults, so totalCount/truncated reflect the filtered set).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -73,6 +73,11 @@ public sealed class FindImplementationsTool : IToolHandler
                 type = "integer",
                 description = "Maximum number of implementations to return",
                 minimum = 1
+            },
+            implementationFile = new
+            {
+                type = "string",
+                description = "Absolute path to a .cs file to restrict reported implementations to those declared in that file (optional; omit for the whole solution)"
             }
         },
         additionalProperties = false
@@ -99,7 +104,8 @@ public sealed class FindImplementationsTool : IToolHandler
                 SymbolName = args.SymbolName,
                 Line = args.Line,
                 Column = args.Column,
-                MaxResults = args.MaxResults
+                MaxResults = args.MaxResults,
+                ImplementationFile = args.ImplementationFile
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -131,5 +137,6 @@ public sealed class FindImplementationsTool : IToolHandler
         public int? Line { get; init; }
         public int? Column { get; init; }
         public int? MaxResults { get; init; }
+        public string? ImplementationFile { get; init; }
     }
 }

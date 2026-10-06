@@ -90,6 +90,21 @@ public class FindImplementationsToolTests
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("maxResults", out _));
+        Assert.True(properties.TryGetProperty("implementationFile", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_ImplementationFile_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var implementationFile = doc.RootElement.GetProperty("properties").GetProperty("implementationFile");
+
+        Assert.Equal("string", implementationFile.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("implementationFile", required);
+        Assert.Contains("implementationFile", _tool.Description);
     }
 
     #endregion

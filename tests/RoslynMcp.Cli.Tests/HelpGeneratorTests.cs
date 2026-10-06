@@ -1973,4 +1973,27 @@ public class HelpGeneratorTests
         Assert.Contains("--include-declaration", optionalSection);
         Assert.Contains("--max-results", optionalSection);
     }
+
+    [Fact]
+    public void GenerateToolHelp_FindImplementations_ShowsImplementationFile()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("find-implementations")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("find-implementations", help);
+        Assert.Contains("implementationFile (optional)", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.DoesNotContain("--implementation-file", requiredSection);
+        Assert.Contains("--implementation-file", optionalSection);
+        Assert.Contains("--max-results", optionalSection);
+    }
 }

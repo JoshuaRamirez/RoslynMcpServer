@@ -29,4 +29,13 @@ public sealed class FindImplementationsParams
     /// Maximum number of implementations to return.
     /// </summary>
     public int? MaxResults { get; init; }
+
+    /// <summary>
+    /// Absolute path to a source file to restrict reported implementations to. When set, only
+    /// implementations declared (with an in-source location) in that file are returned, before
+    /// <see cref="MaxResults"/>, so <c>TotalCount</c> / <c>Truncated</c> reflect the filtered set.
+    /// When omitted, implementations across the whole solution are returned. Distinct from
+    /// <see cref="SourceFile"/>, which locates the target symbol.
+    /// </summary>
+    public string? ImplementationFile { get; init; }
 }

@@ -176,4 +176,23 @@ public class ArgsToJsonConverterTests
         Assert.Equal("Run", p.SymbolName);
         Assert.Equal("/src/UserA.cs", p.ReferenceFile);
     }
+
+    [Fact]
+    public void FindImplementations_ImplementationFileOption_BindsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/IRunner.cs",
+            ["symbol-name"] = "IRunner",
+            ["implementation-file"] = "/src/ImplA.cs"
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.FindImplementationsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+
+        Assert.Equal("/src/IRunner.cs", p.SourceFile);
+        Assert.Equal("IRunner", p.SymbolName);
+        Assert.Equal("/src/ImplA.cs", p.ImplementationFile);
+    }
 }
