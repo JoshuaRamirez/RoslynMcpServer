@@ -673,7 +673,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         {
             if (member.IsImplicitlyDeclared || member.IsOverride)
                 continue;
-            if (IsExplicitInterface(member))
+            if (ExplicitImplementationHelpers.IsExplicitImplementation(member))
                 continue;
             if (SignaturesMatch(member, baseMember))
                 return true;
@@ -681,16 +681,6 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
 
         return false;
     }
-
-    private static bool IsExplicitInterface(ISymbol member) =>
-        member switch
-        {
-            IMethodSymbol method => method.ExplicitInterfaceImplementations.Length > 0
-                || method.MethodKind == MethodKind.ExplicitInterfaceImplementation,
-            IPropertySymbol property => property.ExplicitInterfaceImplementations.Length > 0,
-            IEventSymbol evt => evt.ExplicitInterfaceImplementations.Length > 0,
-            _ => false
-        };
 
     /// <summary>
     /// Maps each selected member to the existing override on this type that
@@ -903,12 +893,12 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
                 {
                     if (eventField.Declaration.Variables.Count > 1)
                     {
-                        AddKeyed(eventDeclaratorsByTreeAndPart, syntax.SyntaxTree, eventPart.SpanStart,
+                        RemoveExistingImplementationsHelpers.AddKeyed(eventDeclaratorsByTreeAndPart, syntax.SyntaxTree, eventPart.SpanStart,
                             (eventField.SpanStart, declarator.SpanStart));
                     }
                     else
                     {
-                        AddKeyed(membersByTreeAndPart, syntax.SyntaxTree, eventPart.SpanStart,
+                        RemoveExistingImplementationsHelpers.AddKeyed(membersByTreeAndPart, syntax.SyntaxTree, eventPart.SpanStart,
                             (eventField.SpanStart, eventField.Span.End, eventField.Kind()));
                     }
 
@@ -918,7 +908,7 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
                 if (syntax.Parent is not TypeDeclarationSyntax part)
                     continue;
 
-                AddKeyed(membersByTreeAndPart, syntax.SyntaxTree, part.SpanStart,
+                RemoveExistingImplementationsHelpers.AddKeyed(membersByTreeAndPart, syntax.SyntaxTree, part.SpanStart,
                     (syntax.SpanStart, syntax.Span.End, syntax.Kind()));
             }
         }
@@ -1000,27 +990,6 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         }
 
         return solution;
-    }
-
-    private static void AddKeyed<T>(
-        Dictionary<SyntaxTree, Dictionary<int, HashSet<T>>> map,
-        SyntaxTree tree,
-        int partSpanStart,
-        T key)
-    {
-        if (!map.TryGetValue(tree, out var byPart))
-        {
-            byPart = new Dictionary<int, HashSet<T>>();
-            map[tree] = byPart;
-        }
-
-        if (!byPart.TryGetValue(partSpanStart, out var keys))
-        {
-            keys = new HashSet<T>();
-            byPart[partSpanStart] = keys;
-        }
-
-        keys.Add(key);
     }
 
     private static RefactoringResult CreatePreviewResult(

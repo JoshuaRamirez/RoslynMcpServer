@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - `generate_overrides`, `implement_interface` (implicit and explicit) and `implement_abstract` now keep the **`scoped`** parameter modifier on generated members (single-site, `allFiles` and `preview`): `scoped` ref-struct values, `scoped ref` / `scoped in` (and `scoped ref readonly` wherever the tool already emits `ref readonly`; `implement_abstract` dropping `ref readonly` itself stays #1183), and the implicit scope of `params` spans (spelled out as `scoped` because stubs omit `params`) are emitted from `IParameterSymbol.ScopedKind`, while implicitly scoped `out` parameters get no redundant keyword. Previously the scope was dropped, so a ref-struct-returning override or implementation such as `Pick(ReadOnlySpan<char> text, scoped ReadOnlySpan<char> separator)` reported success but failed to build with CS8987. (#2404)
 
+### Changed
+
+- Folded GenerateOverrides identical private `IsExplicitInterface` onto existing `ExplicitImplementationHelpers.IsExplicitImplementation` and its identical private `AddKeyed<T>` tree/part bucketing onto `RemoveExistingImplementationsHelpers.AddKeyed` (widened from private to internal, body unchanged). generate_overrides' own removal loop and `SignaturesMatch` copies are intentionally left alone. No behavior change. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. (#2421)
+
 ## [0.8.0] - 2026-10-06
 
 ### Added
