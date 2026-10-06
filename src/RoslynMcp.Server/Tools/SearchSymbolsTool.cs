@@ -32,7 +32,7 @@ public sealed class SearchSymbolsTool : IToolHandler
     public string Name => "search_symbols";
 
     /// <inheritdoc />
-    public string Description => "Search for C# symbols by name pattern across the solution or a specific file. Supports substring matching and filtering by symbol kind (Class, Method, Property, etc.). Optional sourceFile restricts results to symbols declared in that file. Optional caseSensitive (default false) set to true matches query case-sensitively (ordinal) instead of case-insensitively. Optional exactMatch (default false) set to true returns only symbols whose whole name equals query instead of containing it.";
+    public string Description => "Search for C# symbols by name pattern across the solution or a specific file. Supports substring matching and filtering by symbol kind (Class, Method, Property, etc.). Optional sourceFile restricts results to symbols declared in that file. Optional caseSensitive (default false) set to true matches query case-sensitively (ordinal) instead of case-insensitively. Optional exactMatch (default false) set to true returns only symbols whose whole name equals query instead of containing it. Optional namespaceFilter restricts results to symbols declared in that namespace or a namespace nested inside it.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -76,6 +76,11 @@ public sealed class SearchSymbolsTool : IToolHandler
             {
                 type = "boolean",
                 description = "Match query against the whole symbol name when true (default false = substring match); honors caseSensitive and is applied before maxResults so totalCount/truncated reflect the exact-match set"
+            },
+            namespaceFilter = new
+            {
+                type = "string",
+                description = "Namespace to restrict results to (optional; omit for all namespaces). Keeps symbols whose containing namespace equals it or is nested inside it (e.g. App.Services matches App.Services and App.Services.Orders, not App.ServicesExtra); ordinal (case-sensitive) comparison, leading global:: accepted; global-namespace symbols never match; applied before maxResults so totalCount/truncated reflect the filtered set"
             }
         },
         additionalProperties = false
@@ -103,7 +108,8 @@ public sealed class SearchSymbolsTool : IToolHandler
                 MaxResults = args.MaxResults,
                 SourceFile = args.SourceFile,
                 CaseSensitive = args.CaseSensitive,
-                ExactMatch = args.ExactMatch
+                ExactMatch = args.ExactMatch,
+                NamespaceFilter = args.NamespaceFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -136,5 +142,6 @@ public sealed class SearchSymbolsTool : IToolHandler
         public string? SourceFile { get; init; }
         public bool? CaseSensitive { get; init; }
         public bool? ExactMatch { get; init; }
+        public string? NamespaceFilter { get; init; }
     }
 }

@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 
 - `search_symbols` now honors optional **`exactMatch`**: omit or `false` keeps today's substring match; `true` keeps only symbols whose whole name equals `query` (e.g. `Add` no longer returns `AddRange` / `TryAdd` / `Padding`). Compared with the same case rule as `caseSensitive` (`StringComparison.Ordinal` when `caseSensitive: true`, otherwise `OrdinalIgnoreCase`) in the `GetSymbolsWithName` name predicate, alongside `kindFilter` / `sourceFile` and before `maxResults`, so `TotalCount` / `Truncated` reflect the exact-match set; no exact match returns an empty success. `SymbolSearchEntry` shape unchanged. (#2383)
+- `search_symbols` now honors optional **`namespaceFilter`**: omit or blank keeps today's whole-solution behavior; when set, only symbols whose containing namespace (`ISymbol.ContainingNamespace`, so members of nested types use the enclosing namespace) equals the filter or is nested inside it are returned (`App.Services` matches `App.Services` and `App.Services.Orders`, not `App.ServicesExtra` or `App`). Compared with `StringComparison.Ordinal`; surrounding whitespace is trimmed and a leading `global::` is accepted; global-namespace symbols never match. Applied alongside `kindFilter` / `sourceFile` / `caseSensitive` / `exactMatch` and before `maxResults`, so `TotalCount` / `Truncated` reflect the namespace-filtered set; no match returns an empty success. `SymbolSearchEntry` shape unchanged. (#2390)
 
 ## [0.8.0] - 2026-10-06
 

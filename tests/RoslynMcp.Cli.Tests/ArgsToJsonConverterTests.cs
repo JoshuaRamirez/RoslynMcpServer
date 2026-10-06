@@ -266,4 +266,34 @@ public class ArgsToJsonConverterTests
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
         Assert.Null(p.ExactMatch);
     }
+
+    [Fact]
+    public void SearchSymbols_NamespaceFilter_RoundTripsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["query"] = "Widget",
+            ["namespace-filter"] = "App.Services"
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("App.Services", doc.RootElement.GetProperty("namespaceFilter").GetString());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.SearchSymbolsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("Widget", p.Query);
+        Assert.Equal("App.Services", p.NamespaceFilter);
+    }
+
+    [Fact]
+    public void SearchSymbols_NamespaceFilterOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string> { ["query"] = "Widget" });
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.SearchSymbolsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.NamespaceFilter);
+    }
 }

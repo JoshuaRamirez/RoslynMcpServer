@@ -42,4 +42,16 @@ public sealed class SearchSymbolsParams
     /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the exact-match set.
     /// </summary>
     public bool? ExactMatch { get; init; }
+
+    /// <summary>
+    /// Optional namespace to restrict results to. When set, only symbols whose containing namespace
+    /// (the namespace enclosing the symbol or its containing type) equals this value or is nested
+    /// inside it are returned (e.g. <c>App.Services</c> matches <c>App.Services</c> and
+    /// <c>App.Services.Orders</c>, not <c>App.ServicesExtra</c>). Compared with
+    /// <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading
+    /// <c>global::</c> is accepted. Applied before <see cref="MaxResults"/> so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the namespace-filtered set. Symbols in the global namespace never match a
+    /// named filter. Omit, blank, or a bare <c>global::</c> (the root namespace) searches all namespaces.
+    /// </summary>
+    public string? NamespaceFilter { get; init; }
 }
