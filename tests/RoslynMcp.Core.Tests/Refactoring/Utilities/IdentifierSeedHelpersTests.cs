@@ -6,7 +6,9 @@ using Xunit;
 namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 
 /// <summary>
-/// Unit tests for <see cref="IdentifierSeedHelpers"/>: PreferTypeName for
+/// Unit tests for <see cref="IdentifierSeedHelpers"/>: PreferInvokedName /
+/// PreferInvokedNameFromExpression for simple, member-access, generic,
+/// parenthesized and unsupported expressions, PreferTypeName for
 /// identifier, qualified, generic, nullable, alias-qualified, fallback and null
 /// types, and SanitizeIdentifierSeed in both casing modes for blank, symbol-only
 /// and digit inputs.
@@ -14,6 +16,55 @@ namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 public class IdentifierSeedHelpersTests
 {
     private static TypeSyntax Type(string text) => SyntaxFactory.ParseTypeName(text);
+
+    private static ExpressionSyntax Expr(string text) => SyntaxFactory.ParseExpression(text);
+
+    [Theory]
+    [InlineData("Compute()", "Compute")]
+    [InlineData("order.GetTotal()", "GetTotal")]
+    [InlineData("a.b.c.Load(1, 2)", "Load")]
+    [InlineData("Create<int>()", "Create")]
+    [InlineData("factory.Create<Widget>()", "Create")]
+    [InlineData("((x.Run))()", "Run")]
+    [InlineData("this.Save()", "Save")]
+    public void PreferInvokedName_ReturnsInvokedSimpleName(string text, string expected)
+    {
+        var invocation = Assert.IsType<InvocationExpressionSyntax>(Expr(text));
+        Assert.Equal(expected, IdentifierSeedHelpers.PreferInvokedName(invocation));
+    }
+
+    [Theory]
+    [InlineData("GetItems()()")]
+    [InlineData("handlers[0]()")]
+    [InlineData("((Func<int>)f)()")]
+    public void PreferInvokedName_UnsupportedTarget_ReturnsNull(string text)
+    {
+        var invocation = Assert.IsType<InvocationExpressionSyntax>(Expr(text));
+        Assert.Null(IdentifierSeedHelpers.PreferInvokedName(invocation));
+    }
+
+    [Theory]
+    [InlineData("items", "items")]
+    [InlineData("order.Lines", "Lines")]
+    [InlineData("Cache<string>", "Cache")]
+    [InlineData("(items)", "items")]
+    [InlineData("(((order.Lines)))", "Lines")]
+    public void PreferInvokedNameFromExpression_SimpleShapes_ReturnSimpleName(string text, string expected)
+    {
+        Assert.Equal(expected, IdentifierSeedHelpers.PreferInvokedNameFromExpression(Expr(text)));
+    }
+
+    [Theory]
+    [InlineData("42")]
+    [InlineData("a + b")]
+    [InlineData("items[0]")]
+    [InlineData("Load()")]
+    [InlineData("(a + b)")]
+    [InlineData("\"text\"")]
+    public void PreferInvokedNameFromExpression_OtherShapes_ReturnNull(string text)
+    {
+        Assert.Null(IdentifierSeedHelpers.PreferInvokedNameFromExpression(Expr(text)));
+    }
 
     [Theory]
     [InlineData("Widget", "Widget")]

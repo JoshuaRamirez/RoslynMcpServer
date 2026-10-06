@@ -764,11 +764,11 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
 
         string? seed = expression switch
         {
-            InvocationExpressionSyntax invocation => PreferInvokedName(invocation),
+            InvocationExpressionSyntax invocation => IdentifierSeedHelpers.PreferInvokedName(invocation),
             ObjectCreationExpressionSyntax creation => IdentifierSeedHelpers.PreferTypeName(creation.Type, capitalizeFirstWord: false),
             ImplicitObjectCreationExpressionSyntax => PreferTypeNameFromSemanticFallback(expression),
-            ElementAccessExpressionSyntax access => PreferInvokedNameFromExpression(access.Expression),
-            AwaitExpressionSyntax awaitExpr => PreferInvokedNameFromExpression(awaitExpr.Expression)
+            ElementAccessExpressionSyntax access => IdentifierSeedHelpers.PreferInvokedNameFromExpression(access.Expression),
+            AwaitExpressionSyntax awaitExpr => IdentifierSeedHelpers.PreferInvokedNameFromExpression(awaitExpr.Expression)
                 ?? PreferTypeNameFromSemanticFallback(awaitExpr.Expression),
             CastExpressionSyntax cast => IdentifierSeedHelpers.PreferTypeName(cast.Type, capitalizeFirstWord: false),
             BinaryExpressionSyntax binary when binary.IsKind(SyntaxKind.AsExpression) =>
@@ -812,18 +812,6 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
 
         return false;
     }
-
-    private static string? PreferInvokedName(InvocationExpressionSyntax invocation) =>
-        PreferInvokedNameFromExpression(invocation.Expression);
-
-    private static string? PreferInvokedNameFromExpression(ExpressionSyntax expression) =>
-        Unwrap(expression) switch
-        {
-            IdentifierNameSyntax id => id.Identifier.ValueText,
-            MemberAccessExpressionSyntax member => member.Name.Identifier.ValueText,
-            GenericNameSyntax generic => generic.Identifier.ValueText,
-            _ => null
-        };
 
     private static string? FinalizeVariableName(string? seed)
     {

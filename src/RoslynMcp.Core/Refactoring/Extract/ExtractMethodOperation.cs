@@ -558,7 +558,7 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
             {
                 seed = node switch
                 {
-                    InvocationExpressionSyntax invocation => PreferInvokedName(invocation),
+                    InvocationExpressionSyntax invocation => IdentifierSeedHelpers.PreferInvokedName(invocation),
                     ObjectCreationExpressionSyntax creation => IdentifierSeedHelpers.PreferTypeName(creation.Type, capitalizeFirstWord: true),
                     IdentifierNameSyntax id when seed == null => id.Identifier.ValueText,
                     _ => seed
@@ -679,19 +679,6 @@ public sealed class ExtractMethodOperation : RefactoringOperationBase<ExtractMet
 
         return false;
     }
-
-    private static string? PreferInvokedName(InvocationExpressionSyntax invocation) =>
-        PreferInvokedNameFromExpression(invocation.Expression);
-
-    private static string? PreferInvokedNameFromExpression(ExpressionSyntax expression) =>
-        expression switch
-        {
-            IdentifierNameSyntax id => id.Identifier.ValueText,
-            MemberAccessExpressionSyntax member => member.Name.Identifier.ValueText,
-            GenericNameSyntax generic => generic.Identifier.ValueText,
-            ParenthesizedExpressionSyntax paren => PreferInvokedNameFromExpression(paren.Expression),
-            _ => null
-        };
 
     private static string? FinalizeMethodName(string? seed)
     {
