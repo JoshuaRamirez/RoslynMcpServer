@@ -292,7 +292,7 @@ public sealed class ToolRegistry
         r.RegisterQuery<FindCallersOperation, FindCallersParams, FindCallersResult>(
             "find-callers", "Find all callers of a method; callerFile (optional) restricts reported call sites to callers located in that absolute .cs file (applied before maxResults, so totalCount / truncated reflect the filtered set); sourceFile still locates the target symbol");
         r.RegisterQuery<FindImplementationsOperation, FindImplementationsParams, FindImplementationsResult>(
-            "find-implementations", "Find all implementations of an interface or abstract member");
+            "find-implementations", "Find all implementations of an interface or abstract member; implementationFile (optional) restricts reported implementations to those declared in that absolute .cs file (applied before maxResults, so totalCount / truncated reflect the filtered set); sourceFile still locates the target symbol");
         r.RegisterQuery<GoToDefinitionOperation, GoToDefinitionParams, GoToDefinitionResult>(
             "go-to-definition", "Navigate to the definition of a symbol; maxResults (optional) caps the returned Definitions list (omit = no cap); result includes Truncated when capped");
         r.RegisterQuery<SearchSymbolsOperation, SearchSymbolsParams, SearchSymbolsResult>(

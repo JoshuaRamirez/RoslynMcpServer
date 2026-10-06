@@ -2,6 +2,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.FindSymbols;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
+using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Query.Base;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
@@ -43,6 +44,18 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
 
         if (@params.MaxResults.HasValue && @params.MaxResults.Value < 1)
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "maxResults must be >= 1.");
+
+        if (!string.IsNullOrWhiteSpace(@params.ImplementationFile))
+        {
+            if (!PathResolver.IsAbsolutePath(@params.ImplementationFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "implementationFile must be an absolute path.");
+
+            if (!PathResolver.IsValidCSharpFilePath(@params.ImplementationFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "implementationFile must be a .cs file.");
+
+            if (!File.Exists(@params.ImplementationFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.ImplementationFile}");
+        }
     }
 
     /// <inheritdoc />
@@ -63,14 +76,55 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
             symbol, Context.Solution, cancellationToken: cancellationToken);
 
         var totalCount = 0;
+        // Optional implementationFile filter: compare canonical path keys so aliases such as
+        // "src/../Impl.cs" still match Roslyn's canonical location paths, and compare those keys
+        // with OrdinalIgnoreCase (the documented contract, same as find_references referenceFile /
+        // find_callers callerFile) so paths that differ only by letter case also match, even on
+        // case-sensitive volumes.
+        var implementationFileKey = string.IsNullOrWhiteSpace(@params.ImplementationFile)
+            ? null
+            : PathResolver.GetPathComparisonKey(@params.ImplementationFile);
+        var locationKeyCache = implementationFileKey == null
+            ? null
+            : new Dictionary<string, string>(StringComparer.Ordinal);
+
+        bool IsInImplementationFile(Location location)
+        {
+            var locationPath = location.GetLineSpan().Path;
+            if (string.IsNullOrWhiteSpace(locationPath)) return false;
+
+            if (!locationKeyCache!.TryGetValue(locationPath, out var locationKey))
+            {
+                locationKey = PathResolver.GetPathComparisonKey(locationPath);
+                locationKeyCache[locationPath] = locationKey;
+            }
+
+            return string.Equals(locationKey, implementationFileKey, StringComparison.OrdinalIgnoreCase);
+        }
 
         foreach (var impl in implSymbols)
         {
-            totalCount++;
-            if (implementations.Count >= maxResults) continue;
+            Location? location;
+            if (implementationFileKey == null)
+            {
+                totalCount++;
+                if (implementations.Count >= maxResults) continue;
 
-            var location = impl.Locations.FirstOrDefault(l => l.IsInSource);
-            if (location == null) continue;
+                location = impl.Locations.FirstOrDefault(l => l.IsInSource);
+                if (location == null) continue;
+            }
+            else
+            {
+                // Optional implementationFile filter runs before maxResults so TotalCount /
+                // Truncated reflect the filtered set. An implementation declared across several
+                // files (partial type) matches when any of its in-source locations is in
+                // implementationFile, and is reported at that location.
+                location = impl.Locations.FirstOrDefault(l => l.IsInSource && IsInImplementationFile(l));
+                if (location == null) continue;
+
+                totalCount++;
+                if (implementations.Count >= maxResults) continue;
+            }
 
             var lineSpan = location.GetLineSpan();
             implementations.Add(new ImplementationInfo

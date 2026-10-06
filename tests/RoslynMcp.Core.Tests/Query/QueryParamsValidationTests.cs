@@ -214,6 +214,37 @@ public class QueryParamsValidationTests
         Assert.Equal(ErrorCodes.MissingRequiredParam, ex.ErrorCode);
     }
 
+    [Fact]
+    public void FindImplementations_ImplementationFileRelativePath_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateFindImplementationsImplementationFile(new FindImplementationsParams { SourceFile = AbsoluteTestPath(), SymbolName = "IFoo", ImplementationFile = "file.cs" }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindImplementations_ImplementationFileNonCsFile_ThrowsException()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateFindImplementationsImplementationFile(new FindImplementationsParams { SourceFile = AbsoluteTestPath(), SymbolName = "IFoo", ImplementationFile = AbsoluteTestPath(".txt") }));
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindImplementations_ImplementationFileMissingPath_ThrowsSourceFileNotFound()
+    {
+        var ex = Assert.Throws<RefactoringException>(() =>
+            ValidateFindImplementationsImplementationFile(new FindImplementationsParams { SourceFile = AbsoluteTestPath(), SymbolName = "IFoo", ImplementationFile = AbsoluteTestPath() }));
+        Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
+    }
+
+    [Fact]
+    public void FindImplementations_NoImplementationFile_PassesImplementationFileValidation()
+    {
+        // No implementationFile is valid — reports implementations across the whole solution
+        ValidateFindImplementationsImplementationFile(new FindImplementationsParams { SourceFile = AbsoluteTestPath(), SymbolName = "IFoo" });
+    }
+
     #endregion
 
     #region SearchSymbolsParams Validation
@@ -357,6 +388,19 @@ public class QueryParamsValidationTests
             throw new RefactoringException(ErrorCodes.MissingRequiredParam, "Either line/column or symbolName must be provided.");
         if (!File.Exists(p.SourceFile))
             throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.SourceFile}");
+    }
+
+    private static void ValidateFindImplementationsImplementationFile(FindImplementationsParams p)
+    {
+        if (!string.IsNullOrWhiteSpace(p.ImplementationFile))
+        {
+            if (!PathResolver.IsAbsolutePath(p.ImplementationFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "implementationFile must be an absolute path.");
+            if (!PathResolver.IsValidCSharpFilePath(p.ImplementationFile))
+                throw new RefactoringException(ErrorCodes.InvalidSourcePath, "implementationFile must be a .cs file.");
+            if (!File.Exists(p.ImplementationFile))
+                throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {p.ImplementationFile}");
+        }
     }
 
     private static void ValidateFindImplementationsParams(FindImplementationsParams p)
