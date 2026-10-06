@@ -519,6 +519,63 @@ public class GoToDefinitionOperationTests
     }
 
     [SkippableFact]
+    public async Task GoToDefinition_DefinitionFile_PartialEvent_ReachesOtherPart()
+    {
+        // Partial events (C# 14, so LangVersion preview on the net9.0 test project): defining
+        // declaration in Bus.cs, implementation in Bus.Impl.cs (both line 3, column 41 = "Changed").
+        // IEventSymbol.PartialDefinitionPart / PartialImplementationPart is a distinct Roslyn API
+        // path from partial methods and properties.
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Bus.cs"] = """
+                public partial class Bus
+                {
+                    public partial event System.Action? Changed;
+                }
+                """,
+            ["Bus.Impl.cs"] = """
+                public partial class Bus
+                {
+                    public partial event System.Action? Changed { add { } remove { } }
+                }
+                """
+        }, langVersion: "preview");
+        var operation = new GoToDefinitionOperation(workspace.Context);
+
+        var toImplementation = await operation.ExecuteAsync(new GoToDefinitionParams
+        {
+            SourceFile = workspace.PathOf("Bus.cs"),
+            Line = 3,
+            Column = 41,
+            DefinitionFile = workspace.PathOf("Bus.Impl.cs")
+        });
+
+        Assert.True(toImplementation.Success);
+        Assert.NotNull(toImplementation.Data);
+        var implementation = Assert.Single(toImplementation.Data.Definitions);
+        Assert.Equal("Changed", implementation.SymbolName);
+        Assert.True(SamePath(implementation.File, workspace.PathOf("Bus.Impl.cs")));
+        Assert.Equal(3, implementation.Line);
+        Assert.Equal(1, toImplementation.Data.TotalCount);
+
+        var toDefinition = await operation.ExecuteAsync(new GoToDefinitionParams
+        {
+            SourceFile = workspace.PathOf("Bus.Impl.cs"),
+            Line = 3,
+            Column = 41,
+            DefinitionFile = workspace.PathOf("Bus.cs")
+        });
+
+        Assert.True(toDefinition.Success);
+        Assert.NotNull(toDefinition.Data);
+        var definition = Assert.Single(toDefinition.Data.Definitions);
+        Assert.Equal("Changed", definition.SymbolName);
+        Assert.True(SamePath(definition.File, workspace.PathOf("Bus.cs")));
+        Assert.Equal(3, definition.Line);
+        Assert.Equal(1, toDefinition.Data.TotalCount);
+    }
+
+    [SkippableFact]
     public async Task GoToDefinition_DefinitionFile_SymbolNameResolution_FiltersToThatFile()
     {
         await using var workspace = await TempWorkspace.CreateAsync(MultiFileSources);
@@ -772,7 +829,8 @@ public class GoToDefinitionOperationTests
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Foo.cs") =>
             CreateAsync(new Dictionary<string, string> { [fileName] = source }, fileName);
 
-        public static async Task<TempWorkspace> CreateAsync(IReadOnlyDictionary<string, string> files, string? primaryFile = null)
+        public static async Task<TempWorkspace> CreateAsync(
+            IReadOnlyDictionary<string, string> files, string? primaryFile = null, string? langVersion = null)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -780,11 +838,13 @@ public class GoToDefinitionOperationTests
             Directory.CreateDirectory(directory);
 
             var projectPath = Path.Combine(directory, "TestApp.csproj");
-            await File.WriteAllTextAsync(projectPath, """
+            var langVersionElement = langVersion == null ? "" : $"<LangVersion>{langVersion}</LangVersion>";
+            await File.WriteAllTextAsync(projectPath, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
+                    {langVersionElement}
                   </PropertyGroup>
                 </Project>
                 """);

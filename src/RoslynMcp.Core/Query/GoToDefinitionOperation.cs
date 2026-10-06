@@ -79,6 +79,12 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
             ? null
             : PathResolver.GetPathComparisonKey(@params.DefinitionFile);
 
+        // GetPathComparisonKey walks the filesystem, so cache keys by raw location path when
+        // many declarations share a file (same as the peer per-file filters).
+        var locationKeyCache = definitionFileKey == null
+            ? null
+            : new Dictionary<string, string>(StringComparer.Ordinal);
+
         // With a filter, the candidate set also covers the other half of a partial method /
         // property / event: Roslyn models the defining declaration and the implementation as
         // distinct linked symbols, so symbol.Locations alone never reaches the other part's
@@ -92,11 +98,20 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
             var lineSpan = location.GetLineSpan();
 
             // Filter runs before maxResults so TotalCount / Truncated reflect the filtered set.
-            if (definitionFileKey != null &&
-                (string.IsNullOrWhiteSpace(lineSpan.Path) ||
-                 !string.Equals(PathResolver.GetPathComparisonKey(lineSpan.Path), definitionFileKey, StringComparison.OrdinalIgnoreCase)))
+            if (definitionFileKey != null)
             {
-                continue;
+                var locationPath = lineSpan.Path;
+                if (string.IsNullOrWhiteSpace(locationPath))
+                    continue;
+
+                if (!locationKeyCache!.TryGetValue(locationPath, out var locationKey))
+                {
+                    locationKey = PathResolver.GetPathComparisonKey(locationPath);
+                    locationKeyCache[locationPath] = locationKey;
+                }
+
+                if (!string.Equals(locationKey, definitionFileKey, StringComparison.OrdinalIgnoreCase))
+                    continue;
             }
 
             definitions.Add(new DefinitionLocation
