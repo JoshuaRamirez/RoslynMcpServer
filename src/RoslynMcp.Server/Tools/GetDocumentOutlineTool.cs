@@ -32,7 +32,7 @@ public sealed class GetDocumentOutlineTool : IToolHandler
     public string Name => "get_document_outline";
 
     /// <inheritdoc />
-    public string Description => "Get a structured outline of all declarations in a C# file: namespaces, types, methods, properties, fields, and events with their line numbers and accessibility. Optional maxDepth caps the returned outline tree depth (1 = top-level entries only; omit = no depth cap). Optional maxResults caps the returned outline tree via DFS pre-order (omit = no cap), applied after maxDepth.";
+    public string Description => "Get a structured outline of all declarations in a C# file: namespaces, types, methods, properties, fields, and events with their line numbers and accessibility. Optional maxDepth caps the returned outline tree depth (1 = top-level entries only; omit = no depth cap). Optional maxResults caps the returned outline tree via DFS pre-order (omit = no cap), applied after maxDepth. Optional kindFilter (same values as search_symbols kindFilter, case-insensitive) keeps only entries of that kind plus their containing types/namespaces, applied before maxDepth and maxResults.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -62,6 +62,11 @@ public sealed class GetDocumentOutlineTool : IToolHandler
                 type = "integer",
                 description = "Maximum outline tree depth to return; 1 = top-level entries only (optional; omit = no depth cap). Applied before maxResults.",
                 minimum = 1
+            },
+            kindFilter = new
+            {
+                type = "string",
+                description = "Keep only outline entries of this kind plus their containing types/namespaces (optional; case-insensitive): Class, Struct, Interface, Enum, Record, Delegate, Method, Property, Field, Event, Constant, Local, Parameter, Namespace (a single kind name; numeric or comma-combined values are rejected with InvalidSymbolKind). Constructors match Method and enum members match Constant; Local and Parameter are accepted but never match an outline entry (empty outline). Applied before maxDepth and maxResults; omit = all declarations."
             }
         },
         additionalProperties = false
@@ -86,7 +91,8 @@ public sealed class GetDocumentOutlineTool : IToolHandler
             {
                 SourceFile = args.SourceFile,
                 MaxResults = args.MaxResults,
-                MaxDepth = args.MaxDepth
+                MaxDepth = args.MaxDepth,
+                KindFilter = args.KindFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -116,5 +122,6 @@ public sealed class GetDocumentOutlineTool : IToolHandler
         public string SourceFile { get; init; } = "";
         public int? MaxResults { get; init; }
         public int? MaxDepth { get; init; }
+        public string? KindFilter { get; init; }
     }
 }

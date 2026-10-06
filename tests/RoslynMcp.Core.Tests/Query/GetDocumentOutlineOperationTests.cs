@@ -1,3 +1,4 @@
+using System.Text.Json;
 using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.Query;
@@ -9,7 +10,8 @@ namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
 /// Operation-level tests for <see cref="GetDocumentOutlineOperation"/> optional <c>maxResults</c>
-/// (peer of <see cref="GetDiagnosticsOperation"/> / <see cref="SearchSymbolsOperation"/>).
+/// (peer of <see cref="GetDiagnosticsOperation"/> / <see cref="SearchSymbolsOperation"/>), optional
+/// <c>maxDepth</c>, and optional <c>kindFilter</c>.
 /// </summary>
 public class GetDocumentOutlineOperationTests
 {
@@ -355,6 +357,365 @@ public class GetDocumentOutlineOperationTests
     }
 
     #endregion
+
+    #region Execute kindFilter
+
+    private const string KindSource = """
+        namespace N
+        {
+            public class A
+            {
+                public A() { }
+                public int P { get; set; }
+                public void M() { }
+
+                public class Inner
+                {
+                    public void InnerM() { }
+                }
+            }
+
+            public class B
+            {
+                public int F;
+                public const int K = 1;
+            }
+
+            public enum E
+            {
+                One,
+                Two
+            }
+
+            public interface I
+            {
+                void IM();
+            }
+        }
+        """;
+
+    // Full DFS pre-order: N, A, Inner, InnerM, A (ctor), M, P, B, F, K, E, One, Two, I, IM => 15 nodes.
+    private const int KindSourceTotal = 15;
+
+    [Fact]
+    public void KindFilter_DefaultsToNull()
+    {
+        var @params = new GetDocumentOutlineParams { SourceFile = "/tmp/x.cs" };
+        Assert.Null(@params.KindFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task GetDocumentOutline_OmittedOrBlankKindFilter_MatchesTodayOutputExactly(string? kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var baseline = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+        var filtered = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(baseline.Success);
+        Assert.NotNull(baseline.Data);
+        Assert.True(filtered.Success);
+        Assert.NotNull(filtered.Data);
+        Assert.Equal(KindSourceTotal, filtered.Data.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+        Assert.Equal(SerializeOutline(baseline.Data), SerializeOutline(filtered.Data));
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_KindFilterMethod_KeepsMethodsAndTheirContainers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var full = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = "Method"
+        });
+
+        Assert.True(full.Success);
+        Assert.NotNull(full.Data);
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+
+        var flat = Flatten(result.Data.Entries);
+        Assert.Equal(
+            new[]
+            {
+                ("N", "Namespace", 1),
+                ("A", "Class", 2),
+                ("Inner", "Class", 3),
+                ("InnerM", "Method", 4),
+                ("A", "Constructor", 3),
+                ("M", "Method", 3),
+                ("I", "Interface", 2),
+                ("IM", "Method", 3)
+            },
+            flat.Select(e => (e.Name, e.Kind, e.Depth)));
+
+        // Kept entries (containers included) keep their original positions and metadata.
+        var original = Flatten(full.Data.Entries);
+        Assert.All(flat, e => Assert.Contains(e, original));
+
+        Assert.Equal(8, result.Data.TotalCount);
+        Assert.Equal(result.Data.TotalCount, CountNodes(result.Data.Entries));
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_KindFilterClass_KeepsOnlyTypeNodesAndNamespaceContainers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = "Class"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(
+            new[]
+            {
+                ("N", "Namespace", 1),
+                ("A", "Class", 2),
+                ("Inner", "Class", 3),
+                ("B", "Class", 2)
+            },
+            Flatten(result.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+
+        var root = Assert.Single(result.Data.Entries);
+        var b = root.Children!.Single(c => c.Name == "B");
+        Assert.Null(b.Children);
+        var inner = Assert.Single(root.Children!.Single(c => c.Name == "A").Children!);
+        Assert.Null(inner.Children);
+
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_KindFilterConstant_IncludesConstFieldsAndEnumMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = "Constant"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(
+            new[]
+            {
+                ("N", "Namespace", 1),
+                ("B", "Class", 2),
+                ("K", "Constant", 3),
+                ("E", "Enum", 2),
+                ("One", "EnumMember", 3),
+                ("Two", "EnumMember", 3)
+            },
+            Flatten(result.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+        Assert.Equal(6, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_KindFilterNamespace_KeepsNamespaceWithoutChildren()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = "Namespace"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var root = Assert.Single(result.Data.Entries);
+        Assert.Equal("N", root.Name);
+        Assert.Null(root.Children);
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_KindFilterNoMatch_ReturnsEmptyOutline()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = "Delegate"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Entries);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("method")]
+    [InlineData("METHOD")]
+    [InlineData("mEtHoD")]
+    public async Task GetDocumentOutline_KindFilter_IsCaseInsensitive(string kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var canonical = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = "Method"
+        });
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = kindFilter
+        });
+
+        Assert.True(canonical.Success);
+        Assert.NotNull(canonical.Data);
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(SerializeOutline(canonical.Data), SerializeOutline(result.Data));
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_KindFilterWithMaxDepth_AppliesFilterBeforeDepthCap()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        // Method-filtered tree: N > [A > [Inner > [InnerM], A (ctor), M], I > [IM]] (8 nodes);
+        // depth 2 keeps N, A, I. B and E were removed by the filter, not the depth cap.
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = "Method",
+            MaxDepth = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(new[] { "N", "A", "I" }, Flatten(result.Data.Entries).Select(e => e.Name));
+        var root = Assert.Single(result.Data.Entries);
+        Assert.All(root.Children!, c => Assert.Null(c.Children));
+        Assert.Equal(8, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_KindFilterWithMaxResults_AppliesFilterBeforeNodeBudget()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = "Method",
+            MaxResults = 5
+        });
+
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        Assert.Equal(new[] { "N", "A", "Inner", "InnerM", "A" }, Flatten(capped.Data.Entries).Select(e => e.Name));
+        Assert.Equal(8, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        // maxResults at or above the filtered node count: nothing beyond the filter is dropped.
+        var notCapped = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = "Method",
+            MaxResults = 8
+        });
+
+        Assert.True(notCapped.Success);
+        Assert.NotNull(notCapped.Data);
+        Assert.Equal(8, CountNodes(notCapped.Data.Entries));
+        Assert.Equal(8, notCapped.Data.TotalCount);
+        Assert.False(notCapped.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_KindFilterWithMaxDepthAndMaxResults_AppliesFilterThenDepthThenBudget()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        // filter (Method) -> depth 2 => N, A, I -> budget 2 => N, A.
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            KindFilter = "Method",
+            MaxDepth = 2,
+            MaxResults = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(new[] { "N", "A" }, Flatten(result.Data.Entries).Select(e => e.Name));
+        Assert.Equal(8, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Bogus")]
+    [InlineData("Methods")]
+    [InlineData("Constructor")]
+    [InlineData("6")]
+    [InlineData("999")]
+    [InlineData("-1")]
+    [InlineData("Class, Method")]
+    public async Task Validate_InvalidKindFilter_ThrowsInvalidSymbolKind(string kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(KindSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GetDocumentOutlineParams
+            {
+                SourceFile = workspace.SourcePath,
+                KindFilter = kindFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.StartsWith($"Invalid kindFilter '{kindFilter}'. Valid values: ", ex.Message);
+        Assert.Contains("Method", ex.Message);
+    }
+
+    #endregion
+
+    private static string SerializeOutline(GetDocumentOutlineResult data) =>
+        JsonSerializer.Serialize(data, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
     private static int MaxTreeDepth(IReadOnlyList<OutlineEntry>? entries)
     {

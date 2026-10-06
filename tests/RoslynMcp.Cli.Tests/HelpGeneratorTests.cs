@@ -2090,4 +2090,28 @@ public class HelpGeneratorTests
         Assert.Contains("--namespace-filter", optionalSection);
         Assert.Contains("--exact-match", optionalSection);
     }
+
+    [Fact]
+    public void GenerateToolHelp_GetDocumentOutline_ShowsKindFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-document-outline")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("get-document-outline", help);
+        Assert.Contains("kindFilter", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+        var requiredSection = help[requiredIdx..optionalIdx];
+        var optionalSection = help[optionalIdx..];
+
+        Assert.Contains("--source-file", requiredSection);
+        Assert.DoesNotContain("--kind-filter", requiredSection);
+        Assert.Contains("--kind-filter", optionalSection);
+        Assert.Contains("--max-depth", optionalSection);
+        Assert.Contains("--max-results", optionalSection);
+    }
 }

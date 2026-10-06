@@ -296,4 +296,34 @@ public class ArgsToJsonConverterTests
             new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
         Assert.Null(p.NamespaceFilter);
     }
+
+    [Fact]
+    public void GetDocumentOutline_KindFilter_RoundTripsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Foo.cs",
+            ["kind-filter"] = "Method"
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("Method", doc.RootElement.GetProperty("kindFilter").GetString());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.GetDocumentOutlineParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("/src/Foo.cs", p.SourceFile);
+        Assert.Equal("Method", p.KindFilter);
+    }
+
+    [Fact]
+    public void GetDocumentOutline_KindFilterOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string> { ["source-file"] = "/src/Foo.cs" });
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.GetDocumentOutlineParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.KindFilter);
+    }
 }

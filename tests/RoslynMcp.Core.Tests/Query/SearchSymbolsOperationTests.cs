@@ -77,6 +77,27 @@ public class SearchSymbolsOperationTests
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
 
+    [SkippableTheory]
+    [InlineData("6")]
+    [InlineData("999")]
+    [InlineData("-1")]
+    [InlineData("Class, Method")]
+    public async Task Execute_NumericUndefinedOrCombinedKindFilter_ThrowsInvalidSymbolKind(string kindFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("class UniqueAlpha {}");
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SearchSymbolsParams
+            {
+                Query = "UniqueAlpha",
+                KindFilter = kindFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
+        Assert.StartsWith($"Invalid kindFilter '{kindFilter}'. Valid values: ", ex.Message);
+    }
+
     #endregion
 
     #region Execute filtering
