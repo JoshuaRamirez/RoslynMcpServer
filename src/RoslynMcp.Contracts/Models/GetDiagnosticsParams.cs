@@ -33,4 +33,13 @@ public sealed class GetDiagnosticsParams
     /// (exclusion wins when an ID is in both) and before <see cref="MaxResults"/>.
     /// </summary>
     public IReadOnlyList<string>? ExcludeDiagnosticIds { get; init; }
+
+    /// <summary>
+    /// Optional absolute path to a <c>.csproj</c> in the loaded workspace to restrict diagnostics to.
+    /// Only projects whose file path equals it are compiled and scanned (every target-framework
+    /// variant of a multi-targeted project shares that path, so all are included). Omit for the
+    /// whole solution. Applied together with <see cref="SourceFile"/> and the ID / severity filters,
+    /// and before <see cref="MaxResults"/>.
+    /// </summary>
+    public string? ProjectPath { get; init; }
 }
