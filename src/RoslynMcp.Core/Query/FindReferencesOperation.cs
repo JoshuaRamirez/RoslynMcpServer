@@ -4,6 +4,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Query.Base;
+using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Workspace;
@@ -11,7 +12,8 @@ using RoslynMcp.Core.Workspace;
 namespace RoslynMcp.Core.Query;
 
 /// <summary>
-/// Finds all references to a symbol across the solution.
+/// Finds all references to a symbol across the solution (or within one project when
+/// <see cref="FindReferencesParams.ProjectPath"/> is set).
 /// Delegates to Roslyn's SymbolFinder.FindReferencesAsync.
 /// </summary>
 public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesParams, FindReferencesResult>
@@ -55,6 +57,8 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
             if (!File.Exists(@params.ReferenceFile))
                 throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.ReferenceFile}");
         }
+
+        ProjectPathFilter.Validate(@params.ProjectPath);
     }
 
     /// <inheritdoc />
@@ -63,6 +67,16 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         FindReferencesParams @params,
         CancellationToken cancellationToken)
     {
+        // Optional projectPath scope (same validation / matching as get_diagnostics and search_symbols):
+        // resolved up front so a project that is not in the workspace fails with SourceNotInWorkspace
+        // instead of an empty result. Every target-framework variant of a multi-targeted project
+        // shares that path, so all of their ProjectIds are in scope.
+        var projectScope = string.IsNullOrWhiteSpace(@params.ProjectPath)
+            ? null
+            : ProjectPathFilter.SelectProjects(Context.Solution, @params.ProjectPath)
+                .Select(project => project.Id)
+                .ToHashSet();
+
         // Resolve the symbol
         var resolved = await SymbolResolver.ResolveSymbolAsync(
             @params.SourceFile, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
@@ -104,6 +118,10 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
             return string.Equals(locationKey, referenceFileKey, StringComparison.OrdinalIgnoreCase);
         }
 
+        // Optional projectPath filter: keep only locations whose document belongs to a matched project.
+        bool IsInProjectScope(DocumentId? documentId) =>
+            projectScope == null || (documentId != null && projectScope.Contains(documentId.ProjectId));
+
         foreach (var referencedSymbol in referencedSymbols)
         {
             // Add the definition itself (skipped entirely when includeDeclaration is false)
@@ -114,9 +132,10 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
             {
                 var lineSpan = defLocation.GetLineSpan();
 
-                // Optional referenceFile filter runs before maxResults so TotalCount / Truncated
-                // reflect the filtered set.
+                // Optional referenceFile / projectPath filters run before maxResults so
+                // TotalCount / Truncated reflect the filtered set.
                 if (!IsInReferenceFile(lineSpan.Path)) continue;
+                if (projectScope != null && !IsInProjectScope(Context.Solution.GetDocumentId(defLocation.SourceTree))) continue;
 
                 totalCount++;
                 if (locations.Count < maxResults)
@@ -143,8 +162,10 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                 var span = refLocation.Location.GetLineSpan();
                 var file = refLocation.Document.FilePath ?? span.Path;
 
-                // Same filter as definition locations, applied to the reported File path.
+                // Same filters as definition locations, applied to the reported File path and the
+                // reference's own document.
                 if (!IsInReferenceFile(file)) continue;
+                if (!IsInProjectScope(refLocation.Document.Id)) continue;
 
                 totalCount++;
 

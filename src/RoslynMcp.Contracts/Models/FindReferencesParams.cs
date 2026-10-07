@@ -45,4 +45,18 @@ public sealed class FindReferencesParams
     /// are returned. Distinct from <see cref="SourceFile"/>, which locates the target symbol.
     /// </summary>
     public string? ReferenceFile { get; init; }
+
+    /// <summary>
+    /// Optional absolute path to a <c>.csproj</c> in the loaded workspace to restrict reported reference
+    /// locations to. When set, only locations (usages and, when <see cref="IncludeDeclaration"/> is on,
+    /// definition locations) whose document belongs to a project whose file path equals it are returned
+    /// (every target-framework variant of a multi-targeted project shares that path, so all are
+    /// included); same validation and matching as <c>get_diagnostics</c> / <c>search_symbols</c>
+    /// <c>projectPath</c>, and a path matching no project is an error rather than an empty result.
+    /// Omit or leave blank for the whole solution. Applied together with <see cref="ReferenceFile"/>
+    /// and before <see cref="MaxResults"/>, so <c>TotalCount</c> / <c>Truncated</c> reflect the
+    /// project-scoped set. <see cref="SourceFile"/> still locates the target symbol and may live in
+    /// another project.
+    /// </summary>
+    public string? ProjectPath { get; init; }
 }
