@@ -34,4 +34,15 @@ public sealed class GetDocumentOutlineParams
     /// Omit, empty, or whitespace for no kind filter (return every declaration).
     /// </summary>
     public string? KindFilter { get; init; }
+
+    /// <summary>
+    /// Optional name substring to keep. When set, an outline entry is kept if its name contains this value
+    /// (ordinal, case-insensitive; leading/trailing whitespace is ignored) or any descendant matches
+    /// (non-matching ancestors are kept only as containers); subtrees with no match are dropped, exactly
+    /// like <see cref="KindFilter"/>. Combined with <see cref="KindFilter"/>, an entry matches only when it
+    /// satisfies both. Applied before <see cref="MaxDepth"/> and <see cref="MaxResults"/>, so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the name-filtered tree; no match returns an empty outline.
+    /// Omit, empty, or whitespace for no name filter (return every declaration).
+    /// </summary>
+    public string? NameFilter { get; init; }
 }

@@ -11,7 +11,7 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <summary>
 /// Operation-level tests for <see cref="GetDocumentOutlineOperation"/> optional <c>maxResults</c>
 /// (peer of <see cref="GetDiagnosticsOperation"/> / <see cref="SearchSymbolsOperation"/>), optional
-/// <c>maxDepth</c>, and optional <c>kindFilter</c>.
+/// <c>maxDepth</c>, optional <c>kindFilter</c>, and optional <c>nameFilter</c>.
 /// </summary>
 public class GetDocumentOutlineOperationTests
 {
@@ -710,6 +710,389 @@ public class GetDocumentOutlineOperationTests
         Assert.Equal(ErrorCodes.InvalidSymbolKind, ex.ErrorCode);
         Assert.StartsWith($"Invalid kindFilter '{kindFilter}'. Valid values: ", ex.Message);
         Assert.Contains("Method", ex.Message);
+    }
+
+    #endregion
+
+    #region Execute nameFilter
+
+    private const string NameSource = """
+        namespace App
+        {
+            public class ClickHandler
+            {
+                public ClickHandler() { }
+                public void HandleClick() { }
+                public void Render() { }
+                public int HandledCount { get; set; }
+
+                public class KeyRouter
+                {
+                    public void HandleKey() { }
+                    public void Route() { }
+                }
+            }
+
+            public class Renderer
+            {
+                public void Draw() { }
+                public const int Handles = 1;
+            }
+
+            public enum Mode
+            {
+                Handled,
+                Ignored
+            }
+        }
+        """;
+
+    // Full DFS pre-order: App, ClickHandler, KeyRouter, HandleKey, Route, ClickHandler (ctor), HandleClick,
+    // Render, HandledCount, Renderer, Draw, Handles, Mode, Handled, Ignored => 15 nodes.
+    private const int NameSourceTotal = 15;
+
+    // nameFilter "handle" tree: App > [ClickHandler > [KeyRouter > [HandleKey], ClickHandler (ctor), HandleClick,
+    // HandledCount], Renderer > [Handles], Mode > [Handled]] => 11 nodes.
+    private const int HandleFilteredTotal = 11;
+
+    [Fact]
+    public void NameFilter_DefaultsToNull()
+    {
+        var @params = new GetDocumentOutlineParams { SourceFile = "/tmp/x.cs" };
+        Assert.Null(@params.NameFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t")]
+    public async Task GetDocumentOutline_OmittedOrBlankNameFilter_MatchesTodayOutputExactly(string? nameFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var baseline = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+        var filtered = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(baseline.Success);
+        Assert.NotNull(baseline.Data);
+        Assert.True(filtered.Success);
+        Assert.NotNull(filtered.Data);
+        Assert.Equal(NameSourceTotal, filtered.Data.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+        Assert.Equal(SerializeOutline(baseline.Data), SerializeOutline(filtered.Data));
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NameFilterNestedMember_KeepsContainingTypesAsContainers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var full = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = "HandleKey"
+        });
+
+        Assert.True(full.Success);
+        Assert.NotNull(full.Data);
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+
+        // App, ClickHandler and KeyRouter do not contain "HandleKey" and are kept only as containers;
+        // their other members (ctor, HandleClick, Route, ...) and the Renderer / Mode subtrees are dropped.
+        var flat = Flatten(result.Data.Entries);
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace", 1),
+                ("ClickHandler", "Class", 2),
+                ("KeyRouter", "Class", 3),
+                ("HandleKey", "Method", 4)
+            },
+            flat.Select(e => (e.Name, e.Kind, e.Depth)));
+
+        // Kept entries (containers included) keep their original positions and metadata.
+        var original = Flatten(full.Data.Entries);
+        Assert.All(flat, e => Assert.Contains(e, original));
+
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.Equal(result.Data.TotalCount, CountNodes(result.Data.Entries));
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NameFilterSubstring_KeepsEveryMatchAndItsContainers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = "handle"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace", 1),
+                ("ClickHandler", "Class", 2),
+                ("KeyRouter", "Class", 3),
+                ("HandleKey", "Method", 4),
+                ("ClickHandler", "Constructor", 3),
+                ("HandleClick", "Method", 3),
+                ("HandledCount", "Property", 3),
+                ("Renderer", "Class", 2),
+                ("Handles", "Constant", 3),
+                ("Mode", "Enum", 2),
+                ("Handled", "EnumMember", 3)
+            },
+            Flatten(result.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+        Assert.Equal(HandleFilteredTotal, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NameFilterMatchingContainer_DropsItsNonMatchingChildren()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = "Router"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace", 1),
+                ("ClickHandler", "Class", 2),
+                ("KeyRouter", "Class", 3)
+            },
+            Flatten(result.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+
+        var root = Assert.Single(result.Data.Entries);
+        var clickHandler = Assert.Single(root.Children!);
+        var keyRouter = Assert.Single(clickHandler.Children!);
+        Assert.Null(keyRouter.Children);
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NameFilterNoMatch_ReturnsEmptyOutline()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = "Zzz"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Entries);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("handlekey")]
+    [InlineData("HANDLEKEY")]
+    [InlineData("hAnDlEkEy")]
+    [InlineData("  HandleKey  ")]
+    public async Task GetDocumentOutline_NameFilter_IsCaseInsensitiveAndIgnoresSurroundingWhitespace(string nameFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var canonical = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = "HandleKey"
+        });
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(canonical.Success);
+        Assert.NotNull(canonical.Data);
+        Assert.Equal(4, canonical.Data.TotalCount);
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(SerializeOutline(canonical.Data), SerializeOutline(result.Data));
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NameFilterWithKindFilter_RequiresBothToMatch()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        // "handle" + Method: the constructor counts as Method; ClickHandler (Class), HandledCount (Property),
+        // Handles (Constant) and Handled (EnumMember) match the name but not the kind.
+        var methods = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = "handle",
+            KindFilter = "Method"
+        });
+
+        Assert.True(methods.Success);
+        Assert.NotNull(methods.Data);
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace", 1),
+                ("ClickHandler", "Class", 2),
+                ("KeyRouter", "Class", 3),
+                ("HandleKey", "Method", 4),
+                ("ClickHandler", "Constructor", 3),
+                ("HandleClick", "Method", 3)
+            },
+            Flatten(methods.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+        Assert.Equal(6, methods.Data.TotalCount);
+        Assert.False(methods.Data.Truncated);
+
+        // "Render" + Method keeps the Render method only; the Renderer class matches the name but not the kind.
+        var render = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = "Render",
+            KindFilter = "Method"
+        });
+
+        Assert.True(render.Success);
+        Assert.NotNull(render.Data);
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace", 1),
+                ("ClickHandler", "Class", 2),
+                ("Render", "Method", 3)
+            },
+            Flatten(render.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+        Assert.Equal(3, render.Data.TotalCount);
+
+        // A name match of the wrong kind with no matching descendant yields an empty outline.
+        var none = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = "Handles",
+            KindFilter = "Method"
+        });
+
+        Assert.True(none.Success);
+        Assert.NotNull(none.Data);
+        Assert.Empty(none.Data.Entries);
+        Assert.Equal(0, none.Data.TotalCount);
+        Assert.False(none.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NameFilterWithMaxDepth_AppliesFilterBeforeDepthCap()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        // "HandleKey" tree: App > ClickHandler > KeyRouter > HandleKey (4 nodes); depth 2 keeps App, ClickHandler.
+        // Renderer and Mode were removed by the filter, not the depth cap.
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = "HandleKey",
+            MaxDepth = 2
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(new[] { "App", "ClickHandler" }, Flatten(result.Data.Entries).Select(e => e.Name));
+        var root = Assert.Single(result.Data.Entries);
+        Assert.Null(Assert.Single(root.Children!).Children);
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NameFilterWithMaxResults_AppliesFilterBeforeNodeBudget()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = "handle",
+            MaxResults = 5
+        });
+
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        Assert.Equal(
+            new[] { "App", "ClickHandler", "KeyRouter", "HandleKey", "ClickHandler" },
+            Flatten(capped.Data.Entries).Select(e => e.Name));
+        Assert.Equal(HandleFilteredTotal, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        // maxResults at or above the filtered node count: nothing beyond the filter is dropped.
+        var notCapped = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = "handle",
+            MaxResults = HandleFilteredTotal
+        });
+
+        Assert.True(notCapped.Success);
+        Assert.NotNull(notCapped.Data);
+        Assert.Equal(HandleFilteredTotal, CountNodes(notCapped.Data.Entries));
+        Assert.Equal(HandleFilteredTotal, notCapped.Data.TotalCount);
+        Assert.False(notCapped.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_NameFilterWithMaxDepthAndMaxResults_AppliesFilterThenDepthThenBudget()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NameSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        // filter ("handle") -> depth 2 => App, ClickHandler, Renderer, Mode -> budget 3 => App, ClickHandler, Renderer.
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            NameFilter = "handle",
+            MaxDepth = 2,
+            MaxResults = 3
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(new[] { "App", "ClickHandler", "Renderer" }, Flatten(result.Data.Entries).Select(e => e.Name));
+        Assert.Equal(HandleFilteredTotal, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
     }
 
     #endregion

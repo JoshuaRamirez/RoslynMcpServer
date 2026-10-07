@@ -89,9 +89,10 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
 
         IReadOnlyList<OutlineEntry> returned = entries;
         var kindFilter = SymbolKindFilterParser.Parse(@params.KindFilter);
-        if (kindFilter.HasValue)
+        var nameFilter = string.IsNullOrWhiteSpace(@params.NameFilter) ? null : @params.NameFilter.Trim();
+        if (kindFilter.HasValue || nameFilter != null)
         {
-            returned = FilterOutlineForestByKind(entries, kindFilter.Value);
+            returned = FilterOutlineForest(entries, entry => OutlineEntryMatches(entry, kindFilter, nameFilter));
             totalCount = CountNodes(returned);
         }
 
@@ -119,19 +120,19 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
     }
 
     /// <summary>
-    /// Keeps every outline entry whose kind matches <paramref name="kind"/> plus the ancestors that
+    /// Keeps every outline entry that satisfies <paramref name="matches"/> plus the ancestors that
     /// contain a match (kept as containers so the tree shape and line numbers are unchanged).
     /// Subtrees with no matching entry are dropped; a kept entry left with no kept children is
     /// returned with <c>Children = null</c>, matching how leaf entries serialize today.
     /// </summary>
-    private static IReadOnlyList<OutlineEntry> FilterOutlineForestByKind(
+    private static IReadOnlyList<OutlineEntry> FilterOutlineForest(
         IReadOnlyList<OutlineEntry> entries,
-        Contracts.Enums.SymbolKind kind)
+        Func<OutlineEntry, bool> matches)
     {
         var filtered = new List<OutlineEntry>();
         foreach (var entry in entries)
         {
-            var kept = FilterOutlineEntryByKind(entry, kind);
+            var kept = FilterOutlineEntry(entry, matches);
             if (kept != null)
                 filtered.Add(kept);
         }
@@ -139,17 +140,17 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
         return filtered;
     }
 
-    private static OutlineEntry? FilterOutlineEntryByKind(OutlineEntry entry, Contracts.Enums.SymbolKind kind)
+    private static OutlineEntry? FilterOutlineEntry(OutlineEntry entry, Func<OutlineEntry, bool> matches)
     {
         IReadOnlyList<OutlineEntry>? children = null;
         if (entry.Children is { Count: > 0 })
         {
-            var keptChildren = FilterOutlineForestByKind(entry.Children, kind);
+            var keptChildren = FilterOutlineForest(entry.Children, matches);
             if (keptChildren.Count > 0)
                 children = keptChildren;
         }
 
-        if (children == null && !OutlineKindMatches(entry.Kind, kind))
+        if (children == null && !matches(entry))
             return null;
 
         return new OutlineEntry
@@ -162,6 +163,19 @@ public sealed class GetDocumentOutlineOperation : QueryOperationBase<GetDocument
             ReturnType = entry.ReturnType,
             Children = children
         };
+    }
+
+    /// <summary>
+    /// Whether an outline entry satisfies every active filter: its kind matches <paramref name="kind"/>
+    /// (when set) and its name contains <paramref name="nameFilter"/> as an ordinal, case-insensitive
+    /// substring (when set).
+    /// </summary>
+    private static bool OutlineEntryMatches(OutlineEntry entry, Contracts.Enums.SymbolKind? kind, string? nameFilter)
+    {
+        if (kind.HasValue && !OutlineKindMatches(entry.Kind, kind.Value))
+            return false;
+
+        return nameFilter == null || entry.Name.Contains(nameFilter, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
