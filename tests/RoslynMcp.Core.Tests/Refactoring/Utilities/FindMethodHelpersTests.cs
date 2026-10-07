@@ -238,6 +238,52 @@ public class FindMethodHelpersTests
     }
 
     [Fact]
+    public void CollectMethods_AllFilesWalkShapes_ReturnsEveryMethodDeclarationInSpanStartOrder()
+    {
+        // Shapes the inline_method and make_static / make_non_static allFiles
+        // walks see: nested-type methods, expression bodies, both parts of a
+        // partial method, and interface methods. Local functions,
+        // constructors, and operators are not MethodDeclarationSyntax.
+        const string source = """
+            partial class Outer
+            {
+                public Outer() { }
+                public int Twice(int x) => x * 2;
+                partial void OnChanged();
+                partial void OnChanged() { }
+                public static Outer operator +(Outer a, Outer b) => a;
+                public void Run()
+                {
+                    int Local() => 1;
+                    Local();
+                }
+
+                class Inner
+                {
+                    void Deep() { }
+                }
+            }
+
+            interface IShape
+            {
+                double Area();
+            }
+            """;
+        var root = CSharpSyntaxTree.ParseText(source).GetRoot();
+
+        var methods = FindMethodHelpers.CollectMethods(root);
+
+        Assert.Equal(
+            ["Twice", "OnChanged", "OnChanged", "Run", "Deep", "Area"],
+            methods.Select(m => m.Identifier.Text).ToList());
+        Assert.Equal(
+            methods.Select(m => m.SpanStart).OrderBy(start => start),
+            methods.Select(m => m.SpanStart));
+        Assert.Null(methods[1].Body);
+        Assert.NotNull(methods[2].Body);
+    }
+
+    [Fact]
     public void OrderMethods_EqualSpanStart_OrdersByLength()
     {
         // Independently parsed members share SpanStart 0, so ThenBy Length decides.

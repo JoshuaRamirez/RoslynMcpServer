@@ -11,7 +11,8 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// and convert_to_async. Includes nullable <see cref="FindMethod"/> /
 /// <see cref="FindMethodPreferFirst"/> / <see cref="StartLine"/>,
 /// the throwing <see cref="FindMethodDeclaration"/> gate, and allFiles
-/// <see cref="CollectMethods"/>.
+/// <see cref="CollectMethods"/> (also used by inline_method and
+/// make_static / make_non_static allFiles walks).
 /// </summary>
 internal static class FindMethodHelpers
 {
@@ -210,7 +211,11 @@ internal static class FindMethodHelpers
     /// <paramref name="root"/> in deterministic <c>SpanStart</c> then
     /// <c>Span.Length</c> order. Same collect logic as the prior private
     /// copies on AddParameter / RemoveParameter / ReorderParameters /
-    /// ChangeSignature / ChangeReturnType allFiles walks.
+    /// ChangeSignature / ChangeReturnType allFiles walks, and as the prior
+    /// <c>InlineMethodOperation.CollectMethodDeclarations</c> /
+    /// <c>StaticMethodHelpers.CollectOrdinaryMethods</c> copies used by the
+    /// inline_method and make_static / make_non_static allFiles walks.
+    /// Unfiltered: callers apply their own eligibility checks.
     /// </summary>
     internal static IReadOnlyList<MethodDeclarationSyntax> CollectMethods(SyntaxNode root) =>
         OrderMethods(root.DescendantNodes().OfType<MethodDeclarationSyntax>());

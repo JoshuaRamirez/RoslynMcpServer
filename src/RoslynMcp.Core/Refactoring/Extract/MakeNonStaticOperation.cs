@@ -193,7 +193,7 @@ public sealed class MakeNonStaticOperation : RefactoringOperationBase<MakeNonSta
             if (root == null || semanticModel == null)
                 continue;
 
-            foreach (var methodDecl in StaticMethodHelpers.CollectOrdinaryMethods(root))
+            foreach (var methodDecl in FindMethodHelpers.CollectMethods(root))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
