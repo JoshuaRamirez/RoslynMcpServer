@@ -13,18 +13,6 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 internal static class StaticMethodHelpers
 {
     /// <summary>
-    /// Ordinary method declarations in <paramref name="root"/> ordered by
-    /// SpanStart then Span.Length. Same body as the prior
-    /// <c>CollectOrdinaryMethods</c> copies.
-    /// </summary>
-    internal static IReadOnlyList<MethodDeclarationSyntax> CollectOrdinaryMethods(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .OrderBy(method => method.SpanStart)
-            .ThenBy(method => method.Span.Length)
-            .ToList();
-
-    /// <summary>
     /// Finds the <see cref="SimpleNameSyntax"/> covering
     /// <paramref name="span"/> (node itself or nearest ancestor/self whose
     /// span contains / is contained by the span). Same body as the prior

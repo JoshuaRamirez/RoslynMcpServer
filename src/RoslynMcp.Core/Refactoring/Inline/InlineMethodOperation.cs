@@ -242,7 +242,7 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
                     break;
 
                 Solution? updated = null;
-                foreach (var methodSyntax in CollectMethodDeclarations(root))
+                foreach (var methodSyntax in FindMethodHelpers.CollectMethods(root))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -379,18 +379,6 @@ public sealed class InlineMethodOperation : RefactoringOperationBase<InlineMetho
         inlinedCount == 1
             ? "Inline method"
             : $"Inline {inlinedCount} methods";
-
-    /// <summary>
-    /// Collects every <see cref="MethodDeclarationSyntax"/> in
-    /// <paramref name="root"/>. Deterministic <c>SpanStart</c> then
-    /// span-length order.
-    /// </summary>
-    internal static IReadOnlyList<MethodDeclarationSyntax> CollectMethodDeclarations(SyntaxNode root) =>
-        root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .OrderBy(method => method.SpanStart)
-            .ThenBy(method => method.Span.Length)
-            .ToList();
 
     private async Task<Solution?> TryInlineOneAsync(
         Document document,
