@@ -5,6 +5,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Query.Base;
+using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Workspace;
@@ -12,7 +13,9 @@ using RoslynMcp.Core.Workspace;
 namespace RoslynMcp.Core.Query;
 
 /// <summary>
-/// Gets the type hierarchy (base types, derived types, interfaces) for a type symbol.
+/// Gets the type hierarchy (base types, derived types, interfaces) for a type symbol. Derived types
+/// are searched across the solution (or reported only within one project when
+/// <see cref="GetTypeHierarchyParams.ProjectPath"/> is set).
 /// </summary>
 public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierarchyParams, GetTypeHierarchyResult>
 {
@@ -62,6 +65,8 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
             if (!File.Exists(@params.DerivedFile))
                 throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.DerivedFile}");
         }
+
+        ProjectPathFilter.Validate(@params.ProjectPath);
     }
 
     /// <inheritdoc />
@@ -70,6 +75,17 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
         GetTypeHierarchyParams @params,
         CancellationToken cancellationToken)
     {
+        // Optional projectPath scope (same validation / matching as get_diagnostics, search_symbols,
+        // find_references, find_callers and find_implementations): resolved up front so a project that
+        // is not in the workspace fails with SourceNotInWorkspace instead of an empty result. Every
+        // target-framework variant of a multi-targeted project shares that path, so all of their
+        // ProjectIds are in scope.
+        var projectScope = string.IsNullOrWhiteSpace(@params.ProjectPath)
+            ? null
+            : ProjectPathFilter.SelectProjects(Context.Solution, @params.ProjectPath)
+                .Select(project => project.Id)
+                .ToHashSet();
+
         var resolved = await SymbolResolver.ResolveSymbolAsync(
             @params.SourceFile, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
 
@@ -133,19 +149,31 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
                 return string.Equals(locationKey, derivedFileKey, StringComparison.OrdinalIgnoreCase);
             }
 
+            bool IsInScopedProject(Location location)
+            {
+                var documentId = Context.Solution.GetDocumentId(location.SourceTree);
+                return documentId != null && projectScope!.Contains(documentId.ProjectId);
+            }
+
+            var filtered = derivedFileKey != null || projectScope != null;
+
             foreach (var d in derived)
             {
-                if (derivedFileKey == null)
+                if (!filtered)
                 {
                     derivedTypes.Add(CreateEntry(d));
                     continue;
                 }
 
-                // Filter runs before maxResults so TotalCount / Truncated reflect the filtered
-                // set. A derived type declared across several files (partial type) matches when
-                // any of its in-source locations is in derivedFile, and is reported at that
+                // Optional derivedFile / projectPath filters run before maxResults so TotalCount /
+                // Truncated reflect the filtered set. A derived type declared across several files
+                // (partial type) matches when any of its in-source locations satisfies both filters
+                // (in derivedFile and in a document of the scoped project), and is reported at that
                 // location. BaseTypes and Interfaces are never filtered.
-                var location = d.Locations.FirstOrDefault(l => l.IsInSource && IsInDerivedFile(l));
+                var location = d.Locations.FirstOrDefault(l =>
+                    l.IsInSource &&
+                    (derivedFileKey == null || IsInDerivedFile(l)) &&
+                    (projectScope == null || IsInScopedProject(l)));
                 if (location == null) continue;
 
                 derivedTypes.Add(CreateEntry(d, location));
