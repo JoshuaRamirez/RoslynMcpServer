@@ -437,6 +437,53 @@ public class ArgsToJsonConverterTests
         Assert.Null(p.NameFilter);
     }
 
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    [InlineData("123")]
+    [InlineData("-1")]
+    public void GetDocumentOutline_TypeAware_BooleanOrNumericLookingNameFilter_StaysString(string value)
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Foo.cs",
+            ["name-filter"] = value,
+            ["max-depth"] = "2",
+            ["max-results"] = "10"
+        };
+        var json = ArgsToJsonConverter.Convert(dict, typeof(GetDocumentOutlineParams));
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal(JsonValueKind.String, doc.RootElement.GetProperty("nameFilter").ValueKind);
+        Assert.Equal(value, doc.RootElement.GetProperty("nameFilter").GetString());
+
+        // Non-string parameters keep numeric inference.
+        Assert.Equal(JsonValueKind.Number, doc.RootElement.GetProperty("maxDepth").ValueKind);
+
+        var p = JsonSerializer.Deserialize<GetDocumentOutlineParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal(value, p.NameFilter);
+        Assert.Equal(2, p.MaxDepth);
+        Assert.Equal(10, p.MaxResults);
+    }
+
+    [Fact]
+    public void SearchSymbols_TypeAware_NumericQuery_StaysStringAndBooleanOptionStaysBoolean()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["query"] = "123",
+            ["case-sensitive"] = "true"
+        };
+        var json = ArgsToJsonConverter.Convert(dict, typeof(SearchSymbolsParams));
+
+        var p = JsonSerializer.Deserialize<SearchSymbolsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("123", p.Query);
+        Assert.True(p.CaseSensitive);
+    }
+
     [Fact]
     public void StringListOption_CommaSeparated_SerializedAsJsonArray()
     {

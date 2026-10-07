@@ -32,7 +32,9 @@ public static class ArgsToJsonConverter
     /// string collection (<c>IReadOnlyList&lt;string&gt;</c>, <c>List&lt;string&gt;</c>, <c>string[]</c>, …),
     /// the value is emitted as a JSON array of strings. A value that is a JSON array literal
     /// (e.g. <c>["CS1591","CS8019"]</c>) is used as-is; otherwise it is split on commas and each
-    /// entry trimmed (e.g. <c>CS1591, CS8019</c>). A blank value becomes an empty array.
+    /// entry trimmed (e.g. <c>CS1591, CS8019</c>). A blank value becomes an empty array. When the matching
+    /// property is a <see cref="string"/>, the value is always emitted as a JSON string (no boolean or
+    /// numeric inference), so values such as <c>true</c> or <c>123</c> still bind to string parameters.
     /// </remarks>
     public static string Convert(Dictionary<string, string> options, Type? paramsType)
     {
@@ -48,6 +50,12 @@ public static class ArgsToJsonConverter
             if (paramsType is not null && IsStringListProperty(paramsType, camelKey))
             {
                 WriteStringArray(writer, camelKey, value);
+            }
+            else if (paramsType is not null && IsStringProperty(paramsType, camelKey))
+            {
+                // A string-typed parameter keeps its raw value, so e.g. --name-filter 123 or
+                // --query true is not inferred as a JSON number/boolean that cannot bind to string.
+                writer.WriteString(camelKey, value);
             }
             else if (bool.TryParse(value, out var boolVal))
             {
@@ -69,11 +77,17 @@ public static class ArgsToJsonConverter
         return System.Text.Encoding.UTF8.GetString(stream.ToArray());
     }
 
-    private static bool IsStringListProperty(Type paramsType, string camelKey)
-    {
-        var prop = paramsType.GetProperty(
+    private static bool IsStringProperty(Type paramsType, string camelKey) =>
+        FindProperty(paramsType, camelKey)?.PropertyType == typeof(string);
+
+    private static PropertyInfo? FindProperty(Type paramsType, string camelKey) =>
+        paramsType.GetProperty(
             camelKey,
             BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+
+    private static bool IsStringListProperty(Type paramsType, string camelKey)
+    {
+        var prop = FindProperty(paramsType, camelKey);
         if (prop is null)
             return false;
 
