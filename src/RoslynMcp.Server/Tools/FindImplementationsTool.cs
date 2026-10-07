@@ -32,7 +32,7 @@ public sealed class FindImplementationsTool : IToolHandler
     public string Name => "find_implementations";
 
     /// <inheritdoc />
-    public string Description => "Find all implementations of a C# interface, abstract class, or virtual/abstract member across the solution. sourceFile locates the target symbol; optional implementationFile restricts reported implementations to those declared in that file (applied before maxResults, so totalCount/truncated reflect the filtered set).";
+    public string Description => "Find all implementations of a C# interface, abstract class, or virtual/abstract member across the solution. sourceFile locates the target symbol; optional implementationFile restricts reported implementations to those declared in that file (applied before maxResults, so totalCount/truncated reflect the filtered set). Optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported implementations to those declared in documents of that project, applied before maxResults.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -78,6 +78,11 @@ public sealed class FindImplementationsTool : IToolHandler
             {
                 type = "string",
                 description = "Absolute path to a .cs file to restrict reported implementations to those declared in that file (optional; omit for the whole solution)"
+            },
+            projectPath = new
+            {
+                type = "string",
+                description = "Absolute path to a .csproj in the loaded solution to restrict reported implementations to those declared in a document of that project (optional; omit for the whole solution). Every target framework of a multi-targeted project is included; combined with implementationFile and applied before maxResults so totalCount/truncated reflect the project-scoped set; sourceFile may be in another project; a relative or non-.csproj path is rejected and a path matching no project in the workspace returns a source-not-in-workspace error"
             }
         },
         additionalProperties = false
@@ -105,7 +110,8 @@ public sealed class FindImplementationsTool : IToolHandler
                 Line = args.Line,
                 Column = args.Column,
                 MaxResults = args.MaxResults,
-                ImplementationFile = args.ImplementationFile
+                ImplementationFile = args.ImplementationFile,
+                ProjectPath = args.ProjectPath
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -138,5 +144,6 @@ public sealed class FindImplementationsTool : IToolHandler
         public int? Column { get; init; }
         public int? MaxResults { get; init; }
         public string? ImplementationFile { get; init; }
+        public string? ProjectPath { get; init; }
     }
 }

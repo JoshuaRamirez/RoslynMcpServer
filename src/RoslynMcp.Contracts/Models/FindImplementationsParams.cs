@@ -38,4 +38,18 @@ public sealed class FindImplementationsParams
     /// <see cref="SourceFile"/>, which locates the target symbol.
     /// </summary>
     public string? ImplementationFile { get; init; }
+
+    /// <summary>
+    /// Optional absolute path to a <c>.csproj</c> in the loaded workspace to restrict reported
+    /// implementations to. When set, only implementations with an in-source location whose document
+    /// belongs to a project whose file path equals it are returned, reported at that location (every
+    /// target-framework variant of a multi-targeted project shares that path, so all are included);
+    /// same validation and matching as <c>get_diagnostics</c> / <c>search_symbols</c> /
+    /// <c>find_references</c> / <c>find_callers</c> <c>projectPath</c>, and combined with
+    /// <see cref="ImplementationFile"/>. Applied before <see cref="MaxResults"/>, so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the project-scoped set. When omitted or blank,
+    /// implementations across the whole solution are returned. <see cref="SourceFile"/> still
+    /// locates the target symbol and may be in another project.
+    /// </summary>
+    public string? ProjectPath { get; init; }
 }
