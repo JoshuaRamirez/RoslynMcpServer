@@ -3,6 +3,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Query.Base;
+using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
@@ -13,6 +14,8 @@ namespace RoslynMcp.Core.Query;
 /// <summary>
 /// Navigates to a symbol's definition. Resolves a symbol at a given position or by name,
 /// then returns its definition location(s). Handles partial classes with multiple locations.
+/// Definitions can be restricted to one file (<see cref="GoToDefinitionParams.DefinitionFile"/>)
+/// and/or one project (<see cref="GoToDefinitionParams.ProjectPath"/>).
 /// </summary>
 public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionParams, GoToDefinitionResult>
 {
@@ -55,6 +58,8 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
             if (!File.Exists(@params.DefinitionFile))
                 throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.DefinitionFile}");
         }
+
+        ProjectPathFilter.Validate(@params.ProjectPath);
     }
 
     /// <inheritdoc />
@@ -63,6 +68,18 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
         GoToDefinitionParams @params,
         CancellationToken cancellationToken)
     {
+        // Optional projectPath scope (same validation / matching as get_diagnostics, search_symbols,
+        // find_references, find_callers, find_implementations and get_type_hierarchy): resolved up
+        // front so a project that is not in the workspace fails with SourceNotInWorkspace instead of
+        // an empty result. Every target-framework variant of a multi-targeted project shares that
+        // path, so all of their ProjectIds are in scope.
+        var scopedProjects = string.IsNullOrWhiteSpace(@params.ProjectPath)
+            ? null
+            : ProjectPathFilter.SelectProjects(Context.Solution, @params.ProjectPath);
+        var projectScope = scopedProjects?
+            .Select(project => project.Id)
+            .ToHashSet();
+
         var resolved = await SymbolResolver.ResolveSymbolAsync(
             @params.SourceFile, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
 
@@ -88,7 +105,9 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
         // With a filter, the candidate set also covers the other half of a partial method /
         // property / event: Roslyn models the defining declaration and the implementation as
         // distinct linked symbols, so symbol.Locations alone never reaches the other part's
-        // file. Without a filter the reported set is unchanged.
+        // file. Without a definitionFile filter the reported set is unchanged (projectPath alone
+        // does not widen it: every part of a partial member lives in the same project, so the
+        // resolved half's own locations are scoped as-is).
         var candidateLocations = definitionFileKey == null
             ? symbol.Locations.Where(l => l.IsInSource)
             : GetLocationsIncludingPartialParts(symbol);
@@ -97,7 +116,12 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
         {
             var lineSpan = location.GetLineSpan();
 
-            // Filter runs before maxResults so TotalCount / Truncated reflect the filtered set.
+            // Filters run before maxResults so TotalCount / Truncated reflect the filtered set.
+            // A location must satisfy both definitionFile and projectPath when both are set.
+            if (projectScope != null &&
+                !await IsInScopedProjectAsync(location, projectScope, scopedProjects!, cancellationToken))
+                continue;
+
             if (definitionFileKey != null)
             {
                 var locationPath = lineSpan.Path;
@@ -126,10 +150,11 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
             });
         }
 
-        if (definitions.Count == 0 && definitionFileKey == null)
+        if (definitions.Count == 0 && definitionFileKey == null && projectScope == null)
         {
             // Symbol exists but is from metadata (external assembly). Metadata definitions have
-            // no file, so they are excluded when definitionFile is set.
+            // no file and no project document, so they are excluded when definitionFile or
+            // projectPath is set.
             definitions.Add(new DefinitionLocation
             {
                 File = "(metadata)",
@@ -156,6 +181,42 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
             Truncated = totalCount > returnedDefinitions.Count
         };
         return QueryResult<GoToDefinitionResult>.Succeeded(operationId, result);
+    }
+
+    /// <summary>
+    /// True when <paramref name="location"/>'s syntax tree belongs to a project in
+    /// <paramref name="projectScope"/>: either a regular document of that project, or a
+    /// source-generated tree in that project's compilation (generator output such as a
+    /// <c>[GeneratedRegex]</c> partial part is not a regular document, so
+    /// <see cref="Solution.GetDocumentId(SyntaxTree)"/> does not map it). False for locations
+    /// without a syntax tree.
+    /// </summary>
+    private async Task<bool> IsInScopedProjectAsync(
+        Location location,
+        IReadOnlySet<ProjectId> projectScope,
+        IReadOnlyList<Project> scopedProjects,
+        CancellationToken cancellationToken)
+    {
+        var tree = location.SourceTree;
+        if (tree == null)
+            return false;
+
+        var documentId = Context.Solution.GetDocumentId(tree);
+        if (documentId != null)
+            return projectScope.Contains(documentId.ProjectId);
+
+        // Not a regular document: accept it only when a scoped project's compilation (which
+        // includes that project's generator output) contains this exact tree, so generated parts
+        // of other projects stay excluded. Compilations are cached by the workspace, and the
+        // symbol's locations come from those same compilations.
+        foreach (var project in scopedProjects)
+        {
+            var compilation = await project.GetCompilationAsync(cancellationToken);
+            if (compilation != null && compilation.ContainsSyntaxTree(tree))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
