@@ -11,7 +11,10 @@ namespace RoslynMcp.Core.Tests.Query;
 /// Operation-level tests for <see cref="GetTypeHierarchyOperation"/> optional <c>maxResults</c>
 /// (peer of <see cref="FindImplementationsOperation"/> / <see cref="GetDiagnosticsOperation"/>)
 /// and optional <c>derivedFile</c> (restricts reported DerivedTypes to one file; peer of
-/// <c>find_implementations</c> <c>implementationFile</c> / <c>find_references</c> <c>referenceFile</c>).
+/// <c>find_implementations</c> <c>implementationFile</c> / <c>find_references</c> <c>referenceFile</c>),
+/// and optional <c>projectPath</c> (restricts reported DerivedTypes to one project; peer of
+/// <c>get_diagnostics</c> / <c>search_symbols</c> / <c>find_references</c> / <c>find_callers</c> /
+/// <c>find_implementations</c> <c>projectPath</c>).
 /// </summary>
 public class GetTypeHierarchyOperationTests
 {
@@ -515,6 +518,440 @@ public class GetTypeHierarchyOperationTests
 
     #endregion
 
+    #region projectPath
+
+    // Two-project scenario: Lib/Shape.cs declares Shape (line 1, column 14) with base type Root and
+    // interface IMarker; Lib/LibDerived.cs derives L1 (line 1) and Mid (line 2) from it. App (which
+    // references Lib) derives P1 (line 1) and P2 (line 2) in AppA.cs, and P3 from Lib's Mid in AppB.cs
+    // (line 1; transitive). Solution-wide: 5 derived types.
+    private const string LibShapeSource = """
+        public class Shape : Root, IMarker { }
+        public class Root { }
+        public interface IMarker { }
+        """;
+
+    private const string LibDerivedSource = """
+        public class L1 : Shape { }
+        public class Mid : Shape { }
+        """;
+
+    private const string AppASource = """
+        public class P1 : Shape { }
+        public class P2 : Shape { }
+        """;
+
+    private const string AppBSource = """
+        public class P3 : Mid { }
+        """;
+
+    [Fact]
+    public void ProjectPath_DefaultsToNull()
+    {
+        var @params = new GetTypeHierarchyParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.ProjectPath);
+    }
+
+    [SkippableFact]
+    public async Task Validate_ProjectPathRelative_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MultiFileSources);
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() => operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.PathOf("Shape.cs"),
+            SymbolName = "Shape",
+            ProjectPath = Path.Combine("Lib", "Lib.csproj")
+        }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+        Assert.Equal("projectPath must be an absolute path.", ex.Message);
+    }
+
+    [SkippableTheory]
+    [InlineData("C:Lib.csproj")]
+    [InlineData("\\Lib\\Lib.csproj")]
+    public async Task Validate_ProjectPathDriveOrRootRelative_ThrowsInvalidSourcePath(string projectPath)
+    {
+        // Windows drive-relative / root-relative forms pass Path.IsPathRooted but are not fully
+        // qualified; on non-Windows they are plain relative paths. Both must be InvalidSourcePath.
+        await using var workspace = await TempWorkspace.CreateAsync(MultiFileSources);
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() => operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.PathOf("Shape.cs"),
+            SymbolName = "Shape",
+            ProjectPath = projectPath
+        }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+        Assert.Equal("projectPath must be an absolute path.", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task Validate_ProjectPathNotCsproj_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MultiFileSources);
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() => operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.PathOf("Shape.cs"),
+            SymbolName = "Shape",
+            ProjectPath = workspace.PathOf("Shape.cs")
+        }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+        Assert.Equal("projectPath must be a .csproj file.", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ProjectPathNotInWorkspace_ThrowsSourceNotInWorkspace()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+        var missing = Path.Combine(workspace.DirectoryPath, "Other", "Other.csproj");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() => operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = missing
+        }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        Assert.Equal($"Project not found in workspace: {missing}", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ProjectPathNotInWorkspace_ThrowsEvenForAncestorsOnly()
+    {
+        // The scope is resolved up front, so an unknown project is reported even when the
+        // Descendants search (the only part projectPath filters) is not requested.
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+        var missing = Path.Combine(workspace.DirectoryPath, "Other", "Other.csproj");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() => operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            Direction = "Ancestors",
+            ProjectPath = missing
+        }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ProjectPathOmittedOrBlank_ReturnsEveryProject()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape"
+        });
+        var blank = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = "  "
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(blank.Success);
+        Assert.Equal(new[] { "L1", "Mid", "P1", "P2", "P3" }, SortedNames(omitted.Data!.DerivedTypes));
+        Assert.Equal(5, omitted.Data.TotalCount);
+        Assert.False(omitted.Data.Truncated);
+        Assert.Equal(SortedSites(omitted.Data.DerivedTypes), SortedSites(blank.Data!.DerivedTypes));
+        Assert.Equal(omitted.Data.TotalCount, blank.Data.TotalCount);
+        Assert.False(blank.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ProjectPath_RestrictsToThatProject()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // sourceFile (Lib) still locates the type; projectPath (App) only scopes reported DerivedTypes.
+        // P3 derives from Lib's Mid, so it is kept even though the intermediate type is in Lib.
+        var app = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            ProjectPath = workspace.AppProjectPath
+        });
+
+        Assert.True(app.Success);
+        Assert.Equal("Shape", app.Data!.TypeName);
+        Assert.Equal(new[] { "P1", "P2", "P3" }, SortedNames(app.Data.DerivedTypes));
+        Assert.Equal(3, app.Data.TotalCount);
+        Assert.False(app.Data.Truncated);
+        Assert.All(app.Data.DerivedTypes, d => Assert.True(
+            SamePath(d.File, workspace.AppAPath) || SamePath(d.File, workspace.AppBPath)));
+
+        var lib = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            ProjectPath = workspace.LibProjectPath
+        });
+
+        Assert.True(lib.Success);
+        Assert.Equal(new[] { "L1", "Mid" }, SortedNames(lib.Data!.DerivedTypes));
+        Assert.All(lib.Data.DerivedTypes, d => Assert.True(SamePath(d.File, workspace.LibDerivedPath)));
+        Assert.Equal(new int?[] { 1, 2 }, lib.Data.DerivedTypes.Select(d => d.Line).OrderBy(l => l));
+        Assert.Equal(2, lib.Data.TotalCount);
+        Assert.False(lib.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ProjectPath_LineColumnResolution_RestrictsToThatProject()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            Line = 1,
+            Column = 14,
+            Direction = "Descendants",
+            ProjectPath = workspace.LibProjectPath
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal("Shape", result.Data!.TypeName);
+        Assert.Equal(new[] { "L1", "Mid" }, SortedNames(result.Data.DerivedTypes));
+        Assert.Equal(2, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ProjectPath_DoesNotFilterBaseTypesOrInterfaces()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // Root and IMarker live in Lib; scoping DerivedTypes to App must not drop them.
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            Direction = "Both",
+            ProjectPath = workspace.AppProjectPath
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "P1", "P2", "P3" }, SortedNames(result.Data!.DerivedTypes));
+        Assert.Equal("Root", Assert.Single(result.Data.BaseTypes).TypeName);
+        Assert.Equal("IMarker", Assert.Single(result.Data.Interfaces).TypeName);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ProjectPathWithDerivedFile_AndsTheScopes()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var sameProject = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.AppProjectPath,
+            DerivedFile = workspace.AppAPath
+        });
+
+        Assert.True(sameProject.Success);
+        Assert.Equal(new[] { "P1", "P2" }, SortedNames(sameProject.Data!.DerivedTypes));
+        Assert.All(sameProject.Data.DerivedTypes, d => Assert.True(SamePath(d.File, workspace.AppAPath)));
+        Assert.Equal(2, sameProject.Data.TotalCount);
+        Assert.False(sameProject.Data.Truncated);
+
+        var otherProject = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.AppProjectPath,
+            DerivedFile = workspace.LibDerivedPath
+        });
+
+        Assert.True(otherProject.Success);
+        Assert.Empty(otherProject.Data!.DerivedTypes);
+        Assert.Equal(0, otherProject.Data.TotalCount);
+        Assert.False(otherProject.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ProjectPathWithMaxResults_CapsProjectScopedSet()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.AppProjectPath,
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(2, capped.Data!.DerivedTypes.Count);
+        Assert.All(capped.Data.DerivedTypes, d => Assert.StartsWith("P", d.TypeName, StringComparison.Ordinal));
+        // TotalCount reflects the project-scoped set (3 in App), not the solution-wide 5.
+        Assert.Equal(3, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        var exact = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.AppProjectPath,
+            MaxResults = 3
+        });
+
+        Assert.True(exact.Success);
+        Assert.Equal(3, exact.Data!.DerivedTypes.Count);
+        Assert.Equal(3, exact.Data.TotalCount);
+        Assert.False(exact.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ProjectPathWithDerivedFileAndMaxResults_CapsCombinedSet()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.AppProjectPath,
+            DerivedFile = workspace.AppAPath,
+            MaxResults = 1
+        });
+
+        Assert.True(result.Success);
+        var only = Assert.Single(result.Data!.DerivedTypes);
+        Assert.True(SamePath(only.File, workspace.AppAPath));
+        Assert.Equal(2, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ProjectPathDifferentCasing_MatchesOnlyOnCaseInsensitiveVolume()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+        var wrongCased = Path.Combine(Path.GetDirectoryName(workspace.AppProjectPath)!, "APP.CSPROJ");
+        var caseInsensitiveVolume = File.Exists(wrongCased);
+
+        var @params = new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = wrongCased
+        };
+
+        if (caseInsensitiveVolume)
+        {
+            // Windows / default macOS: the wrong-cased alias is the same physical project.
+            var result = await operation.ExecuteAsync(@params);
+            Assert.True(result.Success);
+            Assert.Equal(new[] { "P1", "P2", "P3" }, SortedNames(result.Data!.DerivedTypes));
+            Assert.Equal(3, result.Data.TotalCount);
+        }
+        else
+        {
+            // Case-sensitive volume (Linux): APP.CSPROJ is a different, nonexistent project.
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() => operation.ExecuteAsync(@params));
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ProjectPathLinkedFile_ReportsThatProjectsDeclaration()
+    {
+        // Linked.cs is compiled into both Lib and App (internal, so the two copies do not clash), so
+        // each project has its own Shared derived type; projectPath reports the copy declared in that
+        // project's document.
+        await using var workspace = await TwoProjectWorkspace.CreateAsync(linkedSource: """
+            internal class Shared : Shape { }
+            """);
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var app = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.AppProjectPath
+        });
+
+        Assert.True(app.Success);
+        Assert.Equal(new[] { "P1", "P2", "P3", "Shared" }, SortedNames(app.Data!.DerivedTypes));
+        Assert.Equal(4, app.Data.TotalCount);
+        Assert.True(SamePath(Assert.Single(app.Data.DerivedTypes, d => d.TypeName == "Shared").File, workspace.LinkedPath!));
+
+        var lib = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.LibProjectPath
+        });
+
+        Assert.True(lib.Success);
+        Assert.Equal(new[] { "L1", "Mid", "Shared" }, SortedNames(lib.Data!.DerivedTypes));
+        Assert.Equal(3, lib.Data.TotalCount);
+        Assert.True(SamePath(Assert.Single(lib.Data.DerivedTypes, d => d.TypeName == "Shared").File, workspace.LinkedPath!));
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_ProjectPathSingleProject_MatchesOmitted()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(MultiFileSources);
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.PathOf("Shape.cs"),
+            SymbolName = "Shape"
+        });
+        var scoped = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.PathOf("Shape.cs"),
+            SymbolName = "Shape",
+            ProjectPath = workspace.ProjectPath
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(scoped.Success);
+        Assert.Equal(4, scoped.Data!.TotalCount);
+        Assert.Equal(omitted.Data!.TotalCount, scoped.Data.TotalCount);
+        Assert.Equal(SortedSites(omitted.Data.DerivedTypes), SortedSites(scoped.Data.DerivedTypes));
+    }
+
+    #endregion
+
+    private static List<string> SortedNames(IEnumerable<TypeHierarchyEntry> entries) =>
+        entries.Select(e => e.TypeName).OrderBy(n => n, StringComparer.Ordinal).ToList();
+
+    // Roslyn does not guarantee derived-type order across runs, so compare sites as sorted sets.
+    private static List<(string? File, int? Line, string Name)> SortedSites(IEnumerable<TypeHierarchyEntry> entries) =>
+        entries
+            .Select(e => (e.File, e.Line, e.TypeName))
+            .OrderBy(e => e.File, StringComparer.Ordinal)
+            .ThenBy(e => e.Line)
+            .ThenBy(e => e.TypeName, StringComparer.Ordinal)
+            .ToList();
+
     private static bool SamePath(string? a, string b) =>
         a != null && string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
 
@@ -525,6 +962,8 @@ public class GetTypeHierarchyOperationTests
         public required WorkspaceContext Context { get; init; }
 
         public string PathOf(string fileName) => Path.Combine(DirectoryPath, fileName);
+
+        public string ProjectPath => Path.Combine(DirectoryPath, "TestApp.csproj");
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Foo.cs") =>
             CreateAsync(new Dictionary<string, string> { [fileName] = source }, fileName);
@@ -567,6 +1006,155 @@ public class GetTypeHierarchyOperationTests
                 {
                     DirectoryPath = directory,
                     SourcePath = Path.Combine(directory, primaryFile ?? files.Keys.First()),
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            Context.Dispose();
+            await Task.Run(() =>
+            {
+                try
+                {
+                    Directory.Delete(DirectoryPath, recursive: true);
+                }
+                catch
+                {
+                    // ignore locked temp files
+                }
+            });
+        }
+    }
+
+    private sealed class TwoProjectWorkspace : IAsyncDisposable
+    {
+        public required string DirectoryPath { get; init; }
+        public required string LibProjectPath { get; init; }
+        public required string AppProjectPath { get; init; }
+        public required string LibShapePath { get; init; }
+        public required string LibDerivedPath { get; init; }
+        public required string AppAPath { get; init; }
+        public required string AppBPath { get; init; }
+        public string? LinkedPath { get; init; }
+        public required WorkspaceContext Context { get; init; }
+
+        public static async Task<TwoProjectWorkspace> CreateAsync(string? linkedSource = null)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpGetTypeHierarchyXP_" + Guid.NewGuid().ToString("N"));
+            var libDir = Path.Combine(directory, "Lib");
+            var appDir = Path.Combine(directory, "App");
+            Directory.CreateDirectory(libDir);
+            Directory.CreateDirectory(appDir);
+
+            var libProject = Path.Combine(libDir, "Lib.csproj");
+            var appProject = Path.Combine(appDir, "App.csproj");
+            var libShape = Path.Combine(libDir, "Shape.cs");
+            var libDerived = Path.Combine(libDir, "LibDerived.cs");
+            var appA = Path.Combine(appDir, "AppA.cs");
+            var appB = Path.Combine(appDir, "AppB.cs");
+
+            // Optional source file outside both project directories, linked into both projects, so the
+            // same file is a document in two projects.
+            string? linkedPath = null;
+            var linkedItem = linkedSource == null
+                ? string.Empty
+                : """<ItemGroup><Compile Include="..\Linked\Linked.cs" /></ItemGroup>""";
+            if (linkedSource != null)
+            {
+                var linkedDir = Path.Combine(directory, "Linked");
+                Directory.CreateDirectory(linkedDir);
+                linkedPath = Path.Combine(linkedDir, "Linked.cs");
+                await File.WriteAllTextAsync(linkedPath, linkedSource);
+            }
+
+            await File.WriteAllTextAsync(libProject, $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  {linkedItem}
+                </Project>
+                """);
+            await File.WriteAllTextAsync(appProject, $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="..\Lib\Lib.csproj" />
+                  </ItemGroup>
+                  {linkedItem}
+                </Project>
+                """);
+            await File.WriteAllTextAsync(libShape, LibShapeSource);
+            await File.WriteAllTextAsync(libDerived, LibDerivedSource);
+            await File.WriteAllTextAsync(appA, AppASource);
+            await File.WriteAllTextAsync(appB, AppBSource);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            await File.WriteAllTextAsync(solutionPath, """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lib", "Lib\Lib.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\App.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                if (context.GetDocumentByPath(libShape) == null ||
+                    context.GetDocumentByPath(libDerived) == null ||
+                    context.GetDocumentByPath(appA) == null ||
+                    context.GetDocumentByPath(appB) == null)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException("Workspace loaded but did not include Lib/App sources.");
+                }
+
+                return new TwoProjectWorkspace
+                {
+                    DirectoryPath = directory,
+                    LibProjectPath = libProject,
+                    AppProjectPath = appProject,
+                    LibShapePath = libShape,
+                    LibDerivedPath = libDerived,
+                    AppAPath = appA,
+                    AppBPath = appB,
+                    LinkedPath = linkedPath,
                     Context = context
                 };
             }

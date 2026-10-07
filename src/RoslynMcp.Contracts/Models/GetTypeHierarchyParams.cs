@@ -45,4 +45,19 @@ public sealed class GetTypeHierarchyParams
     /// <see cref="SourceFile"/>, which locates the target type.
     /// </summary>
     public string? DerivedFile { get; init; }
+
+    /// <summary>
+    /// Optional absolute path to a <c>.csproj</c> in the loaded workspace to restrict reported
+    /// derived types to. When set, only derived types with an in-source location whose document
+    /// belongs to a project whose file path equals it are returned in <c>DerivedTypes</c>, reported
+    /// at that location (every target-framework variant of a multi-targeted project shares that path,
+    /// so all are included); same validation and matching as <c>get_diagnostics</c> /
+    /// <c>search_symbols</c> / <c>find_references</c> / <c>find_callers</c> /
+    /// <c>find_implementations</c> <c>projectPath</c>, and combined with <see cref="DerivedFile"/>.
+    /// Applied before <see cref="MaxResults"/>, so <c>TotalCount</c> / <c>Truncated</c> reflect the
+    /// project-scoped set. Does not filter BaseTypes or Interfaces. When omitted or blank, derived
+    /// types across the whole solution are returned. <see cref="SourceFile"/> still locates the
+    /// target type and may be in another project.
+    /// </summary>
+    public string? ProjectPath { get; init; }
 }
