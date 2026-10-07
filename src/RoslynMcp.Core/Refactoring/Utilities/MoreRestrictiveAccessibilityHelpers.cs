@@ -52,7 +52,8 @@ internal static class MoreRestrictiveAccessibilityHelpers
     /// <see cref="SameAssembly"/>; anything else false. Same switch as the
     /// EqualityMemberCollector / generate_constructor
     /// <c>IsAccessibleFrom</c> / <c>IsAccessorAccessibleFrom</c> /
-    /// <c>IsConstructorAccessibleFrom</c> copies.
+    /// <c>IsConstructorAccessibleFrom</c> copies and
+    /// <see cref="RoslynMcp.Core.Resolution.MemberAnalyzer.IsAccessibleFrom"/>.
     /// </summary>
     internal static bool IsAccessibilityVisibleFrom(
         Accessibility accessibility,

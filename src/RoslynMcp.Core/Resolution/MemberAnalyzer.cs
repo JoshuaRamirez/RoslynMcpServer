@@ -1,5 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using RoslynMcp.Core.Refactoring.Utilities;
 
 namespace RoslynMcp.Core.Resolution;
 
@@ -299,22 +300,13 @@ public static class MemberAnalyzer
     /// True when <paramref name="member"/> is visible for override from
     /// <paramref name="fromType"/>: public / protected / protected-internal
     /// always; internal and private-protected only in the same assembly.
-    /// Same switch as constructor / equals inherited-member collection —
-    /// not a new accessibility subsystem.
+    /// Forwards the declared accessibility to
+    /// <see cref="MoreRestrictiveAccessibilityHelpers.IsAccessibilityVisibleFrom"/>,
+    /// the same switch constructor / equals inherited-member collection uses.
     /// </summary>
     internal static bool IsAccessibleFrom(ISymbol member, INamedTypeSymbol fromType) =>
-        member.DeclaredAccessibility switch
-        {
-            Accessibility.Public => true,
-            Accessibility.Protected => true,
-            Accessibility.ProtectedOrInternal => true,
-            Accessibility.Internal => SameAssembly(member, fromType),
-            Accessibility.ProtectedAndInternal => SameAssembly(member, fromType),
-            _ => false
-        };
-
-    private static bool SameAssembly(ISymbol member, INamedTypeSymbol fromType) =>
-        SymbolEqualityComparer.Default.Equals(member.ContainingAssembly, fromType.ContainingAssembly);
+        MoreRestrictiveAccessibilityHelpers.IsAccessibilityVisibleFrom(
+            member.DeclaredAccessibility, member, fromType);
 
     private static bool CanMoveToBase(ISymbol member)
     {
