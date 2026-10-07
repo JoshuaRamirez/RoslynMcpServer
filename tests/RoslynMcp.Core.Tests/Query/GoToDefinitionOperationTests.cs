@@ -1374,6 +1374,49 @@ public class GoToDefinitionOperationTests
         Assert.Equal(Sites(omitted.Data!.Definitions), Sites(scoped.Data.Definitions));
     }
 
+    [SkippableFact]
+    public async Task GoToDefinition_ProjectPath_IncludesSourceGeneratedDefinitions()
+    {
+        // [GeneratedRegex] makes the BCL regex source generator emit a second `partial class Rx`
+        // part into a generated tree. That tree belongs to the project's compilation but is not a
+        // regular document, so projectPath must still keep it (same set as the unfiltered call).
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            using System.Text.RegularExpressions;
+            public static partial class Rx
+            {
+                [GeneratedRegex("ab+")]
+                public static partial Regex Ab();
+            }
+            """, "Rx.cs");
+        var operation = new GoToDefinitionOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GoToDefinitionParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 2,
+            Column = 29
+        });
+
+        Assert.True(omitted.Success);
+        Assert.All(omitted.Data!.Definitions, d => Assert.Equal("Rx", d.SymbolName));
+        Skip.If(
+            omitted.Data.Definitions.All(d => SamePath(d.File, workspace.SourcePath)),
+            "The regex source generator did not run in this MSBuild workspace.");
+
+        var scoped = await operation.ExecuteAsync(new GoToDefinitionParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 2,
+            Column = 29,
+            ProjectPath = workspace.ProjectPath
+        });
+
+        Assert.True(scoped.Success);
+        Assert.Equal(omitted.Data.TotalCount, scoped.Data!.TotalCount);
+        Assert.Equal(Sites(omitted.Data.Definitions), Sites(scoped.Data.Definitions));
+        Assert.Contains(scoped.Data.Definitions, d => !SamePath(d.File, workspace.SourcePath));
+    }
+
     #endregion
 
     private static List<(string File, int Line, int Column)> Sites(IEnumerable<DefinitionLocation> definitions) =>

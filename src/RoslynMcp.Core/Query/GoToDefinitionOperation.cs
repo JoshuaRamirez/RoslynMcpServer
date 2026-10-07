@@ -73,11 +73,12 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
         // front so a project that is not in the workspace fails with SourceNotInWorkspace instead of
         // an empty result. Every target-framework variant of a multi-targeted project shares that
         // path, so all of their ProjectIds are in scope.
-        var projectScope = string.IsNullOrWhiteSpace(@params.ProjectPath)
+        var scopedProjects = string.IsNullOrWhiteSpace(@params.ProjectPath)
             ? null
-            : ProjectPathFilter.SelectProjects(Context.Solution, @params.ProjectPath)
-                .Select(project => project.Id)
-                .ToHashSet();
+            : ProjectPathFilter.SelectProjects(Context.Solution, @params.ProjectPath);
+        var projectScope = scopedProjects?
+            .Select(project => project.Id)
+            .ToHashSet();
 
         var resolved = await SymbolResolver.ResolveSymbolAsync(
             @params.SourceFile, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
@@ -117,7 +118,8 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
 
             // Filters run before maxResults so TotalCount / Truncated reflect the filtered set.
             // A location must satisfy both definitionFile and projectPath when both are set.
-            if (projectScope != null && !IsInScopedProject(location, projectScope))
+            if (projectScope != null &&
+                !await IsInScopedProjectAsync(location, projectScope, scopedProjects!, cancellationToken))
                 continue;
 
             if (definitionFileKey != null)
@@ -182,16 +184,39 @@ public sealed class GoToDefinitionOperation : QueryOperationBase<GoToDefinitionP
     }
 
     /// <summary>
-    /// True when <paramref name="location"/>'s syntax tree is a document of a project in
-    /// <paramref name="projectScope"/>; false for locations without a syntax tree.
+    /// True when <paramref name="location"/>'s syntax tree belongs to a project in
+    /// <paramref name="projectScope"/>: either a regular document of that project, or a
+    /// source-generated tree in that project's compilation (generator output such as a
+    /// <c>[GeneratedRegex]</c> partial part is not a regular document, so
+    /// <see cref="Solution.GetDocumentId(SyntaxTree)"/> does not map it). False for locations
+    /// without a syntax tree.
     /// </summary>
-    private bool IsInScopedProject(Location location, IReadOnlySet<ProjectId> projectScope)
+    private async Task<bool> IsInScopedProjectAsync(
+        Location location,
+        IReadOnlySet<ProjectId> projectScope,
+        IReadOnlyList<Project> scopedProjects,
+        CancellationToken cancellationToken)
     {
-        if (location.SourceTree == null)
+        var tree = location.SourceTree;
+        if (tree == null)
             return false;
 
-        var documentId = Context.Solution.GetDocumentId(location.SourceTree);
-        return documentId != null && projectScope.Contains(documentId.ProjectId);
+        var documentId = Context.Solution.GetDocumentId(tree);
+        if (documentId != null)
+            return projectScope.Contains(documentId.ProjectId);
+
+        // Not a regular document: accept it only when a scoped project's compilation (which
+        // includes that project's generator output) contains this exact tree, so generated parts
+        // of other projects stay excluded. Compilations are cached by the workspace, and the
+        // symbol's locations come from those same compilations.
+        foreach (var project in scopedProjects)
+        {
+            var compilation = await project.GetCompilationAsync(cancellationToken);
+            if (compilation != null && compilation.ContainsSyntaxTree(tree))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
