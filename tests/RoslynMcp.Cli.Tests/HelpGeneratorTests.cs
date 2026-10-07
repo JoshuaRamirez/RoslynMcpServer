@@ -1969,6 +1969,25 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_FindImplementations_ShowsTransitive()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("find-implementations")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("transitive (optional, default true)", tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("direct implementers", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        Assert.DoesNotContain("--transitive", help[requiredIdx..optionalIdx]);
+        Assert.Contains("--transitive", help[optionalIdx..]);
+    }
+
+    [Fact]
     public void GenerateToolHelp_FindCallers_ShowsProjectPath()
     {
         var registry = ToolRegistry.BuildDefault();

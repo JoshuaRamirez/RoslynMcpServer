@@ -52,4 +52,17 @@ public sealed class FindImplementationsParams
     /// locates the target symbol and may be in another project.
     /// </summary>
     public string? ProjectPath { get; init; }
+
+    /// <summary>
+    /// Optional: when the target symbol is an interface type, whether to report every implementing
+    /// class / struct (<c>true</c>, the default and today's behavior) or only those that implement the
+    /// interface directly (<c>false</c>), via Roslyn's
+    /// <c>SymbolFinder.FindImplementationsAsync(INamedTypeSymbol, Solution, transitive: false, ...)</c>:
+    /// types that only inherit the implementation from a base class, or that implement it through a
+    /// derived interface, are then omitted. Same idea as <c>get_type_hierarchy</c> <c>transitive</c>.
+    /// <see cref="ImplementationFile"/> / <see cref="ProjectPath"/> filter, and
+    /// <see cref="MaxResults"/> caps, the resulting set, so <c>TotalCount</c> / <c>Truncated</c>
+    /// reflect it. No effect for member targets or non-interface types. When omitted, <c>true</c>.
+    /// </summary>
+    public bool? Transitive { get; init; }
 }

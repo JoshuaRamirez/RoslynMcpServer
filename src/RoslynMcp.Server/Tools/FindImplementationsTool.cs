@@ -32,7 +32,7 @@ public sealed class FindImplementationsTool : IToolHandler
     public string Name => "find_implementations";
 
     /// <inheritdoc />
-    public string Description => "Find all implementations of a C# interface, abstract class, or virtual/abstract member across the solution. sourceFile locates the target symbol; optional implementationFile restricts reported implementations to those declared in that file (applied before maxResults, so totalCount/truncated reflect the filtered set). Optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported implementations to those declared in documents of that project, applied before maxResults.";
+    public string Description => "Find all implementations of a C# interface, abstract class, or virtual/abstract member across the solution. sourceFile locates the target symbol; optional implementationFile restricts reported implementations to those declared in that file (applied before maxResults, so totalCount/truncated reflect the filtered set). Optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported implementations to those declared in documents of that project, applied before maxResults. Optional transitive (default true) set to false on an interface returns only types that implement it directly (not those inheriting the implementation from a base class or implementing it via a derived interface), with implementationFile/projectPath/maxResults applied to that direct set; no effect for member targets.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -83,6 +83,11 @@ public sealed class FindImplementationsTool : IToolHandler
             {
                 type = "string",
                 description = "Absolute path to a .csproj in the loaded solution to restrict reported implementations to those declared in a document of that project (optional; omit for the whole solution). Every target framework of a multi-targeted project is included; combined with implementationFile and applied before maxResults so totalCount/truncated reflect the project-scoped set; sourceFile may be in another project; a relative or non-.csproj path is rejected and a path matching no project in the workspace returns a source-not-in-workspace error"
+            },
+            transitive = new
+            {
+                type = "boolean",
+                description = "When the target is an interface, include every implementing type (default true). false returns only types that implement the interface directly (not those inheriting the implementation from a base class or implementing it via a derived interface); implementationFile/projectPath filter and maxResults cap that direct set, so totalCount/truncated reflect it. No effect for member targets or non-interface types"
             }
         },
         additionalProperties = false
@@ -111,7 +116,8 @@ public sealed class FindImplementationsTool : IToolHandler
                 Column = args.Column,
                 MaxResults = args.MaxResults,
                 ImplementationFile = args.ImplementationFile,
-                ProjectPath = args.ProjectPath
+                ProjectPath = args.ProjectPath,
+                Transitive = args.Transitive
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -145,5 +151,6 @@ public sealed class FindImplementationsTool : IToolHandler
         public int? MaxResults { get; init; }
         public string? ImplementationFile { get; init; }
         public string? ProjectPath { get; init; }
+        public bool? Transitive { get; init; }
     }
 }

@@ -13,7 +13,8 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <c>find_references</c> <c>referenceFile</c> / <c>find_callers</c> <c>callerFile</c>), and optional
 /// <c>projectPath</c> (restricts reported implementations to one project; peer of
 /// <c>get_diagnostics</c> / <c>search_symbols</c> / <c>find_references</c> / <c>find_callers</c>
-/// <c>projectPath</c>).
+/// <c>projectPath</c>), and optional <c>transitive</c> (direct interface implementers only when
+/// false; peer of <c>get_type_hierarchy</c> <c>transitive</c>).
 /// </summary>
 public class FindImplementationsOperationTests
 {
@@ -687,6 +688,377 @@ public class FindImplementationsOperationTests
 
     #endregion
 
+    #region transitive
+
+    // Interface chain: IRunner.cs declares IRunner (line 1, column 18) and IFastRunner : IRunner
+    // (line 2). Direct.cs lists IRunner directly on A (line 1), struct S (line 2) and abstract Base
+    // (line 3). Inherited.cs has types that only inherit the implementation from a base class (Sub : A
+    // line 1, SubSub : Sub line 2, Concrete : Base line 4) plus Relisted : A, IRunner (line 3), which
+    // re-lists the interface itself. ViaDerived.cs has Turbo : IFastRunner (line 1), implementing
+    // IRunner only through a derived interface. Transitive: 8 implementations; direct: A, Base,
+    // Relisted, S.
+    private static readonly Dictionary<string, string> ChainSources = new()
+    {
+        ["IRunner.cs"] = """
+            public interface IRunner { void Run(); }
+            public interface IFastRunner : IRunner { }
+            """,
+        ["Direct.cs"] = """
+            public class A : IRunner { public virtual void Run() { } }
+            public struct S : IRunner { public void Run() { } }
+            public abstract class Base : IRunner { public abstract void Run(); }
+            """,
+        ["Inherited.cs"] = """
+            public class Sub : A { }
+            public class SubSub : Sub { }
+            public class Relisted : A, IRunner { }
+            public class Concrete : Base { public override void Run() { } }
+            """,
+        ["ViaDerived.cs"] = """
+            public class Turbo : IFastRunner { public void Run() { } }
+            """,
+        ["Generic.cs"] = """
+            public interface IBox<T> { T Get(); }
+            public class IntBox : IBox<int> { public int Get() => 0; }
+            public class OpenBox<T> : IBox<T> { public T Get() => default!; }
+            public class SubIntBox : IntBox { }
+            public class SubOpenBox<T> : OpenBox<T> { }
+            """
+    };
+
+    private static readonly string[] AllChainImplementations =
+        ["A", "Base", "Concrete", "Relisted", "S", "Sub", "SubSub", "Turbo"];
+
+    private static readonly string[] DirectChainImplementations = ["A", "Base", "Relisted", "S"];
+
+    [Fact]
+    public void Transitive_DefaultsToNull()
+    {
+        var @params = new FindImplementationsParams { SourceFile = "/tmp/x.cs", SymbolName = "IFoo" };
+        Assert.Null(@params.Transitive);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_TransitiveOmittedOrTrue_ReturnsEveryImplementation()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("IRunner.cs"),
+            SymbolName = "IRunner"
+        });
+        var transitive = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("IRunner.cs"),
+            SymbolName = "IRunner",
+            Transitive = true
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(transitive.Success);
+        Assert.Equal(AllChainImplementations, SortedNames(omitted.Data!.Implementations));
+        Assert.Equal(8, omitted.Data.TotalCount);
+        Assert.False(omitted.Data.Truncated);
+        Assert.Equal(SortedSites(omitted.Data.Implementations), SortedSites(transitive.Data!.Implementations));
+        Assert.Equal(omitted.Data.TotalCount, transitive.Data.TotalCount);
+        Assert.False(transitive.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_TransitiveFalse_ReturnsOnlyDirectImplementers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("IRunner.cs"),
+            SymbolName = "IRunner",
+            Transitive = false
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal("IRunner", result.Data!.SymbolName);
+        // Sub / SubSub / Concrete only inherit the implementation and Turbo only implements it via
+        // IFastRunner, so they are dropped; Relisted re-lists IRunner itself, so it stays.
+        Assert.Equal(DirectChainImplementations, SortedNames(result.Data.Implementations));
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+
+        var relisted = Assert.Single(result.Data.Implementations, i => i.Name == "Relisted");
+        Assert.True(SamePath(relisted.File, workspace.PathOf("Inherited.cs")));
+        Assert.Equal(3, relisted.Line);
+        Assert.All(
+            result.Data.Implementations.Where(i => i.Name != "Relisted"),
+            i => Assert.True(SamePath(i.File, workspace.PathOf("Direct.cs"))));
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_TransitiveFalse_DerivedInterfaceTarget_ReturnsItsDirectImplementers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("IRunner.cs"),
+            SymbolName = "IFastRunner",
+            Transitive = false
+        });
+
+        Assert.True(result.Success);
+        var only = Assert.Single(result.Data!.Implementations);
+        Assert.Equal("Turbo", only.Name);
+        Assert.True(SamePath(only.File, workspace.PathOf("ViaDerived.cs")));
+        Assert.Equal(1, only.Line);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_TransitiveFalse_LineColumnResolution_ReturnsOnlyDirectImplementers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("IRunner.cs"),
+            Line = 1,
+            Column = 18,
+            Transitive = false
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal("IRunner", result.Data!.SymbolName);
+        Assert.Equal(DirectChainImplementations, SortedNames(result.Data.Implementations));
+        Assert.Equal(4, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_TransitiveFalse_GenericInterface_ReturnsConstructedAndOpenDirectImplementers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var direct = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Generic.cs"),
+            SymbolName = "IBox",
+            Transitive = false
+        });
+        var transitive = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Generic.cs"),
+            SymbolName = "IBox"
+        });
+
+        Assert.True(direct.Success);
+        Assert.Equal(new[] { "IntBox", "OpenBox" }, SortedNames(direct.Data!.Implementations));
+        Assert.Equal(2, direct.Data.TotalCount);
+        Assert.True(transitive.Success);
+        Assert.Equal(new[] { "IntBox", "OpenBox", "SubIntBox", "SubOpenBox" }, SortedNames(transitive.Data!.Implementations));
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_TransitiveFalse_MemberTarget_Unaffected()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        // IRunner.Run (line 1, column 33): transitive only applies to interface types.
+        var omitted = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("IRunner.cs"),
+            Line = 1,
+            Column = 33
+        });
+        var direct = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("IRunner.cs"),
+            Line = 1,
+            Column = 33,
+            Transitive = false
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(direct.Success);
+        Assert.Equal("Run", omitted.Data!.SymbolName);
+        Assert.NotEmpty(omitted.Data.Implementations);
+        Assert.Equal(SortedSites(omitted.Data.Implementations), SortedSites(direct.Data!.Implementations));
+        Assert.Equal(omitted.Data.TotalCount, direct.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_TransitiveFalse_NonInterfaceType_Unaffected()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Direct.cs"),
+            SymbolName = "Base"
+        });
+        var direct = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("Direct.cs"),
+            SymbolName = "Base",
+            Transitive = false
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(direct.Success);
+        Assert.Equal(SortedSites(omitted.Data!.Implementations), SortedSites(direct.Data!.Implementations));
+        Assert.Equal(omitted.Data.TotalCount, direct.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_TransitiveFalseWithImplementationFile_FiltersDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var inherited = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("IRunner.cs"),
+            SymbolName = "IRunner",
+            ImplementationFile = workspace.PathOf("Inherited.cs"),
+            Transitive = false
+        });
+
+        Assert.True(inherited.Success);
+        var only = Assert.Single(inherited.Data!.Implementations);
+        Assert.Equal("Relisted", only.Name);
+        Assert.Equal(1, inherited.Data.TotalCount);
+        Assert.False(inherited.Data.Truncated);
+
+        var viaDerived = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("IRunner.cs"),
+            SymbolName = "IRunner",
+            ImplementationFile = workspace.PathOf("ViaDerived.cs"),
+            Transitive = false
+        });
+
+        Assert.True(viaDerived.Success);
+        Assert.Empty(viaDerived.Data!.Implementations);
+        Assert.Equal(0, viaDerived.Data.TotalCount);
+        Assert.False(viaDerived.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_TransitiveFalseWithMaxResults_CapsDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("IRunner.cs"),
+            SymbolName = "IRunner",
+            MaxResults = 2,
+            Transitive = false
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(2, capped.Data!.Implementations.Count);
+        Assert.All(capped.Data.Implementations, i => Assert.Contains(i.Name, DirectChainImplementations));
+        Assert.Equal(4, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        var exact = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.PathOf("IRunner.cs"),
+            SymbolName = "IRunner",
+            MaxResults = 4,
+            Transitive = false
+        });
+
+        Assert.True(exact.Success);
+        Assert.Equal(DirectChainImplementations, SortedNames(exact.Data!.Implementations));
+        Assert.Equal(4, exact.Data.TotalCount);
+        Assert.False(exact.Data.Truncated);
+    }
+
+    // Extra App/AppC.cs source for the two-project fixture: P4 only inherits IRunner from P1, P5
+    // implements it through IFastRunner (declared in App), and P6 re-lists IRunner on top of P2.
+    private const string AppChainSource = """
+        public class P4 : P1 { }
+        public interface IFastRunner : IRunner { }
+        public class P5 : IFastRunner { public void Run() { } }
+        public class P6 : P2, IRunner { }
+        """;
+
+    [SkippableFact]
+    public async Task FindImplementations_TransitiveFalseWithProjectPath_FiltersDirectSet()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync(extraAppSource: AppChainSource);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var appTransitive = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.LibInterfacePath,
+            SymbolName = "IRunner",
+            ProjectPath = workspace.AppProjectPath
+        });
+        var appDirect = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.LibInterfacePath,
+            SymbolName = "IRunner",
+            ProjectPath = workspace.AppProjectPath,
+            Transitive = false
+        });
+        var libDirect = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.LibInterfacePath,
+            SymbolName = "IRunner",
+            ProjectPath = workspace.LibProjectPath,
+            Transitive = false
+        });
+        var solutionDirect = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.LibInterfacePath,
+            SymbolName = "IRunner",
+            Transitive = false
+        });
+
+        Assert.True(appTransitive.Success);
+        Assert.Equal(new[] { "P1", "P2", "P3", "P4", "P5", "P6" }, SortedNames(appTransitive.Data!.Implementations));
+        Assert.True(appDirect.Success);
+        Assert.Equal(new[] { "P1", "P2", "P3", "P6" }, SortedNames(appDirect.Data!.Implementations));
+        Assert.Equal(4, appDirect.Data.TotalCount);
+        Assert.False(appDirect.Data.Truncated);
+        Assert.True(libDirect.Success);
+        Assert.Equal("L1", Assert.Single(libDirect.Data!.Implementations).Name);
+        Assert.True(solutionDirect.Success);
+        Assert.Equal(new[] { "L1", "P1", "P2", "P3", "P6" }, SortedNames(solutionDirect.Data!.Implementations));
+    }
+
+    [SkippableFact]
+    public async Task FindImplementations_TransitiveFalseWithProjectPathAndMaxResults_CapsCombinedSet()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync(extraAppSource: AppChainSource);
+        var operation = new FindImplementationsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindImplementationsParams
+        {
+            SourceFile = workspace.LibInterfacePath,
+            SymbolName = "IRunner",
+            ProjectPath = workspace.AppProjectPath,
+            MaxResults = 1,
+            Transitive = false
+        });
+
+        Assert.True(result.Success);
+        var only = Assert.Single(result.Data!.Implementations);
+        Assert.Contains(only.Name, new[] { "P1", "P2", "P3", "P6" });
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
+    }
+
+    #endregion
+
     private static List<string> SortedNames(IEnumerable<ImplementationInfo> implementations) =>
         implementations.Select(i => i.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
 
@@ -803,7 +1175,7 @@ public class FindImplementationsOperationTests
         public string? LinkedPath { get; init; }
         public required WorkspaceContext Context { get; init; }
 
-        public static async Task<TwoProjectWorkspace> CreateAsync(string? linkedSource = null)
+        public static async Task<TwoProjectWorkspace> CreateAsync(string? linkedSource = null, string? extraAppSource = null)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -859,6 +1231,10 @@ public class FindImplementationsOperationTests
             await File.WriteAllTextAsync(libImpl, LibImplSource);
             await File.WriteAllTextAsync(appA, AppASource);
             await File.WriteAllTextAsync(appB, AppBSource);
+            // Optional extra App source (App/AppC.cs), picked up by the SDK's default compile glob.
+            var appC = Path.Combine(appDir, "AppC.cs");
+            if (extraAppSource != null)
+                await File.WriteAllTextAsync(appC, extraAppSource);
 
             var solutionPath = Path.Combine(directory, "TestApp.sln");
             await File.WriteAllTextAsync(solutionPath, """
@@ -888,7 +1264,8 @@ public class FindImplementationsOperationTests
                 if (context.GetDocumentByPath(libInterface) == null ||
                     context.GetDocumentByPath(libImpl) == null ||
                     context.GetDocumentByPath(appA) == null ||
-                    context.GetDocumentByPath(appB) == null)
+                    context.GetDocumentByPath(appB) == null ||
+                    (extraAppSource != null && context.GetDocumentByPath(appC) == null))
                 {
                     context.Dispose();
                     throw new InvalidOperationException("Workspace loaded but did not include Lib/App sources.");

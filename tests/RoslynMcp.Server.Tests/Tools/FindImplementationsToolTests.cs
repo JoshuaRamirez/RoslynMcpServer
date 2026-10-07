@@ -92,6 +92,7 @@ public class FindImplementationsToolTests
         Assert.True(properties.TryGetProperty("maxResults", out _));
         Assert.True(properties.TryGetProperty("implementationFile", out _));
         Assert.True(properties.TryGetProperty("projectPath", out _));
+        Assert.True(properties.TryGetProperty("transitive", out _));
     }
 
     [Fact]
@@ -209,6 +210,60 @@ public class FindImplementationsToolTests
             ""sourceFile"": ""C:/test/Lib/IRunner.cs"",
             ""symbolName"": ""IRunner"",
             ""projectPath"": 42
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Fact]
+    public void GetDefinition_Transitive_IsOptionalBoolean()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var transitive = doc.RootElement.GetProperty("properties").GetProperty("transitive");
+
+        Assert.Equal("boolean", transitive.GetProperty("type").GetString());
+        Assert.Contains("implement the interface directly", transitive.GetProperty("description").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("transitive", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+        Assert.Contains("transitive", _tool.Description);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TransitiveBoolean_ParsesAndReachesWorkspace()
+    {
+        // Arrange - well-formed transitive parses; the throwing provider proves parsing succeeded
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/IRunner.cs"",
+            ""symbolName"": ""IRunner"",
+            ""transitive"": false
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_TransitiveNonBoolean_ReturnsParseError()
+    {
+        // Arrange - a string is not a boolean; deserialization fails before workspace creation
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Lib/IRunner.cs"",
+            ""symbolName"": ""IRunner"",
+            ""transitive"": ""no""
         }").RootElement;
 
         // Act

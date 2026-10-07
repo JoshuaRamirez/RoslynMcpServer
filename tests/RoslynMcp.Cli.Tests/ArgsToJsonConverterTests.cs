@@ -198,6 +198,44 @@ public class ArgsToJsonConverterTests
         Assert.Equal("/src/ImplA.cs", p.ImplementationFile);
     }
 
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData("FALSE", false)]
+    public void FindImplementations_TransitiveOption_RoundTripsToParams(string value, bool expected)
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/IRunner.cs",
+            ["symbol-name"] = "IRunner",
+            ["transitive"] = value
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal(expected, doc.RootElement.GetProperty("transitive").GetBoolean());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.FindImplementationsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("IRunner", p.SymbolName);
+        Assert.Equal(expected, p.Transitive);
+    }
+
+    [Fact]
+    public void FindImplementations_TransitiveOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/IRunner.cs",
+            ["symbol-name"] = "IRunner"
+        });
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.FindImplementationsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.Transitive);
+    }
+
     [Fact]
     public void GetTypeHierarchy_DerivedFileOption_BindsToParams()
     {
