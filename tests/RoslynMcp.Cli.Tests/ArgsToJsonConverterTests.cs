@@ -217,6 +217,44 @@ public class ArgsToJsonConverterTests
         Assert.Equal("/src/Circles.cs", p.DerivedFile);
     }
 
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData("FALSE", false)]
+    public void GetTypeHierarchy_TransitiveOption_RoundTripsToParams(string value, bool expected)
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Shape.cs",
+            ["symbol-name"] = "Shape",
+            ["transitive"] = value
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal(expected, doc.RootElement.GetProperty("transitive").GetBoolean());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.GetTypeHierarchyParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("Shape", p.SymbolName);
+        Assert.Equal(expected, p.Transitive);
+    }
+
+    [Fact]
+    public void GetTypeHierarchy_TransitiveOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Shape.cs",
+            ["symbol-name"] = "Shape"
+        });
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.GetTypeHierarchyParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.Transitive);
+    }
+
     [Fact]
     public void GoToDefinition_DefinitionFileOption_BindsToParams()
     {

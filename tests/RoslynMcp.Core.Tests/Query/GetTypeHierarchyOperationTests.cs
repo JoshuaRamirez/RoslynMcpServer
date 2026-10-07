@@ -14,7 +14,8 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <c>find_implementations</c> <c>implementationFile</c> / <c>find_references</c> <c>referenceFile</c>),
 /// and optional <c>projectPath</c> (restricts reported DerivedTypes to one project; peer of
 /// <c>get_diagnostics</c> / <c>search_symbols</c> / <c>find_references</c> / <c>find_callers</c> /
-/// <c>find_implementations</c> <c>projectPath</c>).
+/// <c>find_implementations</c> <c>projectPath</c>), and optional <c>transitive</c> (<c>false</c> reports
+/// only direct subclasses instead of every descendant).
 /// </summary>
 public class GetTypeHierarchyOperationTests
 {
@@ -936,6 +937,352 @@ public class GetTypeHierarchyOperationTests
         Assert.Equal(4, scoped.Data!.TotalCount);
         Assert.Equal(omitted.Data!.TotalCount, scoped.Data.TotalCount);
         Assert.Equal(SortedSites(omitted.Data.DerivedTypes), SortedSites(scoped.Data.DerivedTypes));
+    }
+
+    #endregion
+
+    #region transitive
+
+    // Shape.cs: Root <- Shape (IMarker) <- {A, B} (Direct.cs) and Mid (Chain.cs) <- Leaf (Chain.cs) <- Deep (Deep.cs).
+    // Direct subclasses of Shape: A, B, Mid; transitive descendants add Leaf and Deep.
+    private static readonly Dictionary<string, string> ChainSources = new()
+    {
+        ["Shape.cs"] = """
+            public class Shape : Root, IMarker { }
+            public class Root { }
+            public interface IMarker { }
+            """,
+        ["Direct.cs"] = """
+            public class A : Shape { }
+            public class B : Shape { }
+            """,
+        ["Chain.cs"] = """
+            public class Mid : Shape { }
+            public class Leaf : Mid { }
+            """,
+        ["Deep.cs"] = """
+            public class Deep : Leaf { }
+            """
+    };
+
+    [Fact]
+    public void Transitive_DefaultsToNull()
+    {
+        var @params = new GetTypeHierarchyParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.Transitive);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_TransitiveOmittedOrTrue_ReturnsEveryDescendant()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants"
+        });
+        var explicitTrue = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            Transitive = true
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(explicitTrue.Success);
+        Assert.Equal(new[] { "A", "B", "Deep", "Leaf", "Mid" }, SortedNames(omitted.Data!.DerivedTypes));
+        Assert.Equal(5, omitted.Data.TotalCount);
+        Assert.False(omitted.Data.Truncated);
+        Assert.Equal(SortedSites(omitted.Data.DerivedTypes), SortedSites(explicitTrue.Data!.DerivedTypes));
+        Assert.Equal(omitted.Data.TotalCount, explicitTrue.Data.TotalCount);
+        Assert.False(explicitTrue.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_TransitiveFalse_ReturnsOnlyDirectSubclasses()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Descendants",
+            Transitive = false
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "A", "B", "Mid" }, SortedNames(result.Data!.DerivedTypes));
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+
+        // An intermediate type's direct children are its own, not its grandchildren.
+        var mid = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.PathOf("Chain.cs"),
+            SymbolName = "Mid",
+            Direction = "Descendants",
+            Transitive = false
+        });
+
+        Assert.True(mid.Success);
+        var leaf = Assert.Single(mid.Data!.DerivedTypes);
+        Assert.Equal("Leaf", leaf.TypeName);
+        Assert.True(SamePath(leaf.File, workspace.PathOf("Chain.cs")));
+        Assert.Equal(2, leaf.Line);
+        Assert.Equal(1, mid.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_TransitiveFalse_LineColumnResolution_ReturnsOnlyDirectSubclasses()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            Line = 1,
+            Column = 14,
+            Direction = "Descendants",
+            Transitive = false
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal("Shape", result.Data!.TypeName);
+        Assert.Equal(new[] { "A", "B", "Mid" }, SortedNames(result.Data.DerivedTypes));
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_TransitiveFalse_GenericBase_ReturnsDirectConstructedAndOpenSubclasses()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            public class Box<T> { }
+            public class IntBox : Box<int> { }
+            public class OpenBox<T> : Box<T> { }
+            public class SubIntBox : IntBox { }
+            public class SubOpenBox : OpenBox<string> { }
+            """);
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var direct = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Box",
+            Direction = "Descendants",
+            Transitive = false
+        });
+        var all = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Box",
+            Direction = "Descendants"
+        });
+
+        Assert.True(direct.Success);
+        Assert.Equal(new[] { "IntBox", "OpenBox" }, SortedNames(direct.Data!.DerivedTypes));
+        Assert.Equal(2, direct.Data.TotalCount);
+        Assert.True(all.Success);
+        Assert.Equal(new[] { "IntBox", "OpenBox", "SubIntBox", "SubOpenBox" }, SortedNames(all.Data!.DerivedTypes));
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_TransitiveFalse_DoesNotAffectBaseTypesOrInterfaces()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources, "Deep.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var transitive = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.PathOf("Chain.cs"),
+            SymbolName = "Leaf",
+            Direction = "Both"
+        });
+        var direct = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.PathOf("Chain.cs"),
+            SymbolName = "Leaf",
+            Direction = "Both",
+            Transitive = false
+        });
+
+        Assert.True(direct.Success);
+        // BaseTypes is still the full ancestor chain, not just the immediate base.
+        Assert.Equal(new[] { "Mid", "Shape", "Root" }, direct.Data!.BaseTypes.Select(b => b.TypeName));
+        Assert.Equal("IMarker", Assert.Single(direct.Data.Interfaces).TypeName);
+        Assert.Equal(
+            transitive.Data!.BaseTypes.Select(b => b.FullyQualifiedName),
+            direct.Data.BaseTypes.Select(b => b.FullyQualifiedName));
+        Assert.Equal(
+            transitive.Data.Interfaces.Select(i => i.FullyQualifiedName),
+            direct.Data.Interfaces.Select(i => i.FullyQualifiedName));
+        Assert.Equal("Deep", Assert.Single(direct.Data.DerivedTypes).TypeName);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_TransitiveFalse_AncestorsOnly_Unaffected()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Direction = "Ancestors",
+            Transitive = false
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.DerivedTypes);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.Equal("Root", Assert.Single(result.Data.BaseTypes).TypeName);
+        Assert.Equal("IMarker", Assert.Single(result.Data.Interfaces).TypeName);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_TransitiveFalseWithDerivedFile_FiltersDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // Chain.cs declares Mid (direct) and Leaf (grandchild): only Mid is reported.
+        var chain = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Transitive = false,
+            DerivedFile = workspace.PathOf("Chain.cs")
+        });
+
+        Assert.True(chain.Success);
+        var mid = Assert.Single(chain.Data!.DerivedTypes);
+        Assert.Equal("Mid", mid.TypeName);
+        Assert.Equal(1, mid.Line);
+        Assert.Equal(1, chain.Data.TotalCount);
+        Assert.False(chain.Data.Truncated);
+
+        // Deep.cs holds only a transitive descendant, so the direct set is empty there.
+        var deep = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Transitive = false,
+            DerivedFile = workspace.PathOf("Deep.cs")
+        });
+
+        Assert.True(deep.Success);
+        Assert.Empty(deep.Data!.DerivedTypes);
+        Assert.Equal(0, deep.Data.TotalCount);
+        Assert.False(deep.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_TransitiveFalseWithMaxResults_CapsDirectSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(ChainSources, "Shape.cs");
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Transitive = false,
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(2, capped.Data!.DerivedTypes.Count);
+        Assert.All(capped.Data.DerivedTypes, d => Assert.Contains(d.TypeName, new[] { "A", "B", "Mid" }));
+        // TotalCount reflects the direct set (3), not every descendant (5).
+        Assert.Equal(3, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        var exact = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Shape",
+            Transitive = false,
+            MaxResults = 3
+        });
+
+        Assert.True(exact.Success);
+        Assert.Equal(3, exact.Data!.DerivedTypes.Count);
+        Assert.Equal(3, exact.Data.TotalCount);
+        Assert.False(exact.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_TransitiveFalseWithProjectPath_DropsTypesDerivingThroughIntermediate()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        // P3 : Mid (Lib) is a transitive descendant of Shape, so the direct-only App scope drops it.
+        var app = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.AppProjectPath,
+            Transitive = false
+        });
+
+        Assert.True(app.Success);
+        Assert.Equal(new[] { "P1", "P2" }, SortedNames(app.Data!.DerivedTypes));
+        Assert.All(app.Data.DerivedTypes, d => Assert.True(SamePath(d.File, workspace.AppAPath)));
+        Assert.Equal(2, app.Data.TotalCount);
+        Assert.False(app.Data.Truncated);
+
+        var lib = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.LibProjectPath,
+            Transitive = false
+        });
+
+        Assert.True(lib.Success);
+        Assert.Equal(new[] { "L1", "Mid" }, SortedNames(lib.Data!.DerivedTypes));
+        Assert.Equal(2, lib.Data.TotalCount);
+
+        // Solution-wide direct set spans both projects.
+        var all = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            Transitive = false
+        });
+
+        Assert.True(all.Success);
+        Assert.Equal(new[] { "L1", "Mid", "P1", "P2" }, SortedNames(all.Data!.DerivedTypes));
+        Assert.Equal(4, all.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task GetTypeHierarchy_TransitiveFalseWithProjectPathAndMaxResults_CapsCombinedSet()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new GetTypeHierarchyOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetTypeHierarchyParams
+        {
+            SourceFile = workspace.LibShapePath,
+            SymbolName = "Shape",
+            ProjectPath = workspace.AppProjectPath,
+            Transitive = false,
+            MaxResults = 1
+        });
+
+        Assert.True(result.Success);
+        var only = Assert.Single(result.Data!.DerivedTypes);
+        Assert.Contains(only.TypeName, new[] { "P1", "P2" });
+        Assert.Equal(2, result.Data.TotalCount);
+        Assert.True(result.Data.Truncated);
     }
 
     #endregion
