@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- `find_callers` now honors optional **`projectPath`**: when set to the absolute path of a `.csproj` in the loaded solution, only call sites whose document belongs to a project whose `Project.FilePath` equals it (`PathResolver.GetPathComparisonKey` + ordinal, same as `get_diagnostics` / `search_symbols` / `find_references`) are reported, so callers can ask "who calls this from inside project X?" without paging through the whole solution. Every target-framework variant of a multi-targeted project shares that path and is included; a file linked into several projects is reported only for the scoped project's document. Combined with `callerFile` and applied before `maxResults`, so `TotalCount` / `Truncated` reflect the project-scoped set; `sourceFile` still locates the target symbol and may be in another project; a `callerFile` from another project returns an empty success. Omit or leave blank for today's whole-solution behavior. Relative or not fully qualified path → `InvalidSourcePath` "projectPath must be an absolute path."; non-`.csproj` → `InvalidSourcePath` "projectPath must be a .csproj file."; a path matching no project → `SourceNotInWorkspace` "Project not found in workspace: …". Validation and project selection reuse `ProjectPathFilter`. CLI: `--project-path`. `CallerInfo` shape unchanged. (#2499)
+
 ## [0.9.0] - 2026-10-07
 
 ### Added

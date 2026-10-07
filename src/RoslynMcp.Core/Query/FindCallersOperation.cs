@@ -4,6 +4,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Query.Base;
+using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Workspace;
@@ -11,7 +12,8 @@ using RoslynMcp.Core.Workspace;
 namespace RoslynMcp.Core.Query;
 
 /// <summary>
-/// Finds all callers of a symbol using Roslyn's SymbolFinder.FindCallersAsync().
+/// Finds all callers of a symbol using Roslyn's SymbolFinder.FindCallersAsync(), across the solution
+/// (or within one project when <see cref="FindCallersParams.ProjectPath"/> is set).
 /// </summary>
 public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams, FindCallersResult>
 {
@@ -54,6 +56,8 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
             if (!File.Exists(@params.CallerFile))
                 throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.CallerFile}");
         }
+
+        ProjectPathFilter.Validate(@params.ProjectPath);
     }
 
     /// <inheritdoc />
@@ -62,6 +66,16 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         FindCallersParams @params,
         CancellationToken cancellationToken)
     {
+        // Optional projectPath scope (same validation / matching as get_diagnostics, search_symbols and
+        // find_references): resolved up front so a project that is not in the workspace fails with
+        // SourceNotInWorkspace instead of an empty result. Every target-framework variant of a
+        // multi-targeted project shares that path, so all of their ProjectIds are in scope.
+        var projectScope = string.IsNullOrWhiteSpace(@params.ProjectPath)
+            ? null
+            : ProjectPathFilter.SelectProjects(Context.Solution, @params.ProjectPath)
+                .Select(project => project.Id)
+                .ToHashSet();
+
         var resolved = await SymbolResolver.ResolveSymbolAsync(
             @params.SourceFile, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
 
@@ -104,6 +118,16 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
                     }
 
                     if (!string.Equals(locationKey, callerFileKey, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                }
+
+                // Optional projectPath filter (also before maxResults): keep only call sites whose
+                // document belongs to a matched project, so a file linked into several projects is
+                // reported only for the scoped project's document.
+                if (projectScope != null)
+                {
+                    var documentId = Context.Solution.GetDocumentId(location.SourceTree);
+                    if (documentId == null || !projectScope.Contains(documentId.ProjectId))
                         continue;
                 }
 
