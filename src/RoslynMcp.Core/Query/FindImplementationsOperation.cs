@@ -4,6 +4,7 @@ using RoslynMcp.Contracts.Errors;
 using RoslynMcp.Contracts.Models;
 using RoslynMcp.Core.FileSystem;
 using RoslynMcp.Core.Query.Base;
+using RoslynMcp.Core.Query.Utilities;
 using RoslynMcp.Core.Refactoring;
 using RoslynMcp.Core.Refactoring.Utilities;
 using RoslynMcp.Core.Resolution;
@@ -12,7 +13,8 @@ using RoslynMcp.Core.Workspace;
 namespace RoslynMcp.Core.Query;
 
 /// <summary>
-/// Finds all implementations of an interface, abstract class, or virtual/abstract member.
+/// Finds all implementations of an interface, abstract class, or virtual/abstract member across the
+/// solution (or within one project when <see cref="FindImplementationsParams.ProjectPath"/> is set).
 /// Delegates to Roslyn's SymbolFinder.FindImplementationsAsync.
 /// </summary>
 public sealed class FindImplementationsOperation : QueryOperationBase<FindImplementationsParams, FindImplementationsResult>
@@ -56,6 +58,8 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
             if (!File.Exists(@params.ImplementationFile))
                 throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.ImplementationFile}");
         }
+
+        ProjectPathFilter.Validate(@params.ProjectPath);
     }
 
     /// <inheritdoc />
@@ -64,6 +68,16 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
         FindImplementationsParams @params,
         CancellationToken cancellationToken)
     {
+        // Optional projectPath scope (same validation / matching as get_diagnostics, search_symbols,
+        // find_references and find_callers): resolved up front so a project that is not in the
+        // workspace fails with SourceNotInWorkspace instead of an empty result. Every target-framework
+        // variant of a multi-targeted project shares that path, so all of their ProjectIds are in scope.
+        var projectScope = string.IsNullOrWhiteSpace(@params.ProjectPath)
+            ? null
+            : ProjectPathFilter.SelectProjects(Context.Solution, @params.ProjectPath)
+                .Select(project => project.Id)
+                .ToHashSet();
+
         var resolved = await SymbolResolver.ResolveSymbolAsync(
             @params.SourceFile, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
 
@@ -88,6 +102,12 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
             ? null
             : new Dictionary<string, string>(StringComparer.Ordinal);
 
+        bool IsInScopedProject(Location location)
+        {
+            var documentId = Context.Solution.GetDocumentId(location.SourceTree);
+            return documentId != null && projectScope!.Contains(documentId.ProjectId);
+        }
+
         bool IsInImplementationFile(Location location)
         {
             var locationPath = location.GetLineSpan().Path;
@@ -102,10 +122,12 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
             return string.Equals(locationKey, implementationFileKey, StringComparison.OrdinalIgnoreCase);
         }
 
+        var filtered = implementationFileKey != null || projectScope != null;
+
         foreach (var impl in implSymbols)
         {
             Location? location;
-            if (implementationFileKey == null)
+            if (!filtered)
             {
                 totalCount++;
                 if (implementations.Count >= maxResults) continue;
@@ -115,11 +137,15 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
             }
             else
             {
-                // Optional implementationFile filter runs before maxResults so TotalCount /
-                // Truncated reflect the filtered set. An implementation declared across several
-                // files (partial type) matches when any of its in-source locations is in
-                // implementationFile, and is reported at that location.
-                location = impl.Locations.FirstOrDefault(l => l.IsInSource && IsInImplementationFile(l));
+                // Optional implementationFile / projectPath filters run before maxResults so
+                // TotalCount / Truncated reflect the filtered set. An implementation declared across
+                // several files (partial type) matches when any of its in-source locations satisfies
+                // both filters (in implementationFile and in a document of the scoped project), and is
+                // reported at that location.
+                location = impl.Locations.FirstOrDefault(l =>
+                    l.IsInSource &&
+                    (implementationFileKey == null || IsInImplementationFile(l)) &&
+                    (projectScope == null || IsInScopedProject(l)));
                 if (location == null) continue;
 
                 totalCount++;
