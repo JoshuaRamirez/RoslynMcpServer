@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-07
+
 ### Added
 
 - `find_callers` now honors optional **`projectPath`**: when set to the absolute path of a `.csproj` in the loaded solution, only call sites whose document belongs to a project whose `Project.FilePath` equals it (`PathResolver.GetPathComparisonKey` + ordinal, same as `get_diagnostics` / `search_symbols` / `find_references`) are reported, so callers can ask "who calls this from inside project X?" without paging through the whole solution. Every target-framework variant of a multi-targeted project shares that path and is included; a file linked into several projects is reported only for the scoped project's document. Combined with `callerFile` and applied before `maxResults`, so `TotalCount` / `Truncated` reflect the project-scoped set; `sourceFile` still locates the target symbol and may be in another project; a `callerFile` from another project returns an empty success. Omit or leave blank for today's whole-solution behavior. Relative or not fully qualified path → `InvalidSourcePath` "projectPath must be an absolute path."; non-`.csproj` → `InvalidSourcePath` "projectPath must be a .csproj file."; a path matching no project → `SourceNotInWorkspace` "Project not found in workspace: …". Validation and project selection reuse `ProjectPathFilter`. CLI: `--project-path`. `CallerInfo` shape unchanged. (#2499)
@@ -25,6 +27,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
+- Folded ChangeReturnType's private `IsVoidSyntax` and its three inline `PredefinedTypeSyntax` + `VoidKeyword` checks (`IsValidReturnType`, `ResolveReturnType`, `IsVoid`) onto existing `NonReturningMethodHelpers.IsVoidReturn` (same purely syntactic expression; `System.Void` / `void*` stay false). `ChangeSignatureOperation` and `ExtractMethodOperation` void checks are intentionally left alone. No behavior change. (#2485)
+- Folded `InlineMethodOperation.CollectMethodDeclarations` and `StaticMethodHelpers.CollectOrdinaryMethods` (identical unfiltered `MethodDeclarationSyntax` collects ordered by `SpanStart` then `Span.Length`) onto existing `FindMethodHelpers.CollectMethods`, used by the inline_method and make_static / make_non_static allFiles walks. `InlineMethodOperation.FindMethod` / `StartLine` is intentionally left alone. No behavior change. (#2476)
+- Folded MakeStatic / MakeNonStatic identical private `GetDeclarationDocumentsAsync` onto `StaticMethodHelpers.GetDeclarationDocumentsAsync(method, solution, cancellationToken)` (the `Context.Solution` read became a parameter; same partial-part walk, order, and `DocumentNotEditable` messages). `SafeDeleteOperation.GetDeclarationDocumentsAsync` is intentionally left alone. No behavior change. (#2451)
+- Folded ExtractMethod / ExtractVariable private `PreferInvokedName` / `PreferInvokedNameFromExpression` copies onto `IdentifierSeedHelpers` (sibling of #2265); both copies stripped every parenthesis level before the same identifier / member-access / generic-name arms, so suggested method and variable names are unchanged. No behavior change. (#2443)
+- Folded AddBraces / RemoveBraces identical `Validate` bodies onto `BraceTypeNameHelpers.ValidateBraceParams` (same allFiles / scope / line / column / typeName / sourceFile checks, error codes, and messages). No behavior change. (#2430)
 - Folded GenerateOverrides identical private `IsExplicitInterface` onto existing `ExplicitImplementationHelpers.IsExplicitImplementation` and its identical private `AddKeyed<T>` tree/part bucketing onto `RemoveExistingImplementationsHelpers.AddKeyed` (widened from private to internal, body unchanged). generate_overrides' own removal loop and `SignaturesMatch` copies are intentionally left alone. No behavior change. Does not invent convert_anonymous_to_class / convert_tuple_to_struct allFiles. (#2421)
 
 ## [0.8.0] - 2026-10-06
@@ -641,7 +648,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Cross-platform .NET global tool (`roslyn-mcp`)
 - MCP protocol support for Claude Code and Claude Desktop
 
-[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.8...v0.7.0
 [0.6.8]: https://github.com/JoshuaRamirez/RoslynMcpServer/compare/v0.6.7...v0.6.8
