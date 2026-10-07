@@ -709,7 +709,7 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
             var member = members[i];
             var prefix = i == 0 && !callSuper ? "" : ", ";
             statements.Add(AppendLiteral($"{prefix}{member.Name} = "));
-            statements.Add(AppendExpression(MemberAccess(member.Name)));
+            statements.Add(AppendExpression(SyntaxGenerationHelper.ThisMemberAccess(member.Name)));
         }
 
         statements.Add(AppendLiteral(" }"));
@@ -784,12 +784,6 @@ public sealed class GenerateToStringOperation : RefactoringOperationBase<Generat
                 SyntaxFactory.Token(SyntaxKind.OverrideKeyword)))
             .WithBody(body)
             .NormalizeWhitespace();
-
-    private static MemberAccessExpressionSyntax MemberAccess(string memberName) =>
-        SyntaxFactory.MemberAccessExpression(
-            SyntaxKind.SimpleMemberAccessExpression,
-            SyntaxFactory.ThisExpression(),
-            SyntaxFactory.IdentifierName(memberName));
 
     private static ExpressionStatementSyntax AppendLiteral(string text) =>
         AppendExpression(SyntaxFactory.LiteralExpression(
