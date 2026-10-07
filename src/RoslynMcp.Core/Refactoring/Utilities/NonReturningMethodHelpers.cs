@@ -9,7 +9,9 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 /// <c>ConvertToBlockBodyOperation</c> and <c>ConvertExpressionBodyOperation</c>
 /// when deciding whether an expression-bodied member should emit a bare
 /// expression statement vs a <c>return</c>. Same bodies as the prior private
-/// copies.
+/// copies. <see cref="IsVoidReturn"/> is also the syntactic void check
+/// for <c>ChangeReturnTypeOperation</c> (return-type validation, resolution,
+/// <c>IsVoid</c>, and the return-type rewriter).
 /// </summary>
 internal static class NonReturningMethodHelpers
 {
@@ -50,7 +52,10 @@ internal static class NonReturningMethodHelpers
     }
 
     /// <summary>
-    /// True for the <c>void</c> predefined type. Same body as the prior private copies.
+    /// True for the <c>void</c> predefined type. Purely syntactic: qualified
+    /// <c>System.Void</c> and <c>void*</c> are false. Same body as the prior
+    /// private copies (ConvertToBlockBody / ConvertExpressionBody, and the
+    /// change_return_type <c>IsVoidSyntax</c> and inline void-keyword checks).
     /// </summary>
     internal static bool IsVoidReturn(TypeSyntax returnType) =>
         returnType is PredefinedTypeSyntax predefined && predefined.Keyword.IsKind(SyntaxKind.VoidKeyword);

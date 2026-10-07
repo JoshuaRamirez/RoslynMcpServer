@@ -22,6 +22,25 @@ public class NonReturningMethodHelpersTests
         Assert.False(NonReturningMethodHelpers.IsVoidReturn(returnType));
     }
 
+    /// <summary>
+    /// Shapes change_return_type passes in (parsed new return types and
+    /// declared return types): only the predefined <c>void</c> keyword
+    /// counts; qualified <c>System.Void</c> and pointer-to-void do not.
+    /// </summary>
+    [Theory]
+    [InlineData("void", true)]
+    [InlineData(" void ", true)]
+    [InlineData("int", false)]
+    [InlineData("object", false)]
+    [InlineData("Task", false)]
+    [InlineData("System.Void", false)]
+    [InlineData("global::System.Void", false)]
+    [InlineData("void*", false)]
+    public void IsVoidReturn_ChangeReturnTypeShapes_OnlyPredefinedVoidKeyword(string typeText, bool expected)
+    {
+        Assert.Equal(expected, NonReturningMethodHelpers.IsVoidReturn(SyntaxFactory.ParseTypeName(typeText)));
+    }
+
     [Theory]
     [InlineData("Task")]
     [InlineData("ValueTask")]
