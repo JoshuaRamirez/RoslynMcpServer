@@ -10,8 +10,8 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <summary>
 /// Operation-level tests for <see cref="SearchSymbolsOperation"/> optional <c>sourceFile</c>
 /// filtering (peer of <see cref="GetDiagnosticsOperation"/>), optional <c>caseSensitive</c>
-/// name matching, optional <c>exactMatch</c> whole-name matching, and optional
-/// <c>namespaceFilter</c> namespace scoping.
+/// name matching, optional <c>exactMatch</c> whole-name matching, optional
+/// <c>namespaceFilter</c> namespace scoping, and optional <c>projectPath</c> project scoping.
 /// </summary>
 public class SearchSymbolsOperationTests
 {
@@ -906,6 +906,317 @@ public class SearchSymbolsOperationTests
 
     #endregion
 
+    #region projectPath
+
+    [Fact]
+    public void ProjectPath_DefaultsToNull()
+    {
+        var @params = new SearchSymbolsParams { Query = "Foo" };
+        Assert.Null(@params.ProjectPath);
+    }
+
+    [SkippableFact]
+    public async Task Validate_ProjectPathRelative_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("class UniqueAlpha {}");
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SearchSymbolsParams
+            {
+                Query = "UniqueAlpha",
+                ProjectPath = Path.Combine("Lib", "Lib.csproj")
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+        Assert.Equal("projectPath must be an absolute path.", ex.Message);
+    }
+
+    [SkippableTheory]
+    [InlineData("C:Lib.csproj")]
+    [InlineData("\\Lib\\Lib.csproj")]
+    public async Task Validate_ProjectPathDriveOrRootRelative_ThrowsInvalidSourcePath(string projectPath)
+    {
+        // Windows drive-relative / root-relative forms pass Path.IsPathRooted but are not fully
+        // qualified; on non-Windows they are plain relative paths. Both must be InvalidSourcePath.
+        await using var workspace = await TempWorkspace.CreateAsync("class UniqueAlpha {}");
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SearchSymbolsParams { Query = "UniqueAlpha", ProjectPath = projectPath }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+        Assert.Equal("projectPath must be an absolute path.", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task Validate_ProjectPathNotCsproj_ThrowsInvalidSourcePath()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("class UniqueAlpha {}");
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SearchSymbolsParams
+            {
+                Query = "UniqueAlpha",
+                ProjectPath = workspace.SourcePath
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidSourcePath, ex.ErrorCode);
+        Assert.Equal("projectPath must be a .csproj file.", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ProjectPathNotInWorkspace_ThrowsSourceNotInWorkspace()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync("class UniqueAlpha {}");
+        var operation = new SearchSymbolsOperation(workspace.Context);
+        var missing = Path.Combine(workspace.DirectoryPath, "Other", "Other.csproj");
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SearchSymbolsParams { Query = "UniqueAlpha", ProjectPath = missing }));
+
+        Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        Assert.Equal($"Project not found in workspace: {missing}", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ProjectPathOmittedOrBlank_ReturnsEveryProject()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "SharedName" });
+        var blank = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "SharedName", ProjectPath = "  " });
+
+        Assert.True(omitted.Success);
+        Assert.True(blank.Success);
+        Assert.Contains(omitted.Data!.Symbols, s => s.FullyQualifiedName == "Lib.SharedName");
+        Assert.Contains(omitted.Data.Symbols, s => s.FullyQualifiedName == "App.SharedName");
+        Assert.Equal(2, omitted.Data.TotalCount);
+        Assert.Equal(
+            omitted.Data.Symbols.Select(s => s.FullyQualifiedName),
+            blank.Data!.Symbols.Select(s => s.FullyQualifiedName));
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ProjectPath_RestrictsToThatProject()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var lib = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "SharedName",
+            ProjectPath = workspace.LibProjectPath
+        });
+
+        Assert.True(lib.Success);
+        var libSymbol = Assert.Single(lib.Data!.Symbols);
+        Assert.Equal("Lib.SharedName", libSymbol.FullyQualifiedName);
+        Assert.Equal(workspace.LibSourcePath, libSymbol.File);
+        Assert.Equal(1, lib.Data.TotalCount);
+        Assert.False(lib.Data.Truncated);
+
+        var app = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "SharedName",
+            ProjectPath = workspace.AppProjectPath
+        });
+
+        Assert.True(app.Success);
+        var appSymbol = Assert.Single(app.Data!.Symbols);
+        Assert.Equal("App.SharedName", appSymbol.FullyQualifiedName);
+        Assert.Equal(workspace.AppSourcePath, appSymbol.File);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ProjectPath_ExcludesReferencedProjectDeclarations()
+    {
+        // App references Lib, but App's compilation only yields symbols declared in App's sources.
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Animal",
+            ProjectPath = workspace.AppProjectPath
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ProjectPathDifferentCasing_MatchesOnlyOnCaseInsensitiveVolume()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new SearchSymbolsOperation(workspace.Context);
+        var wrongCased = Path.Combine(Path.GetDirectoryName(workspace.LibProjectPath)!, "LIB.CSPROJ");
+        var caseInsensitiveVolume = File.Exists(wrongCased);
+
+        var @params = new SearchSymbolsParams { Query = "SharedName", ProjectPath = wrongCased };
+
+        if (caseInsensitiveVolume)
+        {
+            // Windows / default macOS: the wrong-cased alias is the same physical project.
+            var result = await operation.ExecuteAsync(@params);
+            Assert.True(result.Success);
+            var symbol = Assert.Single(result.Data!.Symbols);
+            Assert.Equal("Lib.SharedName", symbol.FullyQualifiedName);
+        }
+        else
+        {
+            // Case-sensitive volume (Linux): LIB.CSPROJ is a different, nonexistent project.
+            var ex = await Assert.ThrowsAsync<RefactoringException>(() => operation.ExecuteAsync(@params));
+            Assert.Equal(ErrorCodes.SourceNotInWorkspace, ex.ErrorCode);
+        }
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ProjectPathWithMaxResults_CapsAfterProjectFilter()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync(
+            libSource: "namespace Lib { public class Widget1 {} public class Widget2 {} public class Widget3 {} }\n",
+            appSource: "namespace App { public class Widget4 {} public class Widget5 {} }\n");
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var uncappedAll = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Widget" });
+        Assert.True(uncappedAll.Success);
+        Assert.Equal(5, uncappedAll.Data!.TotalCount);
+
+        var capped = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            ProjectPath = workspace.LibProjectPath,
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(3, capped.Data!.TotalCount);
+        Assert.Equal(2, capped.Data.Symbols.Count);
+        Assert.True(capped.Data.Truncated);
+        Assert.All(capped.Data.Symbols, s => Assert.Equal(workspace.LibSourcePath, s.File));
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_SymbolInSeveralCompilations_CountedOnceEvenPastMaxResults()
+    {
+        // Linked.cs is compiled into both Lib and App, so each Gizmo appears in two compilations.
+        // Duplicates must be tracked independently of the capped output so TotalCount stays 3.
+        await using var workspace = await TwoProjectWorkspace.CreateAsync(
+            linkedSource: "namespace Linked { public class Gizmo1 {} public class Gizmo2 {} public class Gizmo3 {} }\n");
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var uncapped = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Gizmo" });
+        Assert.True(uncapped.Success);
+        Assert.Equal(3, uncapped.Data!.TotalCount);
+        Assert.Equal(3, uncapped.Data.Symbols.Count);
+        Assert.False(uncapped.Data.Truncated);
+
+        var capped = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Gizmo", MaxResults = 2 });
+        Assert.True(capped.Success);
+        Assert.Equal(3, capped.Data!.TotalCount);
+        Assert.Equal(2, capped.Data.Symbols.Count);
+        Assert.True(capped.Data.Truncated);
+
+        var scoped = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Gizmo",
+            ProjectPath = workspace.AppProjectPath,
+            MaxResults = 2
+        });
+        Assert.True(scoped.Success);
+        Assert.Equal(3, scoped.Data!.TotalCount);
+        Assert.Equal(2, scoped.Data.Symbols.Count);
+        Assert.True(scoped.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ProjectPathWithSourceFile_AndsTheScopes()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var otherProject = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "SharedName",
+            ProjectPath = workspace.LibProjectPath,
+            SourceFile = workspace.AppSourcePath
+        });
+
+        Assert.True(otherProject.Success);
+        Assert.Empty(otherProject.Data!.Symbols);
+        Assert.Equal(0, otherProject.Data.TotalCount);
+        Assert.False(otherProject.Data.Truncated);
+
+        var sameProject = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "SharedName",
+            ProjectPath = workspace.AppProjectPath,
+            SourceFile = workspace.AppSourcePath
+        });
+
+        Assert.True(sameProject.Success);
+        var symbol = Assert.Single(sameProject.Data!.Symbols);
+        Assert.Equal("App.SharedName", symbol.FullyQualifiedName);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ProjectPathWithKindAndNamespaceFilters_AndsTheFilters()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Speak",
+            KindFilter = "Method",
+            NamespaceFilter = "Lib",
+            ProjectPath = workspace.LibProjectPath
+        });
+
+        Assert.True(result.Success);
+        var symbol = Assert.Single(result.Data!.Symbols);
+        Assert.Equal("Speak", symbol.Name);
+
+        var wrongNamespace = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Speak",
+            NamespaceFilter = "App",
+            ProjectPath = workspace.LibProjectPath
+        });
+
+        Assert.True(wrongNamespace.Success);
+        Assert.Empty(wrongNamespace.Data!.Symbols);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_ProjectPathSingleProject_MatchesOmitted()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceFilterSource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Widget" });
+        var scoped = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            ProjectPath = workspace.ProjectPath
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(scoped.Success);
+        Assert.True(scoped.Data!.TotalCount >= 2);
+        Assert.Equal(omitted.Data!.TotalCount, scoped.Data.TotalCount);
+        Assert.Equal(
+            omitted.Data.Symbols.Select(s => s.FullyQualifiedName),
+            scoped.Data.Symbols.Select(s => s.FullyQualifiedName));
+    }
+
+    #endregion
+
+
     private static string FlipAsciiCase(string name)
     {
         var chars = name.ToCharArray();
@@ -926,6 +1237,8 @@ public class SearchSymbolsOperationTests
         public required string SourcePath { get; init; }
         public required IReadOnlyDictionary<string, string> SourcePaths { get; init; }
         public required WorkspaceContext Context { get; init; }
+
+        public string ProjectPath => Path.Combine(DirectoryPath, "TestApp.csproj");
 
         public static Task<TempWorkspace> CreateAsync(string source, string fileName = "Foo.cs") =>
             CreateMultiFileAsync((fileName, source));
@@ -981,6 +1294,143 @@ public class SearchSymbolsOperationTests
                     DirectoryPath = directory,
                     SourcePath = firstPath,
                     SourcePaths = sourcePaths,
+                    Context = context
+                };
+            }
+            catch (Exception ex) when (ex is not SkipException)
+            {
+                try
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+                catch
+                {
+                    // ignore cleanup failures
+                }
+
+                Skip.If(true, $"Workspace load failed: {ex.Message}");
+                throw;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            Context.Dispose();
+            await Task.Run(() =>
+            {
+                try
+                {
+                    Directory.Delete(DirectoryPath, recursive: true);
+                }
+                catch
+                {
+                    // ignore locked temp files
+                }
+            });
+        }
+    }
+
+    private sealed class TwoProjectWorkspace : IAsyncDisposable
+    {
+        public required string DirectoryPath { get; init; }
+        public required string LibProjectPath { get; init; }
+        public required string AppProjectPath { get; init; }
+        public required string LibSourcePath { get; init; }
+        public required string AppSourcePath { get; init; }
+        public required WorkspaceContext Context { get; init; }
+
+        public static async Task<TwoProjectWorkspace> CreateAsync(
+            string libSource = "namespace Lib { public class Animal { public void Speak() { } } public class SharedName {} }\n",
+            string appSource = "namespace App { public class Dog : Lib.Animal {} public class SharedName {} }\n",
+            string? linkedSource = null)
+        {
+            Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
+
+            var directory = Path.Combine(Path.GetTempPath(), "RoslynMcpSearchSymbolsXP_" + Guid.NewGuid().ToString("N"));
+            var libDir = Path.Combine(directory, "Lib");
+            var appDir = Path.Combine(directory, "App");
+            Directory.CreateDirectory(libDir);
+            Directory.CreateDirectory(appDir);
+
+            var libProject = Path.Combine(libDir, "Lib.csproj");
+            var appProject = Path.Combine(appDir, "App.csproj");
+            var libSourcePath = Path.Combine(libDir, "Lib.cs");
+            var appSourcePath = Path.Combine(appDir, "App.cs");
+
+            // Optional source file outside both project directories, linked into both projects, so the
+            // same symbols are declared in two compilations.
+            var linkedItem = linkedSource == null
+                ? string.Empty
+                : """<ItemGroup><Compile Include="..\Linked\Linked.cs" /></ItemGroup>""";
+            if (linkedSource != null)
+            {
+                var linkedDir = Path.Combine(directory, "Linked");
+                Directory.CreateDirectory(linkedDir);
+                await File.WriteAllTextAsync(Path.Combine(linkedDir, "Linked.cs"), linkedSource);
+            }
+
+            await File.WriteAllTextAsync(libProject, $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  {linkedItem}
+                </Project>
+                """);
+            await File.WriteAllTextAsync(appProject, $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <TargetFramework>net9.0</TargetFramework>
+                    <Nullable>enable</Nullable>
+                  </PropertyGroup>
+                  <ItemGroup>
+                    <ProjectReference Include="..\Lib\Lib.csproj" />
+                  </ItemGroup>
+                  {linkedItem}
+                </Project>
+                """);
+            await File.WriteAllTextAsync(libSourcePath, libSource);
+            await File.WriteAllTextAsync(appSourcePath, appSource);
+
+            var solutionPath = Path.Combine(directory, "TestApp.sln");
+            await File.WriteAllTextAsync(solutionPath, """
+                Microsoft Visual Studio Solution File, Format Version 12.00
+                # Visual Studio Version 17
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lib", "Lib\Lib.csproj", "{11111111-1111-1111-1111-111111111111}"
+                EndProject
+                Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "App\App.csproj", "{22222222-2222-2222-2222-222222222222}"
+                EndProject
+                Global
+                	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+                		Debug|Any CPU = Debug|Any CPU
+                	EndGlobalSection
+                	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+                		{22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Debug|Any CPU
+                	EndGlobalSection
+                EndGlobal
+                """);
+
+            try
+            {
+                var provider = new MSBuildWorkspaceProvider();
+                var context = await provider.CreateContextAsync(solutionPath);
+                if (context.GetDocumentByPath(libSourcePath) == null || context.GetDocumentByPath(appSourcePath) == null)
+                {
+                    context.Dispose();
+                    throw new InvalidOperationException("Workspace loaded but did not include Lib/App sources.");
+                }
+
+                return new TwoProjectWorkspace
+                {
+                    DirectoryPath = directory,
+                    LibProjectPath = libProject,
+                    AppProjectPath = appProject,
+                    LibSourcePath = libSourcePath,
+                    AppSourcePath = appSourcePath,
                     Context = context
                 };
             }

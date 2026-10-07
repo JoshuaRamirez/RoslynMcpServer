@@ -92,6 +92,23 @@ public class SearchSymbolsToolTests
         Assert.True(properties.TryGetProperty("caseSensitive", out _));
         Assert.True(properties.TryGetProperty("exactMatch", out _));
         Assert.True(properties.TryGetProperty("namespaceFilter", out _));
+        Assert.True(properties.TryGetProperty("projectPath", out _));
+    }
+
+    [Fact]
+    public void GetDefinition_ProjectPath_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var projectPath = doc.RootElement.GetProperty("properties").GetProperty("projectPath");
+
+        Assert.Equal("string", projectPath.GetProperty("type").GetString());
+        Assert.Contains(".csproj", projectPath.GetProperty("description").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("projectPath", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+        Assert.Contains("projectPath", _tool.Description);
     }
 
     [Fact]
@@ -304,6 +321,42 @@ public class SearchSymbolsToolTests
             ""solutionPath"": ""C:/test/test.sln"",
             ""query"": ""Widget"",
             ""namespaceFilter"": 42
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ProjectPathString_ParsesAndReachesWorkspace()
+    {
+        // Arrange - well-formed projectPath parses; the throwing provider proves parsing succeeded
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""query"": ""Widget"",
+            ""projectPath"": ""C:/test/Lib/Lib.csproj""
+        }").RootElement;
+
+        // Act
+        var result = await _tool.ExecuteAsync(args);
+
+        // Assert
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", GetResultText(result));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ProjectPathNonString_ReturnsParseError()
+    {
+        // Arrange - a number is not a string; deserialization fails before workspace creation
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""query"": ""Widget"",
+            ""projectPath"": 42
         }").RootElement;
 
         // Act

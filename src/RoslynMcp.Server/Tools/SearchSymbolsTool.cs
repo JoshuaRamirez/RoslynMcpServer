@@ -32,7 +32,7 @@ public sealed class SearchSymbolsTool : IToolHandler
     public string Name => "search_symbols";
 
     /// <inheritdoc />
-    public string Description => "Search for C# symbols by name pattern across the solution or a specific file. Supports substring matching and filtering by symbol kind (Class, Method, Property, etc.). Optional sourceFile restricts results to symbols declared in that file. Optional caseSensitive (default false) set to true matches query case-sensitively (ordinal) instead of case-insensitively. Optional exactMatch (default false) set to true returns only symbols whose whole name equals query instead of containing it. Optional namespaceFilter restricts results to symbols declared in that namespace or a namespace nested inside it.";
+    public string Description => "Search for C# symbols by name pattern across the solution or a specific file. Supports substring matching and filtering by symbol kind (Class, Method, Property, etc.). Optional sourceFile restricts results to symbols declared in that file. Optional caseSensitive (default false) set to true matches query case-sensitively (ordinal) instead of case-insensitively. Optional exactMatch (default false) set to true returns only symbols whose whole name equals query instead of containing it. Optional namespaceFilter restricts results to symbols declared in that namespace or a namespace nested inside it. Optional projectPath (absolute .csproj path of a project in the loaded solution) searches only that project, so only symbols declared in its sources are returned.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -81,6 +81,11 @@ public sealed class SearchSymbolsTool : IToolHandler
             {
                 type = "string",
                 description = "Namespace to restrict results to (optional; omit for all namespaces). Keeps symbols whose containing namespace equals it or is nested inside it (e.g. App.Services matches App.Services and App.Services.Orders, not App.ServicesExtra); ordinal (case-sensitive) comparison, leading global:: accepted; global-namespace symbols never match a named filter, while a bare global:: is the root namespace and filters nothing; applied before maxResults so totalCount/truncated reflect the filtered set"
+            },
+            projectPath = new
+            {
+                type = "string",
+                description = "Absolute path to a .csproj in the loaded solution to restrict results to symbols declared in that project (optional; omit for the whole solution). Only that project is compiled and searched (every target framework of a multi-targeted project); combined with the other filters and applied before maxResults so totalCount/truncated reflect the project-scoped set; a relative or non-.csproj path is rejected and a path matching no project in the workspace returns a source-not-in-workspace error"
             }
         },
         additionalProperties = false
@@ -109,7 +114,8 @@ public sealed class SearchSymbolsTool : IToolHandler
                 SourceFile = args.SourceFile,
                 CaseSensitive = args.CaseSensitive,
                 ExactMatch = args.ExactMatch,
-                NamespaceFilter = args.NamespaceFilter
+                NamespaceFilter = args.NamespaceFilter,
+                ProjectPath = args.ProjectPath
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -143,5 +149,6 @@ public sealed class SearchSymbolsTool : IToolHandler
         public bool? CaseSensitive { get; init; }
         public bool? ExactMatch { get; init; }
         public string? NamespaceFilter { get; init; }
+        public string? ProjectPath { get; init; }
     }
 }

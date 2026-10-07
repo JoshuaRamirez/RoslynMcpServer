@@ -54,4 +54,15 @@ public sealed class SearchSymbolsParams
     /// named filter. Omit, blank, or a bare <c>global::</c> (the root namespace) searches all namespaces.
     /// </summary>
     public string? NamespaceFilter { get; init; }
+
+    /// <summary>
+    /// Optional absolute path to a <c>.csproj</c> in the loaded workspace to restrict results to.
+    /// Only projects whose file path equals it are compiled and searched, so only symbols declared in
+    /// that project's sources are returned (every target-framework variant of a multi-targeted project
+    /// shares that path, so all are included). Omit or leave blank for the whole solution. Applied
+    /// together with <see cref="KindFilter"/>, <see cref="SourceFile"/>, <see cref="CaseSensitive"/>,
+    /// <see cref="ExactMatch"/>, and <see cref="NamespaceFilter"/>, and before <see cref="MaxResults"/>
+    /// so <c>TotalCount</c> / <c>Truncated</c> reflect the project-scoped set.
+    /// </summary>
+    public string? ProjectPath { get; init; }
 }
