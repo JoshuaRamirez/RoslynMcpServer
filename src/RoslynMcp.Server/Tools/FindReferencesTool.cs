@@ -32,7 +32,7 @@ public sealed class FindReferencesTool : IToolHandler
     public string Name => "find_references";
 
     /// <inheritdoc />
-    public string Description => "Find all references to a C# symbol across the solution. Returns file locations, context snippets, and whether each reference is a definition or usage. Optional includeDeclaration (default true) set to false returns usages only, excluding the symbol's own definition locations before maxResults is applied. sourceFile locates the target symbol; optional referenceFile restricts reported locations to those in that file (definition locations included only when they are in that file; applied before maxResults, so totalCount/truncated reflect the filtered set).";
+    public string Description => "Find all references to a C# symbol across the solution. Returns file locations, context snippets, and whether each reference is a definition or usage. Optional includeDeclaration (default true) set to false returns usages only, excluding the symbol's own definition locations before maxResults is applied. sourceFile locates the target symbol; optional referenceFile restricts reported locations to those in that file (definition locations included only when they are in that file; applied before maxResults, so totalCount/truncated reflect the filtered set). Optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported locations to documents in that project, applied before maxResults.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -83,6 +83,11 @@ public sealed class FindReferencesTool : IToolHandler
             {
                 type = "string",
                 description = "Absolute path to a .cs file to restrict reported reference locations to those located in that file, including definition locations when includeDeclaration is on (optional; omit for the whole solution)"
+            },
+            projectPath = new
+            {
+                type = "string",
+                description = "Absolute path to a .csproj in the loaded solution to restrict reported reference locations to those whose document belongs to that project, including definition locations when includeDeclaration is on (optional; omit for the whole solution). Every target framework of a multi-targeted project is included; combined with referenceFile and applied before maxResults so totalCount/truncated reflect the project-scoped set; sourceFile may be in another project; a relative or non-.csproj path is rejected and a path matching no project in the workspace returns a source-not-in-workspace error"
             }
         },
         additionalProperties = false
@@ -111,7 +116,8 @@ public sealed class FindReferencesTool : IToolHandler
                 Column = args.Column,
                 MaxResults = args.MaxResults,
                 IncludeDeclaration = args.IncludeDeclaration,
-                ReferenceFile = args.ReferenceFile
+                ReferenceFile = args.ReferenceFile,
+                ProjectPath = args.ProjectPath
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -145,5 +151,6 @@ public sealed class FindReferencesTool : IToolHandler
         public int? MaxResults { get; init; }
         public bool? IncludeDeclaration { get; init; }
         public string? ReferenceFile { get; init; }
+        public string? ProjectPath { get; init; }
     }
 }

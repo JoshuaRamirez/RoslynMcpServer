@@ -6,8 +6,9 @@ using RoslynMcp.Core.Refactoring;
 namespace RoslynMcp.Core.Query.Utilities;
 
 /// <summary>
-/// Validates and applies the optional <c>projectPath</c> scope shared by <c>get_diagnostics</c> and
-/// <c>search_symbols</c>: an absolute path to a <c>.csproj</c> in the loaded solution.
+/// Validates and applies the optional <c>projectPath</c> scope shared by <c>get_diagnostics</c>,
+/// <c>search_symbols</c>, and <c>find_references</c>: an absolute path to a <c>.csproj</c> in the
+/// loaded solution.
 /// </summary>
 internal static class ProjectPathFilter
 {
