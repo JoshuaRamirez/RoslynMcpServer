@@ -4,7 +4,8 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
 /// Maps <see cref="INamedTypeSymbol"/> to contract <see cref="Contracts.Enums.SymbolKind"/>
-/// for MoveType operations. Intentionally distinct from
+/// for MoveType operations and the named-type arm of rename_symbol's
+/// <c>MapSymbolKind</c>. Intentionally distinct from
 /// <see cref="RoslynMcp.Core.Resolution.SymbolKindMapper"/>: MoveType treats
 /// <see cref="TypeKind.Class"/> as Class even when <c>IsRecord</c> is true
 /// (record class), matching the historical MoveType switch.
@@ -12,7 +13,9 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 internal static class NamedTypeSymbolKindHelpers
 {
     /// <summary>
-    /// Same switch body as the two MoveType private MapSymbolKind copies.
+    /// Same switch body as the two MoveType private MapSymbolKind copies and
+    /// the former inline <see cref="INamedTypeSymbol"/> arm of
+    /// <c>RenameSymbolOperation.MapSymbolKind</c>.
     /// Do not redirect through <see cref="RoslynMcp.Core.Resolution.SymbolKindMapper.Map"/>.
     /// </summary>
     internal static Contracts.Enums.SymbolKind Map(INamedTypeSymbol symbol)

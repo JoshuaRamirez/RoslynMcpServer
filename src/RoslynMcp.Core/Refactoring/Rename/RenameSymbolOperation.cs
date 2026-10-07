@@ -1057,16 +1057,7 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
     {
         return symbol switch
         {
-            INamedTypeSymbol namedType => namedType.TypeKind switch
-            {
-                TypeKind.Class => Contracts.Enums.SymbolKind.Class,
-                TypeKind.Struct => Contracts.Enums.SymbolKind.Struct,
-                TypeKind.Interface => Contracts.Enums.SymbolKind.Interface,
-                TypeKind.Enum => Contracts.Enums.SymbolKind.Enum,
-                TypeKind.Delegate => Contracts.Enums.SymbolKind.Delegate,
-                _ when namedType.IsRecord => Contracts.Enums.SymbolKind.Record,
-                _ => Contracts.Enums.SymbolKind.Class
-            },
+            INamedTypeSymbol namedType => NamedTypeSymbolKindHelpers.Map(namedType),
             IMethodSymbol => Contracts.Enums.SymbolKind.Method,
             IPropertySymbol => Contracts.Enums.SymbolKind.Property,
             IFieldSymbol => Contracts.Enums.SymbolKind.Field,
