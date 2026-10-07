@@ -32,7 +32,7 @@ public sealed class GoToDefinitionTool : IToolHandler
     public string Name => "go_to_definition";
 
     /// <inheritdoc />
-    public string Description => "Navigate to a C# symbol's definition. Returns the file, line, and column where the symbol is declared, including support for partial classes with multiple locations. Optional maxResults caps the returned Definitions list (omit = no cap). sourceFile locates the symbol; optional definitionFile restricts reported Definitions to locations in that file (applied before maxResults, so totalCount/truncated reflect the filtered set; metadata definitions are excluded when set).";
+    public string Description => "Navigate to a C# symbol's definition. Returns the file, line, and column where the symbol is declared, including support for partial classes with multiple locations. Optional maxResults caps the returned Definitions list (omit = no cap). sourceFile locates the symbol; optional definitionFile restricts reported Definitions to locations in that file (applied before maxResults, so totalCount/truncated reflect the filtered set; metadata definitions are excluded when set); optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported Definitions to locations in documents of that project, combined with definitionFile and applied before maxResults (omit = unchanged; metadata definitions are excluded when set).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -78,6 +78,11 @@ public sealed class GoToDefinitionTool : IToolHandler
             {
                 type = "string",
                 description = "Absolute path to a .cs file to restrict reported Definitions to locations in that file (optional; omit to keep the existing unfiltered behavior). Metadata definitions are excluded when set."
+            },
+            projectPath = new
+            {
+                type = "string",
+                description = "Absolute path to a .csproj in the loaded solution to restrict reported Definitions to locations in a document of that project (optional; omit to keep the existing unfiltered behavior). Every target framework of a multi-targeted project is included; combined with definitionFile and applied before maxResults so totalCount/truncated reflect the project-scoped set; metadata definitions are excluded when set; sourceFile may be in another project; a relative or non-.csproj path is rejected and a path matching no project in the workspace returns a source-not-in-workspace error"
             }
         },
         additionalProperties = false
@@ -105,7 +110,8 @@ public sealed class GoToDefinitionTool : IToolHandler
                 Line = args.Line,
                 Column = args.Column,
                 MaxResults = args.MaxResults,
-                DefinitionFile = args.DefinitionFile
+                DefinitionFile = args.DefinitionFile,
+                ProjectPath = args.ProjectPath
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -138,5 +144,6 @@ public sealed class GoToDefinitionTool : IToolHandler
         public int? Column { get; init; }
         public int? MaxResults { get; init; }
         public string? DefinitionFile { get; init; }
+        public string? ProjectPath { get; init; }
     }
 }

@@ -7,8 +7,9 @@ namespace RoslynMcp.Core.Query.Utilities;
 
 /// <summary>
 /// Validates and applies the optional <c>projectPath</c> scope shared by <c>get_diagnostics</c>,
-/// <c>search_symbols</c>, <c>find_references</c>, <c>find_callers</c>, <c>find_implementations</c>, and
-/// <c>get_type_hierarchy</c>: an absolute path to a <c>.csproj</c> in the loaded solution.
+/// <c>search_symbols</c>, <c>find_references</c>, <c>find_callers</c>, <c>find_implementations</c>,
+/// <c>get_type_hierarchy</c>, and <c>go_to_definition</c>: an absolute path to a <c>.csproj</c> in the
+/// loaded solution.
 /// </summary>
 internal static class ProjectPathFilter
 {
