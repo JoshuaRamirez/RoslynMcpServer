@@ -32,7 +32,7 @@ public sealed class GetTypeHierarchyTool : IToolHandler
     public string Name => "get_type_hierarchy";
 
     /// <inheritdoc />
-    public string Description => "Get the type hierarchy for a C# type: base types (ancestors), derived types (descendants), and implemented interfaces. Optional maxResults caps the returned DerivedTypes list (omit = no cap). BaseTypes and Interfaces are not capped. sourceFile locates the target type; optional derivedFile restricts reported DerivedTypes to those declared in that file (applied before maxResults, so totalCount/truncated reflect the filtered set; BaseTypes and Interfaces are not filtered); optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported DerivedTypes to those declared in documents of that project, combined with derivedFile and applied before maxResults (omit = whole solution).";
+    public string Description => "Get the type hierarchy for a C# type: base types (ancestors), derived types (descendants), and implemented interfaces. Optional maxResults caps the returned DerivedTypes list (omit = no cap). BaseTypes and Interfaces are not capped. sourceFile locates the target type; optional derivedFile restricts reported DerivedTypes to those declared in that file (applied before maxResults, so totalCount/truncated reflect the filtered set; BaseTypes and Interfaces are not filtered); optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported DerivedTypes to those declared in documents of that project, combined with derivedFile and applied before maxResults (omit = whole solution); optional transitive (default true) set to false returns only direct subclasses (types whose immediate base type is the target) instead of every descendant, with derivedFile/projectPath/maxResults applied to that direct set (BaseTypes and Interfaces unaffected).";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -88,6 +88,11 @@ public sealed class GetTypeHierarchyTool : IToolHandler
             {
                 type = "string",
                 description = "Absolute path to a .csproj in the loaded solution to restrict reported DerivedTypes to those declared in a document of that project (optional; omit for the whole solution). Every target framework of a multi-targeted project is included; combined with derivedFile and applied before maxResults so totalCount/truncated reflect the project-scoped set; does not filter BaseTypes or Interfaces; sourceFile may be in another project; a relative or non-.csproj path is rejected and a path matching no project in the workspace returns a source-not-in-workspace error"
+            },
+            transitive = new
+            {
+                type = "boolean",
+                description = "Include every descendant in DerivedTypes (default true). false returns only direct subclasses (types whose immediate base type is the target type); derivedFile/projectPath filter and maxResults cap that direct set, so totalCount/truncated reflect it. Does not affect BaseTypes or Interfaces"
             }
         },
         additionalProperties = false
@@ -117,7 +122,8 @@ public sealed class GetTypeHierarchyTool : IToolHandler
                 Direction = args.Direction,
                 MaxResults = args.MaxResults,
                 DerivedFile = args.DerivedFile,
-                ProjectPath = args.ProjectPath
+                ProjectPath = args.ProjectPath,
+                Transitive = args.Transitive
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -152,5 +158,6 @@ public sealed class GetTypeHierarchyTool : IToolHandler
         public int? MaxResults { get; init; }
         public string? DerivedFile { get; init; }
         public string? ProjectPath { get; init; }
+        public bool? Transitive { get; init; }
     }
 }

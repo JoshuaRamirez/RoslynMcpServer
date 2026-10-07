@@ -120,8 +120,11 @@ public sealed class GetTypeHierarchyOperation : QueryOperationBase<GetTypeHierar
         // Find descendants
         if (direction is HierarchyDirection.Descendants or HierarchyDirection.Both)
         {
+            // Optional transitive (default true = every descendant, today's behavior); false
+            // returns only direct subclasses. The derivedFile / projectPath filters and maxResults
+            // below then apply to whichever set was found.
             var derived = await SymbolFinder.FindDerivedClassesAsync(
-                typeSymbol, Context.Solution, cancellationToken: cancellationToken);
+                typeSymbol, Context.Solution, transitive: @params.Transitive ?? true, cancellationToken: cancellationToken);
 
             // Optional derivedFile filter: compare canonical path keys so aliases such as
             // "src/../Derived.cs" still match Roslyn's canonical location paths, and compare those

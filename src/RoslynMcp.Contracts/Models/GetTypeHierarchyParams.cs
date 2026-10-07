@@ -60,4 +60,16 @@ public sealed class GetTypeHierarchyParams
     /// target type and may be in another project.
     /// </summary>
     public string? ProjectPath { get; init; }
+
+    /// <summary>
+    /// Whether <c>DerivedTypes</c> includes every descendant (<c>true</c>, the default) or only
+    /// direct subclasses (<c>false</c>): types whose immediate base type is the target type, via
+    /// Roslyn <c>SymbolFinder.FindDerivedClassesAsync(..., transitive: false)</c>. When
+    /// <c>false</c>, <see cref="DerivedFile"/> and <see cref="ProjectPath"/> filter the direct set
+    /// (so a type in the scoped project that derives only through an intermediate type is not
+    /// reported) and <see cref="MaxResults"/> is applied afterwards, so <c>TotalCount</c> /
+    /// <c>Truncated</c> reflect the direct set. Does not affect BaseTypes or Interfaces, and has no
+    /// effect when <c>direction</c> is <c>Ancestors</c>. Omit or <c>true</c> for today's behavior.
+    /// </summary>
+    public bool? Transitive { get; init; }
 }
