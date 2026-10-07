@@ -527,8 +527,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         if (parsed.ContainsDiagnostics || parsed.IsMissing)
             return false;
 
-        if (parsed is PredefinedTypeSyntax predefined &&
-            predefined.Keyword.IsKind(SyntaxKind.VoidKeyword))
+        if (NonReturningMethodHelpers.IsVoidReturn(parsed))
         {
             return true;
         }
@@ -557,8 +556,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         if (parsed.ContainsDiagnostics || parsed.IsMissing)
             return null;
 
-        if (parsed is PredefinedTypeSyntax predefined &&
-            predefined.Keyword.IsKind(SyntaxKind.VoidKeyword))
+        if (NonReturningMethodHelpers.IsVoidReturn(parsed))
         {
             return semanticModel.Compilation.GetSpecialType(SpecialType.System_Void);
         }
@@ -970,8 +968,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         if (type.SpecialType == SpecialType.System_Void)
             return true;
 
-        if (syntax is PredefinedTypeSyntax predefined &&
-            predefined.Keyword.IsKind(SyntaxKind.VoidKeyword))
+        if (syntax is not null && NonReturningMethodHelpers.IsVoidReturn(syntax))
         {
             return true;
         }
@@ -1384,9 +1381,6 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
         return !method.Body.Statements.OfType<ReturnStatementSyntax>().Any();
     }
 
-    private static bool IsVoidSyntax(TypeSyntax type) =>
-        type is PredefinedTypeSyntax predefined && predefined.Keyword.IsKind(SyntaxKind.VoidKeyword);
-
     private static async Task<RefactoringResult> CreatePreviewResultAsync(
         Guid operationId,
         ChangeReturnTypeParams @params,
@@ -1489,7 +1483,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
             var visited = (MethodDeclarationSyntax)base.VisitMethodDeclaration(node)!;
             visited = visited.WithReturnType(CreateReturnTypeSyntax(target.ReturnTypeText, visited.ReturnType));
 
-            var originalIsVoid = IsVoidSyntax(original.ReturnType);
+            var originalIsVoid = NonReturningMethodHelpers.IsVoidReturn(original.ReturnType);
             var newIsVoid = string.Equals(target.ReturnTypeText.Trim(), "void", StringComparison.Ordinal);
             var kind = target.Kind;
             if (kind == ReturnRewriteKind.DeclarationOnly && originalIsVoid && !newIsVoid)
