@@ -1195,7 +1195,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         var arguments = new List<ArgumentSyntax>();
         if (callSuper)
             arguments.Add(SyntaxFactory.Argument(BaseGetHashCodeCall()));
-        arguments.AddRange(members.Select(m => SyntaxFactory.Argument(InstanceMemberAccess(m.Name))));
+        arguments.AddRange(members.Select(m => SyntaxFactory.Argument(SyntaxGenerationHelper.ThisMemberAccess(m.Name))));
 
         if (arguments.Count <= 8) // HashCode.Combine supports up to 8 args
         {
@@ -1244,7 +1244,7 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
                         SyntaxFactory.IdentifierName("Add")))
                     .WithArgumentList(SyntaxFactory.ArgumentList(
                         SyntaxFactory.SingletonSeparatedList(
-                            SyntaxFactory.Argument(InstanceMemberAccess(member.Name)))))));
+                            SyntaxFactory.Argument(SyntaxGenerationHelper.ThisMemberAccess(member.Name)))))));
         }
 
         statements.Add(SyntaxFactory.ReturnStatement(
@@ -1303,17 +1303,11 @@ public sealed class GenerateEqualsHashCodeOperation : RefactoringOperationBase<G
         return GetHashCodeMethod(SyntaxFactory.Block(uncheckedBlock));
     }
 
-    private static ExpressionSyntax InstanceMemberAccess(string memberName) =>
-        SyntaxFactory.MemberAccessExpression(
-            SyntaxKind.SimpleMemberAccessExpression,
-            SyntaxFactory.ThisExpression(),
-            SyntaxFactory.IdentifierName(memberName));
-
     private static ExpressionSyntax BuildMemberHashExpression(ISymbol member)
     {
         var memberType = EqualityMemberCollector.GetMemberType(member);
         // Qualify with this. so a member named hash is not shadowed by the local.
-        var memberAccess = InstanceMemberAccess(member.Name);
+        var memberAccess = SyntaxGenerationHelper.ThisMemberAccess(member.Name);
 
         if (!NeedsNullSafeHash(memberType))
         {

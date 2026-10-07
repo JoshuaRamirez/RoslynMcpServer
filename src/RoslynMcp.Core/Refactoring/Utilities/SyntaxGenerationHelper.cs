@@ -515,6 +515,19 @@ public static class SyntaxGenerationHelper
         && (member.IsAbstract || member.IsVirtual || member.IsOverride);
 
     /// <summary>
+    /// Builds <c>this.<paramref name="memberName"/></c> as a simple member
+    /// access with a <c>this</c> receiver. Used by generate_tostring,
+    /// generate_equals_hashcode, and generate_constructor so a member reference
+    /// is not shadowed by a parameter or local of the same name. The name is
+    /// used as given (no <c>@</c> escaping).
+    /// </summary>
+    internal static MemberAccessExpressionSyntax ThisMemberAccess(string memberName) =>
+        SyntaxFactory.MemberAccessExpression(
+            SyntaxKind.SimpleMemberAccessExpression,
+            SyntaxFactory.ThisExpression(),
+            SyntaxFactory.IdentifierName(memberName));
+
+    /// <summary>
     /// Same-assembly: keep <see cref="ISymbol.DeclaredAccessibility"/>.
     /// Cross-assembly <c>protected internal</c> becomes <c>protected</c>
     /// (CS0507). Other accessibilities are unchanged.

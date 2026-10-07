@@ -1123,10 +1123,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
             if (member.Name == paramName || member.Name.Equals(paramName, StringComparison.OrdinalIgnoreCase))
             {
                 // Need to disambiguate with "this."
-                left = SyntaxFactory.MemberAccessExpression(
-                    SyntaxKind.SimpleMemberAccessExpression,
-                    SyntaxFactory.ThisExpression(),
-                    SyntaxFactory.IdentifierName(member.Name));
+                left = SyntaxGenerationHelper.ThisMemberAccess(member.Name);
             }
             else
             {
@@ -1186,10 +1183,7 @@ public sealed class GenerateConstructorOperation : RefactoringOperationBase<Gene
 
         foreach (var member in members)
         {
-            var left = SyntaxFactory.MemberAccessExpression(
-                SyntaxKind.SimpleMemberAccessExpression,
-                SyntaxFactory.ThisExpression(),
-                SyntaxFactory.IdentifierName(member.Name));
+            var left = SyntaxGenerationHelper.ThisMemberAccess(member.Name);
             var right = SyntaxFactory.MemberAccessExpression(
                 SyntaxKind.SimpleMemberAccessExpression,
                 SyntaxFactory.IdentifierName(parameterName),
