@@ -11,7 +11,8 @@ using RoslynMcp.Core.Workspace;
 namespace RoslynMcp.Core.Query;
 
 /// <summary>
-/// Searches for symbols by name pattern across all projects in the solution.
+/// Searches for symbols by name pattern across all projects in the solution (or one project when
+/// <see cref="SearchSymbolsParams.ProjectPath"/> is set).
 /// Uses Roslyn's Compilation.GetSymbolsWithName for efficient symbol lookup.
 /// </summary>
 public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsParams, SearchSymbolsResult>
@@ -37,6 +38,8 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
             if (!File.Exists(@params.SourceFile))
                 throw new RefactoringException(ErrorCodes.SourceFileNotFound, $"Source file not found: {@params.SourceFile}");
         }
+
+        ProjectPathFilter.Validate(@params.ProjectPath);
     }
 
     /// <inheritdoc />
@@ -62,7 +65,10 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
             ? GetSymbolFilter(kindFilter.Value)
             : SymbolFilter.All;
 
-        foreach (var project in Context.Solution.Projects)
+        // projectPath (when set) restricts the search to that project's compilations. GetSymbolsWithName
+        // only returns symbols declared in a compilation's own sources, so this scopes results to
+        // declarations in that project, applied before maxResults like the other filters.
+        foreach (var project in ProjectPathFilter.SelectProjects(Context.Solution, @params.ProjectPath))
         {
             var compilation = await project.GetCompilationAsync(cancellationToken);
             if (compilation == null) continue;

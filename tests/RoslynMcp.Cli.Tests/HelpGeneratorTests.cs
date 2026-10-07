@@ -2155,6 +2155,24 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_SearchSymbols_ShowsProjectPath()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("search-symbols")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("projectPath (optional)", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        Assert.DoesNotContain("--project-path", help[requiredIdx..optionalIdx]);
+        Assert.Contains("--project-path", help[optionalIdx..]);
+    }
+
+    [Fact]
     public void GenerateToolHelp_GetDocumentOutline_ShowsKindFilter()
     {
         var registry = ToolRegistry.BuildDefault();
