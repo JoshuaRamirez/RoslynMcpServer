@@ -14,8 +14,9 @@ namespace RoslynMcp.Core.Query;
 
 /// <summary>
 /// Finds all implementations of an interface, abstract class, or virtual/abstract member across the
-/// solution (or within one project when <see cref="FindImplementationsParams.ProjectPath"/> is set).
-/// Delegates to Roslyn's SymbolFinder.FindImplementationsAsync.
+/// solution (or within one project when <see cref="FindImplementationsParams.ProjectPath"/> is set;
+/// only direct implementers of an interface when <see cref="FindImplementationsParams.Transitive"/>
+/// is false). Delegates to Roslyn's SymbolFinder.FindImplementationsAsync.
 /// </summary>
 public sealed class FindImplementationsOperation : QueryOperationBase<FindImplementationsParams, FindImplementationsResult>
 {
@@ -85,9 +86,17 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
         var implementations = new List<ImplementationInfo>();
         var maxResults = @params.MaxResults ?? int.MaxValue;
 
-        // Find implementations based on symbol kind
-        var implSymbols = await SymbolFinder.FindImplementationsAsync(
-            symbol, Context.Solution, cancellationToken: cancellationToken);
+        // Find implementations based on symbol kind. Optional transitive (default true = every
+        // implementing type, today's behavior); false on an interface type asks Roslyn for the direct
+        // implementers only (types listing the interface in their own base list), dropping those that
+        // inherit the implementation from a base class or implement it through a derived interface.
+        // Members and non-interface types keep the ISymbol overload, where transitive has no meaning.
+        IEnumerable<ISymbol> implSymbols = @params.Transitive == false
+            && symbol is INamedTypeSymbol { TypeKind: TypeKind.Interface } interfaceType
+            ? await SymbolFinder.FindImplementationsAsync(
+                interfaceType, Context.Solution, transitive: false, cancellationToken: cancellationToken)
+            : await SymbolFinder.FindImplementationsAsync(
+                symbol, Context.Solution, cancellationToken: cancellationToken);
 
         var totalCount = 0;
         // Optional implementationFile filter: compare canonical path keys so aliases such as
