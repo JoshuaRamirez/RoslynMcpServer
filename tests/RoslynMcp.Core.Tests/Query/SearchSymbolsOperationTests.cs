@@ -1101,6 +1101,39 @@ public class SearchSymbolsOperationTests
     }
 
     [SkippableFact]
+    public async Task SearchSymbols_SymbolInSeveralCompilations_CountedOnceEvenPastMaxResults()
+    {
+        // Linked.cs is compiled into both Lib and App, so each Gizmo appears in two compilations.
+        // Duplicates must be tracked independently of the capped output so TotalCount stays 3.
+        await using var workspace = await TwoProjectWorkspace.CreateAsync(
+            linkedSource: "namespace Linked { public class Gizmo1 {} public class Gizmo2 {} public class Gizmo3 {} }\n");
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var uncapped = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Gizmo" });
+        Assert.True(uncapped.Success);
+        Assert.Equal(3, uncapped.Data!.TotalCount);
+        Assert.Equal(3, uncapped.Data.Symbols.Count);
+        Assert.False(uncapped.Data.Truncated);
+
+        var capped = await operation.ExecuteAsync(new SearchSymbolsParams { Query = "Gizmo", MaxResults = 2 });
+        Assert.True(capped.Success);
+        Assert.Equal(3, capped.Data!.TotalCount);
+        Assert.Equal(2, capped.Data.Symbols.Count);
+        Assert.True(capped.Data.Truncated);
+
+        var scoped = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Gizmo",
+            ProjectPath = workspace.AppProjectPath,
+            MaxResults = 2
+        });
+        Assert.True(scoped.Success);
+        Assert.Equal(3, scoped.Data!.TotalCount);
+        Assert.Equal(2, scoped.Data.Symbols.Count);
+        Assert.True(scoped.Data.Truncated);
+    }
+
+    [SkippableFact]
     public async Task SearchSymbols_ProjectPathWithSourceFile_AndsTheScopes()
     {
         await using var workspace = await TwoProjectWorkspace.CreateAsync();
@@ -1308,7 +1341,8 @@ public class SearchSymbolsOperationTests
 
         public static async Task<TwoProjectWorkspace> CreateAsync(
             string libSource = "namespace Lib { public class Animal { public void Speak() { } } public class SharedName {} }\n",
-            string appSource = "namespace App { public class Dog : Lib.Animal {} public class SharedName {} }\n")
+            string appSource = "namespace App { public class Dog : Lib.Animal {} public class SharedName {} }\n",
+            string? linkedSource = null)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -1323,15 +1357,28 @@ public class SearchSymbolsOperationTests
             var libSourcePath = Path.Combine(libDir, "Lib.cs");
             var appSourcePath = Path.Combine(appDir, "App.cs");
 
-            await File.WriteAllTextAsync(libProject, """
+            // Optional source file outside both project directories, linked into both projects, so the
+            // same symbols are declared in two compilations.
+            var linkedItem = linkedSource == null
+                ? string.Empty
+                : """<ItemGroup><Compile Include="..\Linked\Linked.cs" /></ItemGroup>""";
+            if (linkedSource != null)
+            {
+                var linkedDir = Path.Combine(directory, "Linked");
+                Directory.CreateDirectory(linkedDir);
+                await File.WriteAllTextAsync(Path.Combine(linkedDir, "Linked.cs"), linkedSource);
+            }
+
+            await File.WriteAllTextAsync(libProject, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
                     <Nullable>enable</Nullable>
                   </PropertyGroup>
+                  {linkedItem}
                 </Project>
                 """);
-            await File.WriteAllTextAsync(appProject, """
+            await File.WriteAllTextAsync(appProject, $"""
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup>
                     <TargetFramework>net9.0</TargetFramework>
@@ -1340,6 +1387,7 @@ public class SearchSymbolsOperationTests
                   <ItemGroup>
                     <ProjectReference Include="..\Lib\Lib.csproj" />
                   </ItemGroup>
+                  {linkedItem}
                 </Project>
                 """);
             await File.WriteAllTextAsync(libSourcePath, libSource);

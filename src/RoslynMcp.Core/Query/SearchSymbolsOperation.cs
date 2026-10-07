@@ -60,6 +60,12 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
         var entries = new List<SymbolSearchEntry>();
         var totalCount = 0;
 
+        // Fully qualified names already counted. The same symbol can appear in several compilations
+        // (every target-framework variant of a multi-targeted project, or a file linked into more than
+        // one project); tracking them independently of the capped entries keeps TotalCount / Truncated
+        // counting each distinct symbol once even after maxResults fills the output list.
+        var seenFullyQualifiedNames = new HashSet<string>(StringComparer.Ordinal);
+
         // Determine the SymbolFilter based on kindFilter
         var symbolFilter = kindFilter.HasValue
             ? GetSymbolFilter(kindFilter.Value)
@@ -97,9 +103,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
                 if (namespaceFilter != null && !IsInNamespace(symbol, namespaceFilter))
                     continue;
 
-                // Skip duplicates (same symbol can appear in multiple compilations)
                 var fqn = symbol.ToDisplayString();
-                if (entries.Any(e => e.FullyQualifiedName == fqn)) continue;
 
                 Location? location;
                 if (!string.IsNullOrWhiteSpace(@params.SourceFile))
@@ -118,6 +122,10 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
                 {
                     location = null;
                 }
+
+                // Skip duplicates (same symbol can appear in multiple compilations); checked after the
+                // sourceFile filter so only symbols that qualify are recorded as seen.
+                if (!seenFullyQualifiedNames.Add(fqn)) continue;
 
                 totalCount++;
 
