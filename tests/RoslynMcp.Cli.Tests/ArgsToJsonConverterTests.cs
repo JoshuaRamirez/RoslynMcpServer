@@ -406,6 +406,38 @@ public class ArgsToJsonConverterTests
     }
 
     [Fact]
+    public void GetDocumentOutline_NameFilter_RoundTripsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["source-file"] = "/src/Foo.cs",
+            ["name-filter"] = "Handle",
+            ["kind-filter"] = "Method"
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("Handle", doc.RootElement.GetProperty("nameFilter").GetString());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.GetDocumentOutlineParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("/src/Foo.cs", p.SourceFile);
+        Assert.Equal("Handle", p.NameFilter);
+        Assert.Equal("Method", p.KindFilter);
+    }
+
+    [Fact]
+    public void GetDocumentOutline_NameFilterOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string> { ["source-file"] = "/src/Foo.cs" });
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.GetDocumentOutlineParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.NameFilter);
+    }
+
+    [Fact]
     public void StringListOption_CommaSeparated_SerializedAsJsonArray()
     {
         var dict = new Dictionary<string, string> { ["exclude-diagnostic-ids"] = "CS1591, CS8019 ,CS0168" };

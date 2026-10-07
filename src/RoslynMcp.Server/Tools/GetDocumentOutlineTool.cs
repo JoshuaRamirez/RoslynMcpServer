@@ -32,7 +32,7 @@ public sealed class GetDocumentOutlineTool : IToolHandler
     public string Name => "get_document_outline";
 
     /// <inheritdoc />
-    public string Description => "Get a structured outline of all declarations in a C# file: namespaces, types, methods, properties, fields, and events with their line numbers and accessibility. Optional maxDepth caps the returned outline tree depth (1 = top-level entries only; omit = no depth cap). Optional maxResults caps the returned outline tree via DFS pre-order (omit = no cap), applied after maxDepth. Optional kindFilter (same values as search_symbols kindFilter, case-insensitive) keeps only entries of that kind plus their containing types/namespaces, applied before maxDepth and maxResults.";
+    public string Description => "Get a structured outline of all declarations in a C# file: namespaces, types, methods, properties, fields, and events with their line numbers and accessibility. Optional maxDepth caps the returned outline tree depth (1 = top-level entries only; omit = no depth cap). Optional maxResults caps the returned outline tree via DFS pre-order (omit = no cap), applied after maxDepth. Optional kindFilter (same values as search_symbols kindFilter, case-insensitive) keeps only entries of that kind plus their containing types/namespaces, applied before maxDepth and maxResults. Optional nameFilter keeps only entries whose name contains the value (case-insensitive substring) plus their containing types/namespaces; combined with kindFilter an entry must satisfy both; applied before maxDepth and maxResults.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -67,6 +67,11 @@ public sealed class GetDocumentOutlineTool : IToolHandler
             {
                 type = "string",
                 description = "Keep only outline entries of this kind plus their containing types/namespaces (optional; case-insensitive): Class, Struct, Interface, Enum, Record, Delegate, Method, Property, Field, Event, Constant, Local, Parameter, Namespace (a single kind name; numeric or comma-combined values are rejected with InvalidSymbolKind). Constructors match Method and enum members match Constant; Local and Parameter are accepted but never match an outline entry (empty outline). Applied before maxDepth and maxResults; omit = all declarations."
+            },
+            nameFilter = new
+            {
+                type = "string",
+                description = "Keep only outline entries whose name contains this value (optional; ordinal, case-insensitive substring) plus their containing types/namespaces; subtrees with no match are dropped. Combined with kindFilter, an entry must satisfy both. Applied before maxDepth and maxResults; omit, empty, or whitespace = all declarations."
             }
         },
         additionalProperties = false
@@ -92,7 +97,8 @@ public sealed class GetDocumentOutlineTool : IToolHandler
                 SourceFile = args.SourceFile,
                 MaxResults = args.MaxResults,
                 MaxDepth = args.MaxDepth,
-                KindFilter = args.KindFilter
+                KindFilter = args.KindFilter,
+                NameFilter = args.NameFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -123,5 +129,6 @@ public sealed class GetDocumentOutlineTool : IToolHandler
         public int? MaxResults { get; init; }
         public int? MaxDepth { get; init; }
         public string? KindFilter { get; init; }
+        public string? NameFilter { get; init; }
     }
 }
