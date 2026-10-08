@@ -1186,15 +1186,8 @@ public sealed class RenameSymbolOperation : RefactoringOperationBase<RenameSymbo
         if (containing == null)
             yield break;
 
-        foreach (var iface in containing.AllInterfaces)
-        {
-            foreach (var member in iface.GetMembers(symbol.Name))
-            {
-                var implementation = containing.FindImplementationForInterfaceMember(member);
-                if (implementation != null && SymbolEqualityComparer.Default.Equals(implementation, symbol))
-                    yield return member;
-            }
-        }
+        foreach (var member in MethodInterfaceHelpers.ImplicitlyImplementedInterfaceMembers(symbol, containing))
+            yield return member;
     }
 
     private async Task<Solution> RestoreImplementationNamesAsync(
