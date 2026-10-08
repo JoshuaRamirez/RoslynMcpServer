@@ -2388,17 +2388,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         if (member is IPropertySymbol { IsIndexer: true, ExplicitInterfaceImplementations.Length: > 0 })
             return true;
 
-        foreach (var iface in source.AllInterfaces)
-        {
-            foreach (var ifaceMember in iface.GetMembers(member.Name))
-            {
-                var implementation = source.FindImplementationForInterfaceMember(ifaceMember);
-                if (implementation != null && SymbolEqualityComparer.Default.Equals(implementation, member))
-                    return true;
-            }
-        }
-
-        return false;
+        return MethodInterfaceHelpers.ImplicitlyImplementsInterfaceMember(member, source);
     }
 
     private static MemberDeclarationSyntax ConvertForDerived(

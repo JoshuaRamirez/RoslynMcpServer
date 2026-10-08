@@ -1091,24 +1091,9 @@ public sealed class UseBaseTypeOperation : RefactoringOperationBase<UseBaseTypeP
         return ImplementsInterfaceMember(property);
     }
 
-    private static bool ImplementsInterfaceMember(ISymbol symbol)
-    {
-        var containing = symbol.ContainingType;
-        if (containing == null)
-            return false;
-
-        foreach (var iface in containing.AllInterfaces)
-        {
-            foreach (var member in iface.GetMembers(symbol.Name))
-            {
-                var implementation = containing.FindImplementationForInterfaceMember(member);
-                if (implementation != null && SymbolEqualityComparer.Default.Equals(implementation, symbol))
-                    return true;
-            }
-        }
-
-        return false;
-    }
+    private static bool ImplementsInterfaceMember(ISymbol symbol) =>
+        symbol.ContainingType is { } containing &&
+        MethodInterfaceHelpers.ImplicitlyImplementsInterfaceMember(symbol, containing);
 
     private async Task<bool> UsagesCompatibleWithBaseAsync(
         ISymbol symbol,
