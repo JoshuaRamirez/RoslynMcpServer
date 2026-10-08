@@ -170,4 +170,13 @@ public class CliArgsTests
         Assert.Equal("Widget", result.Options["query"]);
         Assert.Equal("App.Services", result.Options["namespace-filter"]);
     }
+
+    [Fact]
+    public void SearchSymbols_AccessibilityFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "search-symbols", "--query", "Widget", "--accessibility-filter", "private protected"]);
+        Assert.Equal("search-symbols", result.ToolName);
+        Assert.Equal("Widget", result.Options["query"]);
+        Assert.Equal("private protected", result.Options["accessibility-filter"]);
+    }
 }

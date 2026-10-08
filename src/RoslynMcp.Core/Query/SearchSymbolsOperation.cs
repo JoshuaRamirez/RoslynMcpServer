@@ -12,7 +12,8 @@ namespace RoslynMcp.Core.Query;
 
 /// <summary>
 /// Searches for symbols by name pattern across all projects in the solution (or one project when
-/// <see cref="SearchSymbolsParams.ProjectPath"/> is set).
+/// <see cref="SearchSymbolsParams.ProjectPath"/> is set), optionally restricted by kind, file, namespace,
+/// and declared accessibility.
 /// Uses Roslyn's Compilation.GetSymbolsWithName for efficient symbol lookup.
 /// </summary>
 public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsParams, SearchSymbolsResult>
@@ -40,6 +41,8 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
         }
 
         ProjectPathFilter.Validate(@params.ProjectPath);
+
+        AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
     }
 
     /// <inheritdoc />
@@ -56,6 +59,7 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
             : StringComparison.OrdinalIgnoreCase;
         var exactMatch = @params.ExactMatch == true;
         var namespaceFilter = NormalizeNamespaceFilter(@params.NamespaceFilter);
+        var accessibilityFilter = AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
 
         var entries = new List<SymbolSearchEntry>();
         var totalCount = 0;
@@ -101,6 +105,13 @@ public sealed class SearchSymbolsOperation : QueryOperationBase<SearchSymbolsPar
 
                 // Apply namespace filter (before maxResults so TotalCount / Truncated reflect it)
                 if (namespaceFilter != null && !IsInNamespace(symbol, namespaceFilter))
+                    continue;
+
+                // Apply accessibility filter (declared accessibility, so implicit defaults count; exact
+                // match), also before maxResults. Namespaces have no accessibility modifier (Roslyn
+                // reports them as Public), so they never match a named filter.
+                if (accessibilityFilter.HasValue &&
+                    (symbol is INamespaceSymbol || symbol.DeclaredAccessibility != accessibilityFilter.Value))
                     continue;
 
                 var fqn = symbol.ToDisplayString();

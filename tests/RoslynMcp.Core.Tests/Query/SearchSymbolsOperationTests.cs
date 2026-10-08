@@ -11,7 +11,8 @@ namespace RoslynMcp.Core.Tests.Query;
 /// Operation-level tests for <see cref="SearchSymbolsOperation"/> optional <c>sourceFile</c>
 /// filtering (peer of <see cref="GetDiagnosticsOperation"/>), optional <c>caseSensitive</c>
 /// name matching, optional <c>exactMatch</c> whole-name matching, optional
-/// <c>namespaceFilter</c> namespace scoping, and optional <c>projectPath</c> project scoping.
+/// <c>namespaceFilter</c> namespace scoping, optional <c>projectPath</c> project scoping, and optional
+/// <c>accessibilityFilter</c> declared-accessibility filtering.
 /// </summary>
 public class SearchSymbolsOperationTests
 {
@@ -1212,6 +1213,223 @@ public class SearchSymbolsOperationTests
         Assert.Equal(
             omitted.Data.Symbols.Select(s => s.FullyQualifiedName),
             scoped.Data.Symbols.Select(s => s.FullyQualifiedName));
+    }
+
+    #endregion
+
+    #region accessibilityFilter
+
+    // Every symbol below except Host contains "Widget". Implicit defaults: IntWidget is internal
+    // (top-level), ImplicitPrivWidget / NestedImplicitPrivWidget are private (class members), and
+    // IWidgetSource.FetchWidget is public (interface member). WidgetSpace is a namespace.
+    private const string AccessibilitySource = """
+        namespace Acc
+        {
+            public class PubWidget { }
+            class IntWidget { }
+            internal class ExplicitIntWidget { }
+            public class Host
+            {
+                public int PubWidgetField;
+                int ImplicitPrivWidget;
+                private void PrivWidget() { }
+                protected void ProtWidget() { }
+                internal void IntWidgetMethod() { }
+                protected internal void ProtIntWidget() { }
+                private protected void PrivProtWidget() { }
+                public class NestedPubWidget { }
+                class NestedImplicitPrivWidget { }
+            }
+            public interface IWidgetSource { void FetchWidget(); }
+        }
+        namespace WidgetSpace
+        {
+            class Unrelated { }
+        }
+        """;
+
+    private static string[] ExpectedAccessibilityNames(string accessibilityFilter) => accessibilityFilter switch
+    {
+        "public" =>
+        [
+            "Acc.Host.NestedPubWidget",
+            "Acc.Host.PubWidgetField",
+            "Acc.IWidgetSource",
+            "Acc.IWidgetSource.FetchWidget()",
+            "Acc.PubWidget"
+        ],
+        "internal" => ["Acc.ExplicitIntWidget", "Acc.Host.IntWidgetMethod()", "Acc.IntWidget"],
+        "private" => ["Acc.Host.ImplicitPrivWidget", "Acc.Host.NestedImplicitPrivWidget", "Acc.Host.PrivWidget()"],
+        "protected" => ["Acc.Host.ProtWidget()"],
+        "protected internal" => ["Acc.Host.ProtIntWidget()"],
+        "private protected" => ["Acc.Host.PrivProtWidget()"],
+        _ => throw new ArgumentOutOfRangeException(nameof(accessibilityFilter))
+    };
+
+    private static readonly string[] AllAccessibilityValues =
+        ["public", "internal", "protected", "private", "protected internal", "private protected"];
+
+    [Fact]
+    public void AccessibilityFilter_DefaultsToNull()
+    {
+        var @params = new SearchSymbolsParams { Query = "Foo" };
+        Assert.Null(@params.AccessibilityFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task SearchSymbols_OmittedOrBlankAccessibilityFilter_ReturnsEveryAccessibility(string? accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            CaseSensitive = true,
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var expected = AllAccessibilityValues
+            .SelectMany(ExpectedAccessibilityNames)
+            .Append("WidgetSpace")
+            .OrderBy(n => n, StringComparer.Ordinal);
+        Assert.Equal(expected, SortedFqns(result.Data));
+        Assert.Equal(result.Data.Symbols.Count, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_AccessibilityFilter_SelectsExactlyEachDeclaredAccessibility()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        foreach (var accessibilityFilter in AllAccessibilityValues)
+        {
+            var result = await operation.ExecuteAsync(new SearchSymbolsParams
+            {
+                Query = "Widget",
+                CaseSensitive = true,
+                AccessibilityFilter = accessibilityFilter
+            });
+
+            Assert.True(result.Success, accessibilityFilter);
+            Assert.NotNull(result.Data);
+            // Implicit defaults count, compound accessibilities are exact (protected / internal /
+            // private never pick up protected internal or private protected), namespaces never match.
+            var expected = ExpectedAccessibilityNames(accessibilityFilter);
+            Assert.Equal(expected, SortedFqns(result.Data));
+            Assert.Equal(expected.Length, result.Data.TotalCount);
+            Assert.False(result.Data.Truncated);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("PUBLIC", "public")]
+    [InlineData("  Private  ", "private")]
+    [InlineData("Protected   Internal", "protected internal")]
+    [InlineData("internal protected", "protected internal")]
+    [InlineData("protected private", "private protected")]
+    public async Task SearchSymbols_AccessibilityFilter_IsCaseInsensitiveAndAcceptsEitherModifierOrder(
+        string accessibilityFilter,
+        string canonical)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            CaseSensitive = true,
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(ExpectedAccessibilityNames(canonical), SortedFqns(result.Data));
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_AccessibilityFilter_CombinesWithKindFilterAndMaxResults()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var classes = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            CaseSensitive = true,
+            KindFilter = "Class",
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(classes.Success);
+        Assert.NotNull(classes.Data);
+        Assert.Equal(["Acc.Host.NestedPubWidget", "Acc.PubWidget"], SortedFqns(classes.Data));
+        Assert.Equal(2, classes.Data.TotalCount);
+
+        // maxResults caps the accessibility-filtered set; TotalCount / Truncated reflect it.
+        var capped = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "Widget",
+            CaseSensitive = true,
+            AccessibilityFilter = "private",
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        Assert.Equal(2, capped.Data.Symbols.Count);
+        Assert.Equal(3, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+        Assert.All(capped.Data.Symbols, s =>
+            Assert.Contains(s.FullyQualifiedName, ExpectedAccessibilityNames("private")));
+    }
+
+    [SkippableFact]
+    public async Task SearchSymbols_AccessibilityFilterWithNoMatch_ReturnsEmptySuccess()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        // Namespaces have no accessibility, so a namespace kindFilter never matches a named filter.
+        var result = await operation.ExecuteAsync(new SearchSymbolsParams
+        {
+            Query = "WidgetSpace",
+            KindFilter = "Namespace",
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Symbols);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("friend")]
+    [InlineData("ProtectedOrInternal")]
+    [InlineData("public, internal")]
+    public async Task Execute_UnknownAccessibilityFilter_ThrowsInvalidVisibility(string accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessibilitySource);
+        var operation = new SearchSymbolsOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new SearchSymbolsParams
+            {
+                Query = "Widget",
+                AccessibilityFilter = accessibilityFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.StartsWith($"Invalid accessibilityFilter '{accessibilityFilter}'. Valid values: ", ex.Message);
     }
 
     #endregion
