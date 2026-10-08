@@ -449,8 +449,7 @@ public sealed class SafeDeleteOperation : RefactoringOperationBase<SafeDeletePar
     /// </summary>
     internal static bool IsPureInitializer(ExpressionSyntax expression)
     {
-        while (expression is ParenthesizedExpressionSyntax parenthesized)
-            expression = parenthesized.Expression;
+        expression = ParenthesizedExpressionHelpers.SkipParentheses(expression);
 
         if (expression is LiteralExpressionSyntax or DefaultExpressionSyntax or TypeOfExpressionSyntax)
             return true;

@@ -860,9 +860,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
         var lambdaIdentity = new List<bool>();
         foreach (var argument in invocation.ArgumentList.Arguments)
         {
-            var expr = argument.Expression;
-            while (expr is ParenthesizedExpressionSyntax parenthesized)
-                expr = parenthesized.Expression;
+            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
 
             if (expr is SimpleLambdaExpressionSyntax simple)
             {
@@ -923,9 +921,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         foreach (var argument in invocation.ArgumentList.Arguments)
         {
-            var expr = argument.Expression;
-            while (expr is ParenthesizedExpressionSyntax parenthesized)
-                expr = parenthesized.Expression;
+            var expr = ParenthesizedExpressionHelpers.SkipParentheses(argument.Expression);
 
             if (expr is SimpleLambdaExpressionSyntax simple &&
                 IsIdentityLambdaBody(simple.ExpressionBody, simple.Block, simple.Parameter.Identifier.ValueText))
@@ -950,9 +946,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
     {
         if (expressionBody != null)
         {
-            var body = expressionBody;
-            while (body is ParenthesizedExpressionSyntax parenthesizedBody)
-                body = parenthesizedBody.Expression;
+            var body = ParenthesizedExpressionHelpers.SkipParentheses(expressionBody);
 
             return body is IdentifierNameSyntax id &&
                    id.Identifier.ValueText == parameterName;
@@ -960,10 +954,7 @@ public sealed class ConvertTupleToStructOperation : RefactoringOperationBase<Con
 
         if (block?.Statements is [ReturnStatementSyntax { Expression: { } returned }])
         {
-            while (returned is ParenthesizedExpressionSyntax parenthesizedReturned)
-                returned = parenthesizedReturned.Expression;
-
-            return returned is IdentifierNameSyntax id &&
+            return ParenthesizedExpressionHelpers.SkipParentheses(returned) is IdentifierNameSyntax id &&
                    id.Identifier.ValueText == parameterName;
         }
 
