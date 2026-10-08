@@ -508,27 +508,19 @@ public sealed class GenerateOverridesOperation : RefactoringOperationBase<Genera
         var result = new List<ISymbol>();
 
         foreach (var member in MemberAnalyzer.GetOverridableMembers(typeSymbol))
-            AddUnique(result, member);
+            MemberSignatureMatchHelpers.AddUnique(result, member, SignaturesMatch);
 
         foreach (var member in GetObjectMethodsToOverride(typeSymbol))
-            AddUnique(result, member);
+            MemberSignatureMatchHelpers.AddUnique(result, member, SignaturesMatch);
 
         if (!replaceExisting)
             return result;
 
         foreach (var member in GetExistingOverrideTargets(typeSymbol))
-            AddUnique(result, member);
+            MemberSignatureMatchHelpers.AddUnique(result, member, SignaturesMatch);
 
         result.RemoveAll(m => IsHiddenByNonOverride(typeSymbol, m));
         return result;
-    }
-
-    private static void AddUnique(List<ISymbol> members, ISymbol member)
-    {
-        if (members.Any(existing => SignaturesMatch(existing, member)))
-            return;
-
-        members.Add(member);
     }
 
     private static List<ISymbol> GetObjectMethodsToOverride(INamedTypeSymbol typeSymbol)

@@ -543,24 +543,16 @@ public sealed class ImplementAbstractOperation : RefactoringOperationBase<Implem
         foreach (var member in MemberAnalyzer.GetUnimplementedAbstractMembers(typeSymbol))
         {
             if (IsImplementableAbstractMember(member, typeSymbol))
-                AddUnique(result, member);
+                MemberSignatureMatchHelpers.AddUnique(result, member, SignaturesMatch);
         }
 
         if (!replaceExisting)
             return result;
 
         foreach (var member in GetExistingAbstractImplementationTargets(typeSymbol))
-            AddUnique(result, member);
+            MemberSignatureMatchHelpers.AddUnique(result, member, SignaturesMatch);
 
         return result;
-    }
-
-    private static void AddUnique(List<ISymbol> members, ISymbol member)
-    {
-        if (members.Any(existing => SignaturesMatch(existing, member)))
-            return;
-
-        members.Add(member);
     }
 
     /// <summary>
