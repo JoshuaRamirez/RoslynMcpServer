@@ -6241,6 +6241,80 @@ public class PushMembersDownOperationTests
         Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
     }
 
+    private const string LeaveAbstractPrivateGetterPropertyFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            public int Age { private get; set; }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_PrivateGetterProperty_Throws()
+    {
+        // Abstract property cannot keep a private getter (CS0442), same gate
+        // as the private setter (shared CanAbstractPropertyAccessors).
+        await using var workspace = await TempWorkspace.CreateAsync(LeaveAbstractPrivateGetterPropertyFile);
+        var operation = new PushMembersDownOperation(workspace.Context);
+        var before = await File.ReadAllTextAsync(workspace.SourcePath);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new PushMembersDownParams
+            {
+                SourceFile = workspace.SourcePath,
+                TypeName = "Animal",
+                Members = ["Age"],
+                LeaveAbstract = true
+            }));
+
+        Assert.Equal(ErrorCodes.MemberNotMoveable, ex.ErrorCode);
+        Assert.Equal(before, await File.ReadAllTextAsync(workspace.SourcePath));
+    }
+
+    private const string LeaveAbstractWhollyPrivatePropertyFile = """
+        namespace TestApp;
+
+        public class Animal
+        {
+            private int Age { get; set; }
+        }
+
+        public class Dog : Animal
+        {
+        }
+        """;
+
+    [SkippableFact]
+    public async Task PushMembersDown_LeaveAbstract_WhollyPrivateProperty_LiftsToProtectedAbstract()
+    {
+        // A wholly private property has no explicit private accessor, so the
+        // shared CanAbstractPropertyAccessors gate allows it; it is lifted to
+        // protected abstract on the base and overridden on the derived type.
+        await using var workspace = await TempWorkspace.CreateAsync(LeaveAbstractWhollyPrivatePropertyFile);
+        var operation = new PushMembersDownOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new PushMembersDownParams
+        {
+            SourceFile = workspace.SourcePath,
+            TypeName = "Animal",
+            Members = ["Age"],
+            LeaveAbstract = true
+        });
+
+        Assert.True(result.Success);
+        var text = NormalizeNewlines(await File.ReadAllTextAsync(workspace.SourcePath));
+        var animal = ExtractTypeBody(text, "Animal");
+        var dog = ExtractTypeBody(text, "Dog");
+        Assert.Contains("protected abstract int Age", animal);
+        Assert.Contains("override int Age", dog);
+        Assert.DoesNotContain("private", animal);
+    }
+
     [SkippableFact]
     public async Task PushMembersDown_AllFilesTrue_LeaveAbstractSkipsPrivateSetterProperty()
     {

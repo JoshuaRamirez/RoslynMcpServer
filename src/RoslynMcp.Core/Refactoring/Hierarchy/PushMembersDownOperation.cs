@@ -2341,7 +2341,7 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
             !property.IsStatic
             && property.ExplicitInterfaceImplementations.Length == 0
             && !IsPartialPropertySymbol(property)
-            && CanPushPropertyAsAbstract(property),
+            && HierarchyAbstractMemberRewriter.CanAbstractPropertyAccessors(property),
         IEventSymbol evt => !evt.IsStatic && evt.ExplicitInterfaceImplementations.Length == 0,
         _ => false
     };
@@ -2355,24 +2355,6 @@ public sealed class PushMembersDownOperation : RefactoringOperationBase<PushMemb
         property.IsPartialDefinition ||
         property.PartialDefinitionPart != null ||
         property.PartialImplementationPart != null;
-
-    /// <summary>
-    /// True when a property/indexer can become abstract: wholly private is
-    /// lifted to protected, but an explicit private accessor on a more
-    /// visible member cannot become abstract (CS0442 / CS0621).
-    /// </summary>
-    private static bool CanPushPropertyAsAbstract(IPropertySymbol property)
-    {
-        // A wholly private property/indexer is lifted to protected; implicit
-        // accessors follow. An explicit private accessor on a more
-        // visible member cannot become abstract (CS0442/CS0621) and cannot
-        // stay on the override if the base drops it (CS0546).
-        if (property.DeclaredAccessibility == Accessibility.Private)
-            return true;
-
-        return property.GetMethod?.DeclaredAccessibility != Accessibility.Private
-            && property.SetMethod?.DeclaredAccessibility != Accessibility.Private;
-    }
 
     private static bool IsRequiredByAbstractBase(ISymbol member)
     {
