@@ -182,6 +182,75 @@ public class MemberSignatureMatchHelpersTests
         Assert.False(MemberSignatureMatchHelpers.SignaturesMatch(Event(a, "E"), Method(b, "M", 0, "int"), PlainName));
     }
 
+    [Fact]
+    public void AddUnique_skips_member_matching_an_existing_one_and_keeps_first()
+    {
+        var (a, b, _) = Types();
+        var first = Method(a, "M", 0, "int");
+        var members = new List<ISymbol> { first };
+
+        MemberSignatureMatchHelpers.AddUnique(
+            members,
+            Method(b, "M", 0, "int"),
+            static (existing, candidate) => MemberSignatureMatchHelpers.SignaturesMatch(existing, candidate, PlainName));
+
+        Assert.Same(first, Assert.Single(members));
+    }
+
+    [Fact]
+    public void AddUnique_appends_non_matching_member_at_end()
+    {
+        var (a, b, _) = Types();
+        var first = Method(a, "M", 0, "int");
+        var members = new List<ISymbol> { first };
+        var property = Property(b, "P");
+
+        MemberSignatureMatchHelpers.AddUnique(
+            members,
+            property,
+            static (existing, candidate) => MemberSignatureMatchHelpers.SignaturesMatch(existing, candidate, PlainName));
+
+        Assert.Equal(new ISymbol[] { first, property }, members);
+    }
+
+    [Fact]
+    public void AddUnique_passes_existing_then_candidate_to_predicate()
+    {
+        var (a, b, _) = Types();
+        var first = Method(a, "M", 0, "int");
+        var candidate = Method(b, "M", 0, "int");
+        var members = new List<ISymbol> { first };
+        var calls = new List<(ISymbol Existing, ISymbol Candidate)>();
+
+        MemberSignatureMatchHelpers.AddUnique(members, candidate, (existing, member) =>
+        {
+            calls.Add((existing, member));
+            return false;
+        });
+
+        var call = Assert.Single(calls);
+        Assert.Same(first, call.Existing);
+        Assert.Same(candidate, call.Candidate);
+        Assert.Equal(new ISymbol[] { first, candidate }, members);
+    }
+
+    [Fact]
+    public void AddUnique_with_identity_predicate_keeps_same_signature_distinct_symbols()
+    {
+        var (a, b, _) = Types();
+        var left = Method(a, "M", 0, "int");
+        var right = Method(b, "M", 0, "int");
+        var members = new List<ISymbol>();
+        Func<ISymbol, ISymbol, bool> identity =
+            static (existing, candidate) => SymbolEqualityComparer.Default.Equals(existing, candidate);
+
+        MemberSignatureMatchHelpers.AddUnique(members, left, identity);
+        MemberSignatureMatchHelpers.AddUnique(members, right, identity);
+        MemberSignatureMatchHelpers.AddUnique(members, left, identity);
+
+        Assert.Equal(new ISymbol[] { left, right }, members);
+    }
+
     private static (INamedTypeSymbol A, INamedTypeSymbol B, INamedTypeSymbol X) Types()
     {
         var tree = CSharpSyntaxTree.ParseText(Source);

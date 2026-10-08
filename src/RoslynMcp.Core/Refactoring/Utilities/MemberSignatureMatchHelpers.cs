@@ -61,4 +61,21 @@ internal static class MemberSignatureMatchHelpers
             return string.Equals(nameOf(left), nameOf(right), StringComparison.Ordinal);
         return ParameterTypeMatchHelpers.ParameterListsMatch(left.Parameters, right.Parameters);
     }
+
+    /// <summary>
+    /// Appends <paramref name="member"/> to <paramref name="members"/> unless an
+    /// already-collected member satisfies
+    /// <paramref name="matches"/>(<c>existing</c>, <paramref name="member"/>).
+    /// Shared by implement_interface, implement_abstract and generate_overrides
+    /// when collecting members to emit; each passes its own predicate
+    /// (its <c>SignaturesMatch</c>, or symbol identity for explicit
+    /// implementations), so first-wins order and dedup rules are unchanged.
+    /// </summary>
+    internal static void AddUnique(List<ISymbol> members, ISymbol member, Func<ISymbol, ISymbol, bool> matches)
+    {
+        if (members.Any(existing => matches(existing, member)))
+            return;
+
+        members.Add(member);
+    }
 }

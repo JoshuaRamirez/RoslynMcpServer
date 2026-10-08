@@ -483,9 +483,12 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             foreach (var member in CollectMembersToImplement(typeSymbol, interfaceSymbol, replaceExisting))
             {
                 if (explicitImplementation)
-                    AddUniqueByIdentity(result, member);
+                    MemberSignatureMatchHelpers.AddUnique(
+                        result,
+                        member,
+                        static (existing, candidate) => SymbolEqualityComparer.Default.Equals(existing, candidate));
                 else
-                    AddUnique(result, member);
+                    MemberSignatureMatchHelpers.AddUnique(result, member, SignaturesMatch);
             }
         }
 
@@ -584,7 +587,7 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
         foreach (var member in MemberAnalyzer.GetUnimplementedMembers(typeSymbol, interfaceSymbol))
         {
             if (IsImplementableInterfaceMember(member))
-                AddUnique(result, member);
+                MemberSignatureMatchHelpers.AddUnique(result, member, SignaturesMatch);
         }
 
         if (!replaceExisting)
@@ -601,26 +604,10 @@ public sealed class ImplementInterfaceOperation : RefactoringOperationBase<Imple
             if (!IsDeclaredOnType(typeSymbol, implementation))
                 continue;
 
-            AddUnique(result, member);
+            MemberSignatureMatchHelpers.AddUnique(result, member, SignaturesMatch);
         }
 
         return result;
-    }
-
-    private static void AddUnique(List<ISymbol> members, ISymbol member)
-    {
-        if (members.Any(existing => SignaturesMatch(existing, member)))
-            return;
-
-        members.Add(member);
-    }
-
-    private static void AddUniqueByIdentity(List<ISymbol> members, ISymbol member)
-    {
-        if (members.Any(existing => SymbolEqualityComparer.Default.Equals(existing, member)))
-            return;
-
-        members.Add(member);
     }
 
     private static bool IsDeclaredOnType(INamedTypeSymbol typeSymbol, ISymbol implementation) =>
