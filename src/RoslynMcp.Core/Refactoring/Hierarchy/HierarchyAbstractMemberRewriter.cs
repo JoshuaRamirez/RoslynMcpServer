@@ -38,12 +38,15 @@ internal static class HierarchyAbstractMemberRewriter
     };
 
     /// <summary>
-    /// A wholly private property/indexer is lifted to protected; implicit
-    /// accessors follow. An explicit private accessor on a more visible
-    /// member cannot become abstract (CS0621) and cannot stay on the
-    /// override if the base drops it (CS0546).
+    /// True when a property/indexer's accessors allow an abstract + override
+    /// pair. A wholly private property/indexer is lifted to protected;
+    /// implicit accessors follow. An explicit private accessor on a more
+    /// visible member cannot become abstract (CS0442 / CS0621) and cannot
+    /// stay on the override if the base drops it (CS0546). Shared by
+    /// <see cref="CanBeAbstract"/> and <see cref="PushMembersDownOperation"/>
+    /// (<c>leaveAbstract</c>).
     /// </summary>
-    private static bool CanAbstractPropertyAccessors(IPropertySymbol property)
+    internal static bool CanAbstractPropertyAccessors(IPropertySymbol property)
     {
         if (property.DeclaredAccessibility == Accessibility.Private)
             return true;
