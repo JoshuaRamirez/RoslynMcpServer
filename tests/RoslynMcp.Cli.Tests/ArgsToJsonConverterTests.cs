@@ -581,4 +581,34 @@ public class ArgsToJsonConverterTests
         var p = JsonSerializer.Deserialize<PullMembersUpParams>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
         Assert.Equal(new[] { "Foo", "Bar" }, p.Members);
     }
+
+    [Fact]
+    public void SearchSymbols_AccessibilityFilter_RoundTripsToParams()
+    {
+        var dict = new Dictionary<string, string>
+        {
+            ["query"] = "Widget",
+            ["accessibility-filter"] = "protected internal"
+        };
+        var json = ArgsToJsonConverter.Convert(dict);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("protected internal", doc.RootElement.GetProperty("accessibilityFilter").GetString());
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.SearchSymbolsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("Widget", p.Query);
+        Assert.Equal("protected internal", p.AccessibilityFilter);
+    }
+
+    [Fact]
+    public void SearchSymbols_AccessibilityFilterOmitted_DeserializesAsNull()
+    {
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string> { ["query"] = "Widget" });
+
+        var p = JsonSerializer.Deserialize<RoslynMcp.Contracts.Models.SearchSymbolsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.AccessibilityFilter);
+    }
 }

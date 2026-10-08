@@ -65,4 +65,19 @@ public sealed class SearchSymbolsParams
     /// so <c>TotalCount</c> / <c>Truncated</c> reflect the project-scoped set.
     /// </summary>
     public string? ProjectPath { get; init; }
+
+    /// <summary>
+    /// Optional declared accessibility to restrict results to: one of the C# spellings <c>public</c>,
+    /// <c>internal</c>, <c>protected</c>, <c>private</c>, <c>protected internal</c>, or
+    /// <c>private protected</c> (case-insensitive; surrounding whitespace trimmed and inner whitespace
+    /// runs collapsed; the compound values are also accepted in the reversed modifier order C# allows,
+    /// <c>internal protected</c> / <c>protected private</c>). When set, only symbols whose <c>ISymbol.DeclaredAccessibility</c> equals it are
+    /// returned, so implicit defaults count (a top-level type with no modifier is <c>internal</c>, a
+    /// class member with no modifier is <c>private</c>) and the match is exact (<c>protected internal</c>
+    /// is not matched by <c>protected</c> or <c>internal</c>). Symbols without an accessibility
+    /// (namespaces) never match. Applied together with the other filters and before
+    /// <see cref="MaxResults"/> so <c>TotalCount</c> / <c>Truncated</c> reflect the accessibility-filtered
+    /// set. Omit or leave blank for no accessibility filter.
+    /// </summary>
+    public string? AccessibilityFilter { get; init; }
 }
