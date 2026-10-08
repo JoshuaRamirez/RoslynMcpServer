@@ -1158,12 +1158,8 @@ public sealed class ExtractVariableOperation : RefactoringOperationBase<ExtractV
     private static BlockSyntax? GetInnermostBlock(SyntaxNode node) =>
         node.Ancestors().OfType<BlockSyntax>().FirstOrDefault();
 
-    private static ExpressionSyntax Unwrap(ExpressionSyntax expression)
-    {
-        while (expression is ParenthesizedExpressionSyntax parenthesized)
-            expression = parenthesized.Expression;
-        return expression;
-    }
+    private static ExpressionSyntax Unwrap(ExpressionSyntax expression) =>
+        ParenthesizedExpressionHelpers.SkipParentheses(expression);
 
     private static IReadOnlyList<ISymbol?> CollectBindings(
         ExpressionSyntax expression,
