@@ -12,7 +12,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 /// Unit tests for <see cref="BraceTypeNameHelpers"/> —
 /// FindTypeDeclaration hit/miss, GetQualifiedTypeName nested,
 /// NormalizeScope null/whitespace/value, TypeNameMatches true/false,
-/// ValidateBraceParams allFiles / single-file rule set.
+/// ValidateBraceParams allFiles / single-file rule set,
+/// BuildDescription singular/plural and scope/verb arms.
 /// </summary>
 public class BraceTypeNameHelpersTests
 {
@@ -213,4 +214,35 @@ public class BraceTypeNameHelpersTests
 
         Assert.Equal(ErrorCodes.SourceFileNotFound, ex.ErrorCode);
     }
+
+    [Theory]
+    [InlineData("Add braces to", 1, "Add braces to 1 control statement")]
+    [InlineData("Add braces to", 2, "Add braces to 2 control statements")]
+    [InlineData("Remove braces from", 1, "Remove braces from 1 control statement")]
+    [InlineData("Remove braces from", 3, "Remove braces from 3 control statements")]
+    public void BuildDescription_DefaultScope_SingularPluralAndVerbs(string verbPhrase, int count, string expected)
+    {
+        Assert.Equal(expected, BraceTypeNameHelpers.BuildDescription(verbPhrase, "statement", count, null));
+    }
+
+    [Theory]
+    [InlineData("Add braces to", 1, "Worker", "Add braces to 1 control statement in type 'Worker'")]
+    [InlineData("Add braces to", 2, "Sample.Host", "Add braces to 2 control statements in type 'Sample.Host'")]
+    [InlineData("Remove braces from", 1, "Worker", "Remove braces from 1 control statement in type 'Worker'")]
+    [InlineData("Remove braces from", 4, "Host", "Remove braces from 4 control statements in type 'Host'")]
+    public void BuildDescription_TypeScope_IncludesTypeName(string verbPhrase, int count, string typeName, string expected)
+    {
+        Assert.Equal(expected, BraceTypeNameHelpers.BuildDescription(verbPhrase, "type", count, typeName));
+    }
+
+    [Theory]
+    [InlineData("Add braces to", 1, "Add braces to 1 control statement in file")]
+    [InlineData("Add braces to", 2, "Add braces to 2 control statements in file")]
+    [InlineData("Remove braces from", 1, "Remove braces from 1 control statement in file")]
+    [InlineData("Remove braces from", 5, "Remove braces from 5 control statements in file")]
+    public void BuildDescription_FileScope_IncludesInFile(string verbPhrase, int count, string expected)
+    {
+        Assert.Equal(expected, BraceTypeNameHelpers.BuildDescription(verbPhrase, "file", count, null));
+    }
+
 }
