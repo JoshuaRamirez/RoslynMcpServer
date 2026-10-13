@@ -4,7 +4,7 @@ namespace RoslynMcp.Core.Query.Utilities;
 
 /// <summary>
 /// Normalizes and applies the optional <c>namespaceFilter</c> of <c>search_symbols</c>,
-/// <c>find_implementations</c>, <c>find_references</c>, <c>find_callers</c>, and <c>get_type_hierarchy</c>: a symbol (or reference / call site) matches when
+/// <c>find_implementations</c>, <c>find_references</c>, <c>find_callers</c>, <c>get_type_hierarchy</c>, and <c>get_diagnostics</c>: a symbol (or reference / call / diagnostic site) matches when
 /// its containing namespace equals the filter or is nested inside it (ordinal).
 /// </summary>
 internal static class NamespaceFilter

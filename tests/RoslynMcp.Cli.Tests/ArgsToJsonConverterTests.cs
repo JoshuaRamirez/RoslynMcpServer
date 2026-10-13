@@ -812,6 +812,43 @@ public class ArgsToJsonConverterTests
     }
 
     [Fact]
+    public void GetDiagnostics_NamespaceFilter_RoundTripsToParams()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var dict = new Dictionary<string, string>
+        {
+            ["namespace-filter"] = "App.Services",
+            ["max-results"] = "3"
+        };
+        var json = ArgsToJsonConverter.Convert(dict, tool.ParamsType);
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("App.Services", doc.RootElement.GetProperty("namespaceFilter").GetString());
+
+        var p = JsonSerializer.Deserialize<GetDiagnosticsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Equal("App.Services", p.NamespaceFilter);
+        Assert.Equal(3, p.MaxResults);
+    }
+
+    [Fact]
+    public void GetDiagnostics_NamespaceFilterOmitted_DeserializesAsNull()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("get-diagnostics")!;
+        var json = ArgsToJsonConverter.Convert(new Dictionary<string, string>
+        {
+            ["severity-filter"] = "Error"
+        }, tool.ParamsType);
+
+        var p = JsonSerializer.Deserialize<GetDiagnosticsParams>(
+            json,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true })!;
+        Assert.Null(p.NamespaceFilter);
+    }
+
+    [Fact]
     public void GetDiagnosticsParams_ListOptions_RoundTripThroughDeserialize()
     {
         var registry = ToolRegistry.BuildDefault();

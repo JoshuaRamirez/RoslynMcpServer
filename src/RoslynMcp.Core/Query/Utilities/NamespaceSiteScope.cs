@@ -4,8 +4,8 @@ using RoslynMcp.Core.Workspace;
 namespace RoslynMcp.Core.Query.Utilities;
 
 /// <summary>
-/// Applies the optional <c>namespaceFilter</c> of <c>find_references</c> and <c>find_callers</c> to
-/// reference / call sites: a site matches when the symbol enclosing it (member, type, or namespace
+/// Applies the optional <c>namespaceFilter</c> of <c>find_references</c>, <c>find_callers</c>, and
+/// <c>get_diagnostics</c> to reference / call / diagnostic sites: a site matches when the symbol enclosing it (member, type, or namespace
 /// declaration) lives in the filter namespace or one nested inside it (see
 /// <see cref="NamespaceFilter.IsSiteInNamespace"/>). The target symbol's own namespace is irrelevant.
 /// Semantic models are cached per syntax tree so each file is bound at most once per scope.
