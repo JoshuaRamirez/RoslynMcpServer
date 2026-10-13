@@ -45,6 +45,9 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
 
         // Same parsing and InvalidSymbolKind error as search_symbols / get_document_outline kindFilter.
         SymbolKindFilterParser.Parse(@params.KindFilter);
+
+        // Same parsing and InvalidVisibility error as search_symbols / get_document_outline accessibilityFilter.
+        AccessibilityFilterParser.Parse(@params.AccessibilityFilter);
     }
 
     /// <inheritdoc />
@@ -57,16 +60,18 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
             @params.SourceFile, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
 
         var symbol = resolved.Symbol;
-        var info = BuildDetailedInfo(symbol, @params.MaxResults, @params.KindFilter);
+        var info = BuildDetailedInfo(symbol, @params.MaxResults, @params.KindFilter, @params.AccessibilityFilter);
 
         return QueryResult<DetailedSymbolInfo>.Succeeded(operationId, info);
     }
 
-    private static DetailedSymbolInfo BuildDetailedInfo(ISymbol symbol, int? maxResults, string? kindFilter)
+    private static DetailedSymbolInfo BuildDetailedInfo(
+        ISymbol symbol, int? maxResults, string? kindFilter, string? accessibilityFilter)
     {
         var modifiers = GetModifiers(symbol);
         var location = GetLocation(symbol);
         var kindFilterValue = SymbolKindFilterParser.Parse(kindFilter);
+        var accessibilityFilterValue = AccessibilityFilterParser.Parse(accessibilityFilter);
 
         // Gather type-specific fields
         string? baseType = null;
@@ -91,12 +96,20 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                     .Where(m => SymbolKindMapper.Map(m) == kindFilterValue.Value);
             }
 
+            if (accessibilityFilterValue.HasValue)
+            {
+                // Exact match on declared accessibility (implicit defaults count), same as
+                // search_symbols accessibilityFilter.
+                memberSymbols = memberSymbols
+                    .Where(m => m.DeclaredAccessibility == accessibilityFilterValue.Value);
+            }
+
             var allMembers = memberSymbols
                 .Select(m => m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat))
                 .ToList();
 
-            // kindFilter applies first; maxResults caps only Members (first N in today's
-            // enumeration order); TotalCount stays the kind-filtered member count.
+            // kindFilter then accessibilityFilter apply first; maxResults caps only Members (first N
+            // in today's enumeration order); TotalCount stays the filtered member count.
             totalCount = allMembers.Count;
             if (maxResults.HasValue && allMembers.Count > maxResults.Value)
             {
