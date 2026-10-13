@@ -730,45 +730,16 @@ public sealed class GeneratePropertyOperation : RefactoringOperationBase<Generat
         return @params.PropertyType!;
     }
 
-    internal static bool PropertyTypeMatchesField(string requestedType, ITypeSymbol fieldType)
-    {
-        requestedType = requestedType.Trim();
-        var candidates = new HashSet<string>(StringComparer.Ordinal)
-        {
-            fieldType.ToDisplayString(),
-            fieldType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat).Replace("global::", "", StringComparison.Ordinal),
-            fieldType.Name
-        };
-
-        if (TryGetSpecialTypeAlias(fieldType.SpecialType, out var alias))
-            candidates.Add(alias);
-
-        return candidates.Contains(requestedType);
-    }
-
-    private static bool TryGetSpecialTypeAlias(SpecialType specialType, out string alias)
-    {
-        alias = specialType switch
-        {
-            SpecialType.System_Boolean => "bool",
-            SpecialType.System_Byte => "byte",
-            SpecialType.System_SByte => "sbyte",
-            SpecialType.System_Int16 => "short",
-            SpecialType.System_UInt16 => "ushort",
-            SpecialType.System_Int32 => "int",
-            SpecialType.System_UInt32 => "uint",
-            SpecialType.System_Int64 => "long",
-            SpecialType.System_UInt64 => "ulong",
-            SpecialType.System_Single => "float",
-            SpecialType.System_Double => "double",
-            SpecialType.System_Decimal => "decimal",
-            SpecialType.System_Char => "char",
-            SpecialType.System_String => "string",
-            SpecialType.System_Object => "object",
-            _ => ""
-        };
-        return alias.Length > 0;
-    }
+    /// <summary>
+    /// True when <paramref name="requestedType"/> matches
+    /// <paramref name="fieldType"/> via display string / FQN / name / special-type
+    /// keyword alias. Delegates to
+    /// <see cref="SpecialTypeAliasHelpers.MatchesRequestedType"/> without the
+    /// nint/nuint/void aliases, preserving generate_property's original
+    /// 15-entry alias map (behavior-preserving; no widening).
+    /// </summary>
+    internal static bool PropertyTypeMatchesField(string requestedType, ITypeSymbol fieldType) =>
+        SpecialTypeAliasHelpers.MatchesRequestedType(requestedType, fieldType, includeNativeAndVoidAliases: false);
 
     internal static string DerivePropertyName(string fieldName)
     {
