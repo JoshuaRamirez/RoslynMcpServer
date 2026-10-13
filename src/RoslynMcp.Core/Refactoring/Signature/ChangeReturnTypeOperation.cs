@@ -585,7 +585,7 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                 continue;
             if (candidate.TypeParameters.Length != method.TypeParameters.Length)
                 continue;
-            if (!ParameterTypesMatch(method, candidate))
+            if (!TypeEquivalenceHelpers.ParameterListsMatch(method.Parameters, candidate.Parameters))
                 continue;
             if (!TypeEquivalenceHelpers.TypesEquivalent(candidate.ReturnType, newReturnType))
                 continue;
@@ -594,21 +594,6 @@ public sealed class ChangeReturnTypeOperation : RefactoringOperationBase<ChangeR
                 ErrorCodes.SignatureMatchesOverload,
                 $"Changing the return type of '{method.Name}' would match an existing overload.");
         }
-    }
-
-    private static bool ParameterTypesMatch(IMethodSymbol method, IMethodSymbol other)
-    {
-        for (var i = 0; i < method.Parameters.Length; i++)
-        {
-            var left = method.Parameters[i];
-            var right = other.Parameters[i];
-            if (left.RefKind != right.RefKind)
-                return false;
-            if (!TypeEquivalenceHelpers.TypesEquivalent(left.Type, right.Type))
-                return false;
-        }
-
-        return true;
     }
 
     private async Task<List<IMethodSymbol>> GetRelatedMethodsAsync(
