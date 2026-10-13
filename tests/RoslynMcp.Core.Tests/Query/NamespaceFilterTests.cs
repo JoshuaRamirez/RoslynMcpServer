@@ -6,7 +6,7 @@ namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
 /// Unit tests for <see cref="NamespaceFilter"/>, the shared <c>namespaceFilter</c> normalization and
-/// matching of <c>search_symbols</c> and <c>find_implementations</c>.
+/// matching of <c>search_symbols</c>, <c>find_implementations</c>, and <c>find_references</c>.
 /// </summary>
 public class NamespaceFilterTests
 {
@@ -51,5 +51,42 @@ public class NamespaceFilterTests
         Assert.NotNull(type);
 
         Assert.Equal(expected, NamespaceFilter.IsInNamespace(type, filter));
+    }
+
+    [Theory]
+    [InlineData("App.Services", true)]
+    [InlineData("App", true)]
+    [InlineData("App.Services.Orders", true)]
+    [InlineData("App.Serv", false)]
+    [InlineData("app.services.orders", false)]
+    public void IsSiteInNamespace_NamespaceEnclosingSymbol_UsesThatNamespace(string filter, bool expected)
+    {
+        var compilation = CSharpCompilation.Create("NsTest", [CSharpSyntaxTree.ParseText(
+            "namespace App.Services.Orders { public class Widget { } }")]);
+        var ns = compilation.GetTypeByMetadataName("App.Services.Orders.Widget")!.ContainingNamespace;
+
+        // The site's enclosing symbol is the namespace itself (e.g. a using directive inside it).
+        Assert.Equal(expected, NamespaceFilter.IsSiteInNamespace(ns, filter));
+    }
+
+    [Theory]
+    [InlineData("App.Services", true)]
+    [InlineData("App.Services.Orders", false)]
+    public void IsSiteInNamespace_MemberEnclosingSymbol_UsesContainingNamespace(string filter, bool expected)
+    {
+        var compilation = CSharpCompilation.Create("NsTest", [CSharpSyntaxTree.ParseText(
+            "namespace App.Services { public class Widget { public void Run() { } } }")]);
+        var method = compilation.GetTypeByMetadataName("App.Services.Widget")!.GetMembers("Run").Single();
+
+        Assert.Equal(expected, NamespaceFilter.IsSiteInNamespace(method, filter));
+    }
+
+    [Fact]
+    public void IsSiteInNamespace_GlobalNamespace_NeverMatches()
+    {
+        var compilation = CSharpCompilation.Create("NsTest", [CSharpSyntaxTree.ParseText("public class Widget { }")]);
+
+        Assert.False(NamespaceFilter.IsSiteInNamespace(compilation.GlobalNamespace, "App"));
+        Assert.False(NamespaceFilter.IsSiteInNamespace(compilation.GetTypeByMetadataName("Widget")!, "App"));
     }
 }

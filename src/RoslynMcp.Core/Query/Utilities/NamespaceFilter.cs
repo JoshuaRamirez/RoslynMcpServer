@@ -3,9 +3,9 @@ using Microsoft.CodeAnalysis;
 namespace RoslynMcp.Core.Query.Utilities;
 
 /// <summary>
-/// Normalizes and applies the optional <c>namespaceFilter</c> of <c>search_symbols</c> and
-/// <c>find_implementations</c>: a symbol matches when its containing namespace equals the filter or
-/// is nested inside it (ordinal).
+/// Normalizes and applies the optional <c>namespaceFilter</c> of <c>search_symbols</c>,
+/// <c>find_implementations</c>, and <c>find_references</c>: a symbol (or reference site) matches when
+/// its containing namespace equals the filter or is nested inside it (ordinal).
 /// </summary>
 internal static class NamespaceFilter
 {
@@ -32,9 +32,25 @@ internal static class NamespaceFilter
     /// returned by <see cref="Normalize"/>) or is nested inside it (ordinal). Symbols in the global
     /// namespace never match.
     /// </summary>
-    public static bool IsInNamespace(ISymbol symbol, string normalizedFilter)
+    public static bool IsInNamespace(ISymbol symbol, string normalizedFilter) =>
+        IsNamespaceInFilter(symbol.ContainingNamespace, normalizedFilter);
+
+    /// <summary>
+    /// Whether a reference site whose enclosing symbol (e.g. from
+    /// <see cref="SemanticModel.GetEnclosingSymbol(int, System.Threading.CancellationToken)"/>) is
+    /// <paramref name="enclosingSymbol"/> lives in a namespace that equals
+    /// <paramref name="normalizedFilter"/> or is nested inside it (ordinal). When the enclosing symbol
+    /// is itself a namespace (e.g. a using directive inside a namespace declaration),
+    /// that namespace is used; otherwise its containing namespace. Sites in the global namespace never
+    /// match.
+    /// </summary>
+    public static bool IsSiteInNamespace(ISymbol enclosingSymbol, string normalizedFilter) =>
+        IsNamespaceInFilter(
+            enclosingSymbol as INamespaceSymbol ?? enclosingSymbol.ContainingNamespace,
+            normalizedFilter);
+
+    private static bool IsNamespaceInFilter(INamespaceSymbol? containingNamespace, string normalizedFilter)
     {
-        var containingNamespace = symbol.ContainingNamespace;
         if (containingNamespace == null || containingNamespace.IsGlobalNamespace) return false;
 
         var name = containingNamespace.ToDisplayString();

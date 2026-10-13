@@ -13,7 +13,8 @@ namespace RoslynMcp.Core.Query;
 
 /// <summary>
 /// Finds all references to a symbol across the solution (or within one project when
-/// <see cref="FindReferencesParams.ProjectPath"/> is set).
+/// <see cref="FindReferencesParams.ProjectPath"/> is set), optionally narrowed to reference sites in one
+/// namespace (<see cref="FindReferencesParams.NamespaceFilter"/>).
 /// Delegates to Roslyn's SymbolFinder.FindReferencesAsync.
 /// </summary>
 public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesParams, FindReferencesResult>
@@ -122,6 +123,31 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         bool IsInProjectScope(DocumentId? documentId) =>
             projectScope == null || (documentId != null && projectScope.Contains(documentId.ProjectId));
 
+        // Optional namespaceFilter (same normalization / matching as search_symbols and
+        // find_implementations): keep only locations whose reference site, i.e. the symbol enclosing
+        // the location (member, type, or namespace declaration), lives in the filter namespace or one
+        // nested inside it. The target symbol's own namespace is irrelevant (it is the same for every
+        // reference). Semantic models are cached per syntax tree so each file is bound at most once.
+        var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
+        var semanticModelCache = namespaceFilter == null
+            ? null
+            : new Dictionary<SyntaxTree, SemanticModel?>();
+
+        async Task<bool> IsInNamespaceScopeAsync(SyntaxTree? tree, Document? document, int position)
+        {
+            if (namespaceFilter == null) return true;
+            if (tree == null) return false;
+
+            if (!semanticModelCache!.TryGetValue(tree, out var semanticModel))
+            {
+                semanticModel = await GetSemanticModelAsync(tree, document, cancellationToken);
+                semanticModelCache[tree] = semanticModel;
+            }
+
+            var enclosingSymbol = semanticModel?.GetEnclosingSymbol(position, cancellationToken);
+            return enclosingSymbol != null && NamespaceFilter.IsSiteInNamespace(enclosingSymbol, namespaceFilter);
+        }
+
         foreach (var referencedSymbol in referencedSymbols)
         {
             // Add the definition itself (skipped entirely when includeDeclaration is false)
@@ -132,10 +158,14 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
             {
                 var lineSpan = defLocation.GetLineSpan();
 
-                // Optional referenceFile / projectPath filters run before maxResults so
-                // TotalCount / Truncated reflect the filtered set.
+                // Optional referenceFile / projectPath / namespaceFilter filters run before maxResults
+                // so TotalCount / Truncated reflect the filtered set.
                 if (!IsInReferenceFile(lineSpan.Path)) continue;
                 if (projectScope != null && !IsInProjectScope(Context.Solution.GetDocumentId(defLocation.SourceTree))) continue;
+                if (namespaceFilter != null
+                    && !await IsInNamespaceScopeAsync(
+                        defLocation.SourceTree, Context.Solution.GetDocument(defLocation.SourceTree), defLocation.SourceSpan.Start))
+                    continue;
 
                 totalCount++;
                 if (locations.Count < maxResults)
@@ -166,6 +196,9 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                 // reference's own document.
                 if (!IsInReferenceFile(file)) continue;
                 if (!IsInProjectScope(refLocation.Document.Id)) continue;
+                if (!await IsInNamespaceScopeAsync(
+                        refLocation.Location.SourceTree, refLocation.Document, refLocation.Location.SourceSpan.Start))
+                    continue;
 
                 totalCount++;
 
@@ -196,6 +229,28 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         };
 
         return QueryResult<FindReferencesResult>.Succeeded(operationId, result);
+    }
+
+    /// <summary>
+    /// Semantic model for a reference / definition tree: from its document when it has one, otherwise
+    /// (e.g. a source-generated partial declaration, which is not a regular document) from the
+    /// compilation of the project whose generator output contains that exact tree. Compilations are
+    /// cached by the workspace, and the locations come from those same compilations.
+    /// </summary>
+    private async Task<SemanticModel?> GetSemanticModelAsync(
+        SyntaxTree tree, Document? document, CancellationToken cancellationToken)
+    {
+        if (document != null)
+            return await document.GetSemanticModelAsync(cancellationToken);
+
+        foreach (var project in Context.Solution.Projects)
+        {
+            var compilation = await project.GetCompilationAsync(cancellationToken);
+            if (compilation != null && compilation.ContainsSyntaxTree(tree))
+                return compilation.GetSemanticModel(tree);
+        }
+
+        return null;
     }
 
     private static async Task<string?> GetContextSnippetAsync(Location location, CancellationToken cancellationToken)

@@ -899,6 +899,509 @@ public class FindReferencesOperationTests
 
     #endregion
 
+
+    #region namespaceFilter
+
+    // namespaceFilter scenario (one project): Target.Run is declared in App.Core (Target.cs line 5) and
+    // used once there (Self, line 6); Services.cs uses it in block namespace App.Services (line 5) and,
+    // inside a lambda, in nested block namespace App.Services.Orders (line 12); Extra.cs uses it in
+    // file-scoped App.ServicesExtra (line 5, prefix but not nested); Lower.cs in app.services (line 5,
+    // differs only by case); Global.cs in the global namespace (line 3). Solution-wide: 1 definition +
+    // 6 usages.
+    private static readonly Dictionary<string, string> NamespaceSources = new()
+    {
+        ["Target.cs"] = """
+            namespace App.Core
+            {
+                public class Target
+                {
+                    public void Run() { }
+                    public void Self() { Run(); }
+                }
+            }
+            """,
+        ["Services.cs"] = """
+            namespace App.Services
+            {
+                public class OrderService
+                {
+                    public void Place(App.Core.Target t) { t.Run(); }
+                }
+            }
+            namespace App.Services.Orders
+            {
+                public class OrderHandler
+                {
+                    public void Handle(App.Core.Target t) { System.Action a = () => t.Run(); a(); }
+                }
+            }
+            """,
+        ["Extra.cs"] = """
+            namespace App.ServicesExtra;
+
+            public class Extra
+            {
+                public void Go(App.Core.Target t) { t.Run(); }
+            }
+            """,
+        ["Lower.cs"] = """
+            namespace app.services
+            {
+                public class Lower
+                {
+                    public void Go(App.Core.Target t) { t.Run(); }
+                }
+            }
+            """,
+        ["Global.cs"] = """
+            public class GlobalUser
+            {
+                public void Go(App.Core.Target t) { t.Run(); }
+            }
+            """
+    };
+
+    private static List<(string File, int Line)> FileLines(IEnumerable<ReferenceLocationInfo> references) =>
+        references
+            .Select(r => (Path.GetFileName(r.File), r.Line))
+            .OrderBy(l => l.Item1, StringComparer.Ordinal)
+            .ThenBy(l => l.Line)
+            .ToList();
+
+    [Fact]
+    public void NamespaceFilter_DefaultsToNull()
+    {
+        var @params = new FindReferencesParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.NamespaceFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("global::")]
+    [InlineData("  global::  ")]
+    public async Task FindReferences_NamespaceFilterBlankOrRoot_MatchesOmitted(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run"
+        });
+        var filtered = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(filtered.Success);
+        Assert.Equal(7, omitted.Data!.TotalCount);
+        Assert.Equal(7, filtered.Data!.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+        Assert.Equal(SortedLocations(omitted.Data.References), SortedLocations(filtered.Data.References));
+    }
+
+    [SkippableTheory]
+    [InlineData("App.Services")]
+    [InlineData("  App.Services  ")]
+    [InlineData("global::App.Services")]
+    [InlineData(" global::App.Services ")]
+    public async Task FindReferences_NamespaceFilter_KeepsSitesInEqualOrNestedNamespace(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        // sourceFile (App.Core) still locates the symbol; the filter scopes reference sites only.
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal("Run", result.Data!.SymbolName);
+        // App.Services (line 5) + nested App.Services.Orders lambda (line 12); not App.ServicesExtra,
+        // app.services, the global namespace, or the App.Core declaration / Self usage.
+        Assert.Equal(
+            new List<(string, int)> { ("Services.cs", 5), ("Services.cs", 12) },
+            FileLines(result.Data.References));
+        Assert.DoesNotContain(result.Data.References, r => r.IsDefinition);
+        Assert.Equal(2, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NamespaceFilterNestedBlock_KeepsOnlyInnerNamespaceSites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        // Two block namespaces in one file: only the lambda in App.Services.Orders matches.
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App.Services.Orders"
+        });
+
+        Assert.True(result.Success);
+        var only = Assert.Single(result.Data!.References);
+        Assert.True(SamePath(only.File, workspace.PathOf("Services.cs")));
+        Assert.Equal(12, only.Line);
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NamespaceFilterRoot_IncludesDefinitionAndNestedButNotGlobalOrOtherCase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            new List<(string, int)>
+            {
+                ("Extra.cs", 5), ("Services.cs", 5), ("Services.cs", 12), ("Target.cs", 5), ("Target.cs", 6)
+            },
+            FileLines(result.Data!.References));
+        var definition = Assert.Single(result.Data.References, r => r.IsDefinition);
+        Assert.Equal(5, definition.Line);
+        Assert.Equal(5, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("App.ServicesExtra", "Extra.cs", 5)]
+    [InlineData("app.services", "Lower.cs", 5)]
+    public async Task FindReferences_NamespaceFilter_IsOrdinalAndHonorsFileScopedNamespaces(
+        string namespaceFilter, string expectedFile, int expectedLine)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        var only = Assert.Single(result.Data!.References);
+        Assert.True(SamePath(only.File, workspace.PathOf(expectedFile)));
+        Assert.Equal(expectedLine, only.Line);
+        Assert.Equal(1, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("App.Serv")]
+    [InlineData("App.Services.Orders.Deep")]
+    [InlineData("Nope")]
+    [InlineData("APP")]
+    public async Task FindReferences_NamespaceFilterNoMatch_ReturnsEmptySuccess(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.References);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NamespaceFilterWithIncludeDeclarationFalse_DropsDefinition()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var withDeclaration = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App.Core"
+        });
+
+        Assert.True(withDeclaration.Success);
+        Assert.Equal(2, withDeclaration.Data!.TotalCount);
+        Assert.Single(withDeclaration.Data.References, r => r.IsDefinition);
+
+        var usagesOnly = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App.Core",
+            IncludeDeclaration = false
+        });
+
+        Assert.True(usagesOnly.Success);
+        var only = Assert.Single(usagesOnly.Data!.References);
+        Assert.False(only.IsDefinition);
+        Assert.Equal(6, only.Line);
+        Assert.Equal(1, usagesOnly.Data.TotalCount);
+        Assert.False(usagesOnly.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NamespaceFilterWithReferenceFile_AndsTheScopes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var sameFile = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App",
+            ReferenceFile = workspace.PathOf("Services.cs")
+        });
+
+        Assert.True(sameFile.Success);
+        Assert.Equal(
+            new List<(string, int)> { ("Services.cs", 5), ("Services.cs", 12) },
+            FileLines(sameFile.Data!.References));
+        Assert.Equal(2, sameFile.Data.TotalCount);
+
+        var otherFile = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App.Services",
+            ReferenceFile = workspace.PathOf("Extra.cs")
+        });
+
+        Assert.True(otherFile.Success);
+        Assert.Empty(otherFile.Data!.References);
+        Assert.Equal(0, otherFile.Data.TotalCount);
+        Assert.False(otherFile.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NamespaceFilterWithMaxResults_CapsAfterNamespaceFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App",
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(2, capped.Data!.References.Count);
+        // TotalCount reflects the namespace-filtered set (5 under App), not the solution-wide 7.
+        Assert.Equal(5, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+        Assert.DoesNotContain(capped.Data.References, r =>
+            SamePath(r.File, workspace.PathOf("Global.cs")) || SamePath(r.File, workspace.PathOf("Lower.cs")));
+
+        var notCapped = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App.Services",
+            MaxResults = 2
+        });
+
+        Assert.True(notCapped.Success);
+        Assert.Equal(2, notCapped.Data!.References.Count);
+        Assert.Equal(2, notCapped.Data.TotalCount);
+        Assert.False(notCapped.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NamespaceFilterTypeTarget_AttributesUsingAliasAndBaseListToEnclosingNamespace()
+    {
+        // A using alias outside any namespace is a global-namespace site; the alias and base list
+        // inside App.Services.Aliases belong to that namespace (the enclosing symbol is the namespace
+        // or the declaring type, not the target).
+        await using var workspace = await TempWorkspace.CreateAsync(new Dictionary<string, string>
+        {
+            ["Target.cs"] = """
+                namespace App.Core
+                {
+                    public class Target { }
+                }
+                """,
+            ["Aliases.cs"] = """
+                using GlobalAlias = App.Core.Target;
+
+                namespace App.Services.Aliases
+                {
+                    using LocalAlias = App.Core.Target;
+
+                    public class Derived : App.Core.Target { }
+                }
+                """
+        });
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var scoped = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            NamespaceFilter = "App.Services"
+        });
+
+        Assert.True(scoped.Success);
+        Assert.Equal(
+            new List<(string, int)> { ("Aliases.cs", 5), ("Aliases.cs", 7) },
+            FileLines(scoped.Data!.References));
+        Assert.Equal(2, scoped.Data.TotalCount);
+
+        var core = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target",
+            NamespaceFilter = "App.Core"
+        });
+
+        // Only the declaration site(s) in App.Core remain (Roslyn also reports the implicit
+        // constructor's definition at the class declaration); no usage lives in App.Core.
+        Assert.True(core.Success);
+        Assert.NotEmpty(core.Data!.References);
+        Assert.All(core.Data.References, r =>
+        {
+            Assert.True(r.IsDefinition);
+            Assert.True(SamePath(r.File, workspace.PathOf("Target.cs")));
+            Assert.Equal(3, r.Line);
+        });
+        Assert.Equal(core.Data.References.Count, core.Data.TotalCount);
+
+        var global = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Target"
+        });
+
+        // Without the filter the global-namespace alias (line 1) is reported too.
+        Assert.True(global.Success);
+        Assert.Contains(global.Data!.References, r => SamePath(r.File, workspace.PathOf("Aliases.cs")) && r.Line == 1);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NamespaceFilter_KeepsSourceGeneratedDefinitions()
+    {
+        // [GeneratedRegex] makes the BCL regex source generator emit a second `partial class Rx`
+        // part (in the same namespace) into a generated tree that is not a regular document; its
+        // definition location must still be attributed to App.Gen rather than dropped.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            using System.Text.RegularExpressions;
+            namespace App.Gen
+            {
+                public static partial class Rx
+                {
+                    [GeneratedRegex("ab+")]
+                    public static partial Regex Ab();
+                }
+            }
+            """, "Rx.cs");
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Rx"
+        });
+
+        Assert.True(omitted.Success);
+        Skip.If(
+            omitted.Data!.References.All(r => SamePath(r.File, workspace.SourcePath)),
+            "The regex source generator did not run in this MSBuild workspace.");
+
+        var scoped = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Rx",
+            NamespaceFilter = "App.Gen"
+        });
+
+        Assert.True(scoped.Success);
+        Assert.Equal(omitted.Data.TotalCount, scoped.Data!.TotalCount);
+        Assert.Equal(SortedLocations(omitted.Data.References), SortedLocations(scoped.Data.References));
+        Assert.Contains(scoped.Data.References, r => r.IsDefinition && !SamePath(r.File, workspace.SourcePath));
+
+        var other = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Rx",
+            NamespaceFilter = "App.Other"
+        });
+
+        Assert.True(other.Success);
+        Assert.Empty(other.Data!.References);
+        Assert.Equal(0, other.Data.TotalCount);
+    }
+
+    [SkippableFact]
+    public async Task FindReferences_NamespaceFilterWithProjectPath_AndsTheScopes()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var lib = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.LibTargetPath,
+            SymbolName = "Run",
+            NamespaceFilter = "Lib",
+            ProjectPath = workspace.LibProjectPath
+        });
+
+        Assert.True(lib.Success);
+        Assert.Equal(2, lib.Data!.TotalCount);
+        Assert.Single(lib.Data.References, r => r.IsDefinition);
+
+        var app = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.LibTargetPath,
+            SymbolName = "Run",
+            NamespaceFilter = "App"
+        });
+
+        Assert.True(app.Success);
+        Assert.Equal(3, app.Data!.TotalCount);
+        Assert.All(app.Data.References, r => Assert.True(
+            SamePath(r.File, workspace.AppUserAPath) || SamePath(r.File, workspace.AppUserBPath)));
+
+        var mismatch = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.LibTargetPath,
+            SymbolName = "Run",
+            NamespaceFilter = "Lib",
+            ProjectPath = workspace.AppProjectPath
+        });
+
+        Assert.True(mismatch.Success);
+        Assert.Empty(mismatch.Data!.References);
+        Assert.Equal(0, mismatch.Data.TotalCount);
+        Assert.False(mismatch.Data.Truncated);
+    }
+
+    #endregion
+
     // Roslyn does not guarantee reference order across runs, so compare locations as sorted sets.
     private static List<(string File, int Line, int Column, bool IsDefinition)> SortedLocations(
         IEnumerable<ReferenceLocationInfo> references) =>
