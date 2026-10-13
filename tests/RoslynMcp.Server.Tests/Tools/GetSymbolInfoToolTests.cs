@@ -92,6 +92,7 @@ public class GetSymbolInfoToolTests
         Assert.True(properties.TryGetProperty("maxResults", out _));
         Assert.True(properties.TryGetProperty("kindFilter", out _));
         Assert.True(properties.TryGetProperty("accessibilityFilter", out _));
+        Assert.True(properties.TryGetProperty("nameFilter", out _));
     }
 
     [Fact]
@@ -151,6 +152,27 @@ public class GetSymbolInfoToolTests
     public void GetDefinition_DescriptionMentionsAccessibilityFilter()
     {
         Assert.Contains("accessibilityFilter", _tool.Description, StringComparison.Ordinal);
+        Assert.Contains("applied before maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_NameFilter_IsOptionalString()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var nameFilter = doc.RootElement.GetProperty("properties").GetProperty("nameFilter");
+
+        Assert.Equal("string", nameFilter.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("nameFilter", required);
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsNameFilter()
+    {
+        Assert.Contains("nameFilter", _tool.Description, StringComparison.Ordinal);
         Assert.Contains("applied before maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
