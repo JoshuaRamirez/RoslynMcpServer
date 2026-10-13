@@ -544,13 +544,6 @@ public static class SyntaxGenerationHelper
         return Accessibility.Protected;
     }
 
-    /// <summary>
-    /// True when a getter must throw: the flag is on, or the indexer /
-    /// property returns <c>ref</c> / <c>ref readonly</c> (CS8156).
-    /// </summary>
-    private static bool RequiresThrowBody(IPropertySymbol property, bool throwNotImplemented) =>
-        throwNotImplemented || property.ReturnsByRef || property.ReturnsByRefReadonly;
-
     private static TypeSyntax CreateMemberType(ITypeSymbol type, bool returnsByRef, bool returnsByRefReadonly)
     {
         var inner = SyntaxFactory.ParseTypeName(type.ToDisplayString());
@@ -586,7 +579,7 @@ public static class SyntaxGenerationHelper
         {
             var getBody = useBase
                 ? CreateBasePropertyGetBody(property)
-                : RequiresThrowBody(property, throwNotImplemented)
+                : ThrowNotImplementedBodyHelpers.RequiresThrowBody(property, throwNotImplemented)
                     ? CreateThrowNotImplementedBody()
                     : CreateDefaultReturnBody(property.Type);
             accessors.Add(WithOverrideAccessorModifiers(
