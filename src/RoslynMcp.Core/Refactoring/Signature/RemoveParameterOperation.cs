@@ -402,54 +402,11 @@ public sealed class RemoveParameterOperation : RefactoringOperationBase<RemovePa
     /// <summary>
     /// True when removing the parameter at <paramref name="removeIndex"/> would
     /// collide with another method of the same name in the containing type
-    /// (same arity + bound types) (ChangeSignature / Codex).
+    /// (same arity + bound types) (ChangeSignature / Codex). Thin wrapper over
+    /// <see cref="SiblingOverloadCollisionHelpers.WouldCollideWithSiblingAfterRemove"/>.
     /// </summary>
-    internal static bool WouldCollideWithSibling(IMethodSymbol method, int removeIndex)
-    {
-        var containingType = method.ContainingType;
-        if (containingType == null)
-            return false;
-
-        if (removeIndex < 0 || removeIndex >= method.Parameters.Length)
-            return false;
-
-        var prospectiveLength = method.Parameters.Length - 1;
-
-        foreach (var sibling in containingType.GetMembers(method.Name).OfType<IMethodSymbol>())
-        {
-            if (SymbolEqualityComparer.Default.Equals(sibling, method))
-                continue;
-            if (sibling.Parameters.Length != prospectiveLength)
-                continue;
-            if (sibling.TypeParameters.Length != method.TypeParameters.Length)
-                continue;
-
-            var collision = true;
-            for (var i = 0; i < prospectiveLength; i++)
-            {
-                var originalIndex = i < removeIndex ? i : i + 1;
-                var expectedType = method.Parameters[originalIndex].Type;
-                var expectedRef = method.Parameters[originalIndex].RefKind;
-
-                if (sibling.Parameters[i].RefKind != expectedRef)
-                {
-                    collision = false;
-                    break;
-                }
-
-                if (!TypeEquivalenceHelpers.TypesEquivalent(sibling.Parameters[i].Type, expectedType))
-                {
-                    collision = false;
-                    break;
-                }
-            }
-
-            if (collision)
-                return true;
-        }
-
-        return false;
-    }
+    internal static bool WouldCollideWithSibling(IMethodSymbol method, int removeIndex) =>
+        SiblingOverloadCollisionHelpers.WouldCollideWithSiblingAfterRemove(method, removeIndex);
 
     private async Task<Solution?> TryRemoveOneAsync(
         Document document,

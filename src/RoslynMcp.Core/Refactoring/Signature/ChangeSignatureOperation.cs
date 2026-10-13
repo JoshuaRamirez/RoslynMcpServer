@@ -522,6 +522,7 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
     /// True when applying <paramref name="newParameters"/> to
     /// <paramref name="method"/> would collide with another method of the
     /// same name in the containing type (same arity + bound type symbols).
+    /// Thin wrapper over <see cref="SiblingOverloadCollisionHelpers"/>.
     /// </summary>
     private static bool WouldCollideWithSibling(
         IMethodSymbol method,
@@ -529,57 +530,15 @@ public sealed class ChangeSignatureOperation : RefactoringOperationBase<ChangeSi
         SemanticModel semanticModel,
         MethodDeclarationSyntax methodDecl)
     {
-        var containingType = method.ContainingType;
-        if (containingType == null)
-            return false;
-
-        var position = methodDecl.SpanStart;
-        var boundTypes = new ITypeSymbol?[newParameters.Count];
+        var typeNames = new string[newParameters.Count];
         for (var i = 0; i < newParameters.Count; i++)
-        {
-            var typeInfo = semanticModel.GetSpeculativeTypeInfo(
-                position,
-                SyntaxFactory.ParseTypeName(newParameters[i].Type),
-                SpeculativeBindingOption.BindAsTypeOrNamespace);
-            if (typeInfo.Type == null || typeInfo.Type is IErrorTypeSymbol)
-                return false;
-            boundTypes[i] = typeInfo.Type;
-        }
+            typeNames[i] = newParameters[i].Type;
 
-        foreach (var sibling in containingType.GetMembers(method.Name).OfType<IMethodSymbol>())
-        {
-            if (SymbolEqualityComparer.Default.Equals(sibling, method))
-                continue;
-            if (sibling.Parameters.Length != newParameters.Count)
-                continue;
-            // Method type parameters are distinct symbols per overload; compare
-            // by arity + ordinal via TypeEquivalenceHelpers (Codex).
-            if (sibling.TypeParameters.Length != method.TypeParameters.Length)
-                continue;
-
-            var collision = true;
-            for (var i = 0; i < newParameters.Count; i++)
-            {
-                // Bulk CreateParameterSyntax emits RefKind.None; a sibling with
-                // ref/in/out of the same type remains a distinct overload (Codex).
-                if (sibling.Parameters[i].RefKind != RefKind.None)
-                {
-                    collision = false;
-                    break;
-                }
-
-                if (!TypeEquivalenceHelpers.TypesEquivalent(sibling.Parameters[i].Type, boundTypes[i]!))
-                {
-                    collision = false;
-                    break;
-                }
-            }
-
-            if (collision)
-                return true;
-        }
-
-        return false;
+        return SiblingOverloadCollisionHelpers.WouldCollideWithSibling(
+            method,
+            typeNames,
+            semanticModel,
+            methodDecl.SpanStart);
     }
 
 
