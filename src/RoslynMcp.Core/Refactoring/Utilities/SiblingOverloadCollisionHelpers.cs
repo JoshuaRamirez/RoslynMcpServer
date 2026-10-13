@@ -6,14 +6,46 @@ namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
 /// Shared sibling-overload collision checks used by change_signature /
-/// add_parameter / remove_parameter. Same bodies as the three former
-/// <c>WouldCollideWithSibling</c> copies (containing-type null → false;
-/// same-name <see cref="IMethodSymbol"/> siblings; skip self; length +
+/// add_parameter / remove_parameter (and the sibling scan used by
+/// change_return_type / reorder_parameters). Same bodies as the former
+/// copies (containing-type null → no siblings; same-name
+/// <see cref="IMethodSymbol"/> siblings; skip self; length +
 /// <see cref="IMethodSymbol.TypeParameters"/> arity gates; per-parameter
 /// <see cref="RefKind"/> + <see cref="TypeEquivalenceHelpers.TypesEquivalent"/>).
 /// </summary>
 internal static class SiblingOverloadCollisionHelpers
 {
+    /// <summary>
+    /// Same-name <see cref="IMethodSymbol"/> siblings of <paramref name="method"/>
+    /// in its containing type that could share its shape: excludes
+    /// <paramref name="method"/> itself, keeps only candidates with exactly
+    /// <paramref name="parameterCount"/> parameters and the same method
+    /// type-parameter arity. Null containing type → empty. Callers apply their
+    /// own per-candidate parameter / return-type match.
+    /// </summary>
+    internal static IEnumerable<IMethodSymbol> EnumerateSameShapeSiblings(
+        IMethodSymbol method,
+        int parameterCount)
+    {
+        var containingType = method.ContainingType;
+        if (containingType == null)
+            yield break;
+
+        foreach (var sibling in containingType.GetMembers(method.Name).OfType<IMethodSymbol>())
+        {
+            if (SymbolEqualityComparer.Default.Equals(sibling, method))
+                continue;
+            if (sibling.Parameters.Length != parameterCount)
+                continue;
+            // Method type parameters are distinct symbols per overload; compare
+            // by arity + ordinal via TypeEquivalenceHelpers (Codex).
+            if (sibling.TypeParameters.Length != method.TypeParameters.Length)
+                continue;
+
+            yield return sibling;
+        }
+    }
+
     /// <summary>
     /// True when applying <paramref name="prospectiveParameters"/> to
     /// <paramref name="method"/> would collide with another method of the
@@ -25,21 +57,8 @@ internal static class SiblingOverloadCollisionHelpers
         IMethodSymbol method,
         IReadOnlyList<(ITypeSymbol Type, RefKind RefKind)> prospectiveParameters)
     {
-        var containingType = method.ContainingType;
-        if (containingType == null)
-            return false;
-
-        foreach (var sibling in containingType.GetMembers(method.Name).OfType<IMethodSymbol>())
+        foreach (var sibling in EnumerateSameShapeSiblings(method, prospectiveParameters.Count))
         {
-            if (SymbolEqualityComparer.Default.Equals(sibling, method))
-                continue;
-            if (sibling.Parameters.Length != prospectiveParameters.Count)
-                continue;
-            // Method type parameters are distinct symbols per overload; compare
-            // by arity + ordinal via TypeEquivalenceHelpers (Codex).
-            if (sibling.TypeParameters.Length != method.TypeParameters.Length)
-                continue;
-
             var collision = true;
             for (var i = 0; i < prospectiveParameters.Count; i++)
             {
