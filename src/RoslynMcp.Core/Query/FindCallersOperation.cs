@@ -13,7 +13,8 @@ namespace RoslynMcp.Core.Query;
 
 /// <summary>
 /// Finds all callers of a symbol using Roslyn's SymbolFinder.FindCallersAsync(), across the solution
-/// (or within one project when <see cref="FindCallersParams.ProjectPath"/> is set).
+/// (or within one project when <see cref="FindCallersParams.ProjectPath"/> is set), optionally
+/// narrowed to call sites in one namespace (<see cref="FindCallersParams.NamespaceFilter"/>).
 /// </summary>
 public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams, FindCallersResult>
 {
@@ -96,6 +97,31 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
             ? null
             : new Dictionary<string, string>(StringComparer.Ordinal);
 
+        // Optional namespaceFilter (same normalization / matching as search_symbols /
+        // find_implementations / find_references): keep only call sites whose enclosing symbol
+        // (member, type, or namespace declaration) lives in the filter namespace or one nested
+        // inside it. The target symbol's own namespace is irrelevant. Semantic models are cached
+        // per syntax tree so each file is bound at most once.
+        var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
+        var semanticModelCache = namespaceFilter == null
+            ? null
+            : new Dictionary<SyntaxTree, SemanticModel?>();
+
+        async Task<bool> IsInNamespaceScopeAsync(SyntaxTree? tree, Document? document, int position)
+        {
+            if (namespaceFilter == null) return true;
+            if (tree == null) return false;
+
+            if (!semanticModelCache!.TryGetValue(tree, out var semanticModel))
+            {
+                semanticModel = await GetSemanticModelAsync(tree, document, cancellationToken);
+                semanticModelCache[tree] = semanticModel;
+            }
+
+            var enclosingSymbol = semanticModel?.GetEnclosingSymbol(position, cancellationToken);
+            return enclosingSymbol != null && NamespaceFilter.IsSiteInNamespace(enclosingSymbol, namespaceFilter);
+        }
+
         foreach (var caller in callerResults)
         {
             foreach (var location in caller.Locations)
@@ -104,8 +130,8 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
 
                 var lineSpan = location.GetLineSpan();
 
-                // Optional callerFile filter runs before maxResults so TotalCount / Truncated
-                // reflect the filtered set.
+                // Optional callerFile / projectPath / namespaceFilter filters run before maxResults
+                // so TotalCount / Truncated reflect the filtered set.
                 if (callerFileKey != null)
                 {
                     var locationPath = lineSpan.Path;
@@ -121,15 +147,22 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
                         continue;
                 }
 
-                // Optional projectPath filter (also before maxResults): keep only call sites whose
-                // document belongs to a matched project, so a file linked into several projects is
-                // reported only for the scoped project's document.
+                // Optional projectPath filter: keep only call sites whose document belongs to a
+                // matched project, so a file linked into several projects is reported only for the
+                // scoped project's document.
                 if (projectScope != null)
                 {
                     var documentId = Context.Solution.GetDocumentId(location.SourceTree);
                     if (documentId == null || !projectScope.Contains(documentId.ProjectId))
                         continue;
                 }
+
+                if (namespaceFilter != null
+                    && !await IsInNamespaceScopeAsync(
+                        location.SourceTree,
+                        Context.Solution.GetDocument(location.SourceTree),
+                        location.SourceSpan.Start))
+                    continue;
 
                 totalCount++;
 
@@ -160,6 +193,28 @@ public sealed class FindCallersOperation : QueryOperationBase<FindCallersParams,
         };
 
         return QueryResult<FindCallersResult>.Succeeded(operationId, result);
+    }
+
+
+    /// <summary>
+    /// Semantic model for a call-site tree: from its document when it has one, otherwise from the
+    /// compilation of the project whose generator output contains that exact tree (same fallback as
+    /// <c>find_references</c>). Compilations are cached by the workspace.
+    /// </summary>
+    private async Task<SemanticModel?> GetSemanticModelAsync(
+        SyntaxTree tree, Document? document, CancellationToken cancellationToken)
+    {
+        if (document != null)
+            return await document.GetSemanticModelAsync(cancellationToken);
+
+        foreach (var project in Context.Solution.Projects)
+        {
+            var compilation = await project.GetCompilationAsync(cancellationToken);
+            if (compilation != null && compilation.ContainsSyntaxTree(tree))
+                return compilation.GetSemanticModel(tree);
+        }
+
+        return null;
     }
 
     private static async Task<string?> GetSnippetAsync(Location location, CancellationToken cancellationToken)

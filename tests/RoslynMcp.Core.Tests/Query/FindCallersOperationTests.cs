@@ -10,9 +10,11 @@ namespace RoslynMcp.Core.Tests.Query;
 /// <summary>
 /// Operation-level tests for <see cref="FindCallersOperation"/> optional <c>callerFile</c>
 /// (restricts reported call sites to callers located in that file; peer of
-/// <c>search_symbols</c> / <c>get_diagnostics</c> optional <c>sourceFile</c>), and optional
+/// <c>search_symbols</c> / <c>get_diagnostics</c> optional <c>sourceFile</c>), optional
 /// <c>projectPath</c> (restricts reported call sites to one project; peer of <c>get_diagnostics</c> /
-/// <c>search_symbols</c> / <c>find_references</c> <c>projectPath</c>).
+/// <c>search_symbols</c> / <c>find_references</c> <c>projectPath</c>), and optional
+/// <c>namespaceFilter</c> (restricts reported call sites by call-site containing namespace; peer of
+/// <c>find_references</c> / <c>find_implementations</c> / <c>search_symbols</c> <c>namespaceFilter</c>).
 /// </summary>
 public class FindCallersOperationTests
 {
@@ -668,6 +670,347 @@ public class FindCallersOperationTests
 
     #endregion
 
+    #region namespaceFilter
+
+    // namespaceFilter scenario (one project): Target.Run is declared in App.Core (Target.cs) and
+    // called once there (Self, line 6); Services.cs calls it in block namespace App.Services (line 5)
+    // and, inside a lambda, in nested block namespace App.Services.Orders (line 12); Extra.cs in
+    // file-scoped App.ServicesExtra (line 5, prefix but not nested); Lower.cs in app.services (line 5,
+    // differs only by case); Global.cs in the global namespace (line 3). Solution-wide: 6 call sites
+    // (find_callers does not report the declaration).
+    private static readonly Dictionary<string, string> NamespaceSources = new()
+    {
+        ["Target.cs"] = """
+            namespace App.Core
+            {
+                public class Target
+                {
+                    public void Run() { }
+                    public void Self() { Run(); }
+                }
+            }
+            """,
+        ["Services.cs"] = """
+            namespace App.Services
+            {
+                public class OrderService
+                {
+                    public void Place(App.Core.Target t) { t.Run(); }
+                }
+            }
+            namespace App.Services.Orders
+            {
+                public class OrderHandler
+                {
+                    public void Handle(App.Core.Target t) { System.Action a = () => t.Run(); a(); }
+                }
+            }
+            """,
+        ["Extra.cs"] = """
+            namespace App.ServicesExtra;
+
+            public class Extra
+            {
+                public void Go(App.Core.Target t) { t.Run(); }
+            }
+            """,
+        ["Lower.cs"] = """
+            namespace app.services
+            {
+                public class Lower
+                {
+                    public void Go(App.Core.Target t) { t.Run(); }
+                }
+            }
+            """,
+        ["Global.cs"] = """
+            public class GlobalUser
+            {
+                public void Go(App.Core.Target t) { t.Run(); }
+            }
+            """
+    };
+
+    private static List<(string File, int Line)> FileLines(IEnumerable<CallerInfo> callers) =>
+        callers
+            .Select(c => (Path.GetFileName(c.File), c.Line))
+            .OrderBy(l => l.Item1, StringComparer.Ordinal)
+            .ThenBy(l => l.Line)
+            .ToList();
+
+    [Fact]
+    public void NamespaceFilter_DefaultsToNull()
+    {
+        var @params = new FindCallersParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.NamespaceFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("global::")]
+    [InlineData("  global::  ")]
+    public async Task FindCallers_NamespaceFilterBlankOrRoot_MatchesOmitted(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run"
+        });
+        var filtered = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(omitted.Success);
+        Assert.True(filtered.Success);
+        Assert.Equal(6, omitted.Data!.TotalCount);
+        Assert.Equal(6, filtered.Data!.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+        Assert.Equal(SortedCallSites(omitted.Data.Callers), SortedCallSites(filtered.Data.Callers));
+    }
+
+    [SkippableTheory]
+    [InlineData("App.Services")]
+    [InlineData("  App.Services  ")]
+    [InlineData("global::App.Services")]
+    [InlineData(" global::App.Services ")]
+    public async Task FindCallers_NamespaceFilter_KeepsSitesInEqualOrNestedNamespace(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        // sourceFile (App.Core) still locates the symbol; the filter scopes call sites only.
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal("Run", result.Data!.SymbolName);
+        // App.Services (line 5) + nested App.Services.Orders lambda (line 12); not App.ServicesExtra,
+        // app.services, the global namespace, or the App.Core Self usage.
+        Assert.Equal(
+            new List<(string, int)> { ("Services.cs", 5), ("Services.cs", 12) },
+            FileLines(result.Data.Callers));
+        Assert.Equal(2, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_NamespaceFilterNestedBlock_KeepsOnlyInnerNamespaceSites()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App.Services.Orders"
+        });
+
+        Assert.True(result.Success);
+        var only = Assert.Single(result.Data!.Callers);
+        Assert.True(SamePath(only.File, workspace.PathOf("Services.cs")));
+        Assert.Equal(12, only.Line);
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_NamespaceFilterRoot_IncludesNestedButNotGlobalOrOtherCase()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            new List<(string, int)>
+            {
+                ("Extra.cs", 5), ("Services.cs", 5), ("Services.cs", 12), ("Target.cs", 6)
+            },
+            FileLines(result.Data!.Callers));
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("App.ServicesExtra", "Extra.cs", 5)]
+    [InlineData("app.services", "Lower.cs", 5)]
+    public async Task FindCallers_NamespaceFilter_IsOrdinalAndHonorsFileScopedNamespaces(
+        string namespaceFilter, string expectedFile, int expectedLine)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        var only = Assert.Single(result.Data!.Callers);
+        Assert.True(SamePath(only.File, workspace.PathOf(expectedFile)));
+        Assert.Equal(expectedLine, only.Line);
+        Assert.Equal(1, result.Data.TotalCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("App.Serv")]
+    [InlineData("App.Services.Orders.Deep")]
+    [InlineData("Nope")]
+    [InlineData("APP")]
+    public async Task FindCallers_NamespaceFilterNoMatch_ReturnsEmptySuccess(string namespaceFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = namespaceFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.Empty(result.Data!.Callers);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_NamespaceFilterWithCallerFile_AndsTheScopes()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var sameFile = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App",
+            CallerFile = workspace.PathOf("Services.cs")
+        });
+
+        Assert.True(sameFile.Success);
+        Assert.Equal(
+            new List<(string, int)> { ("Services.cs", 5), ("Services.cs", 12) },
+            FileLines(sameFile.Data!.Callers));
+        Assert.Equal(2, sameFile.Data.TotalCount);
+
+        var otherFile = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App.Services",
+            CallerFile = workspace.PathOf("Extra.cs")
+        });
+
+        Assert.True(otherFile.Success);
+        Assert.Empty(otherFile.Data!.Callers);
+        Assert.Equal(0, otherFile.Data.TotalCount);
+        Assert.False(otherFile.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_NamespaceFilterWithMaxResults_CapsAfterNamespaceFilter()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(NamespaceSources);
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var capped = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App",
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.Equal(2, capped.Data!.Callers.Count);
+        // TotalCount reflects the namespace-filtered set (4 under App), not the solution-wide 6.
+        Assert.Equal(4, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+        Assert.DoesNotContain(capped.Data.Callers, c =>
+            SamePath(c.File, workspace.PathOf("Global.cs")) || SamePath(c.File, workspace.PathOf("Lower.cs")));
+
+        var notCapped = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.PathOf("Target.cs"),
+            SymbolName = "Run",
+            NamespaceFilter = "App.Services",
+            MaxResults = 2
+        });
+
+        Assert.True(notCapped.Success);
+        Assert.Equal(2, notCapped.Data!.Callers.Count);
+        Assert.Equal(2, notCapped.Data.TotalCount);
+        Assert.False(notCapped.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task FindCallers_NamespaceFilterWithProjectPath_AndsTheScopes()
+    {
+        await using var workspace = await TwoProjectWorkspace.CreateAsync();
+        var operation = new FindCallersOperation(workspace.Context);
+
+        var lib = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.LibTargetPath,
+            SymbolName = "Run",
+            NamespaceFilter = "Lib",
+            ProjectPath = workspace.LibProjectPath
+        });
+
+        Assert.True(lib.Success);
+        Assert.Equal(1, lib.Data!.TotalCount);
+        Assert.Equal("Self", Assert.Single(lib.Data.Callers).CallerName);
+
+        var app = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.LibTargetPath,
+            SymbolName = "Run",
+            NamespaceFilter = "App"
+        });
+
+        Assert.True(app.Success);
+        Assert.Equal(3, app.Data!.TotalCount);
+        Assert.All(app.Data.Callers, c => Assert.True(
+            SamePath(c.File, workspace.AppUserAPath) || SamePath(c.File, workspace.AppUserBPath)));
+
+        var mismatch = await operation.ExecuteAsync(new FindCallersParams
+        {
+            SourceFile = workspace.LibTargetPath,
+            SymbolName = "Run",
+            NamespaceFilter = "Lib",
+            ProjectPath = workspace.AppProjectPath
+        });
+
+        Assert.True(mismatch.Success);
+        Assert.Empty(mismatch.Data!.Callers);
+        Assert.Equal(0, mismatch.Data.TotalCount);
+        Assert.False(mismatch.Data.Truncated);
+    }
+
+    #endregion
+
     // Roslyn does not guarantee caller order across runs, so compare call sites as sorted sets.
     private static List<(string File, int Line, int Column, string CallerName)> SortedCallSites(
         IEnumerable<CallerInfo> callers) =>
@@ -691,7 +1034,16 @@ public class FindCallersOperationTests
 
         public string ProjectPath => Path.Combine(DirectoryPath, "TestApp.csproj");
 
-        public static async Task<TempWorkspace> CreateAsync()
+        public static Task<TempWorkspace> CreateAsync() =>
+            CreateAsync(new Dictionary<string, string>
+            {
+                ["Target.cs"] = TargetSource,
+                ["CallerA.cs"] = CallerASource,
+                ["CallerB.cs"] = CallerBSource,
+                ["Empty.cs"] = EmptySource
+            });
+
+        public static async Task<TempWorkspace> CreateAsync(IReadOnlyDictionary<string, string> files)
         {
             Skip.IfNot(ModuleInitializer.MsBuildAvailable, ModuleInitializer.MsBuildError ?? "MSBuild not available");
 
@@ -707,14 +1059,6 @@ public class FindCallersOperationTests
                   </PropertyGroup>
                 </Project>
                 """);
-
-            var files = new Dictionary<string, string>
-            {
-                ["Target.cs"] = TargetSource,
-                ["CallerA.cs"] = CallerASource,
-                ["CallerB.cs"] = CallerBSource,
-                ["Empty.cs"] = EmptySource
-            };
 
             foreach (var (name, source) in files)
                 await File.WriteAllTextAsync(Path.Combine(directory, name), source);
