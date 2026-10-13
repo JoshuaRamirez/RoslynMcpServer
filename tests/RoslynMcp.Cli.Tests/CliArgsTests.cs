@@ -224,4 +224,13 @@ public class CliArgsTests
         Assert.Equal("/src/Target.cs", result.Options["source-file"]);
         Assert.Equal("App.Services", result.Options["namespace-filter"]);
     }
+
+    [Fact]
+    public void GetTypeHierarchy_NamespaceFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-type-hierarchy", "--source-file", "/src/Shape.cs", "--symbol-name", "Shape", "--namespace-filter", "App.Services"]);
+        Assert.Equal("get-type-hierarchy", result.ToolName);
+        Assert.Equal("/src/Shape.cs", result.Options["source-file"]);
+        Assert.Equal("App.Services", result.Options["namespace-filter"]);
+    }
 }

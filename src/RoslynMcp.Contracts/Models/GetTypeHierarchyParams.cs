@@ -72,4 +72,20 @@ public sealed class GetTypeHierarchyParams
     /// effect when <c>direction</c> is <c>Ancestors</c>. Omit or <c>true</c> for today's behavior.
     /// </summary>
     public bool? Transitive { get; init; }
+
+    /// <summary>
+    /// Optional namespace to restrict reported derived types to. When set, only derived types whose
+    /// containing namespace equals this value or is nested inside it are returned in
+    /// <c>DerivedTypes</c> (e.g. <c>App.Services</c> matches <c>App.Services</c> and
+    /// <c>App.Services.Orders</c>, not <c>App.ServicesExtra</c>); same matching as
+    /// <c>search_symbols</c> / <c>find_implementations</c> <c>namespaceFilter</c>. Compared with
+    /// <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading
+    /// <c>global::</c> is accepted. Combined with <see cref="DerivedFile"/>, <see cref="ProjectPath"/>,
+    /// and <see cref="Transitive"/>, and applied before <see cref="MaxResults"/> so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered set. Derived types in the
+    /// global namespace never match a named filter. Does not filter BaseTypes or Interfaces. Omit,
+    /// blank, or a bare <c>global::</c> (the root namespace) reports derived types in all namespaces.
+    /// <see cref="SourceFile"/> still locates the target type and may be in another namespace.
+    /// </summary>
+    public string? NamespaceFilter { get; init; }
 }
