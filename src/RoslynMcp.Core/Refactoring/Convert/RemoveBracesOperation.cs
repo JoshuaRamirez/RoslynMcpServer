@@ -140,7 +140,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
             // already-sorted sort_usings). Statement scope already rejected above.
         }
 
-        var description = BuildDescription(scope, rewriter.UnwrappedCount, @params.TypeName);
+        var description = BraceTypeNameHelpers.BuildDescription("Remove braces from", scope, rewriter.UnwrappedCount, @params.TypeName);
         var beforeSnippet = previewOwner?.NormalizeWhitespace().ToFullString().Trim();
         SyntaxNode? afterOwner = null;
         if (previewOwner != null && rewriter.UnwrappedCount > 0)
@@ -282,7 +282,7 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
                 {
                     File = currentDocument.FilePath!,
                     ChangeType = ChangeKind.Modify,
-                    Description = BuildDescription(ScopeFile, rewriter.UnwrappedCount, null),
+                    Description = BraceTypeNameHelpers.BuildDescription("Remove braces from", ScopeFile, rewriter.UnwrappedCount, null),
                     BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
                     AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
                     StartLine = span.StartLinePosition.Line + 1,
@@ -455,17 +455,6 @@ public sealed class RemoveBracesOperation : RefactoringOperationBase<RemoveBrace
         return statement
             .WithLeadingTrivia(openTrivia.Concat(statement.GetLeadingTrivia()))
             .WithTrailingTrivia(statement.GetTrailingTrivia().Concat(closeTrivia));
-    }
-
-    private static string BuildDescription(string scope, int count, string? typeName)
-    {
-        var noun = count == 1 ? "control statement" : "control statements";
-        return scope switch
-        {
-            ScopeType => $"Remove braces from {count} {noun} in type '{typeName}'",
-            ScopeFile => $"Remove braces from {count} {noun} in file",
-            _ => $"Remove braces from {count} {noun}"
-        };
     }
 
     private sealed class BraceRewriter : CSharpSyntaxRewriter

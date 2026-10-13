@@ -5,16 +5,18 @@ using RoslynMcp.Contracts.Errors;
 namespace RoslynMcp.Core.Refactoring.Utilities;
 
 /// <summary>
-/// Shared type-name / qualified-path / scope-normalize / param-validation
-/// helpers used by add_braces / remove_braces. Same bodies as the two
-/// identical Convert brace copies. Named BraceTypeNameHelpers (not TypeDeclarationHelpers)
-/// because <see cref="TypeDeclarationHelpers.FindTypeDeclaration"/> already
-/// exists with a different signature (nullable + line/column).
+/// Shared type-name / qualified-path / scope-normalize / param-validation /
+/// BuildDescription helpers used by add_braces / remove_braces. Same bodies as
+/// the two identical Convert brace copies. Named BraceTypeNameHelpers (not
+/// TypeDeclarationHelpers) because
+/// <see cref="TypeDeclarationHelpers.FindTypeDeclaration"/> already exists with
+/// a different signature (nullable + line/column).
 /// </summary>
 internal static class BraceTypeNameHelpers
 {
     private const string ScopeStatement = "statement";
     private const string ScopeType = "type";
+    private const string ScopeFile = "file";
 
     /// <summary>
     /// Normalizes brace scope to statement, file, or type (default statement).
@@ -194,5 +196,22 @@ internal static class BraceTypeNameHelpers
         }
 
         return string.Join(".", parts);
+    }
+
+    /// <summary>
+    /// Builds an add_braces / remove_braces result description from
+    /// <paramref name="verbPhrase"/> ("Add braces to" or "Remove braces from"),
+    /// shared singular/plural noun, and ScopeType / ScopeFile / default arms.
+    /// Same body as the two prior Convert brace private copies.
+    /// </summary>
+    internal static string BuildDescription(string verbPhrase, string scope, int count, string? typeName)
+    {
+        var noun = count == 1 ? "control statement" : "control statements";
+        return scope switch
+        {
+            ScopeType => $"{verbPhrase} {count} {noun} in type '{typeName}'",
+            ScopeFile => $"{verbPhrase} {count} {noun} in file",
+            _ => $"{verbPhrase} {count} {noun}"
+        };
     }
 }
