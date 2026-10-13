@@ -188,4 +188,13 @@ public class CliArgsTests
         Assert.Equal("/src/Widget.cs", result.Options["source-file"]);
         Assert.Equal("protected internal", result.Options["accessibility-filter"]);
     }
+
+    [Fact]
+    public void GetSymbolInfo_NameFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "get-symbol-info", "--source-file", "/src/Widget.cs", "--symbol-name", "Widget", "--name-filter", "Handle"]);
+        Assert.Equal("get-symbol-info", result.ToolName);
+        Assert.Equal("/src/Widget.cs", result.Options["source-file"]);
+        Assert.Equal("Handle", result.Options["name-filter"]);
+    }
 }

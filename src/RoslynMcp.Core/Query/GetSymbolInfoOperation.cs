@@ -60,18 +60,24 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
             @params.SourceFile, @params.SymbolName, @params.Line, @params.Column, cancellationToken);
 
         var symbol = resolved.Symbol;
-        var info = BuildDetailedInfo(symbol, @params.MaxResults, @params.KindFilter, @params.AccessibilityFilter);
+        var info = BuildDetailedInfo(
+            symbol, @params.MaxResults, @params.KindFilter, @params.AccessibilityFilter, @params.NameFilter);
 
         return QueryResult<DetailedSymbolInfo>.Succeeded(operationId, info);
     }
 
     private static DetailedSymbolInfo BuildDetailedInfo(
-        ISymbol symbol, int? maxResults, string? kindFilter, string? accessibilityFilter)
+        ISymbol symbol,
+        int? maxResults,
+        string? kindFilter,
+        string? accessibilityFilter,
+        string? nameFilter)
     {
         var modifiers = GetModifiers(symbol);
         var location = GetLocation(symbol);
         var kindFilterValue = SymbolKindFilterParser.Parse(kindFilter);
         var accessibilityFilterValue = AccessibilityFilterParser.Parse(accessibilityFilter);
+        var nameFilterValue = string.IsNullOrWhiteSpace(nameFilter) ? null : nameFilter.Trim();
 
         // Gather type-specific fields
         string? baseType = null;
@@ -104,12 +110,20 @@ public sealed class GetSymbolInfoOperation : QueryOperationBase<GetSymbolInfoPar
                     .Where(m => m.DeclaredAccessibility == accessibilityFilterValue.Value);
             }
 
+            if (nameFilterValue != null)
+            {
+                // Ordinal case-insensitive substring on the simple name, same as
+                // get_document_outline nameFilter.
+                memberSymbols = memberSymbols
+                    .Where(m => m.Name.Contains(nameFilterValue, StringComparison.OrdinalIgnoreCase));
+            }
+
             var allMembers = memberSymbols
                 .Select(m => m.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat))
                 .ToList();
 
-            // kindFilter then accessibilityFilter apply first; maxResults caps only Members (first N
-            // in today's enumeration order); TotalCount stays the filtered member count.
+            // kindFilter then accessibilityFilter then nameFilter apply first; maxResults caps only
+            // Members (first N in today's enumeration order); TotalCount stays the filtered member count.
             totalCount = allMembers.Count;
             if (maxResults.HasValue && allMembers.Count > maxResults.Value)
             {

@@ -9,7 +9,7 @@ namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
 /// Operation-level tests for <see cref="GetSymbolInfoOperation"/> optional <c>maxResults</c>,
-/// <c>kindFilter</c>, and <c>accessibilityFilter</c> (peer of <see cref="GetTypeHierarchyOperation"/> / <c>search_symbols</c>).
+/// <c>kindFilter</c>, <c>accessibilityFilter</c>, and <c>nameFilter</c> (peer of <see cref="GetTypeHierarchyOperation"/> / <c>search_symbols</c> / <c>get_document_outline</c>).
 /// </summary>
 public class GetSymbolInfoOperationTests
 {
@@ -767,6 +767,274 @@ public class GetSymbolInfoOperationTests
         Assert.Equal(
             $"Invalid accessibilityFilter '{accessibilityFilter}'. Valid values: public, internal, protected, private, protected internal, private protected",
             ex.Message);
+    }
+
+    #endregion
+
+    #region nameFilter
+
+    [Fact]
+    public void NameFilter_DefaultsToNull()
+    {
+        var @params = new GetSymbolInfoParams { SourceFile = "/tmp/x.cs", SymbolName = "Foo" };
+        Assert.Null(@params.NameFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task GetSymbolInfo_OmittedOrBlankNameFilter_ReturnsFullMembers(string? nameFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.Members);
+        Assert.Equal(7, result.Data.Members.Count);
+        Assert.Equal(7, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_NameFilterSubstring_ReturnsMatchingMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            NameFilter = "a"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.Members);
+        // Alpha, Beta, Gamma, Delta — not Limit / Epsilon / Nested (no 'a' in the simple name).
+        Assert.Equal(4, result.Data.Members.Count);
+        Assert.Equal(4, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+        Assert.Contains(result.Data.Members, m => m.Contains("Alpha", StringComparison.Ordinal));
+        Assert.Contains(result.Data.Members, m => m.Contains("Beta", StringComparison.Ordinal));
+        Assert.Contains(result.Data.Members, m => m.Contains("Gamma", StringComparison.Ordinal));
+        Assert.Contains(result.Data.Members, m => m.Contains("Delta", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Data.Members, m => m.Contains("Limit", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Data.Members, m => m.Contains("Epsilon", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Data.Members, m => m.Contains("Nested", StringComparison.Ordinal));
+    }
+
+    [SkippableTheory]
+    [InlineData("delta")]
+    [InlineData("DELTA")]
+    [InlineData("  Delta  ")]
+    [InlineData("DeLtA")]
+    public async Task GetSymbolInfo_NameFilter_IsCaseInsensitiveAndIgnoresSurroundingWhitespace(string nameFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.Members);
+        Assert.Single(result.Data.Members);
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.Contains("Delta", result.Data.Members[0], StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_NameFilterNoMatch_ReturnsEmptyMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            NameFilter = "Zzz"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.Members);
+        Assert.Empty(result.Data.Members);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("Method", "pub", "PubMethod")]
+    [InlineData("Field", "pub", "PubField")]
+    [InlineData("Property", "prop", "PubProp")]
+    public async Task GetSymbolInfo_NameFilterCombinedWithKindFilter_RequiresBoth(
+        string kindFilter, string nameFilter, string expectedName)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(GadgetSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Gadget",
+            KindFilter = kindFilter,
+            NameFilter = nameFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.Members);
+        Assert.Single(result.Data.Members);
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.Contains(expectedName, result.Data.Members[0], StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_NameFilterCombinedWithAccessibilityFilter_RequiresBoth()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(GadgetSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Gadget",
+            AccessibilityFilter = "private",
+            NameFilter = "implicit"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.Members);
+        // private: privateField, implicitField, ImplicitMethod, ImplicitNested — name "implicit" → last three
+        Assert.Equal(3, result.Data.Members.Count);
+        Assert.Equal(3, result.Data.TotalCount);
+        Assert.Contains(result.Data.Members, m => m.Contains("implicitField", StringComparison.Ordinal));
+        Assert.Contains(result.Data.Members, m => m.Contains("ImplicitMethod", StringComparison.Ordinal));
+        Assert.Contains(result.Data.Members, m => m.Contains("ImplicitNested", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Data.Members, m => m.Contains("privateField", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_NameFilterCombinedWithKindAndAccessibility_RequiresAll()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(GadgetSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Gadget",
+            KindFilter = "Method",
+            AccessibilityFilter = "private",
+            NameFilter = "Implicit"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.Members);
+        Assert.Single(result.Data.Members);
+        Assert.Equal(1, result.Data.TotalCount);
+        Assert.Contains("ImplicitMethod", result.Data.Members[0], StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_NameFilterThenMaxResults_TruncatesFilteredSet()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var filtered = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            NameFilter = "a"
+        });
+        Assert.True(filtered.Success);
+        Assert.NotNull(filtered.Data);
+        Assert.NotNull(filtered.Data.Members);
+        Assert.Equal(4, filtered.Data.Members.Count);
+
+        var capped = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            NameFilter = "a",
+            MaxResults = 2
+        });
+
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        Assert.NotNull(capped.Data.Members);
+        Assert.Equal(2, capped.Data.Members.Count);
+        Assert.Equal(4, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+        Assert.Equal(filtered.Data.Members.Take(2).ToArray(), capped.Data.Members.ToArray());
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_NameFilterDoesNotFilterInterfaces()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Widget",
+            NameFilter = "Zzz"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.NotNull(result.Data.Interfaces);
+        Assert.Equal(new[] { "IFirst", "ISecond" }, result.Data.Interfaces.ToArray());
+    }
+
+    [SkippableFact]
+    public async Task GetSymbolInfo_NonTypeSymbol_NameFilterHasNoEffect()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(WidgetSource);
+        var operation = new GetSymbolInfoOperation(workspace.Context);
+
+        var full = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Delta"
+        });
+        var filtered = await operation.ExecuteAsync(new GetSymbolInfoParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Delta",
+            NameFilter = "Nope"
+        });
+
+        Assert.True(full.Success);
+        Assert.True(filtered.Success);
+        Assert.NotNull(full.Data);
+        Assert.NotNull(filtered.Data);
+        Assert.Null(filtered.Data.Members);
+        Assert.Null(filtered.Data.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+        Assert.NotNull(filtered.Data.Parameters);
+        Assert.Equal(3, filtered.Data.Parameters.Count);
+        Assert.Equal(full.Data.Signature, filtered.Data.Signature);
     }
 
     #endregion
