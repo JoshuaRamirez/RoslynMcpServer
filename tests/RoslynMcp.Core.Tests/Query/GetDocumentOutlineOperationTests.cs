@@ -1097,6 +1097,390 @@ public class GetDocumentOutlineOperationTests
 
     #endregion
 
+    #region Execute accessibilityFilter
+
+    private const string AccessSource = """
+        namespace App
+        {
+            class Implicit
+            {
+                int _count;
+                void Helper() { }
+                public void Run() { }
+                protected internal void Shared() { }
+                protected void Hook() { }
+                internal int Size { get; set; }
+                private protected event System.EventHandler? Changed;
+                public Implicit() { }
+
+                public class Nested
+                {
+                    void Inner() { }
+                }
+            }
+
+            public interface IService
+            {
+                void Execute();
+            }
+
+            public partial class Split
+            {
+            }
+
+            partial class Split
+            {
+                void Tail() { }
+            }
+
+            public enum Mode
+            {
+                On,
+                Off
+            }
+
+            delegate void Callback();
+        }
+        """;
+
+    // Full DFS pre-order: App, Implicit, Nested, Inner, Implicit (ctor), Helper, Run, Shared, Hook, Size, _count,
+    // Changed, IService, Execute, Split, Split, Tail, Mode, On, Off, Callback => 21 nodes.
+    private const int AccessSourceTotal = 21;
+
+    // accessibilityFilter "public" tree: App > [Implicit > [Nested, Implicit (ctor), Run], IService > [Execute],
+    // Split, Split, Mode > [On, Off]] => 12 nodes.
+    private const int PublicFilteredTotal = 12;
+
+    [Fact]
+    public void AccessibilityFilter_DefaultsToNull()
+    {
+        var @params = new GetDocumentOutlineParams { SourceFile = "/tmp/x.cs" };
+        Assert.Null(@params.AccessibilityFilter);
+    }
+
+    [SkippableTheory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t")]
+    public async Task GetDocumentOutline_OmittedOrBlankAccessibilityFilter_MatchesTodayOutputExactly(string? accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var baseline = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+        var filtered = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(baseline.Success);
+        Assert.NotNull(baseline.Data);
+        Assert.True(filtered.Success);
+        Assert.NotNull(filtered.Data);
+        Assert.Equal(AccessSourceTotal, filtered.Data.TotalCount);
+        Assert.False(filtered.Data.Truncated);
+        Assert.Equal(SerializeOutline(baseline.Data), SerializeOutline(filtered.Data));
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_AccessibilityFilterPublic_CountsImplicitDefaultsAndKeepsContainers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var full = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath
+        });
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "public"
+        });
+
+        Assert.True(full.Success);
+        Assert.NotNull(full.Data);
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+
+        // Implicit (internal) is kept only as a container; the interface member and enum members are implicitly
+        // public; the modifier-less second part of the public partial Split is public too (its private Tail is
+        // dropped); the namespace never matches and is kept only as a container.
+        var flat = Flatten(result.Data.Entries);
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace", 1),
+                ("Implicit", "Class", 2),
+                ("Nested", "Class", 3),
+                ("Implicit", "Constructor", 3),
+                ("Run", "Method", 3),
+                ("IService", "Interface", 2),
+                ("Execute", "Method", 3),
+                ("Split", "Class", 2),
+                ("Split", "Class", 2),
+                ("Mode", "Enum", 2),
+                ("On", "EnumMember", 3),
+                ("Off", "EnumMember", 3)
+            },
+            flat.Select(e => (e.Name, e.Kind, e.Depth)));
+
+        // Kept entries keep their original positions and (syntactic) metadata: the implicitly public interface
+        // member still reports a null Accessibility.
+        var original = Flatten(full.Data.Entries);
+        Assert.All(flat, e => Assert.Contains(e, original));
+        Assert.Null(flat.Single(e => e.Name == "Execute").Accessibility);
+        Assert.Null(flat.Last(e => e.Name == "Split").Accessibility);
+
+        Assert.Equal(PublicFilteredTotal, result.Data.TotalCount);
+        Assert.Equal(result.Data.TotalCount, CountNodes(result.Data.Entries));
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_AccessibilityFilterPrivate_MatchesModifierlessClassMembers()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "private"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+
+        // The first (public, member-less) Split part has no private descendant and is dropped; the second part is
+        // kept only as the container of Tail.
+        var flat = Flatten(result.Data.Entries);
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace", 1),
+                ("Implicit", "Class", 2),
+                ("Nested", "Class", 3),
+                ("Inner", "Method", 4),
+                ("Helper", "Method", 3),
+                ("_count", "Field", 3),
+                ("Split", "Class", 2),
+                ("Tail", "Method", 3)
+            },
+            flat.Select(e => (e.Name, e.Kind, e.Depth)));
+        Assert.All(flat.Where(e => e.Kind is "Method" or "Field"), e => Assert.Null(e.Accessibility));
+        Assert.Equal(8, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("internal", new[] { "App", "Implicit", "Size", "Callback" })]
+    [InlineData("protected", new[] { "App", "Implicit", "Hook" })]
+    [InlineData("protected internal", new[] { "App", "Implicit", "Shared" })]
+    [InlineData("private protected", new[] { "App", "Implicit", "Changed" })]
+    public async Task GetDocumentOutline_AccessibilityFilter_MatchesExactlyAndNotCompoundParts(
+        string accessibilityFilter, string[] expected)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(expected, Flatten(result.Data.Entries).Select(e => e.Name));
+        Assert.Equal(expected.Length, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("PROTECTED INTERNAL")]
+    [InlineData("  protected   internal  ")]
+    [InlineData("internal protected")]
+    [InlineData("Internal\tProtected")]
+    public async Task GetDocumentOutline_AccessibilityFilter_IsCaseAndWhitespaceInsensitiveAndAcceptsReversedOrder(
+        string accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var canonical = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "protected internal"
+        });
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = accessibilityFilter
+        });
+
+        Assert.True(canonical.Success);
+        Assert.NotNull(canonical.Data);
+        Assert.Equal(3, canonical.Data.TotalCount);
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Equal(SerializeOutline(canonical.Data), SerializeOutline(result.Data));
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_AccessibilityFilterWithKindAndNameFilter_RequiresAllToMatch()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        // public + Method: the public constructor counts as Method; the public Nested class matches the
+        // accessibility but not the kind and has no public method, so it is dropped.
+        var methods = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "public",
+            KindFilter = "Method"
+        });
+
+        Assert.True(methods.Success);
+        Assert.NotNull(methods.Data);
+        Assert.Equal(
+            new[]
+            {
+                ("App", "Namespace", 1),
+                ("Implicit", "Class", 2),
+                ("Implicit", "Constructor", 3),
+                ("Run", "Method", 3),
+                ("IService", "Interface", 2),
+                ("Execute", "Method", 3)
+            },
+            Flatten(methods.Data.Entries).Select(e => (e.Name, e.Kind, e.Depth)));
+        Assert.Equal(6, methods.Data.TotalCount);
+
+        // public + nameFilter "Run" keeps Run; private + "Run" has no match.
+        var run = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "public",
+            NameFilter = "run"
+        });
+
+        Assert.True(run.Success);
+        Assert.NotNull(run.Data);
+        Assert.Equal(new[] { "App", "Implicit", "Run" }, Flatten(run.Data.Entries).Select(e => e.Name));
+
+        var none = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "private",
+            NameFilter = "Run"
+        });
+
+        Assert.True(none.Success);
+        Assert.NotNull(none.Data);
+        Assert.Empty(none.Data.Entries);
+        Assert.Equal(0, none.Data.TotalCount);
+        Assert.False(none.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_AccessibilityFilterWithNamespaceKind_NeverMatchesNamespaces()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var result = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "public",
+            KindFilter = "Namespace"
+        });
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        Assert.Empty(result.Data.Entries);
+        Assert.Equal(0, result.Data.TotalCount);
+        Assert.False(result.Data.Truncated);
+    }
+
+    [SkippableFact]
+    public async Task GetDocumentOutline_AccessibilityFilterWithMaxDepthAndMaxResults_AppliesFilterFirst()
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var depth = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "public",
+            MaxDepth = 2
+        });
+
+        Assert.True(depth.Success);
+        Assert.NotNull(depth.Data);
+        Assert.Equal(
+            new[] { "App", "Implicit", "IService", "Split", "Split", "Mode" },
+            Flatten(depth.Data.Entries).Select(e => e.Name));
+        Assert.Equal(PublicFilteredTotal, depth.Data.TotalCount);
+        Assert.True(depth.Data.Truncated);
+
+        var capped = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "public",
+            MaxResults = 4
+        });
+
+        Assert.True(capped.Success);
+        Assert.NotNull(capped.Data);
+        Assert.Equal(
+            new[] { "App", "Implicit", "Nested", "Implicit" },
+            Flatten(capped.Data.Entries).Select(e => e.Name));
+        Assert.Equal(PublicFilteredTotal, capped.Data.TotalCount);
+        Assert.True(capped.Data.Truncated);
+
+        var notCapped = await operation.ExecuteAsync(new GetDocumentOutlineParams
+        {
+            SourceFile = workspace.SourcePath,
+            AccessibilityFilter = "public",
+            MaxResults = PublicFilteredTotal
+        });
+
+        Assert.True(notCapped.Success);
+        Assert.NotNull(notCapped.Data);
+        Assert.Equal(PublicFilteredTotal, CountNodes(notCapped.Data.Entries));
+        Assert.False(notCapped.Data.Truncated);
+    }
+
+    [SkippableTheory]
+    [InlineData("friend")]
+    [InlineData("ProtectedOrInternal")]
+    [InlineData("public, internal")]
+    [InlineData("1")]
+    public async Task Validate_InvalidAccessibilityFilter_ThrowsInvalidVisibility(string accessibilityFilter)
+    {
+        await using var workspace = await TempWorkspace.CreateAsync(AccessSource);
+        var operation = new GetDocumentOutlineOperation(workspace.Context);
+
+        var ex = await Assert.ThrowsAsync<RefactoringException>(() =>
+            operation.ExecuteAsync(new GetDocumentOutlineParams
+            {
+                SourceFile = workspace.SourcePath,
+                AccessibilityFilter = accessibilityFilter
+            }));
+
+        Assert.Equal(ErrorCodes.InvalidVisibility, ex.ErrorCode);
+        Assert.StartsWith($"Invalid accessibilityFilter '{accessibilityFilter}'. Valid values: ", ex.Message);
+        Assert.Contains("private protected", ex.Message);
+    }
+
+    #endregion
+
     private static string SerializeOutline(GetDocumentOutlineResult data) =>
         JsonSerializer.Serialize(data, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
 
