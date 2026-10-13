@@ -1303,6 +1303,60 @@ public class FindReferencesOperationTests
     }
 
     [SkippableFact]
+    public async Task FindReferences_NamespaceFilter_KeepsSourceGeneratedDefinitions()
+    {
+        // [GeneratedRegex] makes the BCL regex source generator emit a second `partial class Rx`
+        // part (in the same namespace) into a generated tree that is not a regular document; its
+        // definition location must still be attributed to App.Gen rather than dropped.
+        await using var workspace = await TempWorkspace.CreateAsync("""
+            using System.Text.RegularExpressions;
+            namespace App.Gen
+            {
+                public static partial class Rx
+                {
+                    [GeneratedRegex("ab+")]
+                    public static partial Regex Ab();
+                }
+            }
+            """, "Rx.cs");
+        var operation = new FindReferencesOperation(workspace.Context);
+
+        var omitted = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Rx"
+        });
+
+        Assert.True(omitted.Success);
+        Skip.If(
+            omitted.Data!.References.All(r => SamePath(r.File, workspace.SourcePath)),
+            "The regex source generator did not run in this MSBuild workspace.");
+
+        var scoped = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Rx",
+            NamespaceFilter = "App.Gen"
+        });
+
+        Assert.True(scoped.Success);
+        Assert.Equal(omitted.Data.TotalCount, scoped.Data!.TotalCount);
+        Assert.Equal(SortedLocations(omitted.Data.References), SortedLocations(scoped.Data.References));
+        Assert.Contains(scoped.Data.References, r => r.IsDefinition && !SamePath(r.File, workspace.SourcePath));
+
+        var other = await operation.ExecuteAsync(new FindReferencesParams
+        {
+            SourceFile = workspace.SourcePath,
+            SymbolName = "Rx",
+            NamespaceFilter = "App.Other"
+        });
+
+        Assert.True(other.Success);
+        Assert.Empty(other.Data!.References);
+        Assert.Equal(0, other.Data.TotalCount);
+    }
+
+    [SkippableFact]
     public async Task FindReferences_NamespaceFilterWithProjectPath_AndsTheScopes()
     {
         await using var workspace = await TwoProjectWorkspace.CreateAsync();

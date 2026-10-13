@@ -127,21 +127,21 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         // find_implementations): keep only locations whose reference site, i.e. the symbol enclosing
         // the location (member, type, or namespace declaration), lives in the filter namespace or one
         // nested inside it. The target symbol's own namespace is irrelevant (it is the same for every
-        // reference). Semantic models are cached per document so each file is bound at most once.
+        // reference). Semantic models are cached per syntax tree so each file is bound at most once.
         var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
         var semanticModelCache = namespaceFilter == null
             ? null
-            : new Dictionary<DocumentId, SemanticModel?>();
+            : new Dictionary<SyntaxTree, SemanticModel?>();
 
-        async Task<bool> IsInNamespaceScopeAsync(Document? document, int position)
+        async Task<bool> IsInNamespaceScopeAsync(SyntaxTree? tree, Document? document, int position)
         {
             if (namespaceFilter == null) return true;
-            if (document == null) return false;
+            if (tree == null) return false;
 
-            if (!semanticModelCache!.TryGetValue(document.Id, out var semanticModel))
+            if (!semanticModelCache!.TryGetValue(tree, out var semanticModel))
             {
-                semanticModel = await document.GetSemanticModelAsync(cancellationToken);
-                semanticModelCache[document.Id] = semanticModel;
+                semanticModel = await GetSemanticModelAsync(tree, document, cancellationToken);
+                semanticModelCache[tree] = semanticModel;
             }
 
             var enclosingSymbol = semanticModel?.GetEnclosingSymbol(position, cancellationToken);
@@ -163,7 +163,8 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                 if (!IsInReferenceFile(lineSpan.Path)) continue;
                 if (projectScope != null && !IsInProjectScope(Context.Solution.GetDocumentId(defLocation.SourceTree))) continue;
                 if (namespaceFilter != null
-                    && !await IsInNamespaceScopeAsync(Context.Solution.GetDocument(defLocation.SourceTree), defLocation.SourceSpan.Start))
+                    && !await IsInNamespaceScopeAsync(
+                        defLocation.SourceTree, Context.Solution.GetDocument(defLocation.SourceTree), defLocation.SourceSpan.Start))
                     continue;
 
                 totalCount++;
@@ -195,7 +196,9 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
                 // reference's own document.
                 if (!IsInReferenceFile(file)) continue;
                 if (!IsInProjectScope(refLocation.Document.Id)) continue;
-                if (!await IsInNamespaceScopeAsync(refLocation.Document, refLocation.Location.SourceSpan.Start)) continue;
+                if (!await IsInNamespaceScopeAsync(
+                        refLocation.Location.SourceTree, refLocation.Document, refLocation.Location.SourceSpan.Start))
+                    continue;
 
                 totalCount++;
 
@@ -226,6 +229,28 @@ public sealed class FindReferencesOperation : QueryOperationBase<FindReferencesP
         };
 
         return QueryResult<FindReferencesResult>.Succeeded(operationId, result);
+    }
+
+    /// <summary>
+    /// Semantic model for a reference / definition tree: from its document when it has one, otherwise
+    /// (e.g. a source-generated partial declaration, which is not a regular document) from the
+    /// compilation of the project whose generator output contains that exact tree. Compilations are
+    /// cached by the workspace, and the locations come from those same compilations.
+    /// </summary>
+    private async Task<SemanticModel?> GetSemanticModelAsync(
+        SyntaxTree tree, Document? document, CancellationToken cancellationToken)
+    {
+        if (document != null)
+            return await document.GetSemanticModelAsync(cancellationToken);
+
+        foreach (var project in Context.Solution.Projects)
+        {
+            var compilation = await project.GetCompilationAsync(cancellationToken);
+            if (compilation != null && compilation.ContainsSyntaxTree(tree))
+                return compilation.GetSemanticModel(tree);
+        }
+
+        return null;
     }
 
     private static async Task<string?> GetContextSnippetAsync(Location location, CancellationToken cancellationToken)
