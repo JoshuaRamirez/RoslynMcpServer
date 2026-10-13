@@ -117,7 +117,7 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             // already-sorted sort_usings). Statement scope already rejected above.
         }
 
-        var description = BuildDescription(scope, rewriter.WrappedCount, @params.TypeName);
+        var description = BraceTypeNameHelpers.BuildDescription("Add braces to", scope, rewriter.WrappedCount, @params.TypeName);
         var beforeSnippet = previewOwner?.NormalizeWhitespace().ToFullString().Trim();
         SyntaxNode? afterOwner = null;
         if (previewOwner != null && rewriter.WrappedCount > 0)
@@ -258,7 +258,7 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
                 {
                     File = currentDocument.FilePath!,
                     ChangeType = ChangeKind.Modify,
-                    Description = BuildDescription(ScopeFile, rewriter.WrappedCount, null),
+                    Description = BraceTypeNameHelpers.BuildDescription("Add braces to", ScopeFile, rewriter.WrappedCount, null),
                     BeforeSnippet = root.NormalizeWhitespace().ToFullString().Trim(),
                     AfterSnippet = newRoot.NormalizeWhitespace().ToFullString().Trim(),
                     StartLine = span.StartLinePosition.Line + 1,
@@ -360,17 +360,6 @@ public sealed class AddBracesOperation : RefactoringOperationBase<AddBracesParam
             return block;
 
         return SyntaxFactory.Block(statement);
-    }
-
-    private static string BuildDescription(string scope, int count, string? typeName)
-    {
-        var noun = count == 1 ? "control statement" : "control statements";
-        return scope switch
-        {
-            ScopeType => $"Add braces to {count} {noun} in type '{typeName}'",
-            ScopeFile => $"Add braces to {count} {noun} in file",
-            _ => $"Add braces to {count} {noun}"
-        };
     }
 
     private sealed class BraceRewriter : CSharpSyntaxRewriter
