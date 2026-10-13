@@ -77,6 +77,8 @@ public class GetDocumentOutlineToolTests
         Assert.Equal("string", kindFilter.GetProperty("type").GetString());
         Assert.True(properties.TryGetProperty("nameFilter", out var nameFilter));
         Assert.Equal("string", nameFilter.GetProperty("type").GetString());
+        Assert.True(properties.TryGetProperty("accessibilityFilter", out var accessibilityFilter));
+        Assert.Equal("string", accessibilityFilter.GetProperty("type").GetString());
         Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
     }
 
@@ -94,6 +96,57 @@ public class GetDocumentOutlineToolTests
     public void GetDefinition_DescriptionMentionsNameFilter()
     {
         Assert.Contains("nameFilter", _tool.Description, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GetDefinition_AccessibilityFilter_IsOptionalString()
+    {
+        var json = JsonSerializer.Serialize(_tool.InputSchema);
+        var doc = JsonDocument.Parse(json);
+        var accessibilityFilter = doc.RootElement.GetProperty("properties").GetProperty("accessibilityFilter");
+
+        Assert.Equal("string", accessibilityFilter.GetProperty("type").GetString());
+        var description = accessibilityFilter.GetProperty("description").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(description));
+        Assert.Contains("protected internal", description);
+        Assert.Contains("private protected", description);
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("accessibilityFilter", required);
+        Assert.Contains("accessibilityFilter", _tool.Description);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AccessibilityFilterString_ParsesAndReachesWorkspace()
+    {
+        // A well-formed accessibilityFilter parses; the throwing provider proves parsing succeeded.
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Foo.cs"",
+            ""accessibilityFilter"": ""protected internal""
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.Contains("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_AccessibilityFilterNonString_ReturnsParseError()
+    {
+        // A boolean is not a string; deserialization fails before workspace creation.
+        var args = JsonDocument.Parse(@"{
+            ""solutionPath"": ""C:/test/test.sln"",
+            ""sourceFile"": ""C:/test/Foo.cs"",
+            ""accessibilityFilter"": true
+        }").RootElement;
+
+        var result = await _tool.ExecuteAsync(args);
+
+        Assert.True(result.IsError);
+        Assert.DoesNotContain("Workspace creation should not have been attempted", result.Content.FirstOrDefault()?.Text ?? "");
     }
 
     [Fact]
