@@ -32,7 +32,7 @@ public sealed class GetSymbolInfoTool : IToolHandler
     public string Name => "get_symbol_info";
 
     /// <inheritdoc />
-    public string Description => "Get detailed information about a C# symbol including its type hierarchy, members, modifiers, parameters, return type, and XML documentation. Optional maxResults caps the returned Members list of a type (omit = no cap); result includes TotalCount and Truncated. Interfaces, Parameters and other fields are not capped, and maxResults has no effect on non-type symbols.";
+    public string Description => "Get detailed information about a C# symbol including its type hierarchy, members, modifiers, parameters, return type, and XML documentation. Optional kindFilter (same values as search_symbols / get_document_outline kindFilter, case-insensitive) keeps only Members of that kind on a type, applied before maxResults so totalCount/truncated reflect the filtered set; Local/Parameter/Namespace never match a type member. Optional maxResults caps the returned Members list of a type (omit = no cap); result includes TotalCount and Truncated. Interfaces, Parameters and other fields are not filtered or capped, and kindFilter/maxResults have no effect on non-type symbols.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -71,8 +71,13 @@ public sealed class GetSymbolInfoTool : IToolHandler
             maxResults = new
             {
                 type = "integer",
-                description = "Maximum number of members to return for a type symbol (optional; omit = no cap). Does not cap Interfaces or Parameters; no effect on non-type symbols.",
+                description = "Maximum number of members to return for a type symbol (optional; omit = no cap). Applied after kindFilter so totalCount/truncated reflect the kind-filtered set. Does not cap Interfaces or Parameters; no effect on non-type symbols.",
                 minimum = 1
+            },
+            kindFilter = new
+            {
+                type = "string",
+                description = "Keep only Members of this kind on a type symbol (optional; case-insensitive): Class, Struct, Interface, Enum, Record, Delegate, Method, Property, Field, Event, Constant, Local, Parameter, Namespace (a single kind name; numeric or comma-combined values are rejected with InvalidSymbolKind). Same values and parsing as search_symbols / get_document_outline kindFilter. Applied before maxResults so totalCount/truncated reflect the filtered set; Local/Parameter/Namespace never match a type member (empty Members); omit, empty, or whitespace = all members; no effect on non-type symbols or on Interfaces/Parameters"
             }
         },
         additionalProperties = false
@@ -99,7 +104,8 @@ public sealed class GetSymbolInfoTool : IToolHandler
                 SymbolName = args.SymbolName,
                 Line = args.Line,
                 Column = args.Column,
-                MaxResults = args.MaxResults
+                MaxResults = args.MaxResults,
+                KindFilter = args.KindFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -131,5 +137,6 @@ public sealed class GetSymbolInfoTool : IToolHandler
         public int? Line { get; init; }
         public int? Column { get; init; }
         public int? MaxResults { get; init; }
+        public string? KindFilter { get; init; }
     }
 }

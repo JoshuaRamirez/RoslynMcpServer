@@ -8,7 +8,7 @@ namespace RoslynMcp.Core.Tests.Query;
 
 /// <summary>
 /// Unit tests for <see cref="SymbolKindFilterParser"/>, the <c>kindFilter</c> parsing shared by
-/// <c>search_symbols</c> and <c>get_document_outline</c>.
+/// <c>search_symbols</c>, <c>get_document_outline</c>, and <c>get_symbol_info</c>.
 /// </summary>
 public class SymbolKindFilterParserTests
 {

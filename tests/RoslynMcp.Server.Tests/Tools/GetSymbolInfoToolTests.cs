@@ -90,6 +90,7 @@ public class GetSymbolInfoToolTests
         Assert.True(properties.TryGetProperty("line", out _));
         Assert.True(properties.TryGetProperty("column", out _));
         Assert.True(properties.TryGetProperty("maxResults", out _));
+        Assert.True(properties.TryGetProperty("kindFilter", out _));
     }
 
     [Fact]
@@ -113,6 +114,29 @@ public class GetSymbolInfoToolTests
     {
         Assert.Contains("maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Members", _tool.Description, StringComparison.Ordinal);
+    }
+
+
+    [Fact]
+    public void GetDefinition_KindFilter_IsOptionalString()
+    {
+        var schema = _tool.InputSchema;
+        var json = JsonSerializer.Serialize(schema);
+        var doc = JsonDocument.Parse(json);
+        var kindFilter = doc.RootElement.GetProperty("properties").GetProperty("kindFilter");
+
+        Assert.Equal("string", kindFilter.GetProperty("type").GetString());
+
+        var required = doc.RootElement.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        Assert.DoesNotContain("kindFilter", required);
+        Assert.False(doc.RootElement.GetProperty("additionalProperties").GetBoolean());
+    }
+
+    [Fact]
+    public void GetDefinition_DescriptionMentionsKindFilter()
+    {
+        Assert.Contains("kindFilter", _tool.Description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("before maxResults", _tool.Description, StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion

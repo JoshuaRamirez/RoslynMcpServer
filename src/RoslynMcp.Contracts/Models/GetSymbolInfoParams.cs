@@ -28,7 +28,18 @@ public sealed class GetSymbolInfoParams
     /// <summary>
     /// Maximum number of members to return for a type symbol. Omit for no cap (return all members).
     /// Only caps <c>Members</c>; Interfaces, Parameters, Modifiers and other fields are not capped,
-    /// and it has no effect on non-type symbols.
+    /// and it has no effect on non-type symbols. Applied after <see cref="KindFilter"/> so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the kind-filtered set.
     /// </summary>
     public int? MaxResults { get; init; }
+
+    /// <summary>
+    /// Optional member kind to restrict the <c>Members</c> list of a named type to: a single
+    /// <c>SymbolKind</c> name shared with <c>search_symbols</c> / <c>get_document_outline</c>
+    /// <c>kindFilter</c> (Class, Struct, Interface, Enum, Record, Delegate, Method, Property, Field,
+    /// Event, Constant, Local, Parameter, Namespace; case-insensitive). Applied before
+    /// <see cref="MaxResults"/>. Omit, empty, or whitespace = all members. Interfaces, Parameters,
+    /// and other fields are not filtered; no effect on non-type symbols.
+    /// </summary>
+    public string? KindFilter { get; init; }
 }
