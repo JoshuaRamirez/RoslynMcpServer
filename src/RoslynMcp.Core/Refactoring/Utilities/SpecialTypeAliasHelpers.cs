@@ -47,7 +47,7 @@ internal static class SpecialTypeAliasHelpers
     /// <summary>
     /// True when <paramref name="requestedType"/> matches
     /// <paramref name="type"/> via display string, FQN without
-    /// <c>global::</c>, metadata <see cref="ISymbol.Name"/>, or the special-type
+    /// <c>global::</c>, simple <see cref="ISymbol.Name"/>, or the special-type
     /// keyword alias from <see cref="TryGetSpecialTypeAlias"/>. Same body as
     /// generate_property's <c>PropertyTypeMatchesField</c> and
     /// generate_method_stub's <c>ParameterTypeMatches</c>.
