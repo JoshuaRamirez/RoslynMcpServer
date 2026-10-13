@@ -4,8 +4,8 @@ using RoslynMcp.Core.Refactoring;
 namespace RoslynMcp.Core.Query.Utilities;
 
 /// <summary>
-/// Parses the optional <c>kindFilter</c> string shared by <c>search_symbols</c> and
-/// <c>get_document_outline</c> into a <see cref="Contracts.Enums.SymbolKind"/>.
+/// Parses the optional <c>kindFilter</c> string shared by <c>search_symbols</c>,
+/// <c>get_document_outline</c>, and <c>get_symbol_info</c> into a <see cref="Contracts.Enums.SymbolKind"/>.
 /// </summary>
 internal static class SymbolKindFilterParser
 {
