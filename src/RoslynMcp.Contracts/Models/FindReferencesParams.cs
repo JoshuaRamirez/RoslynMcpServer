@@ -59,4 +59,22 @@ public sealed class FindReferencesParams
     /// another project.
     /// </summary>
     public string? ProjectPath { get; init; }
+
+    /// <summary>
+    /// Optional namespace to restrict reported reference locations to. When set, only locations
+    /// (usages and, when <see cref="IncludeDeclaration"/> is on, definition locations) whose
+    /// reference site lives in a namespace that equals this value or is nested inside it are
+    /// returned — the containing namespace of the code at that location (the enclosing member, type,
+    /// or namespace declaration), not the target symbol's namespace (e.g. <c>App.Services</c> matches
+    /// sites in <c>App.Services</c> and <c>App.Services.Orders</c>, not <c>App.ServicesExtra</c>); same
+    /// matching as <c>search_symbols</c> / <c>find_implementations</c> <c>namespaceFilter</c>.
+    /// Compared with <c>StringComparison.Ordinal</c>; surrounding whitespace is trimmed and a leading
+    /// <c>global::</c> is accepted. Combined with <see cref="ReferenceFile"/>, <see cref="ProjectPath"/>,
+    /// and <see cref="IncludeDeclaration"/>, and applied before <see cref="MaxResults"/> so
+    /// <c>TotalCount</c> / <c>Truncated</c> reflect the namespace-filtered set. Sites in the global
+    /// namespace (top-level statements, usings outside any namespace) never match a named filter.
+    /// Omit, blank, or a bare <c>global::</c> (the root namespace) reports locations in all namespaces.
+    /// <see cref="SourceFile"/> still locates the target symbol and may be in another namespace.
+    /// </summary>
+    public string? NamespaceFilter { get; init; }
 }

@@ -206,4 +206,13 @@ public class CliArgsTests
         Assert.Equal("/src/IRunner.cs", result.Options["source-file"]);
         Assert.Equal("App.Services", result.Options["namespace-filter"]);
     }
+
+    [Fact]
+    public void FindReferences_NamespaceFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "find-references", "--source-file", "/src/Target.cs", "--symbol-name", "Run", "--namespace-filter", "App.Services"]);
+        Assert.Equal("find-references", result.ToolName);
+        Assert.Equal("/src/Target.cs", result.Options["source-file"]);
+        Assert.Equal("App.Services", result.Options["namespace-filter"]);
+    }
 }

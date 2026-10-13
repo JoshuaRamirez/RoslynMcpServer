@@ -2066,6 +2066,24 @@ public class HelpGeneratorTests
     }
 
     [Fact]
+    public void GenerateToolHelp_FindReferences_ShowsNamespaceFilter()
+    {
+        var registry = ToolRegistry.BuildDefault();
+        var tool = registry.GetTool("find-references")!;
+        var help = HelpGenerator.GenerateToolHelp(tool);
+
+        Assert.Contains("namespaceFilter (optional)", tool.Description, StringComparison.OrdinalIgnoreCase);
+
+        var requiredIdx = help.IndexOf("REQUIRED:");
+        var optionalIdx = help.IndexOf("OPTIONAL:");
+        Assert.True(requiredIdx >= 0, "REQUIRED section should exist");
+        Assert.True(optionalIdx > requiredIdx, "OPTIONAL section should follow REQUIRED");
+
+        Assert.DoesNotContain("--namespace-filter", help[requiredIdx..optionalIdx]);
+        Assert.Contains("--namespace-filter", help[optionalIdx..]);
+    }
+
+    [Fact]
     public void GenerateToolHelp_FindImplementations_ShowsImplementationFile()
     {
         var registry = ToolRegistry.BuildDefault();
