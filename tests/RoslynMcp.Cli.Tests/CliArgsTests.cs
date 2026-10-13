@@ -197,4 +197,13 @@ public class CliArgsTests
         Assert.Equal("/src/Widget.cs", result.Options["source-file"]);
         Assert.Equal("Handle", result.Options["name-filter"]);
     }
+
+    [Fact]
+    public void FindImplementations_NamespaceFilterOption_ParsesValue()
+    {
+        var result = CliArgs.Parse(["My.sln", "find-implementations", "--source-file", "/src/IRunner.cs", "--symbol-name", "IRunner", "--namespace-filter", "App.Services"]);
+        Assert.Equal("find-implementations", result.ToolName);
+        Assert.Equal("/src/IRunner.cs", result.Options["source-file"]);
+        Assert.Equal("App.Services", result.Options["namespace-filter"]);
+    }
 }

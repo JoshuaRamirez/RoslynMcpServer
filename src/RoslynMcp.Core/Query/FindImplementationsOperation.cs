@@ -16,7 +16,8 @@ namespace RoslynMcp.Core.Query;
 /// Finds all implementations of an interface, abstract class, or virtual/abstract member across the
 /// solution (or within one project when <see cref="FindImplementationsParams.ProjectPath"/> is set;
 /// only direct implementers of an interface when <see cref="FindImplementationsParams.Transitive"/>
-/// is false). Delegates to Roslyn's SymbolFinder.FindImplementationsAsync.
+/// is false; only implementations in one namespace subtree when
+/// <see cref="FindImplementationsParams.NamespaceFilter"/> is set). Delegates to Roslyn's SymbolFinder.FindImplementationsAsync.
 /// </summary>
 public sealed class FindImplementationsOperation : QueryOperationBase<FindImplementationsParams, FindImplementationsResult>
 {
@@ -133,8 +134,19 @@ public sealed class FindImplementationsOperation : QueryOperationBase<FindImplem
 
         var filtered = implementationFileKey != null || projectScope != null;
 
+        // Optional namespaceFilter (same normalization / matching as search_symbols namespaceFilter):
+        // an implementation matches when its containing namespace (for member targets, the namespace
+        // of the member's containing type) equals the filter or is nested inside it. Null when omitted,
+        // blank, or a bare global:: (no namespace filtering).
+        var namespaceFilter = NamespaceFilter.Normalize(@params.NamespaceFilter);
+
         foreach (var impl in implSymbols)
         {
+            // Applied before maxResults (and before the location filters below) so TotalCount /
+            // Truncated reflect the namespace-filtered set.
+            if (namespaceFilter != null && !NamespaceFilter.IsInNamespace(impl, namespaceFilter))
+                continue;
+
             Location? location;
             if (!filtered)
             {

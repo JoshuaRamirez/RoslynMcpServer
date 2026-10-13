@@ -32,7 +32,7 @@ public sealed class FindImplementationsTool : IToolHandler
     public string Name => "find_implementations";
 
     /// <inheritdoc />
-    public string Description => "Find all implementations of a C# interface, abstract class, or virtual/abstract member across the solution. sourceFile locates the target symbol; optional implementationFile restricts reported implementations to those declared in that file (applied before maxResults, so totalCount/truncated reflect the filtered set). Optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported implementations to those declared in documents of that project, applied before maxResults. Optional transitive (default true) set to false on an interface returns only types that implement it directly (not those inheriting the implementation from a base class or implementing it via a derived interface), with implementationFile/projectPath/maxResults applied to that direct set; no effect for member targets.";
+    public string Description => "Find all implementations of a C# interface, abstract class, or virtual/abstract member across the solution. sourceFile locates the target symbol; optional implementationFile restricts reported implementations to those declared in that file (applied before maxResults, so totalCount/truncated reflect the filtered set). Optional projectPath (absolute .csproj path of a project in the loaded solution) restricts reported implementations to those declared in documents of that project, applied before maxResults. Optional transitive (default true) set to false on an interface returns only types that implement it directly (not those inheriting the implementation from a base class or implementing it via a derived interface), with implementationFile/projectPath/maxResults applied to that direct set; no effect for member targets. Optional namespaceFilter restricts reported implementations to those whose containing namespace equals it or is nested inside it (ordinal; e.g. App.Services matches App.Services.Orders, not App.ServicesExtra; same matching as search_symbols namespaceFilter), combined with the other filters and applied before maxResults.";
 
     /// <inheritdoc />
     public object InputSchema => new
@@ -88,6 +88,11 @@ public sealed class FindImplementationsTool : IToolHandler
             {
                 type = "boolean",
                 description = "When the target is an interface, include every implementing type (default true). false returns only types that implement the interface directly (not those inheriting the implementation from a base class or implementing it via a derived interface); implementationFile/projectPath filter and maxResults cap that direct set, so totalCount/truncated reflect it. No effect for member targets or non-interface types"
+            },
+            namespaceFilter = new
+            {
+                type = "string",
+                description = "Namespace to restrict reported implementations to (optional; omit for all namespaces). Keeps implementations whose containing namespace (for member targets, that of the member's containing type) equals it or is nested inside it, e.g. App.Services matches App.Services.Orders but not App.ServicesExtra; ordinal (case-sensitive); surrounding whitespace trimmed; a leading global:: is accepted and a bare global:: filters nothing; global-namespace implementations never match a named filter. Same matching as search_symbols namespaceFilter; combined with implementationFile/projectPath/transitive and applied before maxResults so totalCount/truncated reflect the filtered set"
             }
         },
         additionalProperties = false
@@ -117,7 +122,8 @@ public sealed class FindImplementationsTool : IToolHandler
                 MaxResults = args.MaxResults,
                 ImplementationFile = args.ImplementationFile,
                 ProjectPath = args.ProjectPath,
-                Transitive = args.Transitive
+                Transitive = args.Transitive,
+                NamespaceFilter = args.NamespaceFilter
             };
 
             var result = await operation.ExecuteAsync(@params, cancellationToken);
@@ -152,5 +158,6 @@ public sealed class FindImplementationsTool : IToolHandler
         public string? ImplementationFile { get; init; }
         public string? ProjectPath { get; init; }
         public bool? Transitive { get; init; }
+        public string? NamespaceFilter { get; init; }
     }
 }
