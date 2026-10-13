@@ -632,14 +632,10 @@ public sealed class ReorderParametersOperation : RefactoringOperationBase<Reorde
         if (method.ContainingType == null || newOrder.Length != method.Parameters.Length)
             return;
 
-        foreach (var candidate in method.ContainingType.GetMembers(method.Name).OfType<IMethodSymbol>())
+        foreach (var candidate in SiblingOverloadCollisionHelpers.EnumerateSameShapeSiblings(
+                     method,
+                     method.Parameters.Length))
         {
-            if (SymbolEqualityComparer.Default.Equals(candidate, method))
-                continue;
-            if (candidate.Parameters.Length != method.Parameters.Length)
-                continue;
-            if (candidate.TypeParameters.Length != method.TypeParameters.Length)
-                continue;
             if (!TypeEquivalenceHelpers.ParameterListsMatchReordered(method.Parameters, newOrder, candidate.Parameters))
                 continue;
 

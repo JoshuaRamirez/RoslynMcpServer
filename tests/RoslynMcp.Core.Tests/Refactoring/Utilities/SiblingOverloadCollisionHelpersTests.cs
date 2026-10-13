@@ -10,7 +10,8 @@ namespace RoslynMcp.Core.Tests.Refactoring.Utilities;
 /// <summary>
 /// Characterization tests for <see cref="SiblingOverloadCollisionHelpers"/> —
 /// core / insert / full-replace / remove mappings folded from
-/// ChangeSignature / AddParameter / RemoveParameter.
+/// ChangeSignature / AddParameter / RemoveParameter, plus the shared
+/// same-shape sibling scan used by ChangeReturnType / ReorderParameters.
 /// </summary>
 public class SiblingOverloadCollisionHelpersTests
 {
@@ -292,6 +293,113 @@ public class SiblingOverloadCollisionHelpersTests
 
         Assert.False(SiblingOverloadCollisionHelpers.WouldCollideWithSiblingAfterRemove(method, removeIndex: -1));
         Assert.False(SiblingOverloadCollisionHelpers.WouldCollideWithSiblingAfterRemove(method, removeIndex: 1));
+    }
+
+    [Fact]
+    public void EnumerateSameShapeSiblings_NoContainingType_ReturnsEmpty()
+    {
+        var compilation = CreateCompilation("""
+            public class C
+            {
+                public void M(int a) { }
+                public void M(string a) { }
+            }
+            """);
+        var type = compilation.GetTypeByMetadataName("C")!;
+        var declared = type.GetMembers("M").OfType<IMethodSymbol>()
+            .First(m => m.Parameters[0].Type.SpecialType == SpecialType.System_Int32);
+        var method = NullContainingType(declared);
+
+        Assert.Empty(SiblingOverloadCollisionHelpers.EnumerateSameShapeSiblings(method, 1));
+    }
+
+    [Fact]
+    public void EnumerateSameShapeSiblings_SkipsSelf()
+    {
+        var compilation = CreateCompilation("""
+            public class C
+            {
+                public void M(int a) { }
+            }
+            """);
+        var method = compilation.GetTypeByMetadataName("C")!
+            .GetMembers("M").OfType<IMethodSymbol>().Single();
+
+        Assert.Empty(SiblingOverloadCollisionHelpers.EnumerateSameShapeSiblings(method, 1));
+    }
+
+    [Fact]
+    public void EnumerateSameShapeSiblings_FiltersByParameterCount()
+    {
+        var compilation = CreateCompilation("""
+            public class C
+            {
+                public void M(int a) { }
+                public void M(string a) { }
+                public void M(int a, int b) { }
+                public void M() { }
+            }
+            """);
+        var methods = compilation.GetTypeByMetadataName("C")!
+            .GetMembers("M").OfType<IMethodSymbol>().ToList();
+        var method = methods.Single(m =>
+            m.Parameters.Length == 1 && m.Parameters[0].Type.SpecialType == SpecialType.System_Int32);
+
+        var oneParam = SiblingOverloadCollisionHelpers.EnumerateSameShapeSiblings(method, 1).ToList();
+        var single = Assert.Single(oneParam);
+        Assert.Equal(SpecialType.System_String, single.Parameters[0].Type.SpecialType);
+
+        var twoParam = SiblingOverloadCollisionHelpers.EnumerateSameShapeSiblings(method, 2).ToList();
+        Assert.Equal(2, Assert.Single(twoParam).Parameters.Length);
+
+        var zeroParam = SiblingOverloadCollisionHelpers.EnumerateSameShapeSiblings(method, 0).ToList();
+        Assert.Empty(Assert.Single(zeroParam).Parameters);
+    }
+
+    [Fact]
+    public void EnumerateSameShapeSiblings_FiltersByTypeParameterArity()
+    {
+        var compilation = CreateCompilation("""
+            public class C
+            {
+                public void M(int a) { }
+                public void M<T>(int a) { }
+                public void M<T, U>(int a) { }
+                public void M(long a) { }
+            }
+            """);
+        var methods = compilation.GetTypeByMetadataName("C")!
+            .GetMembers("M").OfType<IMethodSymbol>().ToList();
+        var nonGeneric = methods.Single(m =>
+            m.TypeParameters.Length == 0 && m.Parameters[0].Type.SpecialType == SpecialType.System_Int32);
+        var generic = methods.Single(m => m.TypeParameters.Length == 1);
+
+        var nonGenericSiblings = SiblingOverloadCollisionHelpers.EnumerateSameShapeSiblings(nonGeneric, 1).ToList();
+        Assert.Equal(SpecialType.System_Int64, Assert.Single(nonGenericSiblings).Parameters[0].Type.SpecialType);
+
+        Assert.Empty(SiblingOverloadCollisionHelpers.EnumerateSameShapeSiblings(generic, 1));
+    }
+
+    [Fact]
+    public void EnumerateSameShapeSiblings_IgnoresNonMethodsAndOtherNames()
+    {
+        var compilation = CreateCompilation("""
+            public class C
+            {
+                public void M(int a) { }
+                public void N(string a) { }
+                public class Nested { }
+            }
+
+            public class D
+            {
+                public void M(string a) { }
+            }
+            """);
+        var method = compilation.GetTypeByMetadataName("C")!
+            .GetMembers("M").OfType<IMethodSymbol>().Single();
+
+        Assert.Empty(SiblingOverloadCollisionHelpers.EnumerateSameShapeSiblings(method, 1));
     }
 
     private static (IMethodSymbol Method, IMethodSymbol Sibling, CSharpCompilation Compilation) GetOverloads(
